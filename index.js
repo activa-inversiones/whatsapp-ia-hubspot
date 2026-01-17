@@ -128,6 +128,10 @@ async function sendWhatsAppMessage(to, body) {
 /* =========================
    START SERVER
 ========================= */
-app.listen(PORT || 3000, () => {
-  console.log(`🚀 Servidor activo con IA en puerto ${PORT || 3000}`);
+if (!PORT) {
+  throw new Error("❌ PORT no definido por Railway");
+}
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Servidor activo con IA en puerto ${PORT}`);
 });
