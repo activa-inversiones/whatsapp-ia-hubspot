@@ -13,12 +13,12 @@ const {
   WEBHOOK_VERIFY_TOKEN
 } = process.env;
 
-// 1. RUTA DE SALUD (Obligatoria para Railway)
+/* ========= RUTA DE SALUD (OBLIGATORIO) ========= */
 app.get("/", (req, res) => {
-  res.status(200).send("Servidor Activo");
+  res.status(200).send("OK - Servidor Activo");
 });
 
-// 2. VERIFICACIÓN DEL WEBHOOK
+/* ========= WEBHOOK VERIFY ========= */
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -30,7 +30,7 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// 3. RECEPCIÓN DE MENSAJES
+/* ========= RECEIVE MESSAGE ========= */
 app.post("/webhook", async (req, res) => {
   try {
     const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
@@ -47,7 +47,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// 4. FUNCIÓN PARA ENVIAR PLANTILLA
+/* ========= SEND TEMPLATE ========= */
 async function sendWelcomeTemplate(to) {
   const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
   try {
@@ -74,10 +74,11 @@ async function sendWelcomeTemplate(to) {
   }
 }
 
-// 5. INICIO DEL SERVIDOR (Configuración para Railway)
-// Deja que process.env.PORT use lo que Railway asigne automáticamente
+/* ========= START SERVER ========= */
+// Railway asigna el puerto automáticamente en process.env.PORT.
+// Si no existe (local), usará el 3000.
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Servidor funcionando en puerto ${PORT}`);
+  console.log(`🚀 Servidor activo en puerto ${PORT}`);
 });
