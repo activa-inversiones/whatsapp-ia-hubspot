@@ -8,7 +8,6 @@ const app = express();
 app.use(express.json());
 
 const {
-  PORT,
   OPENAI_API_KEY,
   PHONE_NUMBER_ID,
   WHATSAPP_TOKEN,
@@ -138,3 +137,4 @@ if (!PORT) {
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Servidor activo con IA en puerto ${PORT}`);
 });
+
