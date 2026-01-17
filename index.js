@@ -1,5 +1,5 @@
-import fetch from "node-fetch";
 import express from "express";
+import fetch from "node-fetch";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -9,9 +9,9 @@ app.use(express.json());
 
 const {
   PORT,
-  WHATSAPP_VERIFY_TOKEN,
   WHATSAPP_TOKEN,
   PHONE_NUMBER_ID,
+  WHATSAPP_VERIFY_TOKEN,
   OPENAI_API_KEY
 } = process.env;
 
@@ -32,39 +32,33 @@ app.get("/webhook", (req, res) => {
 });
 
 /* =========================
-   RECEIVE WHATSAPP MESSAGE
+   RECEIVE MESSAGES
 ========================= */
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
-    const message = value?.messages?.[0];
-
-    if (!message || message.type !== "text") {
-      return res.sendStatus(200);
-    }
+    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    if (!message || message.type !== "text") return res.sendStatus(200);
 
     const from = message.from;
     const userText = message.text.body;
 
     console.log("📩 Mensaje recibido:", userText);
 
-    const aiReply = await askChatGPT(userText);
+    const aiReply = await askGPT(userText);
 
     await sendWhatsAppMessage(from, aiReply);
 
     res.sendStatus(200);
-  } catch (error) {
-    console.error("❌ Error:", error);
+  } catch (err) {
+    console.error("❌ Error:", err);
     res.sendStatus(500);
   }
 });
 
 /* =========================
-   CHATGPT
+   GPT RESPONSE
 ========================= */
-async function askChatGPT(text) {
+async function askGPT(text) {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -76,44 +70,9 @@ async function askChatGPT(text) {
       messages: [
         {
           role: "system",
-          content: "Eres un asistente de ventas de Activa Inversiones. Responde claro, corto y profesional."
+          content:
+            "Eres un asistente de ventas de Activa Inversiones. Responde de forma clara, profesional y orientada a cotizar ventanas, puertas y proyectos."
         },
-        {
-          role: "user",
-          content: text
-        }
-      ]
-    })
-  });
-
-  const data = await response.json();
-  return data.choices[0].message.content;
-}
-
-/* =========================
-   SEND WHATSAPP MESSAGE
-========================= */
-async function sendWhatsAppMessage(to, body) {
-  const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
-
-  await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body }
-    })
-  });
-}
-
-/* =========================
-   START SERVER
-========================= */
-app.listen(PORT, () => {
-  console.log("🚀 Servidor activo con IA");
-});
+        { role: "user", content: text }
+      ],
+      temperature:
