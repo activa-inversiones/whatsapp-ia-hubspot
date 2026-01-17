@@ -15,6 +15,13 @@ const {
 } = process.env;
 
 /* =========================
+   HEALTH CHECK (OBLIGATORIO PARA RAILWAY)
+========================= */
+app.get("/", (req, res) => {
+  res.status(200).send("OK - WhatsApp IA Activa");
+});
+
+/* =========================
    WEBHOOK VERIFICATION
 ========================= */
 app.get("/webhook", (req, res) => {
@@ -23,7 +30,7 @@ app.get("/webhook", (req, res) => {
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
-    console.log("✅ Webhook verificado");
+    console.log("✅ Webhook verificado correctamente");
     return res.status(200).send(challenge);
   }
 
@@ -35,10 +42,8 @@ app.get("/webhook", (req, res) => {
 ========================= */
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
-    const message = value?.messages?.[0];
+    const message =
+      req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
     if (!message || message.type !== "text") {
       return res.sendStatus(200);
@@ -51,14 +56,12 @@ app.post("/webhook", async (req, res) => {
 
     const aiReply = await askGPT(userText);
 
-    console.log("🤖 Respuesta IA:", aiReply);
-
     await sendWhatsAppMessage(from, aiReply);
 
-    return res.sendStatus(200);
-  } catch (error) {
-    console.error("❌ Error procesando mensaje:", error);
-    return res.sendStatus(500);
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("❌ Error webhook:", err);
+    res.sendStatus(500);
   }
 });
 
@@ -80,12 +83,9 @@ async function askGPT(text) {
           {
             role: "system",
             content:
-              "Eres un asistente comercial de Activa Inversiones. Responde en español, de forma clara, profesional y orientada a cotizar proyectos de ventanas, puertas y soluciones constructivas."
+              "Eres un asistente comercial de Activa Inversiones. Responde de forma clara, profesional y orientada a cotizar proyectos."
           },
-          {
-            role: "user",
-            content: text
-          }
+          { role: "user", content: text }
         ],
         temperature: 0.4
       })
@@ -93,11 +93,6 @@ async function askGPT(text) {
   );
 
   const data = await response.json();
-
-  if (!data.choices || !data.choices[0]) {
-    throw new Error("Respuesta inválida de OpenAI");
-  }
-
   return data.choices[0].message.content;
 }
 
@@ -121,18 +116,13 @@ async function sendWhatsAppMessage(to, body) {
     })
   });
 
-  console.log("✅ Mensaje enviado a:", to);
+  console.log("✅ Respuesta enviada a:", to);
 }
 
 /* =========================
-   START SERVER
+   START SERVER (RAILWAY)
 ========================= */
 const PORT = process.env.PORT;
-
-if (!PORT) {
-  console.error("❌ Railway no entregó PORT");
-  process.exit(1);
-}
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Servidor activo con IA en puerto ${PORT}`);
