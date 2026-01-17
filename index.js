@@ -1,3 +1,4 @@
+import fetch from "node-fetch";
 import express from "express";
 import dotenv from "dotenv";
 
@@ -10,11 +11,12 @@ const {
   PORT,
   WHATSAPP_VERIFY_TOKEN,
   WHATSAPP_TOKEN,
-  PHONE_NUMBER_ID
+  PHONE_NUMBER_ID,
+  OPENAI_API_KEY
 } = process.env;
 
 /* =========================
-   WEBHOOK VERIFICATION (META)
+   WEBHOOK VERIFICATION
 ========================= */
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -26,12 +28,11 @@ app.get("/webhook", (req, res) => {
     return res.status(200).send(challenge);
   }
 
-  console.log("❌ Falló verificación webhook");
   return res.sendStatus(403);
 });
 
 /* =========================
-   RECEIVE WHATSAPP MESSAGES
+   RECEIVE WHATSAPP MESSAGE
 ========================= */
 app.post("/webhook", async (req, res) => {
   try {
@@ -45,21 +46,49 @@ app.post("/webhook", async (req, res) => {
     }
 
     const from = message.from;
-    const text = message.text.body;
+    const userText = message.text.body;
 
-    console.log(`📩 Mensaje recibido: ${text}`);
+    console.log("📩 Mensaje recibido:", userText);
 
-    await sendWhatsAppMessage(
-      from,
-      "Hola 👋 Gracias por escribir a *Activa Inversiones*.\n\n¿Me comentas brevemente qué tipo de proyecto tienes?"
-    );
+    const aiReply = await askChatGPT(userText);
+
+    await sendWhatsAppMessage(from, aiReply);
 
     res.sendStatus(200);
-  } catch (err) {
-    console.error("❌ Error webhook:", err);
+  } catch (error) {
+    console.error("❌ Error:", error);
     res.sendStatus(500);
   }
 });
+
+/* =========================
+   CHATGPT
+========================= */
+async function askChatGPT(text) {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "Eres un asistente de ventas de Activa Inversiones. Responde claro, corto y profesional."
+        },
+        {
+          role: "user",
+          content: text
+        }
+      ]
+    })
+  });
+
+  const data = await response.json();
+  return data.choices[0].message.content;
+}
 
 /* =========================
    SEND WHATSAPP MESSAGE
@@ -67,29 +96,24 @@ app.post("/webhook", async (req, res) => {
 async function sendWhatsAppMessage(to, body) {
   const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
 
-  const payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: { body }
-  };
-
-  const response = await fetch(url, {
+  await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body }
+    })
   });
-
-  const data = await response.json();
-  console.log("📤 Respuesta WhatsApp:", data);
 }
 
 /* =========================
    START SERVER
 ========================= */
-app.listen(PORT || 3000, () => {
-  console.log(`🚀 Servidor activo`);
+app.listen(PORT, () => {
+  console.log("🚀 Servidor activo con IA");
 });
