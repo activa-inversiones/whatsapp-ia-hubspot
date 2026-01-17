@@ -7,6 +7,9 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+/* =========================
+   ENV VARIABLES
+========================= */
 const {
   PORT,
   OPENAI_API_KEY,
@@ -14,6 +17,13 @@ const {
   WHATSAPP_TOKEN,
   WEBHOOK_VERIFY_TOKEN
 } = process.env;
+
+/* =========================
+   HEALTH CHECK (RAILWAY)
+========================= */
+app.get("/", (req, res) => {
+  res.status(200).send("OK - WhatsApp IA Activa");
+});
 
 /* =========================
    WEBHOOK VERIFICATION
@@ -52,10 +62,10 @@ app.post("/webhook", async (req, res) => {
 
     await sendWhatsAppMessage(from, aiReply);
 
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("❌ Error webhook:", err);
-    res.sendStatus(500);
+    return res.sendStatus(200);
+  } catch (error) {
+    console.error("❌ Error en webhook:", error);
+    return res.sendStatus(500);
   }
 });
 
@@ -77,9 +87,12 @@ async function askGPT(text) {
           {
             role: "system",
             content:
-              "Eres un asistente comercial de Activa Inversiones. Responde de forma clara, profesional y orientada a cotizar proyectos."
+              "Eres un asistente comercial de Activa Inversiones. Responde de forma clara, profesional y orientada a cotizar proyectos de ventanas y soluciones constructivas."
           },
-          { role: "user", content: text }
+          {
+            role: "user",
+            content: text
+          }
         ],
         temperature: 0.4
       })
@@ -106,14 +119,18 @@ async function sendWhatsAppMessage(to, body) {
       messaging_product: "whatsapp",
       to,
       type: "text",
-      text: { body }
+      text: {
+        body
+      }
     })
   });
 }
 
 /* =========================
-   START SERVER
+   START SERVER (NO TOCAR)
 ========================= */
-app.listen(PORT || 3000, () => {
-  console.log("🚀 Servidor activo con IA");
+const port = PORT || 3000;
+
+app.listen(port, "0.0.0.0", () => {
+  console.log(`🚀 Servidor activo con IA en puerto ${port}`);
 });
