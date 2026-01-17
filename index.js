@@ -13,16 +13,12 @@ const {
   WEBHOOK_VERIFY_TOKEN
 } = process.env;
 
-/* =========================
-   HEALTH CHECK
-========================= */
+/* ========= HEALTH CHECK ========= */
 app.get("/", (req, res) => {
   res.status(200).send("OK");
 });
 
-/* =========================
-   WEBHOOK VERIFICATION
-========================= */
+/* ========= WEBHOOK VERIFY ========= */
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -31,37 +27,25 @@ app.get("/webhook", (req, res) => {
   if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
-
   return res.sendStatus(403);
 });
 
-/* =========================
-   RECEIVE WHATSAPP MESSAGES
-========================= */
+/* ========= RECEIVE MESSAGE ========= */
 app.post("/webhook", async (req, res) => {
-  try {
-    const message =
-      req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  const message =
+    req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-    if (!message || message.type !== "text") {
-      return res.sendStatus(200);
-    }
+  if (!message) return res.sendStatus(200);
 
-    const from = message.from;
+  const from = message.from;
 
-    // RESPUESTA SOLO CON PLANTILLA (PRODUCCIÓN)
-    await sendWelcomeTemplate(from);
+  // SOLO plantilla en producción
+  await sendWelcomeTemplate(from);
 
-    res.sendStatus(200);
-  } catch (error) {
-    console.error("❌ Error webhook:", error);
-    res.sendStatus(500);
-  }
+  res.sendStatus(200);
 });
 
-/* =========================
-   SEND TEMPLATE
-========================= */
+/* ========= SEND TEMPLATE ========= */
 async function sendWelcomeTemplate(to) {
   const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
 
@@ -85,11 +69,8 @@ async function sendWelcomeTemplate(to) {
   console.log("✅ Plantilla enviada a", to);
 }
 
-/* =========================
-   START SERVER
-========================= */
+/* ========= START SERVER ========= */
 const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Servidor activo en puerto ${PORT}`);
-});
+app.listen(PORT, "0.0.0.0", () =>
+  console.log("🚀 Servidor activo en puerto", PORT)
+);
