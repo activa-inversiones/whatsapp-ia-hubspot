@@ -36,6 +36,41 @@ app.get("/webhook", (req, res) => {
 
   return res.sendStatus(403);
 });
+/* =========================
+   SEND TEMPLATE (PRODUCCION)
+========================= */
+app.post("/send-template", async (req, res) => {
+  try {
+    const { to } = req.body;
+
+    const response = await fetch(
+      `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to: to,
+          type: "template",
+          template: {
+            name: "bienvenida_activa_inversiones",
+            language: { code: "es_CL" },
+          },
+        }),
+      }
+    );
+
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send("Error enviando plantilla");
+  }
+});
+
 
 /* =========================
    RECEIVE WHATSAPP MESSAGES
