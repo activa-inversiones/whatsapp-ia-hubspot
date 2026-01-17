@@ -13,12 +13,12 @@ const {
   WEBHOOK_VERIFY_TOKEN
 } = process.env;
 
-/* ========= HEALTH CHECK ========= */
+// 1. RUTA DE SALUD (Obligatoria para Railway)
 app.get("/", (req, res) => {
-  res.status(200).send("OK");
+  res.status(200).send("Servidor Activo");
 });
 
-/* ========= WEBHOOK VERIFY ========= */
+// 2. VERIFICACIÓN DEL WEBHOOK
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -30,47 +30,54 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-/* ========= RECEIVE MESSAGE ========= */
+// 3. RECEPCIÓN DE MENSAJES
 app.post("/webhook", async (req, res) => {
-  const message =
-    req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  try {
+    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    if (!message) return res.sendStatus(200);
 
-  if (!message) return res.sendStatus(200);
+    const from = message.from;
+    console.log(`📩 Mensaje recibido de ${from}`);
 
-  const from = message.from;
-
-  // SOLO plantilla en producción
-  await sendWelcomeTemplate(from);
-
-  res.sendStatus(200);
+    await sendWelcomeTemplate(from);
+    res.sendStatus(200);
+  } catch (error) {
+    console.error("❌ Error en Webhook:", error);
+    res.sendStatus(500);
+  }
 });
 
-/* ========= SEND TEMPLATE ========= */
+// 4. FUNCIÓN PARA ENVIAR PLANTILLA
 async function sendWelcomeTemplate(to) {
   const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
-
-  await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      type: "template",
-      template: {
-        name: "bienvenida_activa_inversiones",
-        language: { code: "es_CL" }
-      }
-    })
-  });
-
-  console.log("✅ Plantilla enviada a", to);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "template",
+        template: {
+          name: "bienvenida_activa_inversiones",
+          language: { code: "es_CL" }
+        }
+      })
+    });
+    const data = await response.json();
+    console.log("✅ Resultado envío:", data);
+  } catch (error) {
+    console.error("❌ Error enviando plantilla:", error);
+  }
 }
 
-/* ========= START SERVER ========= */
+// 5. INICIO DEL SERVIDOR (Configuración para Railway)
+// Deja que process.env.PORT use lo que Railway asigne automáticamente
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () =>
-  console.log("🚀 Servidor activo en puerto", PORT)
-);
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Servidor funcionando en puerto ${PORT}`);
+});
