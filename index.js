@@ -8,7 +8,6 @@ const app = express();
 app.use(express.json());
 
 const {
-  OPENAI_API_KEY,
   PHONE_NUMBER_ID,
   WHATSAPP_TOKEN,
   WEBHOOK_VERIFY_TOKEN
@@ -30,47 +29,11 @@ app.get("/webhook", (req, res) => {
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
-    console.log("✅ Webhook verificado");
     return res.status(200).send(challenge);
   }
 
   return res.sendStatus(403);
 });
-/* =========================
-   SEND TEMPLATE (PRODUCCION)
-========================= */
-app.post("/send-template", async (req, res) => {
-  try {
-    const { to } = req.body;
-
-    const response = await fetch(
-      `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          to: to,
-          type: "template",
-          template: {
-            name: "bienvenida_activa_inversiones",
-            language: { code: "es_CL" },
-          },
-        }),
-      }
-    );
-
-    const data = await response.json();
-    res.json(data);
-  } catch (error) {
-    console.error(error);
-    res.status(500).send("Error enviando plantilla");
-  }
-});
-
 
 /* =========================
    RECEIVE WHATSAPP MESSAGES
@@ -85,60 +48,21 @@ app.post("/webhook", async (req, res) => {
     }
 
     const from = message.from;
-    const userText = message.text.body;
 
-    console.log("📩 Mensaje recibido:", userText);
-
-    const aiReply = await askGPT(userText);
-    await sendWhatsAppMessage(from, aiReply);
+    // RESPUESTA SOLO CON PLANTILLA (PRODUCCIÓN)
+    await sendWelcomeTemplate(from);
 
     res.sendStatus(200);
-  } catch (err) {
-    console.error("❌ Error webhook:", err);
+  } catch (error) {
+    console.error("❌ Error webhook:", error);
     res.sendStatus(500);
   }
 });
 
 /* =========================
-   GPT FUNCTION
+   SEND TEMPLATE
 ========================= */
-async function askGPT(text) {
-  try {
-    const response = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [
-            {
-              role: "system",
-              content:
-                "Eres un asistente comercial de Activa Inversiones. Responde de forma clara y profesional."
-            },
-            { role: "user", content: text }
-          ],
-          temperature: 0.4
-        })
-      }
-    );
-
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || "¿Podrías darme más detalles?";
-  } catch (error) {
-    console.error("❌ Error GPT:", error);
-    return "Tuvimos un problema técnico. Intenta nuevamente.";
-  }
-}
-
-/* =========================
-   SEND WHATSAPP MESSAGE
-========================= */
-async function sendWhatsAppMessage(to, body) {
+async function sendWelcomeTemplate(to) {
   const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
 
   await fetch(url, {
@@ -150,18 +74,21 @@ async function sendWhatsAppMessage(to, body) {
     body: JSON.stringify({
       messaging_product: "whatsapp",
       to,
-      type: "text",
-      text: { body }
+      type: "template",
+      template: {
+        name: "bienvenida_activa_inversiones",
+        language: { code: "es_CL" }
+      }
     })
   });
 
-  console.log("✅ Respuesta enviada a", to);
+  console.log("✅ Plantilla enviada a", to);
 }
 
 /* =========================
    START SERVER
 ========================= */
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Servidor activo en puerto ${PORT}`);
