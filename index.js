@@ -7,9 +7,6 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-/* =========================
-   ENV VARIABLES
-========================= */
 const {
   PORT,
   OPENAI_API_KEY,
@@ -17,13 +14,6 @@ const {
   WHATSAPP_TOKEN,
   WEBHOOK_VERIFY_TOKEN
 } = process.env;
-
-/* =========================
-   HEALTH CHECK (RAILWAY)
-========================= */
-app.get("/", (req, res) => {
-  res.status(200).send("OK - WhatsApp IA Activa");
-});
 
 /* =========================
    WEBHOOK VERIFICATION
@@ -34,7 +24,7 @@ app.get("/webhook", (req, res) => {
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
-    console.log("✅ Webhook verificado correctamente");
+    console.log("✅ Webhook verificado");
     return res.status(200).send(challenge);
   }
 
@@ -46,8 +36,10 @@ app.get("/webhook", (req, res) => {
 ========================= */
 app.post("/webhook", async (req, res) => {
   try {
-    const message =
-      req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    const entry = req.body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    const message = value?.messages?.[0];
 
     if (!message || message.type !== "text") {
       return res.sendStatus(200);
@@ -60,11 +52,13 @@ app.post("/webhook", async (req, res) => {
 
     const aiReply = await askGPT(userText);
 
+    console.log("🤖 Respuesta IA:", aiReply);
+
     await sendWhatsAppMessage(from, aiReply);
 
     return res.sendStatus(200);
   } catch (error) {
-    console.error("❌ Error en webhook:", error);
+    console.error("❌ Error procesando mensaje:", error);
     return res.sendStatus(500);
   }
 });
@@ -87,7 +81,7 @@ async function askGPT(text) {
           {
             role: "system",
             content:
-              "Eres un asistente comercial de Activa Inversiones. Responde de forma clara, profesional y orientada a cotizar proyectos de ventanas y soluciones constructivas."
+              "Eres un asistente comercial de Activa Inversiones. Responde en español, de forma clara, profesional y orientada a cotizar proyectos de ventanas, puertas y soluciones constructivas."
           },
           {
             role: "user",
@@ -100,6 +94,11 @@ async function askGPT(text) {
   );
 
   const data = await response.json();
+
+  if (!data.choices || !data.choices[0]) {
+    throw new Error("Respuesta inválida de OpenAI");
+  }
+
   return data.choices[0].message.content;
 }
 
@@ -119,18 +118,16 @@ async function sendWhatsAppMessage(to, body) {
       messaging_product: "whatsapp",
       to,
       type: "text",
-      text: {
-        body
-      }
+      text: { body }
     })
   });
+
+  console.log("✅ Mensaje enviado a:", to);
 }
 
 /* =========================
-   START SERVER (NO TOCAR)
+   START SERVER
 ========================= */
-const port = PORT || 3000;
-
-app.listen(port, "0.0.0.0", () => {
-  console.log(`🚀 Servidor activo con IA en puerto ${port}`);
+app.listen(PORT || 3000, () => {
+  console.log(`🚀 Servidor activo con IA en puerto ${PORT || 3000}`);
 });
