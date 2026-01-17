@@ -15,97 +15,7 @@ const {
 } = process.env;
 
 /* =========================
-   HEALTH CHECK (OBLIGATORIO)
-========================= */
-app.get("/", (req, res) => {
-  res.status(200).send("OK - Servidor Funcionando");
-});
-
-/* =========================
-   WEBHOOK VERIFICATION
-========================= */
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
-    console.log("✅ Webhook verificado");
-    return res.status(200).send(challenge);
-  }
-  return res.sendStatus(403);
-});
-
-/* =========================
-   RECEIVE WHATSAPP MESSAGES
-========================= */
-app.post("/webhook", async (req, res) => {
-  try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const message = changes?.value?.messages?.[0];
-
-    if (!message || message.type !== "text") {
-      return res.sendStatus(200);
-    }
-
-    const from = message.from;
-    const userText = message.text.body;
-
-    console.log(`📩 Mensaje de ${from}: ${userText}`);
-
-    const aiReply = await askGPT(userText);
-    await sendWhatsAppMessage(from, aiReply);
-
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("❌ Error en webhook:", err.message);
-    res.sendStatus(500);
-  }
-});
-
-/* =========================
-   GPT FUNCTION
-========================= */
-async function askGPT(text) {
-  try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: "Eres un asistente comercial de Activa Inversiones. Responde de forma clara y profesional."
-          },
-          { role: "user", content: text }
-        ],
-        temperature: 0.4
-      })
-    });
-
-   import express from "express";
-import fetch from "node-fetch";
-import dotenv from "dotenv";
-
-dotenv.config();
-
-const app = express();
-app.use(express.json());
-
-const {
-  OPENAI_API_KEY,
-  PHONE_NUMBER_ID,
-  WHATSAPP_TOKEN,
-  WEBHOOK_VERIFY_TOKEN
-} = process.env;
-
-/* =========================
-   HEALTH CHECK (OBLIGATORIO)
+   HEALTH CHECK
 ========================= */
 app.get("/", (req, res) => {
   res.status(200).send("OK");
@@ -164,7 +74,7 @@ async function askGPT(text) {
       {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${OPENAI_API_KEY}`,
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
@@ -173,7 +83,7 @@ async function askGPT(text) {
             {
               role: "system",
               content:
-                "Eres un asistente comercial de Activa Inversiones. Responde de forma clara, profesional y orientada a cotizar proyectos."
+                "Eres un asistente comercial de Activa Inversiones. Responde de forma clara y profesional."
             },
             { role: "user", content: text }
           ],
@@ -183,11 +93,10 @@ async function askGPT(text) {
     );
 
     const data = await response.json();
-    return data.choices?.[0]?.message?.content
-      || "¿Podrías darme un poco más de detalle para ayudarte?";
+    return data.choices?.[0]?.message?.content || "¿Podrías darme más detalles?";
   } catch (error) {
     console.error("❌ Error GPT:", error);
-    return "Tuvimos un problema técnico. Intenta nuevamente en unos minutos.";
+    return "Tuvimos un problema técnico. Intenta nuevamente.";
   }
 }
 
@@ -200,7 +109,7 @@ async function sendWhatsAppMessage(to, body) {
   await fetch(url, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
@@ -211,7 +120,7 @@ async function sendWhatsAppMessage(to, body) {
     })
   });
 
-  console.log("✅ Respuesta enviada a:", to);
+  console.log("✅ Respuesta enviada a", to);
 }
 
 /* =========================
@@ -222,4 +131,3 @@ const PORT = process.env.PORT;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Servidor activo en puerto ${PORT}`);
 });
-
