@@ -88,5 +88,6 @@ async function sendWelcomeTemplate(to) {
 const PORT = process.env.PORT;
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Servidor activo en puerto ${PORT}`);
+  console.log("Servidor activo en puerto", PORT);
 });
+
