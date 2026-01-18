@@ -8,10 +8,10 @@ app.use(express.json());
 
 const { PHONE_NUMBER_ID, WHATSAPP_TOKEN, WEBHOOK_VERIFY_TOKEN } = process.env;
 
-// Ruta de salud para Railway
-app.get("/", (req, res) => { res.status(200).send("✅ Servidor Activo"); });
+// Salud del servidor
+app.get("/", (req, res) => { res.status(200).send("✅ Servidor Activa Inversiones Online"); });
 
-// Verificación del Webhook
+// Webhook Meta
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -20,7 +20,6 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// Recepción de mensajes
 app.post("/webhook", async (req, res) => {
   try {
     const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
@@ -35,7 +34,6 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// Envío de plantilla
 async function sendWelcomeTemplate(to) {
   const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
   const response = await fetch(url, {
