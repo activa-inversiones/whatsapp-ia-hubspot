@@ -7,7 +7,6 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// Extraemos las variables de entorno
 const {
   PHONE_NUMBER_ID,
   WHATSAPP_TOKEN,
@@ -15,11 +14,10 @@ const {
 } = process.env;
 
 /* =========================
-   1. HEALTH CHECK (VITAL PARA RAILWAY)
+   1. HEALTH CHECK
    ========================= */
-// Esto responde a Railway para confirmar que el bot está vivo
 app.get("/", (req, res) => {
-  res.status(200).send("✅ Bot de Activa Inversiones Operativo");
+  res.status(200).send("✅ Servidor Experto Activo");
 });
 
 /* =========================
@@ -31,46 +29,35 @@ app.get("/webhook", (req, res) => {
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
-    console.log("Webhook verificado correctamente.");
     return res.status(200).send(challenge);
   }
-
   return res.sendStatus(403);
 });
 
 /* =========================
-   3. RECEPCIÓN DE MENSAJES (WEBHOOK)
+   3. RECEPCIÓN DE MENSAJES
    ========================= */
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
-    const message = value?.messages?.[0];
+    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    if (!message) return res.sendStatus(200);
 
-    // Ignorar si no es un mensaje de texto (evita errores)
-    if (!message) {
-      return res.sendStatus(200);
-    }
+    const from = message.from;
+    console.log(`Mensaje de: ${from}`);
 
-    const from = message.from; // Número del cliente
-    console.log(`Mensaje recibido de: ${from}`);
-
-    // Enviamos la plantilla de bienvenida
     await sendWelcomeTemplate(from);
 
     return res.sendStatus(200);
   } catch (err) {
-    console.error("Error procesando webhook:", err.message);
+    console.error("Error en webhook:", err.message);
     return res.sendStatus(500);
   }
 });
 
 /* =========================
-   4. ENVÍO DE PLANTILLA (META API)
+   4. ENVÍO DE PLANTILLA
    ========================= */
 async function sendWelcomeTemplate(to) {
-  // Usamos la API v22.0 como configuramos en Meta
   const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
 
   const response = await fetch(url, {
@@ -91,19 +78,21 @@ async function sendWelcomeTemplate(to) {
   });
 
   const data = await response.json();
-
   if (response.ok) {
-    console.log(`✅ Plantilla enviada con éxito a ${to}`);
+    console.log(`✅ Éxito enviando a ${to}`);
   } else {
-    console.error(`❌ Error de Meta API:`, data.error?.message);
+    console.error(`❌ Error Meta: ${data.error?.message}`);
   }
 }
 
 /* =========================
-   5. INICIO DEL SERVIDOR (EL CAMBIO CLAVE)
+   5. INICIO DEL SERVIDOR
    ========================= */
-// Definimos el puerto con un respaldo (fallback) al 8080
 const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Servidor en puerto ${PORT}`);
+  console.log(`Conectado al ID: ${PHONE_NUMBER_ID}`);
+});
 
+// --- FIN DEL ARCHIVO ---
