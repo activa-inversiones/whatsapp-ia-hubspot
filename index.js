@@ -7,73 +7,53 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// CONFIGURACIÓN DE IA
-const openai = new OpenAI({ 
-    apiKey: process.env.OPENAI_API_KEY 
-});
-
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const { PHONE_NUMBER_ID, WHATSAPP_TOKEN, WEBHOOK_VERIFY_TOKEN } = process.env;
 
-// --- RUTA RAÍZ (OBLIGATORIA PARA RAILWAY) ---
-// Sin esto, Railway detiene el contenedor a los pocos segundos
+// --- RUTA DE SALUD (OBLIGATORIA PARA RAILWAY) ---
 app.get("/", (req, res) => {
-    res.status(200).send("SERVIDOR ACTIVA INVERSIONES ONLINE ✅");
+    res.status(200).send("SERVIDOR ACTIVA OPERATIVO ✅");
 });
 
-// --- VERIFICACIÓN DE WEBHOOK (META) ---
+// --- VERIFICACIÓN WEBHOOK ---
 app.get("/webhook", (req, res) => {
-    const mode = req.query["hub.mode"];
-    const token = req.query["hub.verify_token"];
-    const challenge = req.query["hub.challenge"];
-
-    if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
-        return res.status(200).send(challenge);
+    if (req.query["hub.verify_token"] === WEBHOOK_VERIFY_TOKEN) {
+        return res.send(req.query["hub.challenge"]);
     }
     res.sendStatus(403);
 });
 
-// --- PROCESAMIENTO DE MENSAJES ---
+// --- LÓGICA DE INTELIGENCIA ARTIFICIAL ---
 app.post("/webhook", async (req, res) => {
-    res.sendStatus(200); // Respuesta inmediata a Meta
-
-    try {
-        const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-
-        if (message?.text?.body) {
-            const from = message.from;
-            const text = message.text.body;
-            console.log(`📩 Mensaje de ${from}: ${text}`);
-
-            // Respuesta de IA
+    res.sendStatus(200);
+    const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    
+    if (msg?.text?.body) {
+        try {
             const completion = await openai.chat.completions.create({
                 model: "gpt-3.5-turbo",
-                messages: [{ role: "user", content: text }],
+                messages: [{ role: "user", content: msg.text.body }]
             });
 
-            const aiResponse = completion.choices[0].message.content;
+            const respuestaIA = completion.choices[0].message.content;
 
-            // Enviar WhatsApp
             await fetch(`https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`, {
                 method: "POST",
-                headers: {
-                    "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
-                    "Content-Type": "application/json"
-                },
+                headers: { "Authorization": `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
                 body: JSON.stringify({
                     messaging_product: "whatsapp",
-                    to: from,
-                    text: { body: aiResponse }
+                    to: msg.from,
+                    text: { body: respuestaIA }
                 })
             });
-            console.log(`🚀 Respuesta enviada a ${from}`);
+            console.log(`🚀 IA respondió a ${msg.from}`);
+        } catch (error) {
+            console.error("❌ Error procesando mensaje:", error.message);
         }
-    } catch (error) {
-        console.error("❌ Error:", error.message);
     }
 });
 
-// --- INICIO ---
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => {
-    console.log(`✅ SERVIDOR INICIADO EN PUERTO ${PORT}`);
+    console.log(`✅ SERVIDOR ESTABLE EN PUERTO ${PORT}`);
 });
