@@ -1,16 +1,18 @@
-const express = require('express');
-const axios = require('axios');
-require('dotenv').config();
+import express from 'express';
+import axios from 'axios';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const app = express();
 app.use(express.json());
 
-// 1. ENDPOINT DE SALUD (Evita el "Stopping Container")
+// 1. ENDPOINT DE SALUD (Para evitar el "Stopping Container")
 app.get('/', (req, res) => {
     res.status(200).send('Servidor Activo');
 });
 
-// 2. VERIFICACIÓN DEL WEBHOOK (Para Meta)
+// 2. VERIFICACIÓN DEL WEBHOOK
 app.get('/webhook', (req, res) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -32,22 +34,22 @@ app.post('/webhook', async (req, res) => {
         const message = value?.messages?.[0];
 
         if (message) {
-            const from = message.from; // Número del cliente
+            const from = message.from;
             const msgBody = message.text?.body;
 
             console.log(`Mensaje recibido de ${from}: ${msgBody}`);
 
-            // Enviar respuesta (puedes integrar OpenAI aquí con tu saldo)
-            await sendWhatsAppMessage(from, "¡Hola! He recibido tu mensaje.");
+            // Respuesta automática de prueba
+            await sendWhatsAppMessage(from, "Hola, recibí tu mensaje correctamente.");
         }
         res.status(200).send('EVENT_RECEIVED');
     } catch (error) {
-        console.error("Error procesando webhook:", error);
+        console.error("Error en webhook:", error);
         res.status(500).end();
     }
 });
 
-// 4. FUNCIÓN PARA ENVIAR MENSAJES (Ajustada a categoría MARKETING)
+// 4. FUNCIÓN PARA ENVIAR (Compatible con categoría Marketing)
 async function sendWhatsAppMessage(to, text) {
     try {
         await axios({
@@ -62,17 +64,16 @@ async function sendWhatsAppMessage(to, text) {
                 to: to,
                 type: "text",
                 text: { body: text }
-                // Si usas la plantilla reclasificada, asegúrate de no forzar categoría 'SERVICE'
             }
         });
-        console.log("Mensaje enviado con éxito");
+        console.log("Respuesta enviada a WhatsApp.");
     } catch (error) {
-        console.error("Error al enviar a WhatsApp:", error.response?.data || error.message);
+        console.error("Error al enviar:", error.response?.data || error.message);
     }
 }
 
-// 5. INICIO DEL SERVIDOR EN PUERTO 8080
+// 5. PUERTO 8080 OBLIGATORIO
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-    console.log(`🚀 SERVIDOR ESCUCHANDO EN PUERTO ${PORT}`);
+    console.log(`🚀 SERVIDOR FUNCIONANDO EN PUERTO ${PORT}`);
 });
