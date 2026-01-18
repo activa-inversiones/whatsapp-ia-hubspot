@@ -10,48 +10,52 @@ app.use(express.json());
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const { PHONE_NUMBER_ID, WHATSAPP_TOKEN, WEBHOOK_VERIFY_TOKEN } = process.env;
 
-app.get("/", (req, res) => res.send("Servidor Activa ✅"));
+// RUTA CRÍTICA: Evita que Railway apague el contenedor
+app.get("/", (req, res) => {
+  res.status(200).send("SERVIDOR ACTIVA INVERSIONES ONLINE ✅");
+});
 
-// Verificación para Meta
+// Verificación de Webhook para Meta
 app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-  if (token === WEBHOOK_VERIFY_TOKEN) return res.send(challenge);
+
+  if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
+    console.log("✅ Webhook Verificado por Meta");
+    return res.status(200).send(challenge);
+  }
   res.sendStatus(403);
 });
 
-// Recepción de mensajes
+// Procesamiento de Mensajes con IA
 app.post("/webhook", async (req, res) => {
-  res.sendStatus(200); // Respuesta inmediata a Meta
+  res.sendStatus(200); // Respuesta inmediata a Meta para evitar reintentos
   
-  const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-  if (msg?.text?.body) {
-    const from = msg.from;
-    console.log(`📩 Mensaje de ${from}: ${msg.text.body}`);
+  const body = req.body;
+  const message = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+
+  if (message?.text?.body) {
+    const from = message.from;
+    const userText = message.text.body;
+    console.log(`📩 Mensaje de ${from}: ${userText}`);
 
     try {
-      // 1. Respuesta con IA
-      const ai = await openai.chat.completions.create({
+      const completion = await openai.chat.completions.create({
         model: "gpt-3.5-turbo",
-        messages: [{ role: "user", content: msg.text.body }],
+        messages: [{ role: "system", content: "Eres el asistente de Activa Inversiones. Sé breve." }, { role: "user", content: userText }],
       });
 
-      // 2. Enviar por WhatsApp
+      const aiResponse = completion.choices[0].message.content;
+
       await fetch(`https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`, {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          to: from,
-          text: { body: ai.choices[0].message.content }
-        })
+        headers: { "Authorization": `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ messaging_product: "whatsapp", to: from, text: { body: aiResponse } })
       });
       console.log(`🚀 IA respondió a ${from}`);
-    } catch (e) {
-      console.error("❌ Error:", e.message);
+    } catch (error) {
+      console.error("❌ Error de IA o Meta:", error.message);
     }
   }
 });
