@@ -1,17 +1,28 @@
 import express from "express";
 import fetch from "node-fetch";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const app = express();
 app.use(express.json());
 
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
+const {
+  PHONE_NUMBER_ID,
+  WHATSAPP_TOKEN,
+  WEBHOOK_VERIFY_TOKEN
+} = process.env;
 
-/* HEALTH */
-app.get("/", (req, res) => res.send("OK"));
+/* =========================
+   HEALTH CHECK (RAILWAY)
+========================= */
+app.get("/", (req, res) => {
+  res.status(200).send("OK");
+});
 
-/* VERIFY */
+/* =========================
+   WEBHOOK VERIFICATION
+========================= */
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -20,17 +31,38 @@ app.get("/webhook", (req, res) => {
   if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
+
   return res.sendStatus(403);
 });
 
-/* RECEIVE MESSAGE */
+/* =========================
+   RECEIVE WHATSAPP MESSAGE
+========================= */
 app.post("/webhook", async (req, res) => {
-  const msg = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-  if (!msg || msg.type !== "text") return res.sendStatus(200);
+  try {
+    const message =
+      req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-  const from = msg.from;
+    if (!message) return res.sendStatus(200);
 
-  await fetch(`https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`, {
+    const from = message.from;
+
+    await sendWelcomeTemplate(from);
+
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error("Webhook error:", err);
+    return res.sendStatus(500);
+  }
+});
+
+/* =========================
+   SEND TEMPLATE
+========================= */
+async function sendWelcomeTemplate(to) {
+  const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
+
+  await fetch(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${WHATSAPP_TOKEN}`,
@@ -38,15 +70,23 @@ app.post("/webhook", async (req, res) => {
     },
     body: JSON.stringify({
       messaging_product: "whatsapp",
-      to: from,
-      type: "text",
-      text: { body: "Hola 👋 Gracias por escribir a Activa Inversiones." }
+      to,
+      type: "template",
+      template: {
+        name: "bienvenida_activa_inversiones",
+        language: { code: "es_CL" }
+      }
     })
   });
 
-  res.sendStatus(200);
-});
+  console.log("Plantilla enviada a", to);
+}
 
-/* START */
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, "0.0.0.0");
+/* =========================
+   START SERVER
+========================= */
+const PORT = process.env.PORT;
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor activo en puerto ${PORT}`);
+});
