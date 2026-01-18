@@ -2,9 +2,7 @@
   "name": "whatsapp-ia-hubspot",
   "version": "1.0.0",
   "type": "module",
-  "scripts": {
-    "start": "node index.js"
-  },
+  "private": true,
   "dependencies": {
     "express": "^4.19.2",
     "node-fetch": "^3.3.2",

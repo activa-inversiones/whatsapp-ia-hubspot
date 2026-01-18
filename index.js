@@ -55,7 +55,11 @@ app.post("/webhook", async (req, res) => {
 });
 
 /* =========================
+<<<<<<< HEAD
    4. ENVÍO DE PLANTILLA (META API)
+=======
+   4. ENVÍO DE PLANTILLA
+>>>>>>> 412feea2cac5036c6e940736addbcb7cddfffe4c
    ========================= */
 async function sendWelcomeTemplate(to) {
   const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
@@ -81,7 +85,11 @@ async function sendWelcomeTemplate(to) {
   if (response.ok) {
     console.log(`✅ Éxito enviando a ${to}`);
   } else {
+<<<<<<< HEAD
     console.error(`❌ Error Meta:`, data.error?.message);
+=======
+    console.error(`❌ Error Meta: ${data.error?.message}`);
+>>>>>>> 412feea2cac5036c6e940736addbcb7cddfffe4c
   }
 }
 
@@ -91,8 +99,16 @@ async function sendWelcomeTemplate(to) {
 const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, "0.0.0.0", () => {
+<<<<<<< HEAD
   console.log(`🚀 Servidor experto 
 
 activo en puerto ${PORT}`);
   console.log(`Conectado al Phone ID: ${PHONE_NUMBER_ID}`);
 });
+=======
+  console.log(`🚀 Servidor en puerto ${PORT}`);
+  console.log(`Conectado al ID: ${PHONE_NUMBER_ID}`);
+});
+
+// --- FIN DEL ARCHIVO ---
+>>>>>>> 412feea2cac5036c6e940736addbcb7cddfffe4c
