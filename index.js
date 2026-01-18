@@ -14,20 +14,19 @@ const openai = new OpenAI({
 
 const { PHONE_NUMBER_ID, WHATSAPP_TOKEN, WEBHOOK_VERIFY_TOKEN } = process.env;
 
-// --- RUTA DE VIDA (FUNDAMENTAL PARA RAILWAY) ---
+// --- RUTA RAÍZ (OBLIGATORIA PARA RAILWAY) ---
+// Sin esto, Railway detiene el contenedor a los pocos segundos
 app.get("/", (req, res) => {
-    console.log("✅ Railway Health Check: Servidor Activa Inversiones Saludable");
-    res.status(200).send("OPERATIVO");
+    res.status(200).send("SERVIDOR ACTIVA INVERSIONES ONLINE ✅");
 });
 
-// --- VERIFICACIÓN DE WEBHOOK ---
+// --- VERIFICACIÓN DE WEBHOOK (META) ---
 app.get("/webhook", (req, res) => {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
 
     if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
-        console.log("✅ Webhook validado por Meta");
         return res.status(200).send(challenge);
     }
     res.sendStatus(403);
@@ -35,7 +34,7 @@ app.get("/webhook", (req, res) => {
 
 // --- PROCESAMIENTO DE MENSAJES ---
 app.post("/webhook", async (req, res) => {
-    res.sendStatus(200); // Responder a Meta de inmediato para evitar bloqueos
+    res.sendStatus(200); // Respuesta inmediata a Meta
 
     try {
         const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
@@ -43,20 +42,17 @@ app.post("/webhook", async (req, res) => {
         if (message?.text?.body) {
             const from = message.from;
             const text = message.text.body;
-            console.log(`📩 Mensaje recibido de ${from}: ${text}`);
+            console.log(`📩 Mensaje de ${from}: ${text}`);
 
-            // Respuesta Inteligente
+            // Respuesta de IA
             const completion = await openai.chat.completions.create({
                 model: "gpt-3.5-turbo",
-                messages: [
-                    { role: "system", content: "Eres el asistente inteligente de Activa Inversiones. Responde de forma breve y profesional." },
-                    { role: "user", content: text }
-                ],
+                messages: [{ role: "user", content: text }],
             });
 
             const aiResponse = completion.choices[0].message.content;
 
-            // Envío por WhatsApp
+            // Enviar WhatsApp
             await fetch(`https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`, {
                 method: "POST",
                 headers: {
@@ -69,20 +65,15 @@ app.post("/webhook", async (req, res) => {
                     text: { body: aiResponse }
                 })
             });
-            console.log(`🚀 Respuesta IA enviada a ${from}`);
+            console.log(`🚀 Respuesta enviada a ${from}`);
         }
     } catch (error) {
-        console.error("❌ Error en flujo:", error.message);
+        console.error("❌ Error:", error.message);
     }
 });
 
-// --- INICIO DEL SERVIDOR ---
+// --- INICIO ---
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => {
-    console.log(`
-    *****************************************
-    ✅ SERVIDOR ACTIVA INVERSIONES INICIADO
-    🚀 Puerto Railway: ${PORT}
-    *****************************************
-    `);
+    console.log(`✅ SERVIDOR INICIADO EN PUERTO ${PORT}`);
 });
