@@ -1,52 +1,78 @@
-import express from 'express';
-import dotenv from 'dotenv';
-import OpenAI from 'openai';
+const express = require('express');
+const axios = require('axios');
+require('dotenv').config();
 
-dotenv.config();
 const app = express();
 app.use(express.json());
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const { PHONE_NUMBER_ID, WHATSAPP_TOKEN, WEBHOOK_VERIFY_TOKEN } = process.env;
-
-// --- RESPUESTA INSTANTÁNEA PARA RAILWAY ---
-// Esto detiene el "Stopping Container" al responder inmediatamente
+// 1. ENDPOINT DE SALUD (Evita el "Stopping Container")
 app.get('/', (req, res) => {
-    res.status(200).send('ESTADO: OPERATIVO ✅');
+    res.status(200).send('Servidor Activo');
 });
 
-// WEBHOOK META
+// 2. VERIFICACIÓN DEL WEBHOOK (Para Meta)
 app.get('/webhook', (req, res) => {
-    if (req.query['hub.verify_token'] === WEBHOOK_VERIFY_TOKEN) {
-        return res.send(req.query['hub.challenge']);
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    if (mode && token === process.env.WEBHOOK_VERIFY_TOKEN) {
+        res.status(200).send(challenge);
+    } else {
+        res.status(403).end();
     }
-    res.sendStatus(403);
 });
 
+// 3. RECEPCIÓN DE MENSAJES
 app.post('/webhook', async (req, res) => {
-    res.sendStatus(200);
-    const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (msg?.text?.body) {
-        try {
-            const ai = await openai.chat.completions.create({
-                model: "gpt-3.5-turbo",
-                messages: [{ role: "user", content: msg.text.body }]
-            });
-            await fetch(`https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messaging_product: "whatsapp", to: msg.from, text: { body: ai.choices[0].message.content } })
-            });
-        } catch (e) { console.error("Error:", e.message); }
+    try {
+        const entry = req.body.entry?.[0];
+        const changes = entry?.changes?.[0];
+        const value = changes?.value;
+        const message = value?.messages?.[0];
+
+        if (message) {
+            const from = message.from; // Número del cliente
+            const msgBody = message.text?.body;
+
+            console.log(`Mensaje recibido de ${from}: ${msgBody}`);
+
+            // Enviar respuesta (puedes integrar OpenAI aquí con tu saldo)
+            await sendWhatsAppMessage(from, "¡Hola! He recibido tu mensaje.");
+        }
+        res.status(200).send('EVENT_RECEIVED');
+    } catch (error) {
+        console.error("Error procesando webhook:", error);
+        res.status(500).end();
     }
 });
 
-// CONFIGURACIÓN DE RED AGRESIVA
+// 4. FUNCIÓN PARA ENVIAR MENSAJES (Ajustada a categoría MARKETING)
+async function sendWhatsAppMessage(to, text) {
+    try {
+        await axios({
+            method: 'POST',
+            url: `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
+            headers: {
+                'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+                'Content-Type': 'application/json'
+            },
+            data: {
+                messaging_product: "whatsapp",
+                to: to,
+                type: "text",
+                text: { body: text }
+                // Si usas la plantilla reclasificada, asegúrate de no forzar categoría 'SERVICE'
+            }
+        });
+        console.log("Mensaje enviado con éxito");
+    } catch (error) {
+        console.error("Error al enviar a WhatsApp:", error.response?.data || error.message);
+    }
+}
+
+// 5. INICIO DEL SERVIDOR EN PUERTO 8080
 const PORT = process.env.PORT || 8080;
-const server = app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, () => {
     console.log(`🚀 SERVIDOR ESCUCHANDO EN PUERTO ${PORT}`);
 });
-
-// Evitar que el servidor se cierre por inactividad de sockets
-server.keepAliveTimeout = 120000; 
-server.headersTimeout = 125000;
