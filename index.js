@@ -14,15 +14,15 @@ const {
 } = process.env;
 
 /* =========================
-   HEALTH CHECK (RAILWAY)
-========================= */
+   1. HEALTH CHECK
+   ========================= */
 app.get("/", (req, res) => {
-  res.status(200).send("OK");
+  res.status(200).send("✅ Servidor Experto Activo");
 });
 
 /* =========================
-   WEBHOOK VERIFICATION
-========================= */
+   2. VERIFICACIÓN DEL WEBHOOK
+   ========================= */
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -31,38 +31,36 @@ app.get("/webhook", (req, res) => {
   if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
-
   return res.sendStatus(403);
 });
 
 /* =========================
-   RECEIVE WHATSAPP MESSAGE
-========================= */
+   3. RECEPCIÓN DE MENSAJES
+   ========================= */
 app.post("/webhook", async (req, res) => {
   try {
-    const message =
-      req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-
+    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (!message) return res.sendStatus(200);
 
     const from = message.from;
+    console.log(`Mensaje de: ${from}`);
 
     await sendWelcomeTemplate(from);
 
     return res.sendStatus(200);
   } catch (err) {
-    console.error("Webhook error:", err);
+    console.error("Error en webhook:", err.message);
     return res.sendStatus(500);
   }
 });
 
 /* =========================
-   SEND TEMPLATE
-========================= */
+   4. ENVÍO DE PLANTILLA (META API)
+   ========================= */
 async function sendWelcomeTemplate(to) {
   const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
 
-  await fetch(url, {
+  const response = await fetch(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${WHATSAPP_TOKEN}`,
@@ -70,7 +68,7 @@ async function sendWelcomeTemplate(to) {
     },
     body: JSON.stringify({
       messaging_product: "whatsapp",
-      to,
+      to: to,
       type: "template",
       template: {
         name: "bienvenida_activa_inversiones",
@@ -79,15 +77,22 @@ async function sendWelcomeTemplate(to) {
     })
   });
 
-  console.log("Plantilla enviada a", to);
+  const data = await response.json();
+  if (response.ok) {
+    console.log(`✅ Éxito enviando a ${to}`);
+  } else {
+    console.error(`❌ Error Meta:`, data.error?.message);
+  }
 }
 
 /* =========================
-   START SERVER
-========================= */
-const PORT = process.env.PORT;
+   5. INICIO DEL SERVIDOR
+   ========================= */
+const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log("Servidor activo en puerto", PORT);
-});
+  console.log(`🚀 Servidor experto 
 
+activo en puerto ${PORT}`);
+  console.log(`Conectado al Phone ID: ${PHONE_NUMBER_ID}`);
+});
