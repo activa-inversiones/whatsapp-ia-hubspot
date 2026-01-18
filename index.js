@@ -9,14 +9,13 @@ app.use(express.json());
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const { PHONE_NUMBER_ID, WHATSAPP_TOKEN, WEBHOOK_VERIFY_TOKEN } = process.env;
 
-// --- RESPUESTA DE VIDA PARA RAILWAY ---
-// Si Railway no recibe respuesta aquí, apaga el servidor
+// --- RESPUESTA INSTANTÁNEA PARA RAILWAY ---
+// Esto detiene el "Stopping Container" al responder inmediatamente
 app.get('/', (req, res) => {
-    console.log("Health Check recibido ✅");
-    res.status(200).send("BOT ACTIVA OPERATIVO");
+    res.status(200).send('ESTADO: OPERATIVO ✅');
 });
 
-// --- VERIFICACIÓN WEBHOOK ---
+// WEBHOOK META
 app.get('/webhook', (req, res) => {
     if (req.query['hub.verify_token'] === WEBHOOK_VERIFY_TOKEN) {
         return res.send(req.query['hub.challenge']);
@@ -24,9 +23,8 @@ app.get('/webhook', (req, res) => {
     res.sendStatus(403);
 });
 
-// --- LÓGICA DE MENSAJES ---
 app.post('/webhook', async (req, res) => {
-    res.sendStatus(200); 
+    res.sendStatus(200);
     const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (msg?.text?.body) {
         try {
@@ -43,8 +41,12 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
-// --- PUERTO OBLIGATORIO 0.0.0.0 ---
+// CONFIGURACIÓN DE RED AGRESIVA
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 SERVIDOR ESCUCHANDO EN PUERTO ${PORT}`);
 });
+
+// Evitar que el servidor se cierre por inactividad de sockets
+server.keepAliveTimeout = 120000; 
+server.headersTimeout = 125000;
