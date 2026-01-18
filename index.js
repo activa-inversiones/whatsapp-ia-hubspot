@@ -2,64 +2,70 @@ import express from "express";
 import fetch from "node-fetch";
 import dotenv from "dotenv";
 
-// Configuración de variables de entorno
 dotenv.config();
-
 const app = express();
 app.use(express.json());
 
-// Extraer variables de entorno
 const { PHONE_NUMBER_ID, WHATSAPP_TOKEN, WEBHOOK_VERIFY_TOKEN } = process.env;
 
-// 1. Salud del servidor (Crucial para que Railway mantenga el servicio activo)
-app.get("/", (req, res) => { 
-  res.status(200).send("✅ Servidor Activa Inversiones Online"); 
+// --- MONITOREO DE SALUD ---
+app.get("/", (req, res) => {
+  res.status(200).json({ status: "online", service: "Activa Inversiones API", uptime: process.uptime() });
 });
 
-// 2. Verificación del Webhook de Meta (GET)
+// --- VERIFICACIÓN DE WEBHOOK (META) ---
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
-    console.log("✅ Webhook verificado correctamente");
+    console.log("✅ WEBHOOK_VERIFIED");
     return res.status(200).send(challenge);
   }
-  
-  console.error("❌ Falló la verificación del token");
   return res.sendStatus(403);
 });
 
-// 3. Recepción de mensajes del Webhook (POST)
+// --- PROCESAMIENTO DE MENSAJES ---
 app.post("/webhook", async (req, res) => {
-  try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
-    const message = value?.messages?.[0];
+  // Respondemos inmediatamente a Meta con 200 OK para evitar reintentos innecesarios
+  res.sendStatus(200);
 
-    if (!message) {
-      return res.sendStatus(200);
+  try {
+    const data = req.body;
+    const message = data.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+
+    if (!message) return;
+
+    const from = message.from; // Número del cliente
+    const msgType = message.type;
+
+    console.log(`📩 Nuevo mensaje de [${from}] tipo [${msgType}]`);
+
+    // Lógica: Solo respondemos a mensajes de texto o interacciones iniciales
+    if (msgType === "text" || msgType === "button") {
+      await sendWelcomeTemplate(from);
     }
 
-    const from = message.from;
-    console.log(`📩 Mensaje recibido de: ${from}`);
-
-    // Enviar plantilla de bienvenida
-    await sendWelcomeTemplate(from);
-
-    return res.sendStatus(200);
   } catch (err) {
-    console.error("❌ Error en el Webhook:", err.message);
-    return res.sendStatus(500);
+    console.error("❌ Error Crítico en Procesamiento:", err.message);
   }
 });
 
-// 4. Función para enviar la plantilla de WhatsApp
+// --- FUNCIÓN DE ENVÍO (RESILIENTE) ---
 async function sendWelcomeTemplate(to) {
   const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
   
+  const payload = {
+    messaging_product: "whatsapp",
+    to: to,
+    type: "template",
+    template: { 
+      name: "bienvenida_activa_inversiones", 
+      language: { code: "es_CL" } 
+    }
+  };
+
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -67,31 +73,29 @@ async function sendWelcomeTemplate(to) {
         "Authorization": `Bearer ${WHATSAPP_TOKEN}`, 
         "Content-Type": "application/json" 
       },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: to,
-        type: "template",
-        template: { 
-          name: "bienvenida_activa_inversiones", 
-          language: { code: "es_CL" } 
-        }
-      })
+      body: JSON.stringify(payload)
     });
 
-    const data = await response.json();
-    if (response.ok) {
-      console.log(`✅ Plantilla enviada con éxito a ${to}`);
-    } else {
-      console.error(`❌ Error de Meta API: ${data.error?.message}`);
+    const result = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(`Meta API Error: ${result.error?.message || "Unknown error"}`);
     }
+
+    console.log(`🚀 Plantilla enviada con éxito a: ${to}`);
   } catch (error) {
-    console.error("❌ Error de red al contactar a Meta:", error.message);
+    console.error(`⚠️ Falló envío a ${to}:`, error.message);
   }
 }
 
-// 5. Configuración del Puerto para Railway
-// Usamos process.env.PORT y escuchamos en '0.0.0.0'
+// --- INICIO DEL SERVIDOR ---
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Servidor experto activo en puerto ${PORT}`);
+  console.log(`
+  *****************************************
+  🚀 SERVIDOR ACTIVA INVERSIONES INICIADO
+  📡 Puerto: ${PORT}
+  🔗 URL Webhook: /webhook
+  *****************************************
+  `);
 });
