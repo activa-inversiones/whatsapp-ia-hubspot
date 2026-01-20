@@ -1,7 +1,13 @@
 {
-  "$schema": "https://railway.app/railway.schema.json",
-  "deploy": {
-    "startCommand": "node index.js",
-    "restartPolicyType": "ON_FAILURE"
+  "name": "whatsapp-ia-hubspot",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "express": "^4.18.2"
   }
 }
