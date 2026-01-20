@@ -4,10 +4,10 @@ import axios from "axios";
 const app = express();
 app.use(express.json());
 
-// Sincronizado con tus logs: Puerto 8080
+// Obligatorio para Railway: Usar el puerto que ellos asignan o el 8080 de tus logs
 const PORT = process.env.PORT || 8080;
 
-// ✅ RUTA DE VIDA PARA RAILWAY
+// ✅ HEALTHCHECK: Vital para que Railway no apague el contenedor
 app.get("/", (req, res) => res.status(200).send("BOT ACTIVA ONLINE 🟢"));
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 
@@ -17,11 +17,11 @@ app.get("/webhook", (req, res) => {
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
   
-  // Usa la variable VERIFY_TOKEN de tu panel: "mi_token_webhook_2026"
+  // Usamos el token exacto de tu panel de variables
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "mi_token_webhook_2026";
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verificado correctamente por Meta.");
+    console.log("✅ Webhook verificado exitosamente.");
     res.status(200).send(challenge);
   } else {
     res.sendStatus(403);
@@ -58,7 +58,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// ✅ INICIO OBLIGATORIO EN 0.0.0.0
+// ✅ ESCUCHAR EN 0.0.0.0 ES REQUISITO DE RAILWAY
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 SERVIDOR ESCUCHANDO EN: 0.0.0.0:${PORT}`);
 });
