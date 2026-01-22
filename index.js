@@ -1,3 +1,4 @@
+
 import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
@@ -7,17 +8,14 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 8080;
 
-// OpenAI
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Ruta de prueba
 app.get("/", (req, res) => {
   res.status(200).send("🟢 BOT ACTIVA INVERSIONES CON IA - ONLINE");
 });
 
-// Verificación del Webhook (Meta)
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -30,31 +28,26 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// Recepción de mensajes
 app.post("/webhook", async (req, res) => {
-  // Responder 200 de inmediato para evitar reintentos/duplicados
+  // Responder altiro para evitar reintentos de Meta
   res.sendStatus(200);
 
   const body = req.body;
 
   try {
-    // Validación de evento WhatsApp
     if (!body?.object || !body?.entry?.[0]?.changes?.[0]?.value) return;
 
     const changes = body.entry[0].changes[0].value;
-
-    // Debe venir el mensaje
     const message = changes?.messages?.[0];
     if (!message) return;
 
-    const from = message.from; // número del cliente (quien escribe)
-    const phoneNumberIdFromWebhook = changes?.metadata?.phone_number_id; // número (API) que recibió
+    const from = message.from;
+    const phoneNumberIdFromWebhook = changes?.metadata?.phone_number_id;
     if (!phoneNumberIdFromWebhook) {
       console.log("⚠️ No viene metadata.phone_number_id en el webhook");
       return;
     }
 
-    // Solo texto por ahora
     if (message.type !== "text") {
       console.log(`ℹ️ Mensaje no-texto recibido de ${from}: type=${message.type}`);
       return;
@@ -63,7 +56,6 @@ app.post("/webhook", async (req, res) => {
     const userMessage = message.text?.body || "";
     console.log(`📩 Mensaje recibido de ${from} (a ${phoneNumberIdFromWebhook}): ${userMessage}`);
 
-    // 1) Respuesta con IA
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -76,10 +68,12 @@ app.post("/webhook", async (req, res) => {
       ],
     });
 
-    const aiResponse = completion?.choices?.[0]?.message?.content?.trim() || "¿Me puedes dar un poco más de detalle?";
+    const aiResponse =
+      completion?.choices?.[0]?.message?.content?.trim() ||
+      "¿Me puedes dar un poco más de detalle?";
+
     console.log(`🤖 Respuesta de GPT: ${aiResponse}`);
 
-    // 2) Envío a WhatsApp (IMPORTANTE: responder usando el mismo phone_number_id que recibió)
     await axios({
       method: "POST",
       url: `https://graph.facebook.com/v22.0/${phoneNumberIdFromWebhook}/messages`,
