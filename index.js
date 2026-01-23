@@ -1,208 +1,342 @@
-// index.js
+// index.js — WhatsApp Business API (Meta) + IA (OpenAI) para VENTAS (ventanas/puertas/muros cortina/tabiques vidriados/termopanel)
+// Enfoque: 1 solo número, atención humana, calificación del tipo de cliente, captura de datos y listo para conectar CRM.
+//
+// ====== ENV (Railway Variables) ======
+// OPENAI_API_KEY=...
+// VERIFY_TOKEN=... (mismo token de verificación de Webhooks)
+// WHATSAPP_TOKEN=... (token largo System User / permanente)
+// PHONE_NUMBER_ID=... (ej: 936007209596307)
+// CRM_WEBHOOK_URL=... (opcional: endpoint tuyo para enviar lead al CRM)
+// BUSINESS_NAME=Activa Inversiones
+// SALES_REGION=Región de La Araucanía
+// DEFAULT_REPLY_FALLBACK=true
+
 import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
 
 const app = express();
-
-// IMPORTANT: Meta webhooks envían JSON
 app.use(express.json({ limit: "2mb" }));
 
 const PORT = process.env.PORT || 8080;
 
-// ====== ENV (Railway Variables) ======
-// OPENAI_API_KEY   = tu key OpenAI
-// VERIFY_TOKEN     = el mismo texto que pusiste en Meta Webhooks (Identificador de verificación)
-// WHATSAPP_TOKEN   = token permanente (System User / token largo)
-// PHONE_NUMBER_ID  = (opcional) fallback si Meta no manda metadata.phone_number_id
-// =====================================
+const {
+  OPENAI_API_KEY,
+  VERIFY_TOKEN,
+  WHATSAPP_TOKEN,
+  PHONE_NUMBER_ID,
+  CRM_WEBHOOK_URL,
+  BUSINESS_NAME = "Activa Inversiones",
+  SALES_REGION = "Chile",
+  DEFAULT_REPLY_FALLBACK = "true",
+} = process.env;
 
-const openai =
-  process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim()
-    ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY.trim() })
-    : null;
+if (!WHATSAPP_TOKEN) console.warn("⚠️ Falta WHATSAPP_TOKEN");
+if (!PHONE_NUMBER_ID) console.warn("⚠️ Falta PHONE_NUMBER_ID");
+if (!VERIFY_TOKEN) console.warn("⚠️ Falta VERIFY_TOKEN");
+if (!OPENAI_API_KEY) console.warn("⚠️ Falta OPENAI_API_KEY");
 
-// Dedupe simple en memoria (evita responder 2 veces si Meta reintenta)
-const seenMessageIds = new Map(); // id -> timestamp
-const DEDUPE_TTL_MS = 10 * 60 * 1000;
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-function dedupeHas(id) {
-  const now = Date.now();
-  // purge
-  for (const [k, ts] of seenMessageIds.entries()) {
-    if (now - ts > DEDUPE_TTL_MS) seenMessageIds.delete(k);
+// ====== Estado simple en memoria (puedes reemplazar por Redis/DB) ======
+const sessions = new Map(); // key: wa_id, value: { stage, profile, lead, lastMessageAt }
+const processedMsgIds = new Set(); // dedupe
+
+function getSession(waId) {
+  if (!sessions.has(waId)) {
+    sessions.set(waId, {
+      stage: "START",
+      profile: {},
+      lead: {
+        customerType: null, // RESIDENCIAL / CONSTRUCTOR / ARQUITECTO / INSTITUCIONAL / COMERCIAL
+        name: null,
+        comuna: null,
+        city: null,
+        email: null,
+        projectType: null, // CASA / DEPTO / OBRA / COLEGIO / HOSPITAL / LOCAL / OTRO
+        products: [], // VENTANAS / PUERTAS / MURO_CORTINA / TABIQUES / TERMOPANEL / OTRO
+        quantities: null,
+        measures: null,
+        glazing: null, // DVH / TRIPLE / LOWE / LAMINADO / SOLAR / ACUSTICO / ARGON / WARM_EDGE
+        color: null,
+        opening: null,
+        installation: null, // SI/NO/RETIRO
+        timeline: null, // URGENTE / 1-2 SEM / 1 MES / +1 MES
+        budgetHint: null,
+        notes: null,
+        consent: null, // SI/NO para contacto
+      },
+      lastMessageAt: Date.now(),
+    });
   }
-  if (!id) return false;
-  if (seenMessageIds.has(id)) return true;
-  seenMessageIds.set(id, now);
-  return false;
+  const s = sessions.get(waId);
+  s.lastMessageAt = Date.now();
+  return s;
 }
 
-// Salud
-app.get("/", (req, res) => {
-  res.status(200).send("BOT ACTIVA INVERSIONES - ONLINE");
-});
+// ====== Utilidades WhatsApp ======
+async function sendWhatsAppText(to, text) {
+  if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) throw new Error("Faltan WHATSAPP_TOKEN o PHONE_NUMBER_ID");
+  const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
 
-// Verificación webhook (Meta)
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "text",
+    text: { body: text },
+  };
+
+  const res = await axios.post(url, payload, {
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    timeout: 15000,
+  });
+
+  return res.data;
+}
+
+async function sendToCRM(waId, lead) {
+  if (!CRM_WEBHOOK_URL) return;
+  try {
+    await axios.post(
+      CRM_WEBHOOK_URL,
+      {
+        waId,
+        source: "whatsapp",
+        business: BUSINESS_NAME,
+        region: SALES_REGION,
+        lead,
+        ts: new Date().toISOString(),
+      },
+      { timeout: 12000 }
+    );
+  } catch (e) {
+    console.warn("⚠️ CRM_WEBHOOK_URL falló:", e?.response?.data || e.message);
+  }
+}
+
+// ====== Extracción básica de datos (heurística rápida) ======
+function normalize(text = "") {
+  return text.toLowerCase().trim();
+}
+
+function detectProducts(t) {
+  const x = normalize(t);
+  const products = new Set();
+  if (/(ventana|ventanas|termopanel|dvh|triple|low[-\s]?e)/i.test(x)) products.add("VENTANAS/TERMOPANEL");
+  if (/(puerta|puertas)/i.test(x)) products.add("PUERTAS");
+  if (/(muro cortina|curtain wall|fachada)/i.test(x)) products.add("MURO_CORTINA");
+  if (/(tabique vidriado|división vidriada|oficina|mampara)/i.test(x)) products.add("TABIQUES_VIDRIADOS");
+  if (/(baranda|barandal|pasamanos)/i.test(x)) products.add("OTRO_BARANDAS");
+  return Array.from(products);
+}
+
+function detectCustomerType(t) {
+  const x = normalize(t);
+  if (/(arquitect|especificador|proyectista)/i.test(x)) return "ARQUITECTO";
+  if (/(constructor|constructora|inmobiliaria|obra|licitación|subcontrato)/i.test(x)) return "CONSTRUCTOR";
+  if (/(municipal|servicio|hospital|cesfam|colegio|liceo|jard[ií]n|instituci[oó]n)/i.test(x)) return "INSTITUCIONAL";
+  if (/(local|comercial|bodega|planta|industrial|tienda|oficina)/i.test(x)) return "COMERCIAL";
+  return null;
+}
+
+function shouldCloseLead(lead) {
+  // Si ya tenemos lo mínimo para cotizar / coordinar visita
+  return Boolean(
+    (lead.name || "").length >= 2 &&
+      (lead.comuna || lead.city) &&
+      (lead.products?.length || 0) > 0 &&
+      (lead.timeline || lead.measures || lead.quantities || lead.projectType)
+  );
+}
+
+// ====== Prompt maestro (ventas B2B/B2C + normativa de eficiencia energética) ======
+function buildSystemPrompt({ session }) {
+  return `
+Eres un asesor comercial HUMANO (tono cercano, profesional, sin sonar robótico) de ${BUSINESS_NAME} en ${SALES_REGION}.
+Tu objetivo: VENDER y AGENDAR (visita técnica / medición / cotización) ventanas, puertas, muros cortina, tabiques vidriados y todo tipo de termopanel.
+
+Reglas:
+- Haz preguntas de calificación cortas (máx 2 por mensaje) y avanza por etapas.
+- Identifica tipo de cliente: RESIDENCIAL / CONSTRUCTOR / ARQUITECTO / INSTITUCIONAL / COMERCIAL.
+- Ajusta el discurso: 
+  * Residencial: confort térmico/acústico, ahorro, condensación, seguridad, estética, garantía.
+  * Constructor/Inmobiliaria: plazos, cubicación, especificaciones, cumplimiento, fichas, coordinación de obra, facturación.
+  * Arquitecto: prestaciones, detalles, soluciones, alternativas low-e/solar/acústico/laminado, compatibilidad de perfilería, normativa.
+  * Institucional: licitaciones, trazabilidad, cumplimiento, documentación técnica, mantenimiento.
+  * Comercial/Industrial: seguridad, control solar, resistencia, continuidad operativa.
+- “Normativa nueva de eficiencia energética en Chile”: NO cites decretos exactos si no te los dan. Di “cumplimos exigencias vigentes de eficiencia energética / Reglamentación Térmica y criterios de desempeño (aislamiento, control de condensación, sellos y DVH)”.
+- Nunca prometas “certificación oficial” si no se ha solicitado formalmente. Ofrece “documentación técnica, fichas y respaldo del sistema”.
+- Si el cliente pide precio inmediato: entrega rangos orientativos SOLO si faltan datos y explica que la cotización final depende de medidas, apertura, vidrio y color.
+- Siempre cierra con un CTA: “¿Te cotizo hoy?” / “¿Agendamos medición?”.
+- Captura datos: nombre, comuna/ciudad, tipo de proyecto, productos, cantidad, medidas aproximadas, plazo.
+- Si hay señales de urgencia, prioriza agendar medición.
+- Evita textos largos. Máximo 8–10 líneas por mensaje.
+
+Contexto de sesión (para que no repitas):
+Tipo cliente actual: ${session.lead.customerType || "DESCONOCIDO"}
+Productos mencionados: ${(session.lead.products || []).join(", ") || "N/A"}
+Comuna/Ciudad: ${session.lead.comuna || session.lead.city || "N/A"}
+Etapa: ${session.stage}
+`;
+}
+
+// ====== Generación IA (con fallback) ======
+async function generateSalesReply({ waId, userText }) {
+  const session = getSession(waId);
+
+  // Heurísticas rápidas antes de IA (para no depender 100% del modelo)
+  const prod = detectProducts(userText);
+  if (prod.length) session.lead.products = Array.from(new Set([...(session.lead.products || []), ...prod]));
+
+  const inferredType = detectCustomerType(userText);
+  if (inferredType && !session.lead.customerType) session.lead.customerType = inferredType;
+
+  // Etapas mínimas
+  if (session.stage === "START") session.stage = "QUALIFY_TYPE";
+
+  // Respuesta IA
+  if (!OPENAI_API_KEY) {
+    // Fallback sin IA
+    if (normalize(DEFAULT_REPLY_FALLBACK) !== "true") return null;
+
+    const typeLine = session.lead.customerType ? `Perfecto. ¿Tu caso es más ${session.lead.customerType} o residencial?` : `Para ayudarte rápido: ¿eres cliente residencial, constructora/inmobiliaria, arquitecto o institución?`;
+    const prodLine =
+      (session.lead.products || []).length > 0
+        ? `Entiendo que buscas: ${session.lead.products.join(", ")}.`
+        : `¿Qué necesitas cotizar: ventanas/puertas/muro cortina/tabiques vidriados/termopanel?`;
+
+    return `${prodLine}
+${typeLine}
+Y dime tu comuna/ciudad para coordinar medición o cotización.`;
+  }
+
+  const messages = [
+    { role: "system", content: buildSystemPrompt({ session }) },
+    {
+      role: "assistant",
+      content:
+        "Si el usuario no ha entregado tipo de cliente, pregunta eso primero. Si ya lo entregó, pide (1) comuna/ciudad y (2) qué producto y cantidad. Mantén tono humano y vendedor.",
+    },
+    { role: "user", content: userText },
+  ];
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0.4,
+    max_tokens: 220,
+    messages,
+  });
+
+  const reply = completion?.choices?.[0]?.message?.content?.trim();
+  return reply || null;
+}
+
+// ====== Webhook Meta ======
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
-    console.log("✅ Webhook verificado correctamente");
+  if (mode === "subscribe" && token && token === VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
-  console.log("❌ Verificación fallida:", { mode, token });
   return res.sendStatus(403);
 });
 
-// Enviar WhatsApp
-async function sendWhatsAppText({ phoneNumberId, to, text }) {
-  const token = process.env.WHATSAPP_TOKEN;
-  if (!token) throw new Error("Falta WHATSAPP_TOKEN en Railway Variables");
-
-  if (!phoneNumberId) {
-    throw new Error(
-      "Falta phoneNumberId (metadata.phone_number_id) y no hay PHONE_NUMBER_ID fallback"
-    );
-  }
-
-  const url = `https://graph.facebook.com/v22.0/${phoneNumberId}/messages`;
-
-  await axios({
-    method: "POST",
-    url,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    data: {
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body: text },
-    },
-    timeout: 20000,
-  });
-}
-
-// Webhook entrante
 app.post("/webhook", async (req, res) => {
-  // Siempre responder 200 rápido (Meta reintenta si demoras)
-  res.sendStatus(200);
-
   try {
     const body = req.body;
 
-    // Log mínimo para saber si llega algo
-    const entry = body?.entry?.[0];
+    if (body.object !== "whatsapp_business_account") {
+      return res.sendStatus(200);
+    }
+
+    const entry = body.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
 
-    if (!body?.object) {
-      console.log("⚠️ POST /webhook sin body.object");
-      return;
-    }
-
-    // Meta manda statuses muy seguido; no son mensajes entrantes
-    if (value?.statuses?.length) {
-      // Si quieres verlos, descomenta:
-      // console.log("ℹ️ STATUS:", JSON.stringify(value.statuses[0], null, 2));
-      return;
-    }
-
     const messages = value?.messages;
     if (!messages || !messages.length) {
-      console.log("ℹ️ Webhook recibido sin messages (posible evento distinto)");
-      return;
+      return res.sendStatus(200);
     }
 
-    // Para 2 números: viene aquí el phone_number_id del número que recibió
-    const phoneNumberId =
-      value?.metadata?.phone_number_id || process.env.PHONE_NUMBER_ID;
+    const msg = messages[0];
+    const msgId = msg.id;
+    const from = msg.from; // wa_id (tel)
+    const text = msg?.text?.body || "";
 
-    if (!phoneNumberId) {
-      console.log("❌ No viene metadata.phone_number_id y no hay PHONE_NUMBER_ID.");
-      return;
+    // Dedupe (Meta puede reenviar)
+    if (processedMsgIds.has(msgId)) return res.sendStatus(200);
+    processedMsgIds.add(msgId);
+    if (processedMsgIds.size > 2000) {
+      // limpieza simple
+      const arr = Array.from(processedMsgIds);
+      arr.slice(0, 800).forEach((id) => processedMsgIds.delete(id));
     }
 
-    for (const message of messages) {
-      const msgId = message?.id;
-      if (dedupeHas(msgId)) {
-        console.log("↩️ Dedupe: mensaje repetido, id:", msgId);
-        continue;
-      }
+    const session = getSession(from);
 
-      const from = message?.from; // cliente
-      const type = message?.type;
-
-      console.log(`📩 IN (${phoneNumberId}) FROM ${from} TYPE ${type} ID ${msgId}`);
-
-      // Solo texto
-      if (type !== "text") {
-        await sendWhatsAppText({
-          phoneNumberId,
-          to: from,
-          text: "Gracias por tu mensaje. Por ahora respondo solo texto. ¿Qué necesitas cotizar o consultar?",
-        });
-        console.log(`📤 OUT (${phoneNumberId}) TO ${from}: fallback no-text`);
-        continue;
-      }
-
-      const userMessage = message?.text?.body?.trim() || "";
-      if (!userMessage) {
-        await sendWhatsAppText({
-          phoneNumberId,
-          to: from,
-          text: "¿Podrías escribir tu consulta por favor?",
-        });
-        console.log(`📤 OUT (${phoneNumberId}) TO ${from}: empty-text`);
-        continue;
-      }
-
-      let aiResponse =
-        "Gracias por tu mensaje. Un ejecutivo te contactará en breve. ¿Me indicas tu nombre y comuna?";
-
-      // IA (si está configurada)
-      if (openai) {
-        try {
-          const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
-            messages: [
-              {
-                role: "system",
-                content:
-                  "Eres un asistente virtual profesional y directo de Activa Inversiones EIRL. Responde breve, claro y orientado a ayudar/cotizar. Si falta un dato, pide ese dato. Si no puedes resolver, deriva a humano.",
-              },
-              { role: "user", content: userMessage },
-            ],
-          });
-
-          aiResponse =
-            completion?.choices?.[0]?.message?.content?.trim() || aiResponse;
-        } catch (e) {
-          console.log("⚠️ OpenAI falló:", e?.message);
-        }
-      } else {
-        console.log("⚠️ OPENAI_API_KEY no configurada, respondo fallback.");
-      }
-
-      await sendWhatsAppText({
-        phoneNumberId,
-        to: from,
-        text: aiResponse,
-      });
-
-      console.log(`📤 OUT (${phoneNumberId}) TO ${from}: ${aiResponse}`);
+    // Intento de capturar datos (mínimo) si el usuario los entrega explícitos
+    // (Puedes ampliar con parsing avanzado o IA estructurada)
+    const t = normalize(text);
+    if (!session.lead.customerType) {
+      const ct = detectCustomerType(text);
+      if (ct) session.lead.customerType = ct;
+      if (/residencial|casa|departamento|hogar/i.test(t)) session.lead.customerType = "RESIDENCIAL";
     }
-  } catch (error) {
-    const data = error?.response?.data;
-    console.error("❌ Error en /webhook:", data || error?.message || error);
+    if (!session.lead.name) {
+      const m = text.match(/me llamo\s+([a-záéíóúñ\s]{2,40})/i);
+      if (m?.[1]) session.lead.name = m[1].trim();
+    }
+    if (!session.lead.email) {
+      const em = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+      if (em?.[0]) session.lead.email = em[0].toLowerCase();
+    }
+    if (!session.lead.timeline) {
+      if (/hoy|urgente|ya/i.test(t)) session.lead.timeline = "URGENTE";
+      else if (/semana|7 d/i.test(t)) session.lead.timeline = "1-2 SEM";
+      else if (/mes|30 d/i.test(t)) session.lead.timeline = "1 MES";
+    }
+
+    // Generar respuesta
+    const reply = await generateSalesReply({ waId: from, userText: text });
+
+    // Si no salió respuesta, fallback muy básico
+    const safeReply =
+      reply ||
+      `Gracias por escribir a ${BUSINESS_NAME}. Para cotizar rápido:
+1) ¿Eres cliente residencial, constructora/inmobiliaria, arquitecto o institución?
+2) ¿Qué necesitas: ventanas/puertas/muro cortina/tabiques vidriados/termopanel?
+3) ¿En qué comuna/ciudad es el proyecto?`;
+
+    // Enviar WhatsApp
+    await sendWhatsAppText(from, safeReply);
+
+    // Si ya hay lead mínimo, enviar al CRM (opcional)
+    if (shouldCloseLead(session.lead)) {
+      await sendToCRM(from, session.lead);
+      // También puedes cambiar etapa para cerrar
+      session.stage = "READY_TO_QUOTE";
+    }
+
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error("Webhook error:", err?.response?.data || err.message);
+    return res.sendStatus(200);
   }
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 SERVIDOR LISTO EN PUERTO: ${PORT}`);
-  console.log("✅ Rutas: GET /  |  GET /webhook  |  POST /webhook");
+// Healthcheck
+app.get("/", (req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: "whatsapp-sales-bot",
+    business: BUSINESS_NAME,
+    region: SALES_REGION,
+    ts: new Date().toISOString(),
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
 });
