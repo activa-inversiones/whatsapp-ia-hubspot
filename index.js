@@ -1,342 +1,208 @@
-// index.js — WhatsApp Business API (Meta) + IA (OpenAI) para VENTAS (ventanas/puertas/muros cortina/tabiques vidriados/termopanel)
-// Enfoque: 1 solo número, atención humana, calificación del tipo de cliente, captura de datos y listo para conectar CRM.
-//
-// ====== ENV (Railway Variables) ======
-// OPENAI_API_KEY=...
-// VERIFY_TOKEN=... (mismo token de verificación de Webhooks)
-// WHATSAPP_TOKEN=... (token largo System User / permanente)
-// PHONE_NUMBER_ID=... (ej: 936007209596307)
-// CRM_WEBHOOK_URL=... (opcional: endpoint tuyo para enviar lead al CRM)
-// BUSINESS_NAME=Activa Inversiones
-// SALES_REGION=Región de La Araucanía
-// DEFAULT_REPLY_FALLBACK=true
+// ====== Helpers nuevos: extracción + siguiente pregunta + contradicción ======
 
-import express from "express";
-import axios from "axios";
-import OpenAI from "openai";
+const CITY_KEYWORDS = [
+  "temuco",
+  "padre las casas",
+  "villarrica",
+  "pucon",
+  "pucón",
+  "lautaro",
+  "freire",
+  "labranza",
+  "carahue",
+  "nueva imperial",
+  "imperial",
+  "angol",
+  "victoria",
+  "collipulli",
+];
 
-const app = express();
-app.use(express.json({ limit: "2mb" }));
-
-const PORT = process.env.PORT || 8080;
-
-const {
-  OPENAI_API_KEY,
-  VERIFY_TOKEN,
-  WHATSAPP_TOKEN,
-  PHONE_NUMBER_ID,
-  CRM_WEBHOOK_URL,
-  BUSINESS_NAME = "Activa Inversiones",
-  SALES_REGION = "Chile",
-  DEFAULT_REPLY_FALLBACK = "true",
-} = process.env;
-
-if (!WHATSAPP_TOKEN) console.warn("⚠️ Falta WHATSAPP_TOKEN");
-if (!PHONE_NUMBER_ID) console.warn("⚠️ Falta PHONE_NUMBER_ID");
-if (!VERIFY_TOKEN) console.warn("⚠️ Falta VERIFY_TOKEN");
-if (!OPENAI_API_KEY) console.warn("⚠️ Falta OPENAI_API_KEY");
-
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
-
-// ====== Estado simple en memoria (puedes reemplazar por Redis/DB) ======
-const sessions = new Map(); // key: wa_id, value: { stage, profile, lead, lastMessageAt }
-const processedMsgIds = new Set(); // dedupe
-
-function getSession(waId) {
-  if (!sessions.has(waId)) {
-    sessions.set(waId, {
-      stage: "START",
-      profile: {},
-      lead: {
-        customerType: null, // RESIDENCIAL / CONSTRUCTOR / ARQUITECTO / INSTITUCIONAL / COMERCIAL
-        name: null,
-        comuna: null,
-        city: null,
-        email: null,
-        projectType: null, // CASA / DEPTO / OBRA / COLEGIO / HOSPITAL / LOCAL / OTRO
-        products: [], // VENTANAS / PUERTAS / MURO_CORTINA / TABIQUES / TERMOPANEL / OTRO
-        quantities: null,
-        measures: null,
-        glazing: null, // DVH / TRIPLE / LOWE / LAMINADO / SOLAR / ACUSTICO / ARGON / WARM_EDGE
-        color: null,
-        opening: null,
-        installation: null, // SI/NO/RETIRO
-        timeline: null, // URGENTE / 1-2 SEM / 1 MES / +1 MES
-        budgetHint: null,
-        notes: null,
-        consent: null, // SI/NO para contacto
-      },
-      lastMessageAt: Date.now(),
-    });
+function detectCityOrComuna(text = "") {
+  const t = normalize(text);
+  for (const c of CITY_KEYWORDS) {
+    if (t.includes(c)) return c.replace(/\b\w/g, (m) => m.toUpperCase());
   }
-  const s = sessions.get(waId);
-  s.lastMessageAt = Date.now();
-  return s;
-}
-
-// ====== Utilidades WhatsApp ======
-async function sendWhatsAppText(to, text) {
-  if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) throw new Error("Faltan WHATSAPP_TOKEN o PHONE_NUMBER_ID");
-  const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
-
-  const payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: { body: text },
-  };
-
-  const res = await axios.post(url, payload, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-    timeout: 15000,
-  });
-
-  return res.data;
-}
-
-async function sendToCRM(waId, lead) {
-  if (!CRM_WEBHOOK_URL) return;
-  try {
-    await axios.post(
-      CRM_WEBHOOK_URL,
-      {
-        waId,
-        source: "whatsapp",
-        business: BUSINESS_NAME,
-        region: SALES_REGION,
-        lead,
-        ts: new Date().toISOString(),
-      },
-      { timeout: 12000 }
-    );
-  } catch (e) {
-    console.warn("⚠️ CRM_WEBHOOK_URL falló:", e?.response?.data || e.message);
-  }
-}
-
-// ====== Extracción básica de datos (heurística rápida) ======
-function normalize(text = "") {
-  return text.toLowerCase().trim();
-}
-
-function detectProducts(t) {
-  const x = normalize(t);
-  const products = new Set();
-  if (/(ventana|ventanas|termopanel|dvh|triple|low[-\s]?e)/i.test(x)) products.add("VENTANAS/TERMOPANEL");
-  if (/(puerta|puertas)/i.test(x)) products.add("PUERTAS");
-  if (/(muro cortina|curtain wall|fachada)/i.test(x)) products.add("MURO_CORTINA");
-  if (/(tabique vidriado|división vidriada|oficina|mampara)/i.test(x)) products.add("TABIQUES_VIDRIADOS");
-  if (/(baranda|barandal|pasamanos)/i.test(x)) products.add("OTRO_BARANDAS");
-  return Array.from(products);
-}
-
-function detectCustomerType(t) {
-  const x = normalize(t);
-  if (/(arquitect|especificador|proyectista)/i.test(x)) return "ARQUITECTO";
-  if (/(constructor|constructora|inmobiliaria|obra|licitación|subcontrato)/i.test(x)) return "CONSTRUCTOR";
-  if (/(municipal|servicio|hospital|cesfam|colegio|liceo|jard[ií]n|instituci[oó]n)/i.test(x)) return "INSTITUCIONAL";
-  if (/(local|comercial|bodega|planta|industrial|tienda|oficina)/i.test(x)) return "COMERCIAL";
   return null;
 }
 
-function shouldCloseLead(lead) {
-  // Si ya tenemos lo mínimo para cotizar / coordinar visita
-  return Boolean(
-    (lead.name || "").length >= 2 &&
-      (lead.comuna || lead.city) &&
-      (lead.products?.length || 0) > 0 &&
-      (lead.timeline || lead.measures || lead.quantities || lead.projectType)
-  );
+function detectGoal(text = "") {
+  const t = normalize(text);
+  if (/(aislaci[oó]n t[eé]rmica|fr[ií]o|calor|temperatura|eficiencia energ[eé]tica)/i.test(t)) return "AISLACIÓN_TÉRMICA";
+  if (/(ruido|ac[uú]stic|sonido)/i.test(t)) return "AISLACIÓN_ACÚSTICA";
+  if (/(condensaci[oó]n|empa[nñ]amiento|hongo|humedad)/i.test(t)) return "CONTROL_CONDENSACIÓN";
+  if (/(seguridad|laminad|antirrobo)/i.test(t)) return "SEGURIDAD";
+  return null;
 }
 
-// ====== Prompt maestro (ventas B2B/B2C + normativa de eficiencia energética) ======
+function parseLeadFromText(lead, text) {
+  const t = normalize(text);
+
+  // Tipo cliente (acepta cambios)
+  if (/residencial|casa|depto|departamento|hogar/i.test(t)) lead.customerType = "RESIDENCIAL";
+  if (/comercial|local|tienda|oficina|bodega|industrial/i.test(t)) lead.customerType = "COMERCIAL";
+  if (/constructora|inmobiliaria|obra|licitaci[oó]n/i.test(t)) lead.customerType = "CONSTRUCTOR";
+  if (/arquitect|proyectista|especificador/i.test(t)) lead.customerType = "ARQUITECTO";
+  if (/colegio|cesfam|hospital|municipal|instituci[oó]n/i.test(t)) lead.customerType = "INSTITUCIONAL";
+
+  // Ciudad/Comuna
+  const city = detectCityOrComuna(text);
+  if (city) {
+    lead.city = city;
+    lead.comuna = city;
+  }
+
+  // Productos
+  const prods = detectProducts(text);
+  if (prods.length) {
+    lead.products = Array.from(new Set([...(lead.products || []), ...prods]));
+  }
+
+  // Material / sistema
+  if (/pvc/i.test(t)) lead.notes = mergeNote(lead.notes, "Interés en PVC");
+  if (/alumin/i.test(t)) lead.notes = mergeNote(lead.notes, "Interés en aluminio");
+
+  // Vidrio / termopanel
+  if (/(termopanel|dvh)/i.test(t)) lead.glazing = mergeTokenList(lead.glazing, ["DVH"]);
+  if (/(triple)/i.test(t)) lead.glazing = mergeTokenList(lead.glazing, ["TRIPLE"]);
+  if (/(low[-\s]?e|baja emisividad)/i.test(t)) lead.glazing = mergeTokenList(lead.glazing, ["LOW_E"]);
+  if (/(laminad)/i.test(t)) lead.glazing = mergeTokenList(lead.glazing, ["LAMINADO"]);
+  if (/(argon)/i.test(t)) lead.glazing = mergeTokenList(lead.glazing, ["ARGON"]);
+
+  // Objetivo
+  const goal = detectGoal(text);
+  if (goal) lead.goal = goal;
+
+  return lead;
+}
+
+function mergeNote(current, add) {
+  const c = (current || "").trim();
+  if (!c) return add;
+  if (c.toLowerCase().includes(add.toLowerCase())) return c;
+  return `${c} | ${add}`;
+}
+
+function mergeTokenList(current, tokens = []) {
+  const set = new Set(
+    (current || "")
+      .split(/[,\|]/)
+      .map((x) => x.trim())
+      .filter(Boolean)
+  );
+  tokens.forEach((x) => set.add(x));
+  return Array.from(set).join(", ");
+}
+
+function pickNextQuestion(lead) {
+  // Orden inteligente: evita repetir, pide lo mínimo para cotizar/agenda
+  if (!lead.customerType) return { key: "customerType", q: "¿Es para casa (residencial) o para un local/negocio (comercial)?" };
+  if (!lead.city && !lead.comuna) return { key: "city", q: "¿En qué comuna/ciudad es el proyecto?" };
+  if (!lead.products || lead.products.length === 0) return { key: "products", q: "¿Qué necesitas cotizar: ventanas, puertas, muro cortina o tabiques vidriados?" };
+  if (!lead.goal) return { key: "goal", q: "¿Tu prioridad es aislación térmica, acústica o controlar condensación?" };
+  if (!lead.quantities && !lead.measures) return { key: "scope", q: "¿Cuántas unidades son y tienes medidas aproximadas? (aunque sea estimado)" };
+  if (!lead.timeline) return { key: "timeline", q: "¿Para cuándo lo necesitas? (urgente / 1-2 semanas / 1 mes / más)" };
+  return null;
+}
+
+function detectContradiction(prevLead, newLead) {
+  if (!prevLead?.customerType) return null;
+  if (!newLead?.customerType) return null;
+  if (prevLead.customerType !== newLead.customerType) {
+    return { from: prevLead.customerType, to: newLead.customerType };
+  }
+  return null;
+}
+
+// ====== Prompt mejorado: prohíbe repetir y exige 1 pregunta ======
 function buildSystemPrompt({ session }) {
+  const lead = session.lead || {};
   return `
-Eres un asesor comercial HUMANO (tono cercano, profesional, sin sonar robótico) de ${BUSINESS_NAME} en ${SALES_REGION}.
-Tu objetivo: VENDER y AGENDAR (visita técnica / medición / cotización) ventanas, puertas, muros cortina, tabiques vidriados y todo tipo de termopanel.
+Eres un asesor comercial humano de ${BUSINESS_NAME}. Estilo: cercano, breve, directo, sin frases robóticas.
+Objetivo: vender y agendar medición/cotización.
 
-Reglas:
-- Haz preguntas de calificación cortas (máx 2 por mensaje) y avanza por etapas.
-- Identifica tipo de cliente: RESIDENCIAL / CONSTRUCTOR / ARQUITECTO / INSTITUCIONAL / COMERCIAL.
-- Ajusta el discurso: 
-  * Residencial: confort térmico/acústico, ahorro, condensación, seguridad, estética, garantía.
-  * Constructor/Inmobiliaria: plazos, cubicación, especificaciones, cumplimiento, fichas, coordinación de obra, facturación.
-  * Arquitecto: prestaciones, detalles, soluciones, alternativas low-e/solar/acústico/laminado, compatibilidad de perfilería, normativa.
-  * Institucional: licitaciones, trazabilidad, cumplimiento, documentación técnica, mantenimiento.
-  * Comercial/Industrial: seguridad, control solar, resistencia, continuidad operativa.
-- “Normativa nueva de eficiencia energética en Chile”: NO cites decretos exactos si no te los dan. Di “cumplimos exigencias vigentes de eficiencia energética / Reglamentación Térmica y criterios de desempeño (aislamiento, control de condensación, sellos y DVH)”.
-- Nunca prometas “certificación oficial” si no se ha solicitado formalmente. Ofrece “documentación técnica, fichas y respaldo del sistema”.
-- Si el cliente pide precio inmediato: entrega rangos orientativos SOLO si faltan datos y explica que la cotización final depende de medidas, apertura, vidrio y color.
-- Siempre cierra con un CTA: “¿Te cotizo hoy?” / “¿Agendamos medición?”.
-- Captura datos: nombre, comuna/ciudad, tipo de proyecto, productos, cantidad, medidas aproximadas, plazo.
-- Si hay señales de urgencia, prioriza agendar medición.
-- Evita textos largos. Máximo 8–10 líneas por mensaje.
+REGLAS CRÍTICAS (obligatorias):
+1) NO repitas preguntas ya respondidas. Usa el lead como memoria.
+2) Máximo 1 pregunta por mensaje (salvo confirmación de contradicción, que también es 1 pregunta).
+3) Siempre inicia con un resumen breve de lo entendido (1-2 líneas) + beneficio concreto (1 línea) + pregunta única.
+4) Si el cliente cambia “residencial/comercial”, no lo discutas: CONFIRMA una sola vez y luego sigue.
+5) Normativa eficiencia energética Chile: habla de “exigencias vigentes de eficiencia energética / desempeño térmico, control de condensación y sellos”, sin citar decretos específicos.
+6) Si el usuario pide precio sin datos: ofrece rango “referencial” y pide el dato faltante más importante.
 
-Contexto de sesión (para que no repitas):
-Tipo cliente actual: ${session.lead.customerType || "DESCONOCIDO"}
-Productos mencionados: ${(session.lead.products || []).join(", ") || "N/A"}
-Comuna/Ciudad: ${session.lead.comuna || session.lead.city || "N/A"}
-Etapa: ${session.stage}
+LEAD ACTUAL (memoria):
+- Tipo cliente: ${lead.customerType || "N/D"}
+- Ciudad/comuna: ${lead.city || lead.comuna || "N/D"}
+- Productos: ${(lead.products || []).join(", ") || "N/D"}
+- Vidrio: ${lead.glazing || "N/D"}
+- Objetivo: ${lead.goal || "N/D"}
+- Cantidad/medidas: ${lead.quantities || ""} ${lead.measures || ""}
+- Plazo: ${lead.timeline || "N/D"}
 `;
 }
 
-// ====== Generación IA (con fallback) ======
+// ====== generateSalesReply REEMPLAZADO ======
 async function generateSalesReply({ waId, userText }) {
   const session = getSession(waId);
 
-  // Heurísticas rápidas antes de IA (para no depender 100% del modelo)
-  const prod = detectProducts(userText);
-  if (prod.length) session.lead.products = Array.from(new Set([...(session.lead.products || []), ...prod]));
+  // Copia previa para detectar contradicción
+  const prev = { ...session.lead };
 
-  const inferredType = detectCustomerType(userText);
-  if (inferredType && !session.lead.customerType) session.lead.customerType = inferredType;
+  // Actualiza lead con lo que diga el usuario
+  session.lead = parseLeadFromText(session.lead, userText);
 
-  // Etapas mínimas
-  if (session.stage === "START") session.stage = "QUALIFY_TYPE";
+  const contradiction = detectContradiction(prev, session.lead);
 
-  // Respuesta IA
-  if (!OPENAI_API_KEY) {
-    // Fallback sin IA
-    if (normalize(DEFAULT_REPLY_FALLBACK) !== "true") return null;
-
-    const typeLine = session.lead.customerType ? `Perfecto. ¿Tu caso es más ${session.lead.customerType} o residencial?` : `Para ayudarte rápido: ¿eres cliente residencial, constructora/inmobiliaria, arquitecto o institución?`;
-    const prodLine =
-      (session.lead.products || []).length > 0
-        ? `Entiendo que buscas: ${session.lead.products.join(", ")}.`
-        : `¿Qué necesitas cotizar: ventanas/puertas/muro cortina/tabiques vidriados/termopanel?`;
-
-    return `${prodLine}
-${typeLine}
-Y dime tu comuna/ciudad para coordinar medición o cotización.`;
+  // Si hay contradicción, confirmar 1 vez y marcar bandera para no insistir
+  if (contradiction && !session.profile?.typeConfirmed) {
+    session.profile.typeConfirmed = true;
+    return `Perfecto, para no equivocarme: me dijiste *${contradiction.from}* y ahora *${contradiction.to}*. ¿Confirmo que es **${contradiction.to.toLowerCase()}**?`;
   }
 
+  const next = pickNextQuestion(session.lead);
+
+  // Si ya está completo lo mínimo, cerrar con CTA humano
+  if (!next) {
+    return `Gracias. Con lo que me indicas (${(session.lead.products || []).join(", ") || "tu solicitud"} en ${session.lead.city || session.lead.comuna || "tu comuna"}), te puedo armar una propuesta enfocada a eficiencia térmica y buen sellado.
+¿Prefieres que coordinemos **medición en terreno** o me envías **medidas/fotos del vano** para cotizar hoy?`;
+  }
+
+  // Si no hay IA, fallback inteligente sin repetir
+  if (!OPENAI_API_KEY) {
+    const summary = [
+      session.lead.city ? `En ${session.lead.city},` : null,
+      (session.lead.products || []).length ? `por ${session.lead.products.join(", ")}.` : null,
+      session.lead.goal ? `Prioridad: ${session.lead.goal.replace("_", " ").toLowerCase()}.` : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    const benefit =
+      session.lead.goal === "AISLACIÓN_TÉRMICA"
+        ? "Con PVC + termopanel (DVH) bien sellado se nota mucho la diferencia en confort y consumo."
+        : "Te propongo una solución que cumpla desempeño y te quede ordenada para cotización/obra.";
+
+    return `${summary || "Perfecto, ya te entendí."}
+${benefit}
+${next.q}`;
+  }
+
+  // Con IA: le damos contexto + exigimos 1 pregunta
   const messages = [
     { role: "system", content: buildSystemPrompt({ session }) },
     {
-      role: "assistant",
-      content:
-        "Si el usuario no ha entregado tipo de cliente, pregunta eso primero. Si ya lo entregó, pide (1) comuna/ciudad y (2) qué producto y cantidad. Mantén tono humano y vendedor.",
+      role: "user",
+      content: `Mensaje del cliente: "${userText}".
+Tu tarea: redacta una respuesta humana siguiendo reglas, SIN repetir preguntas ya respondidas.
+La pregunta única que corresponde ahora es sobre: ${next.key}.`,
     },
-    { role: "user", content: userText },
   ];
 
   const completion = await openai.chat.completions.create({
     model: "gpt-4.1-mini",
-    temperature: 0.4,
-    max_tokens: 220,
+    temperature: 0.35,
+    max_tokens: 180,
     messages,
   });
 
   const reply = completion?.choices?.[0]?.message?.content?.trim();
-  return reply || null;
+  return reply || `Perfecto. ${next.q}`;
 }
-
-// ====== Webhook Meta ======
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token && token === VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
-  }
-  return res.sendStatus(403);
-});
-
-app.post("/webhook", async (req, res) => {
-  try {
-    const body = req.body;
-
-    if (body.object !== "whatsapp_business_account") {
-      return res.sendStatus(200);
-    }
-
-    const entry = body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
-
-    const messages = value?.messages;
-    if (!messages || !messages.length) {
-      return res.sendStatus(200);
-    }
-
-    const msg = messages[0];
-    const msgId = msg.id;
-    const from = msg.from; // wa_id (tel)
-    const text = msg?.text?.body || "";
-
-    // Dedupe (Meta puede reenviar)
-    if (processedMsgIds.has(msgId)) return res.sendStatus(200);
-    processedMsgIds.add(msgId);
-    if (processedMsgIds.size > 2000) {
-      // limpieza simple
-      const arr = Array.from(processedMsgIds);
-      arr.slice(0, 800).forEach((id) => processedMsgIds.delete(id));
-    }
-
-    const session = getSession(from);
-
-    // Intento de capturar datos (mínimo) si el usuario los entrega explícitos
-    // (Puedes ampliar con parsing avanzado o IA estructurada)
-    const t = normalize(text);
-    if (!session.lead.customerType) {
-      const ct = detectCustomerType(text);
-      if (ct) session.lead.customerType = ct;
-      if (/residencial|casa|departamento|hogar/i.test(t)) session.lead.customerType = "RESIDENCIAL";
-    }
-    if (!session.lead.name) {
-      const m = text.match(/me llamo\s+([a-záéíóúñ\s]{2,40})/i);
-      if (m?.[1]) session.lead.name = m[1].trim();
-    }
-    if (!session.lead.email) {
-      const em = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-      if (em?.[0]) session.lead.email = em[0].toLowerCase();
-    }
-    if (!session.lead.timeline) {
-      if (/hoy|urgente|ya/i.test(t)) session.lead.timeline = "URGENTE";
-      else if (/semana|7 d/i.test(t)) session.lead.timeline = "1-2 SEM";
-      else if (/mes|30 d/i.test(t)) session.lead.timeline = "1 MES";
-    }
-
-    // Generar respuesta
-    const reply = await generateSalesReply({ waId: from, userText: text });
-
-    // Si no salió respuesta, fallback muy básico
-    const safeReply =
-      reply ||
-      `Gracias por escribir a ${BUSINESS_NAME}. Para cotizar rápido:
-1) ¿Eres cliente residencial, constructora/inmobiliaria, arquitecto o institución?
-2) ¿Qué necesitas: ventanas/puertas/muro cortina/tabiques vidriados/termopanel?
-3) ¿En qué comuna/ciudad es el proyecto?`;
-
-    // Enviar WhatsApp
-    await sendWhatsAppText(from, safeReply);
-
-    // Si ya hay lead mínimo, enviar al CRM (opcional)
-    if (shouldCloseLead(session.lead)) {
-      await sendToCRM(from, session.lead);
-      // También puedes cambiar etapa para cerrar
-      session.stage = "READY_TO_QUOTE";
-    }
-
-    return res.sendStatus(200);
-  } catch (err) {
-    console.error("Webhook error:", err?.response?.data || err.message);
-    return res.sendStatus(200);
-  }
-});
-
-// Healthcheck
-app.get("/", (req, res) => {
-  res.status(200).json({
-    ok: true,
-    service: "whatsapp-sales-bot",
-    business: BUSINESS_NAME,
-    region: SALES_REGION,
-    ts: new Date().toISOString(),
-  });
-});
-
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-});
