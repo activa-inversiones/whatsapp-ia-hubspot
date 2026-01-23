@@ -1,16 +1,8 @@
-// index.js — WhatsApp Business API + Ventas (Activa) + Anti-duplicados + Lenguaje cercano
-// Claves:
-// 1) ACK inmediato (Meta no reintenta por timeout)
-// 2) Dedupe fuerte (msg.id + fingerprint) + throttle por contacto
-// 3) Slot-filling determinístico (NO repite preguntas)
-// 4) Respuestas cortas, humanas, 1 sola pregunta por mensaje
-
 import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
 import crypto from "crypto";
 
-// ====== Safety logs ======
 process.on("unhandledRejection", (err) =>
   console.error("UNHANDLED_REJECTION:", err?.response?.data || err?.message || err)
 );
@@ -23,7 +15,6 @@ app.use(express.json({ limit: "2mb" }));
 
 const PORT = process.env.PORT || 8080;
 
-// ====== ENV ======
 const {
   OPENAI_API_KEY,
   VERIFY_TOKEN,
@@ -44,12 +35,13 @@ console.log("ENV CRM_WEBHOOK_URL:", CRM_WEBHOOK_URL ? "OK" : "NOT_SET");
 
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
-// ====== Memory (RAM) ======
+// ===================== Memory =====================
 const sessions = new Map(); // waId -> session
 const processedMsgIds = new Set(); // idempotencia por msg.id
-const processedFingerprints = new Map(); // fingerprint -> timestamp (TTL)
-const FINGERPRINT_TTL_MS = 10 * 60 * 1000; // 10 min
-const REPLY_THROTTLE_MS = 2500; // evita ráfagas duplicadas al mismo contacto
+const seenTextWindow = new Map(); // key: sha(from|text) -> timestamp (anti duplicados por texto)
+
+const SEEN_TEXT_TTL_MS = 90 * 1000; // 90 segundos: si llega mismo texto del mismo número, no respondemos 2 veces
+const MSGIDS_MAX = 5000;
 
 function now() {
   return Date.now();
@@ -63,15 +55,14 @@ function sha1(s) {
   return crypto.createHash("sha1").update(s).digest("hex");
 }
 
-function cleanupFingerprints() {
+function cleanup() {
   const t = now();
-  for (const [k, ts] of processedFingerprints.entries()) {
-    if (t - ts > FINGERPRINT_TTL_MS) processedFingerprints.delete(k);
+  for (const [k, ts] of seenTextWindow.entries()) {
+    if (t - ts > SEEN_TEXT_TTL_MS) seenTextWindow.delete(k);
   }
-  // limpieza simple de msgIds
-  if (processedMsgIds.size > 4000) {
+  if (processedMsgIds.size > MSGIDS_MAX) {
     const arr = Array.from(processedMsgIds);
-    arr.slice(0, 1500).forEach((id) => processedMsgIds.delete(id));
+    arr.slice(0, 2000).forEach((id) => processedMsgIds.delete(id));
   }
 }
 
@@ -82,7 +73,7 @@ function getSession(waId) {
         customerType: null, // RESIDENCIAL / COMERCIAL / CONSTRUCTOR / ARQUITECTO / INSTITUCIONAL
         city: null,
         products: [],
-        goal: null, // AISLACIÓN_TÉRMICA / ...
+        goal: null, // AISLACIÓN_TÉRMICA / AISLACIÓN_ACÚSTICA / CONTROL_CONDENSACIÓN / SEGURIDAD
         quantities: null,
         measures: null,
         glazing: null, // DVH, LOW_E, TRIPLE...
@@ -91,20 +82,16 @@ function getSession(waId) {
         name: null,
         email: null,
       },
-      profile: {
-        typeConfirmed: false,
+      flags: {
+        greeted: false,
+        typeConfirmAsked: false,
       },
-      lastReplyAt: 0,
-      lastFingerprint: null,
-      lastMessageAt: now(),
     });
   }
-  const s = sessions.get(waId);
-  s.lastMessageAt = now();
-  return s;
+  return sessions.get(waId);
 }
 
-// ====== City / Products / Goal / Measures / Quantities ======
+// ===================== Parsers =====================
 const CITY_KEYWORDS = [
   "temuco",
   "padre las casas",
@@ -146,7 +133,7 @@ function detectProducts(text = "") {
 
 function detectGoal(text = "") {
   const t = normalize(text);
-  if (/(aislaci[oó]n t[eé]rmica|fr[ií]o|calor|temperatura|eficiencia energ[eé]tica)/i.test(t)) return "AISLACIÓN_TÉRMICA";
+  if (/(aislaci[oó]n t[eé]rmica|fr[ií]o|calor|eficiencia energ[eé]tica)/i.test(t)) return "AISLACIÓN_TÉRMICA";
   if (/(ruido|ac[uú]stic|sonido)/i.test(t)) return "AISLACIÓN_ACÚSTICA";
   if (/(condensaci[oó]n|empa[nñ]amiento|humedad)/i.test(t)) return "CONTROL_CONDENSACIÓN";
   if (/(seguridad|laminad|antirrobo)/i.test(t)) return "SEGURIDAD";
@@ -173,6 +160,7 @@ function extractQuantities(text = "") {
 }
 
 function extractMeasures(text = "") {
+  // soporta: 1600x1900, 1.60x1.90 m, 160x190 cm, etc.
   const raw = text.toLowerCase();
   const measures = [];
   const re = /(\d{1,4}(?:[.,]\d{1,2})?)\s*[x×]\s*(\d{1,4}(?:[.,]\d{1,2})?)\s*(mm|cm|m)?/gi;
@@ -198,7 +186,7 @@ function extractMeasures(text = "") {
 
 function detectCustomerType(text = "") {
   const t = normalize(text);
-  if (/residencial|casa|depto|departamento|hogar/i.test(t)) return "RESIDENCIAL";
+  if (/casa|hogar|residencial|depto|departamento/i.test(t)) return "RESIDENCIAL";
   if (/comercial|local|tienda|oficina|bodega|industrial/i.test(t)) return "COMERCIAL";
   if (/constructora|inmobiliaria|obra|licitaci[oó]n/i.test(t)) return "CONSTRUCTOR";
   if (/arquitect|proyectista|especificador/i.test(t)) return "ARQUITECTO";
@@ -237,6 +225,7 @@ function parseLeadFromText(lead, text) {
     if (/hoy|urgente|ya/i.test(t)) lead.timeline = "URGENTE";
     else if (/semana|7 d/i.test(t)) lead.timeline = "1-2 SEM";
     else if (/mes|30 d/i.test(t)) lead.timeline = "1 MES";
+    else if (/más|2\s*mes|3\s*mes|\+1\s*mes/i.test(t)) lead.timeline = "+1 MES";
   }
 
   const em = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
@@ -245,67 +234,84 @@ function parseLeadFromText(lead, text) {
   const nm = text.match(/me llamo\s+([a-záéíóúñ\s]{2,40})/i);
   if (nm?.[1] && !lead.name) lead.name = nm[1].trim();
 
-  if (/pvc/i.test(t)) lead.notes = (lead.notes ? `${lead.notes} | ` : "") + "PVC";
-  if (/alumin/i.test(t)) lead.notes = (lead.notes ? `${lead.notes} | ` : "") + "Aluminio";
+  if (/pvc/i.test(t)) lead.notes = mergeTokenList(lead.notes, ["PVC"]);
+  if (/alumin/i.test(t)) lead.notes = mergeTokenList(lead.notes, ["ALUMINIO"]);
 
   return lead;
 }
 
-function detectContradiction(prevLead, newLead) {
-  if (!prevLead?.customerType || !newLead?.customerType) return null;
-  if (prevLead.customerType !== newLead.customerType) return { from: prevLead.customerType, to: newLead.customerType };
-  return null;
+// ===================== Next questions (hasta 2 por turno) =====================
+function getMissing(lead) {
+  const missing = [];
+  if (!lead.customerType) missing.push("customerType");
+  if (!lead.city) missing.push("city");
+  if (!lead.products || lead.products.length === 0) missing.push("products");
+  if (!lead.goal) missing.push("goal");
+  if (!lead.quantities) missing.push("quantities");
+  if (!lead.measures) missing.push("measures");
+  if (!lead.timeline) missing.push("timeline");
+  return missing;
 }
 
-function pickNextQuestion(lead) {
-  if (!lead.customerType) return { key: "customerType", q: "¿Es para tu casa (residencial) o para un local/negocio (comercial)?" };
-  if (!lead.city) return { key: "city", q: "¿En qué comuna/ciudad es el proyecto?" };
-  if (!lead.products || lead.products.length === 0) return { key: "products", q: "¿Qué necesitas cotizar: ventanas, puertas, muro cortina o tabiques vidriados?" };
-  if (!lead.goal) return { key: "goal", q: "¿Qué te importa más: aislación térmica, acústica o controlar condensación?" };
-  if (!lead.quantities) return { key: "quantities", q: "Perfecto. ¿Cuántas unidades son en total?" };
-  if (!lead.measures) return { key: "measures", q: "¿Me das medidas aproximadas? (ej: 1000x2000mm)" };
-  if (!lead.timeline) return { key: "timeline", q: "¿Para cuándo lo necesitas? (urgente / 1-2 semanas / 1 mes / más)" };
-  return null;
+function questionFor(key) {
+  switch (key) {
+    case "customerType": return "¿Es para tu casa o para un local/negocio?";
+    case "city": return "¿En qué comuna/ciudad es?";
+    case "products": return "¿Qué necesitas: ventanas, puertas, muro cortina o tabiques vidriados?";
+    case "goal": return "¿Tu prioridad es térmico, acústico o controlar condensación?";
+    case "quantities": return "¿Cuántas unidades son en total?";
+    case "measures": return "¿Medidas aproximadas? (ej: 1600x1900mm)";
+    case "timeline": return "¿Para cuándo lo necesitas?";
+    default: return "¿Me das un poquito más de detalle para cotizar?";
+  }
 }
 
-function shouldCloseLead(lead) {
-  return Boolean(lead.city && (lead.products?.length || 0) > 0 && (lead.quantities || lead.measures));
+function buildShortReply(lead, missingKeys) {
+  // Resumen 1 línea, muy corta
+  const bits = [];
+  if (lead.city) bits.push(lead.city);
+  if ((lead.products || []).length) bits.push(lead.products.join(", ").toLowerCase());
+  if (lead.goal) bits.push(lead.goal.toLowerCase().replace("_", " "));
+  const summary = bits.length ? `Perfecto: ${bits.join(" · ")}.` : "Perfecto.";
+
+  // Beneficio 1 línea (sin “Entiendo que…”)
+  let benefit = "Te lo dejo bien claro y con buena recomendación.";
+  if (lead.goal === "AISLACIÓN_TÉRMICA") {
+    benefit = "Para Temuco suele rendir muy bien PVC + DVH; y si quieres lo mejor, Low-E marca la diferencia.";
+  } else if (lead.goal === "AISLACIÓN_ACÚSTICA") {
+    benefit = "Para ruido, lo que más manda es el vidrio (laminado/espesores) y un buen sellado.";
+  } else if (lead.goal === "CONTROL_CONDENSACIÓN") {
+    benefit = "Para condensación, clave: DVH + sellos correctos + buena instalación.";
+  }
+
+  // Hasta 2 preguntas máximo
+  const questions = missingKeys.slice(0, 2).map((k) => questionFor(k));
+  return `${summary}\n${benefit}\n${questions.join(" ")}`;
 }
 
-// ====== WhatsApp send ======
+function readyToClose(lead) {
+  return Boolean(
+    lead.customerType &&
+    lead.city &&
+    (lead.products?.length || 0) > 0 &&
+    (lead.quantities || lead.measures) &&
+    lead.goal
+  );
+}
+
+// ===================== WhatsApp Send =====================
 async function sendWhatsAppText(to, text) {
   if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) throw new Error("Faltan WHATSAPP_TOKEN o PHONE_NUMBER_ID");
 
   const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
-  const payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: { body: text },
-  };
+  const payload = { messaging_product: "whatsapp", to, type: "text", text: { body: text } };
 
-  const res = await axios.post(url, payload, {
+  await axios.post(url, payload, {
     headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
     timeout: 10000,
   });
-
-  return res.data;
 }
 
-// Envío con throttle + anti ráfaga
-async function safeSendWhatsAppOnce(waId, text) {
-  const s = getSession(waId);
-
-  // Throttle: si por duplicado llega el mismo evento, no envía otra vez
-  if (now() - s.lastReplyAt < REPLY_THROTTLE_MS) return;
-
-  s.lastReplyAt = now();
-  await sendWhatsAppText(waId, text).catch((e) => {
-    console.error("sendWhatsAppText error:", e?.response?.data || e?.message || e);
-  });
-}
-
-// ====== CRM (opcional) ======
 async function sendToCRM(waId, lead) {
   if (!CRM_WEBHOOK_URL) return;
   await axios.post(
@@ -315,84 +321,68 @@ async function sendToCRM(waId, lead) {
   );
 }
 
-// ====== Respuesta humana (determinística) ======
-function humanSummary(lead) {
-  const parts = [];
-  if (lead.city) parts.push(lead.city);
-  if (lead.goal) parts.push(lead.goal.toLowerCase().replace("_", " "));
-  if ((lead.products || []).length) parts.push(lead.products.join(", ").toLowerCase());
-  return parts.length ? `Ya, perfecto: ${parts.join(" · ")}.` : "Perfecto, ya te entendí.";
-}
+// ===================== Close message (IA opcional, corto) =====================
+async function closeMessage(lead) {
+  // Cierre determinístico corto (por defecto)
+  const base =
+    `Listo. Con eso ya puedo cotizar.\n` +
+    `Recomendación top: DVH + Low-E (y buen sellado) para cumplir desempeño térmico y mejorar confort.\n` +
+    `¿Agendamos medición o me mandas 2–3 fotos de los vanos para cotizar hoy?`;
 
-function humanBenefit(lead) {
-  if (lead.goal === "AISLACIÓN_TÉRMICA") {
-    return "Para Temuco normalmente anda muy bien PVC + termopanel (DVH). Si quieres subir el nivel, Low-E ayuda harto en confort y desempeño.";
-  }
-  if (lead.goal === "AISLACIÓN_ACÚSTICA") {
-    return "Para ruido, lo que más cambia la diferencia es el vidrio (espesores/laminado) y un buen sellado perimetral.";
-  }
-  if (lead.goal === "CONTROL_CONDENSACIÓN") {
-    return "Para condensación, clave: DVH + sellos correctos + ventilación. Te recomiendo una configuración que reduzca ese problema.";
-  }
-  return "Te armo una solución buena y bien cerrada, pensando en desempeño y durabilidad.";
-}
+  if (!openai) return base;
 
-// ====== IA SOLO para cierre (si quieres). Si no, cierre determinístico ======
-async function aiClose(lead) {
-  if (!openai) return null;
-
+  // IA: SOLO para pulir tono, pero con límites estrictos
   const prompt = `
-Eres asesor comercial humano en Chile. Responde corto y cercano (máx 6 líneas).
-Datos lead:
-- Ciudad: ${lead.city}
-- Producto: ${(lead.products || []).join(", ")}
-- Objetivo: ${lead.goal}
-- Cantidad: ${lead.quantities || "N/D"}
-- Medidas: ${lead.measures || "N/D"}
-- Vidrio: ${lead.glazing || "N/D"}
-
-Tarea:
-1) Confirma lo entendido en 1 línea (sin "Entiendo que...")
-2) Propón recomendación breve (ej: DVH + Low-E para térmica)
-3) Cierra con 1 pregunta: "¿Agendamos medición o me envías fotos de los vanos para cotizar hoy?"
-No repitas preguntas ya respondidas.`;
-
+Escribe un cierre humano y corto (máx 5 líneas). Sin "Entiendo que".
+Datos: ciudad=${lead.city}, tipo=${lead.customerType}, producto=${(lead.products||[]).join(", ")},
+medidas=${lead.measures||"N/D"}, cantidad=${lead.quantities||"N/D"}, objetivo=${lead.goal}.
+Incluye recomendación DVH+Low-E para térmico si aplica. Termina con: "¿Agendamos medición o me mandas fotos de los vanos?"
+`;
   const r = await openai.chat.completions.create({
     model: "gpt-4.1-mini",
-    temperature: 0.25,
-    max_tokens: 160,
+    temperature: 0.2,
+    max_tokens: 140,
     messages: [{ role: "user", content: prompt }],
   });
 
-  return r?.choices?.[0]?.message?.content?.trim() || null;
+  return r?.choices?.[0]?.message?.content?.trim() || base;
 }
 
+// ===================== Main reply generator =====================
 async function generateReply(session, userText) {
-  const prev = { ...session.lead };
+  const prevType = session.lead.customerType;
   session.lead = parseLeadFromText(session.lead, userText);
 
-  const contradiction = detectContradiction(prev, session.lead);
-  if (contradiction && !session.profile.typeConfirmed) {
-    session.profile.typeConfirmed = true;
-    return `Solo para no equivocarme: ¿confirmo que es **${contradiction.to.toLowerCase()}**?`;
+  // Si cambió el tipo, confirmar una sola vez (sin dar la lata)
+  if (prevType && session.lead.customerType && prevType !== session.lead.customerType && !session.flags.typeConfirmAsked) {
+    session.flags.typeConfirmAsked = true;
+    return `Solo para no equivocarme: ¿confirmo que es **${session.lead.customerType.toLowerCase()}**?`;
   }
 
-  const next = pickNextQuestion(session.lead);
+  const missing = getMissing(session.lead);
 
-  // Si falta algo, respuesta determinística (corta, 1 pregunta)
-  if (next) {
-    return `${humanSummary(session.lead)}\n${humanBenefit(session.lead)}\n${next.q}`;
+  // Saludo solo una vez
+  if (!session.flags.greeted) {
+    session.flags.greeted = true;
+    // si está muy vacío, primer empujón corto
+    if (missing.includes("customerType") || missing.includes("city") || missing.includes("products")) {
+      const top = ["customerType", "city", "products"].filter((k) => missing.includes(k));
+      return `Hola, soy ${BUSINESS_NAME}. Para ayudarte rápido:\n${top.slice(0, 2).map(questionFor).join(" ")}`;
+    }
   }
 
-  // Si ya está lo mínimo, cierre (IA opcional) o determinístico
-  const lead = session.lead;
-  const closeAI = await aiClose(lead);
-  if (closeAI) return closeAI;
+  // Si ya está listo, cerrar
+  if (readyToClose(session.lead)) return await closeMessage(session.lead);
 
-  return `Listo. Con ${lead.quantities} unidades y medidas ${lead.measures}, te puedo cotizar una propuesta buena para ${lead.city}.\n¿Agendamos medición o me envías fotos de los vanos para cotizar hoy?`;
+  // Si falta info, preguntar máximo 2 cosas por turno
+  // Priorización
+  const priority = ["customerType", "city", "products", "goal", "quantities", "measures", "timeline"];
+  const orderedMissing = priority.filter((k) => missing.includes(k));
+
+  return buildShortReply(session.lead, orderedMissing);
 }
 
-// ====== Webhook verify ======
+// ===================== Webhook verify =====================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -401,19 +391,14 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// ====== POST webhook (ACK inmediato + procesamiento async) ======
+// ===================== POST webhook (ACK inmediato) =====================
 app.post("/webhook", (req, res) => {
   res.sendStatus(200);
-
-  setImmediate(() => {
-    handleWebhookEvent(req.body).catch((err) =>
-      console.error("handleWebhookEvent error:", err?.response?.data || err?.message || err)
-    );
-  });
+  setImmediate(() => handleWebhookEvent(req.body).catch((e) => console.error("handleWebhookEvent:", e)));
 });
 
 async function handleWebhookEvent(body) {
-  cleanupFingerprints();
+  cleanup();
 
   if (body.object !== "whatsapp_business_account") return;
 
@@ -424,52 +409,50 @@ async function handleWebhookEvent(body) {
   const messages = value?.messages;
   if (!messages || !messages.length) return;
 
-  // Procesa solo mensajes de texto
   for (const msg of messages) {
+    // Solo texto
     if (msg.type !== "text") continue;
 
     const msgId = msg.id;
     const from = msg.from;
     const text = msg?.text?.body || "";
-    const ts = msg.timestamp || "";
 
     if (!from || !msgId || !text) continue;
 
-    // Dedupe por msgId
+    // 1) dedupe por msgId
     if (processedMsgIds.has(msgId)) continue;
     processedMsgIds.add(msgId);
 
-    // Dedupe por fingerprint (por si Meta reintenta con otro id)
-    const fingerprint = sha1(`${from}|${ts}|${normalize(text)}`);
-    if (processedFingerprints.has(fingerprint)) continue;
-    processedFingerprints.set(fingerprint, now());
+    // 2) dedupe por texto (mismo from + mismo texto dentro de 90s)
+    const textKey = sha1(`${from}|${normalize(text)}`);
+    const lastSeen = seenTextWindow.get(textKey);
+    if (lastSeen && now() - lastSeen < SEEN_TEXT_TTL_MS) continue;
+    seenTextWindow.set(textKey, now());
 
     const session = getSession(from);
 
-    // Extra anti-ráfagas: si llega idéntico otra vez, no respondes
-    if (session.lastFingerprint === fingerprint) continue;
-    session.lastFingerprint = fingerprint;
-
     const reply = await generateReply(session, text);
 
-    // Envía solo UNA respuesta
-    await safeSendWhatsAppOnce(from, reply);
+    await sendWhatsAppText(from, reply).catch((e) =>
+      console.error("sendWhatsAppText error:", e?.response?.data || e?.message || e)
+    );
 
     // CRM opcional
-    if (shouldCloseLead(session.lead)) {
-      sendToCRM(from, session.lead).catch((e) =>
-        console.error("sendToCRM error:", e?.response?.data || e?.message || e)
-      );
+    if (CRM_WEBHOOK_URL) {
+      if (session.lead.city && (session.lead.products?.length || 0) > 0) {
+        sendToCRM(from, session.lead).catch((e) =>
+          console.error("sendToCRM error:", e?.response?.data || e?.message || e)
+        );
+      }
     }
   }
 }
 
-// ====== Health ======
+// ===================== Health =====================
 app.get("/", (req, res) => {
   res.status(200).json({ ok: true, service: "whatsapp-sales-bot", ts: new Date().toISOString() });
 });
 
-// ====== Listen ======
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Server running on port ${PORT}`);
 });
