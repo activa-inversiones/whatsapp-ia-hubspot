@@ -1,6 +1,16 @@
+// index.js — WhatsApp Sales Bot (Activa Inversiones)
+// - Respuesta humana + venta consultiva
+// - Anti spam: ACK inmediato + dedupe + debounce
+// - No repetir preguntas: "pending question" con TTL
+// - IA opcional: OpenAI (AI_PROVIDER=openai) o none
+// Requisitos Railway:
+// VERIFY_TOKEN, WHATSAPP_TOKEN, PHONE_NUMBER_ID
+// OPENAI_API_KEY (si AI_PROVIDER=openai)
+// AI_PROVIDER=openai
+// AI_MODEL_OPENAI=gpt-4.1-mini (recomendado)
+
 import express from "express";
 import axios from "axios";
-import OpenAI from "openai";
 import crypto from "crypto";
 
 process.on("unhandledRejection", (err) =>
@@ -12,18 +22,29 @@ process.on("uncaughtException", (err) =>
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
-
 const PORT = process.env.PORT || 8080;
 
-const {
-  OPENAI_API_KEY,
-  VERIFY_TOKEN,
-  WHATSAPP_TOKEN,
-  PHONE_NUMBER_ID,
-  CRM_WEBHOOK_URL,
-  BUSINESS_NAME = "Activa Inversiones",
-  SALES_REGION = "Temuco y alrededores",
-} = process.env;
+// ===================== ENV =====================
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "";
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "";
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || "";
+
+// CRM (opcional)
+const CRM_WEBHOOK_URL = process.env.CRM_WEBHOOK_URL || "";
+
+// Identidad (opcional)
+const BUSINESS_NAME = process.env.BUSINESS_NAME || "Activa Inversiones";
+const SALES_REGION = process.env.SALES_REGION || "Temuco y alrededores";
+
+// IA (opcional)
+const AI_PROVIDER = (process.env.AI_PROVIDER || "none").toLowerCase();
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+
+// Acepta ambos por si el nombre quedó mal escrito
+const AI_MODEL_OPENAI =
+  process.env.AI_MODEL_OPENAI ||
+  process.env.AI_MODEL_OPENAI || // tolera typo si lo dejaste así
+  "gpt-4.1-mini";
 
 console.log("BOOT: starting app…");
 console.log("ENV PORT:", process.env.PORT || PORT);
@@ -31,38 +52,40 @@ console.log("ENV PHONE_NUMBER_ID:", PHONE_NUMBER_ID ? "OK" : "MISSING");
 console.log("ENV WHATSAPP_TOKEN:", WHATSAPP_TOKEN ? "OK" : "MISSING");
 console.log("ENV VERIFY_TOKEN:", VERIFY_TOKEN ? "OK" : "MISSING");
 console.log("ENV OPENAI_API_KEY:", OPENAI_API_KEY ? "OK" : "MISSING");
+console.log("ENV AI_PROVIDER:", AI_PROVIDER || "none");
+console.log("ENV AI_MODEL_OPENAI:", AI_MODEL_OPENAI);
 console.log("ENV CRM_WEBHOOK_URL:", CRM_WEBHOOK_URL ? "OK" : "NOT_SET");
 
-const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
+// ===================== Controls =====================
+const DEBOUNCE_MS = 1200; // agrupa mensajes del usuario en 1 sola respuesta
+const SEEN_TEXT_TTL_MS = 90 * 1000; // si llega mismo texto dentro de 90s, ignorar duplicado
+const PENDING_TTL_MS = 5 * 60 * 1000; // no repetir la misma pregunta por 5 min
+const MSGIDS_MAX = 6000;
 
-// ===================== Memory =====================
+// ===================== Stores =====================
 const sessions = new Map(); // waId -> session
-const processedMsgIds = new Set(); // idempotencia por msg.id
-const seenTextWindow = new Map(); // key: sha(from|text) -> timestamp (anti duplicados por texto)
-
-const SEEN_TEXT_TTL_MS = 90 * 1000; // 90 segundos: si llega mismo texto del mismo número, no respondemos 2 veces
-const MSGIDS_MAX = 5000;
+const processedMsgIds = new Set(); // msg.id -> processed
+const seenTextWindow = new Map(); // sha(from|text) -> ts
+const inboundBuffers = new Map(); // waId -> { texts: [], timer: null, processing: boolean }
 
 function now() {
   return Date.now();
 }
-
 function normalize(text = "") {
   return text.toLowerCase().trim();
 }
-
 function sha1(s) {
   return crypto.createHash("sha1").update(s).digest("hex");
 }
 
-function cleanup() {
+function cleanupStores() {
   const t = now();
   for (const [k, ts] of seenTextWindow.entries()) {
     if (t - ts > SEEN_TEXT_TTL_MS) seenTextWindow.delete(k);
   }
   if (processedMsgIds.size > MSGIDS_MAX) {
     const arr = Array.from(processedMsgIds);
-    arr.slice(0, 2000).forEach((id) => processedMsgIds.delete(id));
+    arr.slice(0, 2500).forEach((id) => processedMsgIds.delete(id));
   }
 }
 
@@ -76,7 +99,7 @@ function getSession(waId) {
         goal: null, // AISLACIÓN_TÉRMICA / AISLACIÓN_ACÚSTICA / CONTROL_CONDENSACIÓN / SEGURIDAD
         quantities: null,
         measures: null,
-        glazing: null, // DVH, LOW_E, TRIPLE...
+        glazing: null, // DVH, LOW_E, TRIPLE, LAMINADO, ARGON
         timeline: null,
         notes: null,
         name: null,
@@ -86,12 +109,30 @@ function getSession(waId) {
         greeted: false,
         typeConfirmAsked: false,
       },
+      pending: {
+        key: null,
+        askedAt: 0,
+      },
     });
   }
   return sessions.get(waId);
 }
 
-// ===================== Parsers =====================
+function setPending(session, key) {
+  session.pending.key = key;
+  session.pending.askedAt = now();
+}
+function clearPendingIfAnswered(session, key, value) {
+  if (value && session.pending.key === key) {
+    session.pending.key = null;
+    session.pending.askedAt = 0;
+  }
+}
+function pendingIsFresh(session, key) {
+  return session.pending.key === key && now() - session.pending.askedAt < PENDING_TTL_MS;
+}
+
+// ===================== Extraction =====================
 const CITY_KEYWORDS = [
   "temuco",
   "padre las casas",
@@ -118,6 +159,8 @@ function detectCity(text = "") {
   for (const c of CITY_KEYWORDS) {
     if (t.includes(c)) return titleCase(c);
   }
+  const m = text.match(/(?:comuna|ciudad)\s+([a-záéíóúñ\s]{3,40})/i);
+  if (m?.[1]) return titleCase(m[1].trim());
   return null;
 }
 
@@ -133,7 +176,8 @@ function detectProducts(text = "") {
 
 function detectGoal(text = "") {
   const t = normalize(text);
-  if (/(aislaci[oó]n t[eé]rmica|fr[ií]o|calor|eficiencia energ[eé]tica)/i.test(t)) return "AISLACIÓN_TÉRMICA";
+  if (/(aislaci[oó]n t[eé]rmica|fr[ií]o|calor|eficiencia energ[eé]tica|transmitancia|u[-\s]?value)/i.test(t))
+    return "AISLACIÓN_TÉRMICA";
   if (/(ruido|ac[uú]stic|sonido)/i.test(t)) return "AISLACIÓN_ACÚSTICA";
   if (/(condensaci[oó]n|empa[nñ]amiento|humedad)/i.test(t)) return "CONTROL_CONDENSACIÓN";
   if (/(seguridad|laminad|antirrobo)/i.test(t)) return "SEGURIDAD";
@@ -160,7 +204,6 @@ function extractQuantities(text = "") {
 }
 
 function extractMeasures(text = "") {
-  // soporta: 1600x1900, 1.60x1.90 m, 160x190 cm, etc.
   const raw = text.toLowerCase();
   const measures = [];
   const re = /(\d{1,4}(?:[.,]\d{1,2})?)\s*[x×]\s*(\d{1,4}(?:[.,]\d{1,2})?)\s*(mm|cm|m)?/gi;
@@ -176,7 +219,6 @@ function extractMeasures(text = "") {
 
     const A = Math.round(a);
     const B = Math.round(b);
-
     if (A >= 200 && B >= 200 && A <= 6000 && B <= 6000) measures.push(`${A}x${B}mm`);
   }
 
@@ -194,8 +236,11 @@ function detectCustomerType(text = "") {
   return null;
 }
 
-function parseLeadFromText(lead, text) {
+function parseLeadFromText(session, text) {
+  const lead = session.lead;
   const t = normalize(text);
+
+  const prevType = lead.customerType;
 
   const type = detectCustomerType(text);
   if (type) lead.customerType = type;
@@ -224,7 +269,7 @@ function parseLeadFromText(lead, text) {
   if (!lead.timeline) {
     if (/hoy|urgente|ya/i.test(t)) lead.timeline = "URGENTE";
     else if (/semana|7 d/i.test(t)) lead.timeline = "1-2 SEM";
-    else if (/mes|30 d/i.test(t)) lead.timeline = "1 MES";
+    else if (/1\s*mes|mes|30 d/i.test(t)) lead.timeline = "1 MES";
     else if (/más|2\s*mes|3\s*mes|\+1\s*mes/i.test(t)) lead.timeline = "+1 MES";
   }
 
@@ -237,11 +282,20 @@ function parseLeadFromText(lead, text) {
   if (/pvc/i.test(t)) lead.notes = mergeTokenList(lead.notes, ["PVC"]);
   if (/alumin/i.test(t)) lead.notes = mergeTokenList(lead.notes, ["ALUMINIO"]);
 
-  return lead;
+  // Limpia pending si ya respondió
+  clearPendingIfAnswered(session, "customerType", lead.customerType);
+  clearPendingIfAnswered(session, "city", lead.city);
+  clearPendingIfAnswered(session, "products", (lead.products || []).length ? "ok" : "");
+  clearPendingIfAnswered(session, "goal", lead.goal);
+  clearPendingIfAnswered(session, "quantities", lead.quantities);
+  clearPendingIfAnswered(session, "measures", lead.measures);
+  clearPendingIfAnswered(session, "timeline", lead.timeline);
+
+  return { prevType, newType: lead.customerType };
 }
 
-// ===================== Next questions (hasta 2 por turno) =====================
-function getMissing(lead) {
+// ===================== Conversation =====================
+function getMissingKeys(lead) {
   const missing = [];
   if (!lead.customerType) missing.push("customerType");
   if (!lead.city) missing.push("city");
@@ -256,9 +310,9 @@ function getMissing(lead) {
 function questionFor(key) {
   switch (key) {
     case "customerType": return "¿Es para tu casa o para un local/negocio?";
-    case "city": return "¿En qué comuna/ciudad es?";
+    case "city": return "¿En qué comuna/ciudad es el proyecto?";
     case "products": return "¿Qué necesitas: ventanas, puertas, muro cortina o tabiques vidriados?";
-    case "goal": return "¿Tu prioridad es térmico, acústico o controlar condensación?";
+    case "goal": return "¿Qué te importa más: térmico, acústico o controlar condensación?";
     case "quantities": return "¿Cuántas unidades son en total?";
     case "measures": return "¿Medidas aproximadas? (ej: 1600x1900mm)";
     case "timeline": return "¿Para cuándo lo necesitas?";
@@ -266,42 +320,149 @@ function questionFor(key) {
   }
 }
 
-function buildShortReply(lead, missingKeys) {
-  // Resumen 1 línea, muy corta
+function summaryLine(lead) {
   const bits = [];
   if (lead.city) bits.push(lead.city);
   if ((lead.products || []).length) bits.push(lead.products.join(", ").toLowerCase());
   if (lead.goal) bits.push(lead.goal.toLowerCase().replace("_", " "));
-  const summary = bits.length ? `Perfecto: ${bits.join(" · ")}.` : "Perfecto.";
+  return bits.length ? `Perfecto: ${bits.join(" · ")}.` : "Perfecto.";
+}
 
-  // Beneficio 1 línea (sin “Entiendo que…”)
-  let benefit = "Te lo dejo bien claro y con buena recomendación.";
+function benefitLine(lead) {
   if (lead.goal === "AISLACIÓN_TÉRMICA") {
-    benefit = "Para Temuco suele rendir muy bien PVC + DVH; y si quieres lo mejor, Low-E marca la diferencia.";
-  } else if (lead.goal === "AISLACIÓN_ACÚSTICA") {
-    benefit = "Para ruido, lo que más manda es el vidrio (laminado/espesores) y un buen sellado.";
-  } else if (lead.goal === "CONTROL_CONDENSACIÓN") {
-    benefit = "Para condensación, clave: DVH + sellos correctos + buena instalación.";
+    return "Para Temuco suele rendir muy bien PVC + DVH; y si quieres subir el nivel, Low-E marca la diferencia en confort y desempeño.";
   }
-
-  // Hasta 2 preguntas máximo
-  const questions = missingKeys.slice(0, 2).map((k) => questionFor(k));
-  return `${summary}\n${benefit}\n${questions.join(" ")}`;
+  if (lead.goal === "AISLACIÓN_ACÚSTICA") {
+    return "Para ruido, el salto real lo da el vidrio (laminado/espesores) + un buen sellado e instalación.";
+  }
+  if (lead.goal === "CONTROL_CONDENSACIÓN") {
+    return "Para condensación: DVH + sellos correctos + buena ventilación/instalación. Te propongo una configuración que reduzca ese problema.";
+  }
+  if (lead.goal === "SEGURIDAD") {
+    return "Para seguridad: laminado + herrajes buenos. Te indico una configuración sólida.";
+  }
+  return "Te recomiendo una solución bien cerrada, pensando en desempeño y durabilidad.";
 }
 
 function readyToClose(lead) {
   return Boolean(
-    lead.customerType &&
     lead.city &&
+    lead.customerType &&
     (lead.products?.length || 0) > 0 &&
-    (lead.quantities || lead.measures) &&
-    lead.goal
+    lead.goal &&
+    (lead.quantities || lead.measures)
   );
 }
 
-// ===================== WhatsApp Send =====================
+function chooseQuestions(session, missingKeys) {
+  const priority = ["customerType", "city", "products", "goal", "quantities", "measures", "timeline"];
+  const ordered = priority.filter((k) => missingKeys.includes(k));
+
+  const picked = [];
+  for (const k of ordered) {
+    if (picked.length >= 2) break;
+    if (pendingIsFresh(session, k)) continue;
+    picked.push(k);
+  }
+
+  if (!picked.length && session.pending.key) return [session.pending.key];
+  return picked;
+}
+
+async function openaiChat({ system, user }) {
+  const r = await axios.post(
+    "https://api.openai.com/v1/chat/completions",
+    {
+      model: AI_MODEL_OPENAI,
+      temperature: 0.2,
+      max_tokens: 220,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 12000,
+    }
+  );
+  return r?.data?.choices?.[0]?.message?.content?.trim() || "";
+}
+
+async function buildCloseMessage(session) {
+  const lead = session.lead;
+
+  const base =
+    `Listo, con eso ya puedo cotizar.\n` +
+    `Recomendación: DVH${lead.goal === "AISLACIÓN_TÉRMICA" ? " + Low-E" : ""} y buen sellado.\n` +
+    `¿Agendamos medición o me mandas 2–3 fotos de los vanos para cotizar hoy?`;
+
+  if (AI_PROVIDER !== "openai") return base;
+  if (!OPENAI_API_KEY) return base;
+
+  const system =
+    `Eres asesor comercial humano de ${BUSINESS_NAME} en Chile. ` +
+    `Vendes ventanas PVC/aluminio, puertas, muros cortina, tabiques vidriados y termopanel. ` +
+    `Responde corto, natural, vendedor y concreto. No repitas preguntas.`;
+
+  const user =
+    `Crea un cierre en máximo 5 líneas. Sin "Entiendo que".\n` +
+    `Datos: ciudad=${lead.city}, tipo=${lead.customerType}, productos=${(lead.products || []).join(", ")}, ` +
+    `cantidad=${lead.quantities || "N/D"}, medidas=${lead.measures || "N/D"}, objetivo=${lead.goal}, vidrio=${lead.glazing || "N/D"}.\n` +
+    `Incluye recomendación breve (DVH y si es térmico agrega Low-E). ` +
+    `Termina con una sola pregunta: "¿Agendamos medición o me mandas fotos de los vanos?"`;
+
+  try {
+    const txt = await openaiChat({ system, user });
+    return txt || base;
+  } catch (e) {
+    console.error("AI close error:", e?.response?.data || e?.message || e);
+    return base;
+  }
+}
+
+async function generateReply(session, combinedUserText) {
+  const { prevType, newType } = parseLeadFromText(session, combinedUserText);
+  const lead = session.lead;
+
+  // Si cambió el tipo, confirmar 1 vez
+  if (prevType && newType && prevType !== newType && !session.flags.typeConfirmAsked) {
+    session.flags.typeConfirmAsked = true;
+    setPending(session, "customerType");
+    return `Perfecto. Solo para no equivocarme: ¿confirmo que es **${newType.toLowerCase()}**?`;
+  }
+
+  const missing = getMissingKeys(lead);
+
+  // Saludo una sola vez
+  if (!session.flags.greeted) {
+    session.flags.greeted = true;
+    const top = chooseQuestions(session, missing.length ? missing : ["products", "city"]);
+    top.forEach((k) => setPending(session, k));
+    return `Hola, soy ${BUSINESS_NAME}. Para cotizar rápido:\n${top.map(questionFor).join(" ")}`;
+  }
+
+  // Cierre si ya está listo
+  if (readyToClose(lead)) return await buildCloseMessage(session);
+
+  // Preguntar 1–2 cosas, sin repetir la pendiente
+  const picked = chooseQuestions(session, missing);
+  picked.forEach((k) => setPending(session, k));
+
+  // Si solo queda pendiente reciente, recordatorio suave
+  if (picked.length === 1 && pendingIsFresh(session, picked[0])) {
+    return `${summaryLine(lead)}\n${benefitLine(lead)}\nCuando puedas, solo dime esto: ${questionFor(picked[0])}`;
+  }
+
+  return `${summaryLine(lead)}\n${benefitLine(lead)}\n${picked.map(questionFor).join(" ")}`;
+}
+
+// ===================== WhatsApp send =====================
 async function sendWhatsAppText(to, text) {
-  if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) throw new Error("Faltan WHATSAPP_TOKEN o PHONE_NUMBER_ID");
+  if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) throw new Error("Missing WHATSAPP_TOKEN or PHONE_NUMBER_ID");
 
   const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
   const payload = { messaging_product: "whatsapp", to, type: "text", text: { body: text } };
@@ -312,6 +473,7 @@ async function sendWhatsAppText(to, text) {
   });
 }
 
+// ===================== CRM (optional) =====================
 async function sendToCRM(waId, lead) {
   if (!CRM_WEBHOOK_URL) return;
   await axios.post(
@@ -321,65 +483,48 @@ async function sendToCRM(waId, lead) {
   );
 }
 
-// ===================== Close message (IA opcional, corto) =====================
-async function closeMessage(lead) {
-  // Cierre determinístico corto (por defecto)
-  const base =
-    `Listo. Con eso ya puedo cotizar.\n` +
-    `Recomendación top: DVH + Low-E (y buen sellado) para cumplir desempeño térmico y mejorar confort.\n` +
-    `¿Agendamos medición o me mandas 2–3 fotos de los vanos para cotizar hoy?`;
+// ===================== Debounce inbound =====================
+function enqueueInbound(waId, text, flushFn) {
+  const entry = inboundBuffers.get(waId) || { texts: [], timer: null, processing: false };
 
-  if (!openai) return base;
+  entry.texts.push(text);
 
-  // IA: SOLO para pulir tono, pero con límites estrictos
-  const prompt = `
-Escribe un cierre humano y corto (máx 5 líneas). Sin "Entiendo que".
-Datos: ciudad=${lead.city}, tipo=${lead.customerType}, producto=${(lead.products||[]).join(", ")},
-medidas=${lead.measures||"N/D"}, cantidad=${lead.quantities||"N/D"}, objetivo=${lead.goal}.
-Incluye recomendación DVH+Low-E para térmico si aplica. Termina con: "¿Agendamos medición o me mandas fotos de los vanos?"
-`;
-  const r = await openai.chat.completions.create({
-    model: "gpt-4.1-mini",
-    temperature: 0.2,
-    max_tokens: 140,
-    messages: [{ role: "user", content: prompt }],
-  });
+  if (!entry.timer) {
+    entry.timer = setTimeout(async () => {
+      if (entry.processing) return;
+      entry.processing = true;
 
-  return r?.choices?.[0]?.message?.content?.trim() || base;
-}
+      const combined = entry.texts.join("\n");
+      entry.texts = [];
+      entry.timer = null;
+      inboundBuffers.set(waId, entry);
 
-// ===================== Main reply generator =====================
-async function generateReply(session, userText) {
-  const prevType = session.lead.customerType;
-  session.lead = parseLeadFromText(session.lead, userText);
+      try {
+        await flushFn(combined);
+      } finally {
+        entry.processing = false;
 
-  // Si cambió el tipo, confirmar una sola vez (sin dar la lata)
-  if (prevType && session.lead.customerType && prevType !== session.lead.customerType && !session.flags.typeConfirmAsked) {
-    session.flags.typeConfirmAsked = true;
-    return `Solo para no equivocarme: ¿confirmo que es **${session.lead.customerType.toLowerCase()}**?`;
+        // si entró texto durante el procesamiento, dispara otra vez
+        if (entry.texts.length > 0 && !entry.timer) {
+          entry.timer = setTimeout(async () => {
+            if (entry.processing) return;
+            entry.processing = true;
+            const combined2 = entry.texts.join("\n");
+            entry.texts = [];
+            entry.timer = null;
+            inboundBuffers.set(waId, entry);
+            try {
+              await flushFn(combined2);
+            } finally {
+              entry.processing = false;
+            }
+          }, DEBOUNCE_MS);
+        }
+      }
+    }, DEBOUNCE_MS);
   }
 
-  const missing = getMissing(session.lead);
-
-  // Saludo solo una vez
-  if (!session.flags.greeted) {
-    session.flags.greeted = true;
-    // si está muy vacío, primer empujón corto
-    if (missing.includes("customerType") || missing.includes("city") || missing.includes("products")) {
-      const top = ["customerType", "city", "products"].filter((k) => missing.includes(k));
-      return `Hola, soy ${BUSINESS_NAME}. Para ayudarte rápido:\n${top.slice(0, 2).map(questionFor).join(" ")}`;
-    }
-  }
-
-  // Si ya está listo, cerrar
-  if (readyToClose(session.lead)) return await closeMessage(session.lead);
-
-  // Si falta info, preguntar máximo 2 cosas por turno
-  // Priorización
-  const priority = ["customerType", "city", "products", "goal", "quantities", "measures", "timeline"];
-  const orderedMissing = priority.filter((k) => missing.includes(k));
-
-  return buildShortReply(session.lead, orderedMissing);
+  inboundBuffers.set(waId, entry);
 }
 
 // ===================== Webhook verify =====================
@@ -387,30 +532,34 @@ app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
+
   if (mode === "subscribe" && token && token === VERIFY_TOKEN) return res.status(200).send(challenge);
   return res.sendStatus(403);
 });
 
-// ===================== POST webhook (ACK inmediato) =====================
+// ===================== Webhook POST (ACK inmediato) =====================
 app.post("/webhook", (req, res) => {
   res.sendStatus(200);
-  setImmediate(() => handleWebhookEvent(req.body).catch((e) => console.error("handleWebhookEvent:", e)));
+  setImmediate(() => {
+    handleWebhookEvent(req.body).catch((err) =>
+      console.error("handleWebhookEvent error:", err?.response?.data || err?.message || err)
+    );
+  });
 });
 
 async function handleWebhookEvent(body) {
-  cleanup();
+  cleanupStores();
 
   if (body.object !== "whatsapp_business_account") return;
 
   const entry = body.entry?.[0];
   const change = entry?.changes?.[0];
   const value = change?.value;
-
   const messages = value?.messages;
+
   if (!messages || !messages.length) return;
 
   for (const msg of messages) {
-    // Solo texto
     if (msg.type !== "text") continue;
 
     const msgId = msg.id;
@@ -419,32 +568,35 @@ async function handleWebhookEvent(body) {
 
     if (!from || !msgId || !text) continue;
 
-    // 1) dedupe por msgId
+    // 1) Dedupe por msgId
     if (processedMsgIds.has(msgId)) continue;
     processedMsgIds.add(msgId);
 
-    // 2) dedupe por texto (mismo from + mismo texto dentro de 90s)
+    // 2) Dedupe por texto (from+text) dentro de 90s
     const textKey = sha1(`${from}|${normalize(text)}`);
     const lastSeen = seenTextWindow.get(textKey);
     if (lastSeen && now() - lastSeen < SEEN_TEXT_TTL_MS) continue;
     seenTextWindow.set(textKey, now());
 
-    const session = getSession(from);
+    // Debounce: agrupa mensajes del mismo usuario
+    enqueueInbound(from, text, async (combinedText) => {
+      const session = getSession(from);
+      const reply = await generateReply(session, combinedText);
 
-    const reply = await generateReply(session, text);
+      await sendWhatsAppText(from, reply).catch((e) =>
+        console.error("sendWhatsAppText error:", e?.response?.data || e?.message || e)
+      );
 
-    await sendWhatsAppText(from, reply).catch((e) =>
-      console.error("sendWhatsAppText error:", e?.response?.data || e?.message || e)
-    );
-
-    // CRM opcional
-    if (CRM_WEBHOOK_URL) {
-      if (session.lead.city && (session.lead.products?.length || 0) > 0) {
-        sendToCRM(from, session.lead).catch((e) =>
-          console.error("sendToCRM error:", e?.response?.data || e?.message || e)
-        );
+      // CRM opcional
+      if (CRM_WEBHOOK_URL) {
+        const lead = session.lead;
+        if (lead.city && (lead.products?.length || 0) > 0) {
+          sendToCRM(from, lead).catch((e) =>
+            console.error("sendToCRM error:", e?.response?.data || e?.message || e)
+          );
+        }
       }
-    }
+    });
   }
 }
 
