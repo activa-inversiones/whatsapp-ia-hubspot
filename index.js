@@ -1,4 +1,3 @@
-// index.js
 import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
@@ -19,9 +18,11 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || "";
 
 const AI_PROVIDER = (process.env.AI_PROVIDER || "openai").toLowerCase();
 const AI_MODEL_OPENAI = process.env.AI_MODEL_OPENAI || "gpt-4.1-mini";
+// Modelo para IMÁGENES (visión). Recomendado:
+const AI_MODEL_VISION = process.env.AI_MODEL_VISION || "gpt-4o-mini";
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 
-const LANGUAGE = process.env.LANGUAGE || "es-CL";
 const COMPANY_NAME = process.env.COMPANY_NAME || "Activa Inversiones";
 const BRAND_SHORT = process.env.BRAND_SHORT || "Activa";
 const AGENT_NAME = process.env.AGENT_NAME || "Marcelo Cifuentes";
@@ -29,9 +30,9 @@ const AGENT_NAME = process.env.AGENT_NAME || "Marcelo Cifuentes";
 const GREETING_MODE = process.env.GREETING_MODE || "first_message_only"; // first_message_only | every_message | none
 const SIGNATURE_MODE = process.env.SIGNATURE_MODE || "first_message_only";
 
-const WAIT_AFTER_LAST_USER_MESSAGE_MS = Number(process.env.WAIT_AFTER_LAST_USER_MESSAGE_MS || 4500);
-const HUMAN_DELAY_MS_MIN = Number(process.env.HUMAN_DELAY_MS_MIN || 1200);
-const HUMAN_DELAY_MS_MAX = Number(process.env.HUMAN_DELAY_MS_MAX || 2600);
+const WAIT_AFTER_LAST_USER_MESSAGE_MS = Number(process.env.WAIT_AFTER_LAST_USER_MESSAGE_MS || 5500);
+const HUMAN_DELAY_MS_MIN = Number(process.env.HUMAN_DELAY_MS_MIN || 2200);
+const HUMAN_DELAY_MS_MAX = Number(process.env.HUMAN_DELAY_MS_MAX || 4800);
 
 const MAX_LINES_PER_REPLY = Number(process.env.MAX_LINES_PER_REPLY || 10);
 const MAX_REPLY_CHARS = Number(process.env.MAX_REPLY_CHARS || 1200);
@@ -46,19 +47,20 @@ const AFTER_HOURS_MESSAGE =
 
 const DEFAULT_PRIORITY = process.env.DEFAULT_PRIORITY || "aislación térmica, acústica y seguridad";
 
-const ONE_QUESTION_PER_TURN = String(process.env.ONE_QUESTION_PER_TURN || "true") === "true";
 const RATE_LIMIT_PER_USER_PER_MIN = Number(process.env.RATE_LIMIT_PER_USER_PER_MIN || 12);
 const SESSION_TTL_MINUTES = Number(process.env.SESSION_TTL_MINUTES || 60);
 
+const ONE_QUESTION_PER_TURN = String(process.env.ONE_QUESTION_PER_TURN || "true") === "true";
+
 // =====================
-// OpenAI client
+// OpenAI
 // =====================
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
 // =====================
 // In-memory sessions
 // =====================
-const sessions = new Map(); // key: waId => { lastAt, timer, greeted, rate, ttlAt, afterHoursSent }
+const sessions = new Map(); // waId => session
 
 function nowMs() {
   return Date.now();
@@ -81,6 +83,27 @@ function randomBetween(min, max) {
   return Math.floor(a + Math.random() * (b - a + 1));
 }
 
+function withinBusinessHours() {
+  if (!BUSINESS_HOURS_ONLY) return true;
+  try {
+    const toMin = (hhmm) => {
+      const [h, m] = hhmm.split(":").map(Number);
+      return h * 60 + m;
+    };
+    const start = toMin(BUSINESS_HOURS_START);
+    const end = toMin(BUSINESS_HOURS_END);
+
+    const dt = new Date();
+    const hh = Number(new Intl.DateTimeFormat("es-CL", { timeZone: BUSINESS_TIMEZONE, hour: "2-digit", hour12: false }).format(dt));
+    const mm = Number(new Intl.DateTimeFormat("es-CL", { timeZone: BUSINESS_TIMEZONE, minute: "2-digit" }).format(dt));
+    const cur = hh * 60 + mm;
+
+    return cur >= start && cur <= end;
+  } catch {
+    return true;
+  }
+}
+
 function getTimeGreeting() {
   try {
     const hour = Number(
@@ -94,26 +117,6 @@ function getTimeGreeting() {
   }
 }
 
-function withinBusinessHours() {
-  if (!BUSINESS_HOURS_ONLY) return true;
-  try {
-    const parts = (s) => s.split(":").map((n) => Number(n));
-    const [sh, sm] = parts(BUSINESS_HOURS_START);
-    const [eh, em] = parts(BUSINESS_HOURS_END);
-
-    const dt = new Date();
-    const hh = Number(new Intl.DateTimeFormat("es-CL", { timeZone: BUSINESS_TIMEZONE, hour: "2-digit", hour12: false }).format(dt));
-    const mm = Number(new Intl.DateTimeFormat("es-CL", { timeZone: BUSINESS_TIMEZONE, minute: "2-digit" }).format(dt));
-
-    const cur = hh * 60 + mm;
-    const start = sh * 60 + sm;
-    const end = eh * 60 + em;
-    return cur >= start && cur <= end;
-  } catch {
-    return true;
-  }
-}
-
 function getSession(waId) {
   const s = sessions.get(waId);
   const t = nowMs();
@@ -122,6 +125,7 @@ function getSession(waId) {
       lastAt: t,
       timer: null,
       greeted: false,
+      lastReplyAt: 0,
       rate: { windowStart: t, count: 0 },
       ttlAt: t + SESSION_TTL_MINUTES * 60_000,
       afterHoursSent: false,
@@ -152,75 +156,6 @@ function rateLimitOk(sess) {
   return sess.rate.count <= RATE_LIMIT_PER_USER_PER_MIN;
 }
 
-// =====================
-// WhatsApp helpers
-// =====================
-async function waSendText(to, text) {
-  const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
-  const payload = { messaging_product: "whatsapp", to, type: "text", text: { body: text } };
-  await axios.post(url, payload, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
-    timeout: 30_000,
-  });
-}
-
-async function waMarkRead(messageId) {
-  const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
-  const payload = { messaging_product: "whatsapp", status: "read", message_id: messageId };
-  await axios.post(url, payload, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
-    timeout: 30_000,
-  });
-}
-
-// DESCARGA MEDIA (PDF/IMG) DESDE WHATSAPP CLOUD API
-async function waGetMediaInfo(mediaId) {
-  const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${mediaId}`;
-  const r = await axios.get(url, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-    timeout: 30_000,
-  });
-  return r.data; // {url, mime_type, ...}
-}
-
-async function waDownloadMedia(mediaUrl) {
-  const r = await axios.get(mediaUrl, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-    responseType: "arraybuffer",
-    timeout: 60_000,
-  });
-  return Buffer.from(r.data);
-}
-
-// =====================
-// Extract measurements
-// =====================
-function extractMeasurements(text) {
-  const t = (text || "").replace(/\s+/g, " ");
-  const out = [];
-
-  const re1 = /(\d{2,4}(?:[.,]\d{1,2})?)\s*[xX×]\s*(\d{2,4}(?:[.,]\d{1,2})?)/g;
-  let m;
-  while ((m = re1.exec(t))) out.push({ raw: m[0] });
-
-  const re2 = /(\d(?:[.,]\d{1,2})?)\s*[xX×]\s*(\d(?:[.,]\d{1,2})?)\s*(m|mt|mts)?/g;
-  while ((m = re2.exec(t))) out.push({ raw: m[0] });
-
-  const seen = new Set();
-  return out.filter((x) => (seen.has(x.raw) ? false : (seen.add(x.raw), true)));
-}
-
-// =====================
-// Build response
-// =====================
-function buildBaseConsultativeNote() {
-  return (
-    `Para recomendar bien, miramos 3 condiciones: ${DEFAULT_PRIORITY}.\n` +
-    `La condensación interior normalmente se relaciona con humedad interior alta + baja temperatura de superficie. Con PVC línea europea + DVH + buena instalación, es poco probable dentro de la vivienda; si aparece, suele corregirse con ventilación/manejo de humedad.\n` +
-    `Si me confirmas ciudad, cantidad y si incluye instalación, preparo una propuesta inicial y luego verificamos en terreno.`
-  );
-}
-
 function maybeGreeting(sess) {
   const g = getTimeGreeting();
   if (GREETING_MODE === "none") return "";
@@ -236,12 +171,89 @@ function maybeSignature(sess) {
   return "";
 }
 
+// =====================
+// WhatsApp helpers
+// =====================
+async function waSendText(to, text) {
+  const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "text",
+    text: { body: text },
+  };
+  await axios.post(url, payload, {
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
+    timeout: 30_000,
+  });
+}
+
+async function waMarkRead(messageId) {
+  const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
+  const payload = { messaging_product: "whatsapp", status: "read", message_id: messageId };
+  await axios.post(url, payload, {
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
+    timeout: 30_000,
+  });
+}
+
+async function waGetMediaUrl(mediaId) {
+  const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${mediaId}`;
+  const resp = await axios.get(url, {
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    timeout: 30_000,
+  });
+  return resp.data; // { url, mime_type, ... }
+}
+
+async function waDownloadMedia(mediaUrl) {
+  const resp = await axios.get(mediaUrl, {
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    responseType: "arraybuffer",
+    timeout: 60_000,
+  });
+  return Buffer.from(resp.data);
+}
+
+// =====================
+// Extract measures
+// =====================
+function extractMeasurements(text) {
+  const t = (text || "").replace(/\s+/g, " ");
+  const out = [];
+
+  const re1 = /(\d{2,4}(?:[.,]\d{1,2})?)\s*[xX×]\s*(\d{2,4}(?:[.,]\d{1,2})?)/g;
+  let m;
+  while ((m = re1.exec(t))) out.push({ w: m[1], h: m[2], raw: m[0] });
+
+  const re2 = /(\d(?:[.,]\d{1,2})?)\s*[xX×]\s*(\d(?:[.,]\d{1,2})?)\s*(m|mt|mts)?/g;
+  while ((m = re2.exec(t))) out.push({ w: m[1], h: m[2], raw: m[0] });
+
+  const seen = new Set();
+  return out.filter((x) => {
+    if (seen.has(x.raw)) return false;
+    seen.add(x.raw);
+    return true;
+  });
+}
+
+// =====================
+// Business reply logic
+// =====================
+function buildBaseConsultativeNote() {
+  return (
+    `Para recomendar bien, siempre miramos 3 condiciones: ${DEFAULT_PRIORITY}.\n` +
+    `En general, la condensación interior no depende solo de la ventana: aparece cuando sube la humedad interior y baja la temperatura de la superficie interior. En PVC + DVH + buena instalación, eso es poco probable dentro de la casa; si ocurre, normalmente se corrige con ventilación y manejo de humedad.\n` +
+    `Trabajamos PVC y aluminio (todos pueden llevar DVH/termopanel). Lo que cambia es hermeticidad, refuerzo, herrajes y desempeño final.`
+  );
+}
+
 function buildNextQuestion(context) {
-  if (!context.city) return "¿En qué ciudad se instalarían?";
-  if (!context.qty) return "¿Cuántas ventanas y/o puertas necesitas en total (aprox)?";
-  if (!context.hasMeasures) return "¿Me confirmas medidas aproximadas (ancho x alto) o cuántos vanos son?";
+  if (!context.city) return "¿En qué ciudad se instalarían (Temuco / Padre Las Casas / Villarrica / Pucón)?";
+  if (!context.qty) return "¿Cuántas ventanas y/o puertas necesitas en total (aprox.)?";
+  if (!context.hasMeasures) return "¿Me confirmas medidas aproximadas (ancho x alto) de cada vano?";
   if (context.wantsInstall == null) return "¿Las necesitas con instalación incluida o solo fabricación?";
-  return "¿Prefieres corredera u oscilobatiente/proyectante, o te recomiendo según uso?";
+  return "¿Prefieres corredera u oscilobatiente/proyectante, o te recomiendo según ventilación y uso?";
 }
 
 function inferContextFromText(text) {
@@ -255,23 +267,23 @@ function inferContextFromText(text) {
 }
 
 // =====================
-// AI: texto + visión (imagen)
+// AI helpers (text + vision)
 // =====================
-async function aiFromText(userText) {
+async function aiDraftReply(userText) {
   if (!openai || AI_PROVIDER !== "openai") return null;
 
   const system = `
-Eres un asesor comercial-técnico chileno especializado SOLO en ventanas y puertas.
-Estilo: humano, cercano, profesional. Sin emojis.
-Prioriza 3 pilares: aislación térmica, acústica, seguridad.
-Haz máximo 1 pregunta al final.
+Eres asesor chileno especializado SOLO en ventanas y puertas.
+Estilo: humano, consultivo, profesional. Sin emojis.
+Máximo 1 pregunta al final.
+Si el cliente envió PDF/imagen, agradece y confirma que revisaste medidas/datos.
 `.trim();
 
   const resp = await openai.chat.completions.create({
     model: AI_MODEL_OPENAI,
     messages: [
       { role: "system", content: system },
-      { role: "user", content: `Cliente: ${userText}\nResponde breve y claro, con 1 pregunta al final.` },
+      { role: "user", content: userText },
     ],
     temperature: 0.4,
   });
@@ -279,27 +291,27 @@ Haz máximo 1 pregunta al final.
   return resp.choices?.[0]?.message?.content?.trim() || null;
 }
 
-async function aiReadImageToText(imageBuffer, mimeType = "image/jpeg") {
+async function aiReadImage(buffer, mimeType = "image/jpeg") {
   if (!openai || AI_PROVIDER !== "openai") return null;
 
-  const b64 = imageBuffer.toString("base64");
-  const dataUrl = `data:${mimeType};base64,${b64}`;
+  const base64 = buffer.toString("base64");
+  const dataUrl = `data:${mimeType};base64,${base64}`;
 
   const system = `
-Extrae texto útil desde la imagen (medidas ancho x alto, cantidades, observaciones técnicas).
-Entrega SOLO:
-1) Texto extraído resumido (máx 8 líneas)
-2) Lista de medidas detectadas (si hay), separadas por coma
+Eres un revisor técnico de ventanas/puertas.
+Extrae desde la imagen SOLO información útil para cotización: medidas (ancho x alto), cantidades, tipos, notas.
+Si no hay medidas claras, dilo explícitamente.
+Devuelve texto corto y claro en español (Chile).
 `.trim();
 
   const resp = await openai.chat.completions.create({
-    model: AI_MODEL_OPENAI,
+    model: AI_MODEL_VISION,
     messages: [
       { role: "system", content: system },
       {
         role: "user",
         content: [
-          { type: "text", text: "Lee la imagen y extrae medidas/texto relevante." },
+          { type: "text", text: "Lee esta imagen y extrae medidas/cantidades/tipos si aparecen." },
           { type: "image_url", image_url: { url: dataUrl } },
         ],
       },
@@ -311,7 +323,7 @@ Entrega SOLO:
 }
 
 // =====================
-// Delayed reply
+// Delayed reply (anti-typing)
 // =====================
 async function scheduleReply(waId, lastMessageId, collectedText) {
   const sess = getSession(waId);
@@ -334,26 +346,32 @@ async function scheduleReply(waId, lastMessageId, collectedText) {
       const ctx = inferContextFromText(collectedText);
       const hasMeasures = (ctx.measures?.length || 0) > 0;
 
-      let reply = `${maybeGreeting(sess)}Gracias por la información. ${buildBaseConsultativeNote()}\n`;
+      let reply =
+        `${maybeGreeting(sess)}` +
+        `Gracias por la información. ${buildBaseConsultativeNote()}\n`;
 
-      if (hasMeasures) reply += `\nVi estas medidas aproximadas: ${ctx.measures.map((m) => m.raw).join(", ")}.\n`;
+      if (hasMeasures) {
+        reply += `\nVi estas medidas aproximadas: ${ctx.measures.map((m) => m.raw).join(", ")}. Con eso preparo una propuesta inicial y luego confirmamos en terreno.\n`;
+      } else {
+        reply += `\nSi me compartes medidas (ancho x alto) o un plano con cotas, preparo la propuesta inicial.\n`;
+      }
 
       const question = buildNextQuestion({ city: ctx.city, qty: ctx.qty, hasMeasures, wantsInstall: ctx.wantsInstall });
+      if (ONE_QUESTION_PER_TURN) reply += `\n${question}`;
 
-      // AI reescribe si está disponible
-      const ai = await aiFromText(collectedText);
-      if (ai) {
-        reply = `${maybeGreeting(sess)}${ai}${maybeSignature(sess)}`;
-      } else {
-        reply += `\n${question}${maybeSignature(sess)}`;
-      }
+      const ai = await aiDraftReply(collectedText);
+      if (ai) reply = `${maybeGreeting(sess)}${ai}${maybeSignature(sess)}`;
+      else reply += `${maybeSignature(sess)}`;
 
       reply = splitLines(clampText(reply));
 
-      await new Promise((r) => setTimeout(r, randomBetween(HUMAN_DELAY_MS_MIN, HUMAN_DELAY_MS_MAX)));
+      const waitBase = randomBetween(HUMAN_DELAY_MS_MIN, HUMAN_DELAY_MS_MAX);
+      await new Promise((r) => setTimeout(r, waitBase));
+
       await waSendText(waId, reply);
 
       sess.greeted = true;
+      sess.lastReplyAt = nowMs();
 
       if (lastMessageId) await waMarkRead(lastMessageId).catch(() => {});
     } catch (err) {
@@ -379,6 +397,7 @@ app.get("/webhook", (req, res) => {
 app.post("/webhook", async (req, res) => {
   try {
     const body = req.body;
+
     const entry = body?.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
@@ -392,54 +411,79 @@ app.post("/webhook", async (req, res) => {
 
     let collectedText = "";
 
+    // TEXT
     if (msg.type === "text") {
       collectedText = msg.text?.body || "";
+      await scheduleReply(waId, messageId, collectedText);
+      return res.sendStatus(200);
     }
 
-    // PDF
-    if (msg.type === "document" && msg.document?.id) {
-      const mediaId = msg.document.id;
-      const mime = msg.document.mime_type || "";
-      const filename = msg.document.filename || "";
+    // DOCUMENT (PDF)
+    if (msg.type === "document") {
+      const mediaId = msg.document?.id;
+      const mime = msg.document?.mime_type || "";
+      const filename = msg.document?.filename || "documento";
 
       console.log("INCOMING DOCUMENT:", { mime, filename, mediaId });
 
-      const info = await waGetMediaInfo(mediaId);
-      const buf = await waDownloadMedia(info.url);
+      if (mediaId && mime.includes("pdf")) {
+        const meta = await waGetMediaUrl(mediaId);
+        const buffer = await waDownloadMedia(meta.url);
 
-      if (mime.includes("pdf") || filename.toLowerCase().endsWith(".pdf")) {
-        const parsed = await pdfParse(buf);
-        const text = (parsed?.text || "").trim();
-        collectedText =
-          `Cliente envió un PDF (${filename || "sin nombre"}).\n` +
-          `Texto extraído (resumen):\n` +
-          `${text.slice(0, 3500)}`;
-      } else {
-        collectedText = `Cliente envió un documento (${filename || "sin nombre"}). Por favor envía PDF o medidas en texto.`;
+        let pdfText = "";
+        try {
+          const parsed = await pdfParse(buffer);
+          pdfText = (parsed?.text || "").trim();
+        } catch (e) {
+          pdfText = "";
+        }
+
+        if (!pdfText || pdfText.length < 30) {
+          collectedText =
+            `El cliente envió un PDF (“${filename}”), pero parece escaneado o sin texto seleccionable.\n` +
+            `Solicitar medidas en texto (ancho x alto) o una foto/plano con cotas claras.`;
+        } else {
+          const measures = extractMeasurements(pdfText);
+          collectedText =
+            `Cliente envió PDF: ${filename}.\n` +
+            `Texto relevante extraído:\n${pdfText.slice(0, 2500)}\n` +
+            (measures.length ? `\nMedidas detectadas: ${measures.map((m) => m.raw).join(", ")}.` : `\nNo se detectaron medidas con patrón ancho x alto.`);
+        }
+
+        await scheduleReply(waId, messageId, collectedText);
+        return res.sendStatus(200);
       }
+
+      collectedText = `Cliente envió un documento (“${filename}”). Para cotizar, por favor envía medidas ancho x alto o un plano con cotas.`;
+      await scheduleReply(waId, messageId, collectedText);
+      return res.sendStatus(200);
     }
 
     // IMAGE
-    if (msg.type === "image" && msg.image?.id) {
-      const mediaId = msg.image.id;
-      console.log("INCOMING IMAGE:", { mediaId });
+    if (msg.type === "image") {
+      const mediaId = msg.image?.id;
+      const mime = msg.image?.mime_type || "image/jpeg";
+      console.log("INCOMING IMAGE:", { mime, mediaId });
 
-      const info = await waGetMediaInfo(mediaId);
-      const buf = await waDownloadMedia(info.url);
-      const mime = info?.mime_type || "image/jpeg";
+      if (mediaId) {
+        const meta = await waGetMediaUrl(mediaId);
+        const buffer = await waDownloadMedia(meta.url);
 
-      const extracted = await aiReadImageToText(buf, mime);
-      collectedText =
-        extracted
-          ? `Cliente envió una imagen.\nExtracción desde imagen:\n${extracted}`
-          : `Cliente envió una imagen. (No pude extraer texto; por favor envía medidas en texto o PDF).`;
+        let imgText = await aiReadImage(buffer, mime);
+        if (!imgText) imgText = "Cliente envió una imagen, pero no pude extraer información útil automáticamente.";
+
+        collectedText = `Cliente envió imagen.\n${imgText}`;
+        await scheduleReply(waId, messageId, collectedText);
+        return res.sendStatus(200);
+      }
+
+      collectedText = "Cliente envió una imagen. ¿Me confirmas medidas (ancho x alto) o un plano con cotas?";
+      await scheduleReply(waId, messageId, collectedText);
+      return res.sendStatus(200);
     }
 
-    // Otros tipos
-    if (!collectedText) {
-      collectedText = "Cliente envió un archivo/medio. Por favor envía medidas (ancho x alto) en texto o un PDF.";
-    }
-
+    // OTHER TYPES
+    collectedText = "Cliente envió un archivo/multimedia. Para avanzar rápido, envía medidas (ancho x alto) y ciudad de instalación.";
     await scheduleReply(waId, messageId, collectedText);
     return res.sendStatus(200);
   } catch (err) {
@@ -448,18 +492,19 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// Health
+// Health check
 app.get("/", (req, res) => res.status(200).send("OK"));
 
 app.listen(PORT, () => {
   console.log("Starting Container");
   console.log(`Server running on port ${PORT}`);
-  console.log(`ENV WHATSAPP_TOKEN: ${WHATSAPP_TOKEN ? "OK" : "MISSING"}`);
   console.log(`ENV META_GRAPH_VERSION: ${META_GRAPH_VERSION}`);
-  console.log(`ENV VERIFY_TOKEN: ${VERIFY_TOKEN ? "OK" : "MISSING"}`);
   console.log(`ENV PHONE_NUMBER_ID: ${PHONE_NUMBER_ID ? "OK" : "MISSING"}`);
+  console.log(`ENV WHATSAPP_TOKEN: ${WHATSAPP_TOKEN ? "OK" : "MISSING"}`);
+  console.log(`ENV VERIFY_TOKEN: ${VERIFY_TOKEN ? "OK" : "MISSING"}`);
   console.log(`ENV OPENAI_API_KEY: ${OPENAI_API_KEY ? "OK" : "MISSING"}`);
   console.log(`ENV AI_PROVIDER: ${AI_PROVIDER}`);
   console.log(`ENV AI_MODEL_OPENAI: ${AI_MODEL_OPENAI}`);
+  console.log(`ENV AI_MODEL_VISION: ${AI_MODEL_VISION}`);
   console.log(`STYLE GREETING_MODE: ${GREETING_MODE}`);
 });
