@@ -1,7 +1,10 @@
-// index.js
+// index.js (COMPLETO)
+// WhatsApp Cloud API webhook + Respuestas humanas + Lectura PDF (pdf-parse 1.1.1) + Lectura imágenes (OpenAI vision)
+
 import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
+import pdfParse from "pdf-parse";
 
 // =====================
 // ENV / CONFIG
@@ -71,6 +74,10 @@ const ALLOW_BULLETS = String(process.env.ALLOW_BULLETS || "true") === "true";
 const SEND_SINGLE_MESSAGE = String(process.env.SEND_SINGLE_MESSAGE || "true") === "true";
 const SPLIT_LONG_MESSAGES = String(process.env.SPLIT_LONG_MESSAGES || "true") === "true";
 
+// Media limits (para evitar reventar memoria)
+const MAX_MEDIA_BYTES = Number(process.env.MAX_MEDIA_BYTES || 12_000_000); // 12MB
+const MAX_PDF_TEXT_CHARS = Number(process.env.MAX_PDF_TEXT_CHARS || 12_000);
+
 // =====================
 // OpenAI client (optional)
 // =====================
@@ -103,8 +110,6 @@ function randomBetween(min, max) {
 }
 
 function getTimeGreeting() {
-  // Simple local greeting based on Chile time (approx, without external libs).
-  // We rely on server time; Railway usually UTC. We'll approximate using Intl.
   try {
     const hour = Number(
       new Intl.DateTimeFormat("es-CL", { timeZone: BUSINESS_TIMEZONE, hour: "2-digit", hour12: false }).format(new Date())
@@ -160,7 +165,6 @@ function getSession(waId) {
     sessions.set(waId, ns);
     return ns;
   }
-  // TTL refresh
   s.ttlAt = t + SESSION_TTL_MINUTES * 60_000;
   return s;
 }
@@ -211,6 +215,39 @@ async function waMarkRead(messageId) {
 }
 
 // =====================
+// WhatsApp media download helpers
+// =====================
+async function waGetMediaUrl(mediaId) {
+  const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${mediaId}`;
+  const r = await axios.get(url, {
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    timeout: 30_000,
+  });
+  return r.data?.url;
+}
+
+async function waDownloadMediaBuffer(mediaId) {
+  const mediaUrl = await waGetMediaUrl(mediaId);
+  if (!mediaUrl) throw new Error("No media URL from Meta");
+
+  const r = await axios.get(mediaUrl, {
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    responseType: "arraybuffer",
+    timeout: 60_000,
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
+  });
+
+  const buf = Buffer.from(r.data);
+
+  if (buf.length > MAX_MEDIA_BYTES) {
+    throw new Error(`Media demasiado grande (${buf.length} bytes). Límite: ${MAX_MEDIA_BYTES}`);
+  }
+
+  return buf;
+}
+
+// =====================
 // Extract measurements from plain text (PDF text or user text)
 // =====================
 function extractMeasurements(text) {
@@ -236,7 +273,6 @@ function extractMeasurements(text) {
     out.push({ w: m[1] + m[2], h: m[3] + m[4], raw: m[0] });
   }
 
-  // Dedup by raw
   const seen = new Set();
   return out.filter((x) => {
     const k = x.raw;
@@ -272,9 +308,7 @@ function maybeSignature(sess) {
   return "";
 }
 
-// Ask only one thing
 function buildNextQuestion(context) {
-  // context: { city, qty, hasMeasures, wantsInstall }
   if (!context.city) return "¿En qué ciudad se instalarían (por ejemplo, Temuco, Pucón, Villarrica)?";
   if (!context.qty) return "¿Cuántas ventanas y/o puertas necesitas en total (número aproximado)?";
   if (!context.hasMeasures) {
@@ -295,7 +329,7 @@ function inferContextFromText(text) {
 }
 
 // =====================
-// AI (optional) - keep it simple
+// AI helpers (OpenAI)
 // =====================
 async function aiDraftReply(userText, extractedMeasures) {
   if (!openai || AI_PROVIDER !== "openai") return null;
@@ -331,8 +365,33 @@ Genera una respuesta corta, humana y clara.`;
   return resp.choices?.[0]?.message?.content?.trim() || null;
 }
 
+async function aiExtractFromImageBase64(base64, mimeType) {
+  if (!openai || AI_PROVIDER !== "openai") return null;
+
+  const system =
+    "Eres un asesor técnico chileno de ventanas/puertas. Extrae SOLO: (1) medidas (ancho x alto), (2) cantidad, (3) tipo (ventana/puerta), (4) ciudad si aparece. Si no se ve, dilo.";
+  const userText = "Extrae la información solicitada desde esta imagen y devuélvela en texto simple.";
+
+  const resp = await openai.chat.completions.create({
+    model: AI_MODEL_OPENAI,
+    messages: [
+      { role: "system", content: system },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: userText },
+          { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } },
+        ],
+      },
+    ],
+    temperature: 0.2,
+  });
+
+  return resp.choices?.[0]?.message?.content?.trim() || null;
+}
+
 // =====================
-// Core delayed response logic (prevents replying while user typing)
+// Core delayed response logic
 // =====================
 async function scheduleReply(waId, lastMessageId, collectedText) {
   const sess = getSession(waId);
@@ -342,7 +401,6 @@ async function scheduleReply(waId, lastMessageId, collectedText) {
 
   sess.timer = setTimeout(async () => {
     try {
-      // after-hours gate
       if (!withinBusinessHours()) {
         if (!sess.afterHoursSent) {
           await waSendText(waId, AFTER_HOURS_MESSAGE);
@@ -353,7 +411,6 @@ async function scheduleReply(waId, lastMessageId, collectedText) {
 
       if (!rateLimitOk(sess)) return;
 
-      // Optional human handoff
       if (shouldHandoff(collectedText)) {
         const msg = `${maybeGreeting(sess)}Perfecto. Te derivo con un asesor para que lo veamos en detalle. ¿Me confirmas tu ciudad y si es con instalación incluida?${maybeSignature(sess)}`;
         await waSendText(waId, msg);
@@ -361,34 +418,26 @@ async function scheduleReply(waId, lastMessageId, collectedText) {
         return;
       }
 
-      // Build consultive reply
       const ctx = inferContextFromText(collectedText);
       const hasMeasures = (ctx.measures?.length || 0) > 0;
 
-      // Base message + proof of expertise
       let reply =
         `${maybeGreeting(sess)}` +
         `Gracias por la información. ${buildBaseConsultativeNote()}\n`;
 
-      // If measures detected, acknowledge
       if (hasMeasures) {
         reply += `\nVi estas medidas aproximadas: ${ctx.measures.map((m) => m.raw).join(", ")}. Con esto puedo preparar una propuesta inicial y después afinamos con verificación en terreno.\n`;
       }
 
-      // Mention technical specialist / laser measurement
-      reply +=
-        `\nCuando la propuesta se aprueba, asignamos un especialista técnico que verifica medidas en terreno con telémetro láser (alta precisión) y se entrega un informe técnico para fabricación e instalación.\n`;
+      reply += `\nCuando la propuesta se aprueba, asignamos un especialista técnico que verifica medidas en terreno con telémetro láser (alta precisión) y se entrega un informe técnico para fabricación e instalación.\n`;
 
-      // Ask only one question (as you requested)
       const question = buildNextQuestion({ city: ctx.city, qty: ctx.qty, hasMeasures, wantsInstall: ctx.wantsInstall });
       if (ONE_QUESTION_PER_TURN) {
         reply += `\n${question}`;
       }
 
-      // Optional: let AI rephrase into more human answer (if enabled)
       const ai = await aiDraftReply(collectedText, ctx.measures);
       if (ai) {
-        // We keep greeting/signature from our system to preserve rules
         const g = maybeGreeting(sess);
         const sig = maybeSignature(sess);
         reply = `${g}${ai}${sig}`;
@@ -396,10 +445,8 @@ async function scheduleReply(waId, lastMessageId, collectedText) {
         reply += `${maybeSignature(sess)}`;
       }
 
-      // clean up
       reply = splitLines(clampText(reply));
 
-      // delays to feel human
       const waitBase = randomBetween(HUMAN_DELAY_MS_MIN, HUMAN_DELAY_MS_MAX);
       const extra = randomBetween(MIN_RESPONSE_DELAY_MS, MAX_RESPONSE_DELAY_MS);
       await new Promise((r) => setTimeout(r, Math.max(0, waitBase + extra)));
@@ -409,7 +456,6 @@ async function scheduleReply(waId, lastMessageId, collectedText) {
       sess.greeted = true;
       sess.lastReplyAt = nowMs();
 
-      // mark read if possible
       if (lastMessageId) {
         await waMarkRead(lastMessageId).catch(() => {});
       }
@@ -447,22 +493,49 @@ app.post("/webhook", async (req, res) => {
     if (!messages.length) return res.sendStatus(200);
 
     const msg = messages[0];
-    const waId = msg.from; // user phone
+    const waId = msg.from;
     const messageId = msg.id;
 
     let collectedText = "";
 
-    // Text message
+    // TEXT
     if (msg.type === "text") {
       collectedText = msg.text?.body || "";
-    } else {
-      // Other message types: image/document/audio/etc.
-      // For now: ask user to send measures in text or as PDF/image with measures.
-      // (You can extend: download media and parse PDF; needs additional endpoints.)
-      collectedText = "Cliente envió un archivo o imagen con información del proyecto.";
     }
 
-    // update session & schedule reply after user stops writing
+    // DOCUMENT (PDF)
+    else if (msg.type === "document" && msg.document?.id) {
+      const mime = msg.document?.mime_type || "";
+      if (mime.includes("pdf")) {
+        const buf = await waDownloadMediaBuffer(msg.document.id);
+        const parsed = await pdfParse(buf);
+        const text = (parsed?.text || "").trim();
+
+        collectedText = text
+          ? `Texto extraído desde PDF:\n${text.slice(0, MAX_PDF_TEXT_CHARS)}`
+          : "PDF recibido, pero no trae texto seleccionable (probablemente escaneado).";
+      } else {
+        collectedText = `Documento recibido (${mime}).`;
+      }
+    }
+
+    // IMAGE
+    else if (msg.type === "image" && msg.image?.id) {
+      const mime = msg.image?.mime_type || "image/jpeg";
+      const buf = await waDownloadMediaBuffer(msg.image.id);
+      const base64 = buf.toString("base64");
+
+      const extracted = await aiExtractFromImageBase64(base64, mime);
+      collectedText = extracted
+        ? `Información extraída desde imagen:\n${extracted}`
+        : "Imagen recibida con información del proyecto (no pude extraer texto).";
+    }
+
+    // OTHER TYPES
+    else {
+      collectedText = "Cliente envió un archivo (audio/video/etc.).";
+    }
+
     await scheduleReply(waId, messageId, collectedText);
 
     return res.sendStatus(200);
