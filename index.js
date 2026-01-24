@@ -20,6 +20,9 @@ const AI_MODEL_OPENAI = process.env.AI_MODEL_OPENAI || "gpt-4.1-mini";
 const MIN_DELAY = Number(process.env.MIN_RESPONSE_DELAY_MS || 900);
 const MAX_DELAY = Number(process.env.MAX_RESPONSE_DELAY_MS || 2200);
 
+// Debounce: esperar X ms desde el último mensaje del cliente antes de responder
+const WAIT_AFTER_LAST_USER_MESSAGE_MS = Number(process.env.WAIT_AFTER_LAST_USER_MESSAGE_MS || 4500);
+
 const COMPANY_NAME = process.env.COMPANY_NAME || "Activa Inversiones EIRL";
 const DEFAULT_CITY = process.env.DEFAULT_CITY || "Temuco";
 
@@ -27,8 +30,9 @@ const BUSINESS_TIMEZONE = process.env.BUSINESS_TIMEZONE || "America/Santiago";
 const REPLY_WITH_CONTEXT = String(process.env.REPLY_WITH_CONTEXT || "false").toLowerCase() === "true";
 
 const TONE = (process.env.TONE || "usted").toLowerCase(); // "usted" o "tu"
+const AGENT_NAME = process.env.AGENT_NAME || "Marcelo Cifuentes";
 
-// Texto opcional (solo si usted lo define)
+// Opcionales (solo si usted define textos reales)
 const MINVU_EXPERT_NOTE = process.env.MINVU_EXPERT_NOTE || "";
 const MINVU_CREDENTIALS = process.env.MINVU_CREDENTIALS || "";
 
@@ -82,66 +86,7 @@ function expertFooter() {
   return lines.length ? `\n${lines.join(" ")}` : "";
 }
 
-function ustedOn() {
-  return TONE === "usted";
-}
-
-// ===== Dedupe webhook =====
-const processedMessageIds = new Map();
-const PROCESSED_TTL_MS = 10 * 60 * 1000;
-
-function rememberProcessed(id) { processedMessageIds.set(id, now()); }
-function wasProcessed(id) {
-  const t = processedMessageIds.get(id);
-  if (!t) return false;
-  if (now() - t > PROCESSED_TTL_MS) { processedMessageIds.delete(id); return false; }
-  return true;
-}
-setInterval(() => {
-  const t = now();
-  for (const [id, ts] of processedMessageIds.entries()) {
-    if (t - ts > PROCESSED_TTL_MS) processedMessageIds.delete(id);
-  }
-}, 60 * 1000).unref();
-
-// ===== Sessions =====
-const sessions = new Map();
-const QUESTION_COOLDOWN_MS = 45 * 60 * 1000;
-
-function getSession(wa_id) {
-  if (!sessions.has(wa_id)) {
-    sessions.set(wa_id, {
-      wa_id,
-      createdAt: now(),
-      flags: { greeted: false },
-      askedAt: {},
-      profile: {
-        name: "",
-        customerType: "",
-        city: "",
-        comuna: "",
-        products: [],   // SOLO: ["ventanas","puertas"]
-        priority: "",   // "térmico" | "acústico" | "seguridad" | "balance"
-        goal: "",       // "condensación" si el cliente lo menciona
-        qty: null,
-        dims: [],
-        opening: "",    // corredera / abatible / oscilobatiente
-        install: "",    // con instalación / sin instalación
-        material: "",   // pvc europeo / pvc americano / aluminio (si aparece)
-      },
-    });
-  }
-  return sessions.get(wa_id);
-}
-
-function canAsk(session, key) {
-  const ts = session.askedAt[key];
-  if (!ts) return true;
-  return now() - ts > QUESTION_COOLDOWN_MS;
-}
-function markAsked(session, key) { session.askedAt[key] = now(); }
-
-// ===== WhatsApp API =====
+// ===== WhatsApp Cloud API =====
 const graphBase = `https://graph.facebook.com/${META_GRAPH_VERSION}/${PHONE_NUMBER_ID}`;
 
 async function waPostMessages(payload) {
@@ -155,7 +100,7 @@ async function waPostMessages(payload) {
   });
 }
 
-// read + typing
+// Marcar como leído + “intentarlo” como typing
 async function markReadAndTyping(message_id) {
   if (!message_id) return;
   try {
@@ -163,6 +108,7 @@ async function markReadAndTyping(message_id) {
       messaging_product: "whatsapp",
       status: "read",
       message_id,
+      // Nota: no siempre se ve en el cliente. Aun así lo dejamos.
       typing_indicator: { type: "text" },
     });
   } catch (e) {
@@ -182,6 +128,70 @@ async function sendText(to, body, contextMessageId = null) {
   return r.data;
 }
 
+// ===== Dedupe webhook (evitar duplicados) =====
+const processedMessageIds = new Map();
+const PROCESSED_TTL_MS = 10 * 60 * 1000;
+
+function rememberProcessed(id) { processedMessageIds.set(id, now()); }
+function wasProcessed(id) {
+  const t = processedMessageIds.get(id);
+  if (!t) return false;
+  if (now() - t > PROCESSED_TTL_MS) { processedMessageIds.delete(id); return false; }
+  return true;
+}
+setInterval(() => {
+  const t = now();
+  for (const [id, ts] of processedMessageIds.entries()) {
+    if (t - ts > PROCESSED_TTL_MS) processedMessageIds.delete(id);
+  }
+}, 60 * 1000).unref();
+
+// ===== Sessions + Debounce buffer =====
+const sessions = new Map();
+const QUESTION_COOLDOWN_MS = 45 * 60 * 1000;
+
+function getSession(wa_id) {
+  if (!sessions.has(wa_id)) {
+    sessions.set(wa_id, {
+      wa_id,
+      createdAt: now(),
+      flags: { greeted: false },
+      askedAt: {},
+      profile: {
+        name: "",
+        customerType: "",
+        city: "",
+        comuna: "",
+        products: [],     // SOLO: ventanas/puertas
+        priority: "",     // térmico / acústico / seguridad / balance
+        goal: "",         // condensación (si lo mencionan)
+        qty: null,
+        dims: [],
+        opening: "",
+        install: "",
+        material: "",     // pvc línea europea / pvc americano / aluminio
+      },
+      // Buffer debounce
+      buffer: {
+        timer: null,
+        lastMsgId: null,
+        lastFrom: null,
+        lastAt: 0,
+        contextId: null,
+        parts: [],
+      },
+    });
+  }
+  return sessions.get(wa_id);
+}
+
+function canAsk(session, key) {
+  const ts = session.askedAt[key];
+  if (!ts) return true;
+  return now() - ts > QUESTION_COOLDOWN_MS;
+}
+function markAsked(session, key) { session.askedAt[key] = now(); }
+
 // ===== Extractor =====
 function upsertUnique(arr, value) {
   if (!value) return arr;
@@ -196,8 +206,7 @@ function extractInfo(session, userTextRaw) {
   const t = userText.toLowerCase();
 
   // Nombre
-  const nameMatch =
-    userText.match(/\b(soy|me llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){0,4})\b/i);
+  const nameMatch = userText.match(/\b(soy|me llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){0,4})\b/i);
   if (nameMatch?.[2]) session.profile.name = titleCaseName(nameMatch[2]);
 
   // SOLO productos permitidos
@@ -220,8 +229,8 @@ function extractInfo(session, userTextRaw) {
   if (t.includes("segur") || t.includes("antirrobo") || t.includes("cerradura")) session.profile.priority = "seguridad";
   if (t.includes("todo") || t.includes("todas") || t.includes("balance")) session.profile.priority = "balance";
 
-  // Condensación (como tema, no como “prioridad”)
-  if (t.includes("condens")) session.profile.goal = "condensación";
+  // Condensación (tema)
+  if (t.includes("condens") || t.includes("humedad") || t.includes("empaña") || t.includes("empañ")) session.profile.goal = "condensación";
 
   // Material
   if (t.includes("pvc") && (t.includes("europe") || t.includes("línea europea") || t.includes("linea europea"))) session.profile.material = "pvc línea europea";
@@ -254,28 +263,20 @@ function extractInfo(session, userTextRaw) {
 
 // ===== Respuestas consultivas =====
 function condensationExplainer() {
-  // Técnica + consultiva, en “usted”
   return (
-    "Sobre la condensación: normalmente aparece cuando hay **humedad relativa alta (sobre ~80%)** y una superficie fría (por ejemplo, en torno a **12°C**), por lo que el vapor del ambiente se “condensa” como agua.\n" +
-    "En ventanas bien diseñadas y bien instaladas, lo que más ayuda es: **DVH/termopanel**, buena **hermeticidad**, y evitar **puentes térmicos** en la instalación. En **PVC línea europea**, por el diseño multicámara y sellos, es muy difícil que se produzca condensación interior si el conjunto está correcto.\n" +
-    "También es importante la ventilación/uso del recinto (cocina, baños, secado de ropa), porque la humedad del ambiente manda."
+    "Sobre la condensación: normalmente aparece cuando hay **humedad relativa alta (sobre ~80%)** y una superficie fría (por ejemplo, en torno a **12°C**). Ahí el vapor del ambiente se transforma en gotitas.\n" +
+    "Para reducirla, lo que manda es: **termopanel (DVH)**, buena **hermeticidad** (sellos/burletes) y una **instalación** que no deje puentes térmicos.\n" +
+    "En **PVC línea europea**, por su diseño multicámara y sellos, es muy difícil que se produzca condensación interior si el conjunto está bien especificado e instalado."
   );
 }
 
 function materialExplainer(material) {
   const base =
-    "En cuanto a materiales, tanto **PVC americano**, **PVC línea europea** y **aluminio** pueden llevar **termopanel (DVH)**. La diferencia está en el comportamiento del marco, los sellos y la hermeticidad del sistema.";
+    "En materiales, tanto **PVC americano**, **PVC línea europea** y **aluminio** pueden llevar **termopanel (DVH)**. La diferencia está en el marco, los sellos y la hermeticidad del sistema.";
   if (!material) return base;
-
-  if (material.includes("europea")) {
-    return base + " En PVC línea europea suele lograrse muy buen desempeño térmico y hermético, ideal para confort y control de condensación.";
-  }
-  if (material.includes("americano")) {
-    return base + " En PVC americano también se puede lograr un muy buen resultado, especialmente si se especifica correctamente el DVH y la instalación.";
-  }
-  if (material.includes("aluminio")) {
-    return base + " En aluminio, lo clave para desempeño térmico es que sea sistema adecuado (idealmente con solución térmica cuando aplica) y un DVH bien especificado.";
-  }
+  if (material.includes("europea")) return base + " En PVC línea europea suele lograrse muy buen desempeño térmico y hermético.";
+  if (material.includes("americano")) return base + " En PVC americano también se logra un buen resultado si se especifica bien el DVH y la instalación.";
+  if (material.includes("aluminio")) return base + " En aluminio, para rendimiento térmico importa mucho el sistema y el detalle de instalación, además del DVH.";
   return base;
 }
 
@@ -283,47 +284,48 @@ function expertAnswer(session, userTextRaw) {
   const t = normalizeText(userTextRaw).toLowerCase();
   const city = session.profile.city || DEFAULT_CITY;
 
-  // PDA / eficiencia / CES / zonas (se mantiene lo ya implementado)
+  // PDA
   if (t.includes("pda") || t.includes("descontamin") || t.includes("smog") || t.includes("leña")) {
     return (
-      `Sobre el PDA: busca reducir emisiones asociadas a calefacción. Ventanas eficientes ayudan porque disminuyen pérdidas térmicas e infiltraciones; eso reduce la necesidad de calefaccionar.\n` +
-      `En la práctica, el resultado depende de 3 cosas: buen **termopanel**, buen **sello/hermeticidad** y **correcta instalación**.\n` +
-      `¿Le preocupa más el confort térmico, el ruido o la seguridad?` +
+      `Sobre el PDA: busca reducir emisiones asociadas a calefacción. Las ventanas eficientes ayudan porque bajan pérdidas térmicas e infiltraciones; en simple, usted calefacciona menos para lograr el mismo confort.\n` +
+      `En la práctica, el resultado depende de 3 cosas: buen **DVH**, buena **hermeticidad** y **correcta instalación**.\n` +
+      `Para orientarle bien: ¿le preocupa más el confort térmico, el ruido o la seguridad?` +
       expertFooter()
     );
   }
 
+  // Eficiencia / normativa (sin inventar valores)
   if (t.includes("eficiencia") || t.includes("valor u") || t.includes("transmit") || t.includes("normativa") || t.includes("minvu") || t.includes("oguc")) {
     return (
-      `Eficiencia energética en ventanas significa que pase menos frío/calor. Se refleja en el **valor U** (mientras más bajo, mejor), y también en la **hermeticidad** (infiltración de aire) y una instalación sin puentes térmicos.\n` +
-      `Cuando hacemos venta consultiva, siempre buscamos equilibrar tres condiciones: **aislación térmica**, **aislación acústica** y **seguridad**.\n` +
-      `Para orientarle bien: ¿es casa nueva en ${city} y su foco principal es condensación, ruido o seguridad?` +
+      `Eficiencia energética en ventanas significa que pase menos frío/calor. Se refleja en el **valor U** (más bajo = mejor), la **hermeticidad** (menos infiltración) y una instalación sin puentes térmicos.\n` +
+      `Nosotros lo trabajamos como solución integral en 3 pilares: **aislación térmica**, **aislación acústica** y **seguridad**.\n` +
+      `¿Su proyecto es residencial en ${city}, y su foco principal hoy es condensación, ruido o seguridad?` +
       expertFooter()
     );
   }
 
-  if (t.includes("ces") || t.includes("certificación edificio sustentable") || t.includes("sustentable")) {
-    return (
-      `En proyectos con CES, la ventana aporta mucho en energía y confort. Lo importante es definir especificaciones (termopanel/DVH, hermeticidad, y detalles de instalación) desde el inicio.\n` +
-      `Si su proyecto apunta a ese estándar, le puedo proponer una configuración técnica equilibrada.\n` +
-      `¿Es proyecto residencial o comercial?` +
-      expertFooter()
-    );
-  }
-
-  // Condensación (respuesta elaborada)
+  // Condensación
   if (t.includes("condens") || t.includes("humedad") || t.includes("empaña") || t.includes("empañ")) {
     return (
       `${condensationExplainer()}\n` +
       `${materialExplainer(session.profile.material)}\n` +
-      `Para recomendarle una configuración “cerrada” (térmico + acústico + seguridad), ¿sus ventanas las prefiere **correderas** o **abatibles/oscilobatientes**?`
+      `Para recomendarle una configuración “bien cerrada”, ¿las prefiere **corredera** o **abatible/oscilobatiente**?`
+    );
+  }
+
+  // “Transmitancia 4+12+4”
+  if (t.includes("transmit") || t.includes("u ") || t.includes("4+12+4") || t.includes("4 12 4")) {
+    return (
+      "La configuración **4+12+4** (DVH) es una base muy usada. El desempeño final depende de tres factores: " +
+      "**tipo de vidrio** (normal o Low-E), **gas** (aire/argón) y **marco + sellos + instalación**. " +
+      "Si su objetivo es una solución “premium” (térmico + acústico + seguridad), normalmente se ajusta el DVH y herrajes según su caso.\n" +
+      "¿Su foco principal es reducir frío/calor, ruido, o reforzar seguridad?"
     );
   }
 
   return null;
 }
 
-// ===== Pregunta única (solo ventanas/puertas) =====
 function nextSingleQuestion(session) {
   const p = session.profile;
   const city = p.city || DEFAULT_CITY;
@@ -336,7 +338,6 @@ function nextSingleQuestion(session) {
     markAsked(session, "customerType");
     return `¿Es para vivienda (residencial) o para local/obra (comercial/constructora) en ${city}?`;
   }
-  // Prioridad: se sugiere “balance” por defecto para consultivo
   if (!p.priority && canAsk(session, "priority")) {
     markAsked(session, "priority");
     return "Para orientarle bien: ¿su foco principal es **térmico**, **acústico**, **seguridad**, o prefiere una solución **balanceada** (las tres)?";
@@ -364,7 +365,6 @@ function nextSingleQuestion(session) {
   return "";
 }
 
-// ===== Respuesta principal (consultiva y más cercana) =====
 function buildReply(session, userTextRaw) {
   const userText = normalizeText(userTextRaw);
   const p = session.profile;
@@ -374,26 +374,24 @@ function buildReply(session, userTextRaw) {
   if (!session.flags.greeted) {
     const greet = getGreeting();
     const name = p.name ? ` ${p.name}` : "";
-    prefix = `${greet}${name}, un gusto saludarle. Soy del equipo de ${COMPANY_NAME}. `;
+    // Se presenta como Marcelo Cifuentes (según su instrucción)
+    prefix = `${greet}${name}. Soy ${AGENT_NAME}, de ${COMPANY_NAME}. `;
     session.flags.greeted = true;
   }
 
-  // Respuesta experta si aplica
   const expert = expertAnswer(session, userText);
   if (expert) return `${prefix}${expert}`;
 
-  // Si el cliente dice “no sé nada, oriénteme”
   const t = userText.toLowerCase();
   if (t.includes("no sé") || t.includes("no se") || t.includes("oriént") || t.includes("orient")) {
     const base =
-      "Perfecto, le explico de forma simple y práctica. Para una buena ventana nos enfocamos en 3 pilares: " +
-      "**aislación térmica** (confort y ahorro), **aislación acústica** (menos ruido) y **seguridad** (herrajes/cierres y vidrio según riesgo). " +
-      "Luego ajustamos termopanel y tipo de apertura según su caso.\n";
+      "Perfecto, le explico simple. Para una buena ventana o puerta buscamos 3 pilares: " +
+      "**aislación térmica** (confort y ahorro), **aislación acústica** (menos ruido) y **seguridad** (herrajes/cierres y vidrio según necesidad). " +
+      "Luego ajustamos el termopanel y el tipo de apertura según su caso.\n";
     const q = nextSingleQuestion(session);
     return `${prefix}${base}${q}`;
   }
 
-  // Si piden cotizar
   if (t.includes("cotiza") || t.includes("cotización") || t.includes("precio") || t.includes("presupuesto")) {
     const prods = p.products.length ? p.products.join(", ") : "ventanas";
     const qty = p.qty ? `${p.qty}` : "—";
@@ -402,21 +400,20 @@ function buildReply(session, userTextRaw) {
     const q = nextSingleQuestion(session);
 
     return (
-      `${prefix}Perfecto. Con lo que me indicó, ya puedo armar una **cotización base** y luego la cerramos con 1 dato pendiente:\n` +
+      `${prefix}Perfecto. Con lo que me indicó, ya puedo preparar una **cotización base**:\n` +
       `• Producto: ${prods}\n• Comuna/ciudad: ${p.comuna || city}\n• Cantidad: ${qty}\n• Medida ref.: ${dimsText}\n` +
       `${q ? `\n${q}` : "\nSi me confirma apertura y si es con instalación, se la dejo cerrada hoy."}`
     );
   }
 
-  // Flujo normal: 1 pregunta
   const q = nextSingleQuestion(session);
   if (!q) {
-    return `${prefix}Excelente. Con esto avanzamos bien. Si le parece, coordinamos medición o nos envía fotos de los vanos y cierro la propuesta técnica y comercial.`;
+    return `${prefix}Excelente. Con esto avanzamos bien. Si le parece, coordinamos medición o me envía fotos de los vanos y cierro la propuesta técnica y comercial.`;
   }
   return `${prefix}${q}`;
 }
 
-// ===== IA para pulir estilo (sin duplicar saludos, sin pedir todo) =====
+// IA: chileno + consultivo + sin repetir
 function stripRepeatedGreeting(session, text) {
   if (!text) return text;
   if (!session.flags.greeted) return text;
@@ -430,27 +427,25 @@ async function aiPolish(session, userText, baseReply) {
 
   const system = `
 Usted es asesor comercial humano de ${COMPANY_NAME} (Chile). Trato formal: USTED.
-Objetivo: mejorar redacción sin perder el contenido técnico (venta consultiva).
+Estilo: chileno, cercano y profesional (ej: "Perfecto", "Buenísimo", "De acuerdo", "Impecable").
 Reglas:
 - No saludar si greeted=true.
 - Un solo mensaje, máximo 7 líneas.
 - No preguntar más de 1 cosa por turno.
 - No repetir solicitudes de información.
-- Ventas SOLO de: ventanas y puertas.
+- SOLO vender: ventanas y puertas.
 - En ventanas siempre considerar 3 pilares: térmico, acústico y seguridad.
-- Si el cliente menciona condensación, explique (HR alta + superficie fría) y recomiende DVH + hermeticidad + instalación.
-- No inventar cifras normativas específicas ni artículos de ley.
+- Condensación: HR alta + superficie fría; DVH + hermeticidad + instalación. PVC línea europea: muy difícil condensación interior si está bien ejecutado.
+- No inventar cifras normativas ni afirmar certificaciones si no están en variables MINVU_*.
 `.trim();
-
-  const input = [
-    { role: "system", content: system },
-    { role: "user", content: `greeted=${session.flags.greeted}\nPerfil=${JSON.stringify(session.profile)}\nCliente=${userText}\nBase=${baseReply}` },
-  ];
 
   try {
     const resp = await openai.responses.create({
       model: AI_MODEL_OPENAI,
-      input,
+      input: [
+        { role: "system", content: system },
+        { role: "user", content: `greeted=${session.flags.greeted}\nPerfil=${JSON.stringify(session.profile)}\nCliente=${userText}\nBase=${baseReply}` },
+      ],
     });
     let out = normalizeText(resp.output_text || "");
     out = stripRepeatedGreeting(session, out);
@@ -461,18 +456,45 @@ Reglas:
   }
 }
 
-// ===== Handler =====
-async function handleInboundMessage(message) {
+// ===== Core processing (se ejecuta SOLO cuando pasa el debounce) =====
+async function processBuffered(session) {
+  const from = session.buffer.lastFrom;
+  const contextId = session.buffer.contextId;
+  const combined = normalizeText(session.buffer.parts.join(" "));
+
+  // Limpiar buffer antes de responder (evita doble envíos)
+  session.buffer.parts = [];
+  session.buffer.timer = null;
+
+  if (!from || !combined) return;
+
+  // Delay humano adicional (además del debounce)
+  await sleep(clamp(randInt(MIN_DELAY, MAX_DELAY), 250, 8000));
+
+  const base = buildReply(session, combined);
+  const finalReply = await aiPolish(session, combined, base);
+
+  await sendText(from, finalReply, contextId);
+}
+
+// ===== Enqueue inbound (debounce: espera a que el cliente “termine de escribir”) =====
+async function enqueueInboundMessage(message) {
   const messageId = message.id;
   const from = message.from;
   const type = message.type;
 
   if (!from || !messageId) return;
-  if (wasProcessed(messageId)) { log("DUPLICATE ignored:", messageId); return; }
+
+  if (wasProcessed(messageId)) {
+    log("DUPLICATE ignored:", messageId);
+    return;
+  }
   rememberProcessed(messageId);
 
+  // Marcar leído y “typing” (best-effort)
   await markReadAndTyping(messageId);
 
+  // Extraer texto
   let userText = "";
   if (type === "text") userText = message.text?.body || "";
   else if (type === "interactive") {
@@ -481,19 +503,27 @@ async function handleInboundMessage(message) {
       message.interactive?.list_reply?.title ||
       "";
   }
-
   userText = normalizeText(userText);
   if (!userText) return;
 
   const session = getSession(from);
+
+  // Actualizar perfil con cada fragmento
   extractInfo(session, userText);
 
-  await sleep(clamp(randInt(MIN_DELAY, MAX_DELAY), 250, 8000));
+  // Guardar en buffer
+  session.buffer.lastMsgId = messageId;
+  session.buffer.lastFrom = from;
+  session.buffer.lastAt = now();
+  session.buffer.contextId = messageId; // respondemos ligado al último msg del cliente
+  session.buffer.parts.push(userText);
 
-  const base = buildReply(session, userText);
-  const finalReply = await aiPolish(session, userText, base);
+  // Reset timer (debounce)
+  if (session.buffer.timer) clearTimeout(session.buffer.timer);
 
-  await sendText(from, finalReply, messageId);
+  session.buffer.timer = setTimeout(() => {
+    processBuffered(session).catch((e) => err("processBuffered crashed:", e?.response?.data || e.message));
+  }, WAIT_AFTER_LAST_USER_MESSAGE_MS);
 }
 
 // ===== Webhooks =====
@@ -521,8 +551,8 @@ app.post("/webhook", (req, res) => {
         const messages = value.messages || [];
         for (const m of messages) {
           setImmediate(() => {
-            handleInboundMessage(m).catch((e) =>
-              err("handleInboundMessage crashed:", e?.response?.data || e.message)
+            enqueueInboundMessage(m).catch((e) =>
+              err("enqueueInboundMessage crashed:", e?.response?.data || e.message)
             );
           });
         }
@@ -545,8 +575,10 @@ app.listen(PORT, () => {
   log("ENV AI_PROVIDER:", AI_PROVIDER || "NOT_SET");
   log("ENV AI_MODEL_OPENAI:", AI_MODEL_OPENAI || "NOT_SET");
   log("ENV BUSINESS_TIMEZONE:", BUSINESS_TIMEZONE);
+  log("ENV WAIT_AFTER_LAST_USER_MESSAGE_MS:", String(WAIT_AFTER_LAST_USER_MESSAGE_MS));
   log("ENV REPLY_WITH_CONTEXT:", String(REPLY_WITH_CONTEXT));
   log("ENV TONE:", TONE);
+  log("ENV AGENT_NAME:", AGENT_NAME);
   envCheck("MINVU_EXPERT_NOTE", MINVU_EXPERT_NOTE);
   envCheck("MINVU_CREDENTIALS", MINVU_CREDENTIALS);
   log(`✅ Server running on port ${PORT}`);
