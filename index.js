@@ -1,574 +1,475 @@
-// index.js — WhatsApp Sales Bot (Activa Inversiones)
-// Fixes principales:
-// 1) Anti-duplicados de salida (no envía el mismo mensaje 2–3 veces)
-// 2) Debounce más fuerte para responder 1 sola vez
-// 3) IA controlada: NO inventa stock/precios/plazos
-// 4) Respuestas humanas + explicación cuando el usuario pregunta "¿qué es...?"
-
 import express from "express";
 import axios from "axios";
-import crypto from "crypto";
+import OpenAI from "openai";
 
-process.on("unhandledRejection", (err) =>
-  console.error("UNHANDLED_REJECTION:", err?.response?.data || err?.message || err)
-);
-process.on("uncaughtException", (err) =>
-  console.error("UNCAUGHT_EXCEPTION:", err?.response?.data || err?.message || err)
-);
+/**
+ * WhatsApp Cloud API + IA (OpenAI) + estilo humano
+ * - Responde 200 rápido para evitar reintentos de Meta
+ * - Deduplicación por message.id (wamid)
+ * - Marca leído + typing indicator
+ * - Delay aleatorio para “sensación humana”
+ * - 1 solo mensaje por turno (no spam)
+ * - No repite preguntas: usa memoria simple por contacto (in-memory)
+ */
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
-const PORT = process.env.PORT || 8080;
 
-// ===================== ENV =====================
+// ===== ENV =====
+const PORT = Number(process.env.PORT || 8080);
+
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "";
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "";
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || "";
 
-const BUSINESS_NAME = process.env.BUSINESS_NAME || "Activa Inversiones";
-const SALES_REGION = process.env.SALES_REGION || "Temuco y alrededores";
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v22.0";
 
-const CRM_WEBHOOK_URL = process.env.CRM_WEBHOOK_URL || "";
-
-// IA
-const AI_PROVIDER = (process.env.AI_PROVIDER || "none").toLowerCase();
+const AI_PROVIDER = (process.env.AI_PROVIDER || "").toLowerCase(); // "openai"
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const AI_MODEL_OPENAI = process.env.AI_MODEL_OPENAI || "gpt-4.1-mini";
 
-console.log("BOOT: starting app…");
-console.log("ENV PORT:", process.env.PORT || PORT);
-console.log("ENV PHONE_NUMBER_ID:", PHONE_NUMBER_ID ? "OK" : "MISSING");
-console.log("ENV WHATSAPP_TOKEN:", WHATSAPP_TOKEN ? "OK" : "MISSING");
-console.log("ENV VERIFY_TOKEN:", VERIFY_TOKEN ? "OK" : "MISSING");
-console.log("ENV OPENAI_API_KEY:", OPENAI_API_KEY ? "OK" : "MISSING");
-console.log("ENV AI_PROVIDER:", AI_PROVIDER);
-console.log("ENV AI_MODEL_OPENAI:", AI_MODEL_OPENAI);
-console.log("ENV CRM_WEBHOOK_URL:", CRM_WEBHOOK_URL ? "OK" : "NOT_SET");
+const MIN_DELAY = Number(process.env.MIN_RESPONSE_DELAY_MS || 900);
+const MAX_DELAY = Number(process.env.MAX_RESPONSE_DELAY_MS || 2200);
 
-// ===================== Controls =====================
-const DEBOUNCE_MS = 1800;          // más humano: agrupa mensajes seguidos
-const SEEN_TEXT_TTL_MS = 90_000;   // dedupe por mismo texto
-const PENDING_TTL_MS = 5 * 60_000; // no repetir la misma pregunta 5 min
-const OUTBOUND_TTL_MS = 60_000;    // NO reenviar mismo reply 60s
-const MSGIDS_MAX = 8000;
+const COMPANY_NAME = process.env.COMPANY_NAME || "Activa Inversiones";
+const DEFAULT_CITY = process.env.DEFAULT_CITY || "Temuco";
 
-// ===================== Stores =====================
-const sessions = new Map();
-const processedMsgIds = new Set();
-const seenTextWindow = new Map();     // hash(from|text) -> ts
-const outboundWindow = new Map();     // hash(to|reply) -> ts
-const inboundBuffers = new Map();     // waId -> { texts, timer, processing }
+const SALES_EMAIL = process.env.SALES_EMAIL || "";
+const SALES_PHONE = process.env.SALES_PHONE || "";
 
-// ===================== Helpers =====================
-function now() { return Date.now(); }
-function normalize(t = "") { return t.toLowerCase().trim(); }
-function sha1(s) { return crypto.createHash("sha1").update(s).digest("hex"); }
+const CRM_WEBHOOK_URL = process.env.CRM_WEBHOOK_URL || ""; // opcional
 
-function cleanupStores() {
-  const t = now();
+// ===== OpenAI client (si aplica) =====
+const openai =
+  AI_PROVIDER === "openai" && OPENAI_API_KEY
+    ? new OpenAI({ apiKey: OPENAI_API_KEY })
+    : null;
 
-  for (const [k, ts] of seenTextWindow.entries()) {
-    if (t - ts > SEEN_TEXT_TTL_MS) seenTextWindow.delete(k);
-  }
-  for (const [k, ts] of outboundWindow.entries()) {
-    if (t - ts > OUTBOUND_TTL_MS) outboundWindow.delete(k);
-  }
-  if (processedMsgIds.size > MSGIDS_MAX) {
-    const arr = Array.from(processedMsgIds);
-    arr.slice(0, 3000).forEach((id) => processedMsgIds.delete(id));
-  }
+// ===== Utilidades =====
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
+const randInt = (a, b) => Math.floor(a + Math.random() * (b - a + 1));
+const now = () => Date.now();
+
+function log(...args) {
+  console.log(new Date().toISOString(), ...args);
+}
+function warn(...args) {
+  console.warn(new Date().toISOString(), ...args);
+}
+function err(...args) {
+  console.error(new Date().toISOString(), ...args);
 }
 
-function getSession(waId) {
-  if (!sessions.has(waId)) {
-    sessions.set(waId, {
-      lead: {
-        customerType: null,
-        city: null,
-        products: [],
-        goal: null,
-        quantities: null,
-        measures: null,
-        glazing: null,
-        timeline: null,
-        notes: null,
-        name: null,
-        email: null,
+function envCheck(name, value) {
+  log(`ENV ${name}:`, value ? "OK" : "NOT_SET");
+}
+
+// ===== Estado (simple, en memoria) =====
+/**
+ * processedMessageIds evita duplicados si Meta reintenta webhooks.
+ * TTL recomendado: 10 minutos.
+ */
+const processedMessageIds = new Map(); // id -> timestamp
+const PROCESSED_TTL_MS = 10 * 60 * 1000;
+
+function rememberProcessed(id) {
+  processedMessageIds.set(id, now());
+}
+function wasProcessed(id) {
+  const t = processedMessageIds.get(id);
+  if (!t) return false;
+  if (now() - t > PROCESSED_TTL_MS) {
+    processedMessageIds.delete(id);
+    return false;
+  }
+  return true;
+}
+function cleanupProcessed() {
+  const t = now();
+  for (const [id, ts] of processedMessageIds.entries()) {
+    if (t - ts > PROCESSED_TTL_MS) processedMessageIds.delete(id);
+  }
+}
+setInterval(cleanupProcessed, 60 * 1000).unref();
+
+/**
+ * sessions guarda contexto por wa_id para no repetir preguntas
+ * (en producción ideal: Redis/DB, pero esto basta para estabilizar hoy).
+ */
+const sessions = new Map(); // wa_id -> session
+
+function getSession(wa_id) {
+  if (!sessions.has(wa_id)) {
+    sessions.set(wa_id, {
+      wa_id,
+      createdAt: now(),
+      lastReplyAt: 0,
+      profile: {
+        customerType: "", // residencial/comercial/constructora/arquitecto/...
+        city: "",
+        comuna: "",
+        products: [], // ventanas, puertas, muro_cortina, tabiques_vidriados, termopanel
+        goal: "", // termico/acustico/condensacion/seguridad/...
+        qty: null,
+        dims: [], // [{w_mm,h_mm,count}]
+        timeline: "", // urgente/1 mes/2-3 meses/...
       },
-      flags: { greeted: false, typeConfirmAsked: false },
-      pending: { key: null, askedAt: 0 },
+      lastQuestionKey: "", // para no repetir
+      lastUserText: "",
     });
   }
-  return sessions.get(waId);
+  return sessions.get(wa_id);
 }
 
-function setPending(session, key) {
-  session.pending.key = key;
-  session.pending.askedAt = now();
-}
-function clearPendingIfAnswered(session, key, value) {
-  if (value && session.pending.key === key) {
-    session.pending.key = null;
-    session.pending.askedAt = 0;
-  }
-}
-function pendingIsFresh(session, key) {
-  return session.pending.key === key && (now() - session.pending.askedAt) < PENDING_TTL_MS;
-}
+// ===== WhatsApp Cloud API helpers =====
+const graphBase = `https://graph.facebook.com/${META_GRAPH_VERSION}/${PHONE_NUMBER_ID}`;
 
-// ===================== Extraction =====================
-const CITY_KEYWORDS = [
-  "temuco","padre las casas","villarrica","pucon","pucón","lautaro","freire",
-  "labranza","carahue","nueva imperial","imperial","angol","victoria","collipulli"
-];
-function titleCase(str) { return str.replace(/\b\w/g, (m) => m.toUpperCase()); }
-
-function detectCity(text="") {
-  const t = normalize(text);
-  for (const c of CITY_KEYWORDS) if (t.includes(c)) return titleCase(c);
-  const m = text.match(/(?:comuna|ciudad)\s+([a-záéíóúñ\s]{3,40})/i);
-  return m?.[1] ? titleCase(m[1].trim()) : null;
-}
-
-function detectProducts(text="") {
-  const x = normalize(text);
-  const products = new Set();
-  if (/(ventana|ventanas|termopanel|dvh|triple|low[-\s]?e)/i.test(x)) products.add("VENTANAS/TERMOPANEL");
-  if (/(puerta|puertas)/i.test(x)) products.add("PUERTAS");
-  if (/(muro cortina|curtain wall|fachada)/i.test(x)) products.add("MURO_CORTINA");
-  if (/(tabique vidriado|división vidriada|mampara|oficina)/i.test(x)) products.add("TABIQUES_VIDRIADOS");
-  return Array.from(products);
-}
-
-function detectGoal(text="") {
-  const t = normalize(text);
-  if (/(aislaci[oó]n t[eé]rmica|fr[ií]o|calor|eficiencia energ[eé]tica|transmitancia|u[-\s]?value)/i.test(t))
-    return "AISLACIÓN_TÉRMICA";
-  if (/(ruido|ac[uú]stic|sonido)/i.test(t)) return "AISLACIÓN_ACÚSTICA";
-  if (/(condensaci[oó]n|empa[nñ]amiento|humedad)/i.test(t)) return "CONTROL_CONDENSACIÓN";
-  if (/(seguridad|laminad|antirrobo)/i.test(t)) return "SEGURIDAD";
-  return null;
-}
-
-function detectCustomerType(text="") {
-  const t = normalize(text);
-  if (/casa|hogar|residencial|depto|departamento/i.test(t)) return "RESIDENCIAL";
-  if (/comercial|local|tienda|oficina|bodega|industrial/i.test(t)) return "COMERCIAL";
-  if (/constructora|inmobiliaria|obra|licitaci[oó]n/i.test(t)) return "CONSTRUCTOR";
-  if (/arquitect|proyectista|especificador/i.test(t)) return "ARQUITECTO";
-  if (/colegio|cesfam|hospital|municipal|instituci[oó]n/i.test(t)) return "INSTITUCIONAL";
-  return null;
-}
-
-function mergeTokenList(current, tokens=[]) {
-  const set = new Set((current || "").split(/[,\|]/).map(s=>s.trim()).filter(Boolean));
-  tokens.forEach(x => set.add(x));
-  return Array.from(set).join(", ");
-}
-
-function extractQuantities(text="") {
-  const t = normalize(text);
-  if (/^\d{1,4}$/.test(t)) return parseInt(t, 10);
-  const m = t.match(/(?:son|serian|serían|aprox|aproximadamente)?\s*(\d{1,4})\s*(?:unidades|uds|u|ventanas|puertas|paños)?/i);
-  return m?.[1] ? parseInt(m[1], 10) : null;
-}
-
-function extractMeasures(text="") {
-  const raw = text.toLowerCase();
-  const measures = [];
-  const re = /(\d{1,4}(?:[.,]\d{1,2})?)\s*[x×]\s*(\d{1,4}(?:[.,]\d{1,2})?)\s*(mm|cm|m)?/gi;
-
-  let match;
-  while ((match = re.exec(raw)) !== null) {
-    let a = parseFloat(String(match[1]).replace(",", "."));
-    let b = parseFloat(String(match[2]).replace(",", "."));
-    const unit = (match[3] || "mm").toLowerCase();
-    if (unit === "m") { a *= 1000; b *= 1000; }
-    if (unit === "cm") { a *= 10; b *= 10; }
-
-    const A = Math.round(a), B = Math.round(b);
-    if (A >= 200 && B >= 200 && A <= 6000 && B <= 6000) measures.push(`${A}x${B}mm`);
-  }
-  return measures.length ? Array.from(new Set(measures)).join(" | ") : null;
-}
-
-function isExplainIntent(text="") {
-  const t = normalize(text);
-  return /que es|qué es|explica|expl[ií]came|significa|eficiencia energ[eé]tica|aislaci[oó]n/i.test(t);
-}
-
-function parseLeadFromText(session, text) {
-  const lead = session.lead;
-  const t = normalize(text);
-
-  const prevType = lead.customerType;
-
-  const type = detectCustomerType(text);
-  if (type) lead.customerType = type;
-
-  const city = detectCity(text);
-  if (city) lead.city = city;
-
-  const prods = detectProducts(text);
-  if (prods.length) lead.products = Array.from(new Set([...(lead.products||[]), ...prods]));
-
-  const goal = detectGoal(text);
-  if (goal) lead.goal = goal;
-
-  if (/(termopanel|dvh)/i.test(t)) lead.glazing = mergeTokenList(lead.glazing, ["DVH"]);
-  if (/(triple)/i.test(t)) lead.glazing = mergeTokenList(lead.glazing, ["TRIPLE"]);
-  if (/(low[-\s]?e|baja emisividad)/i.test(t)) lead.glazing = mergeTokenList(lead.glazing, ["LOW_E"]);
-  if (/(laminad)/i.test(t)) lead.glazing = mergeTokenList(lead.glazing, ["LAMINADO"]);
-  if (/(argon)/i.test(t)) lead.glazing = mergeTokenList(lead.glazing, ["ARGON"]);
-
-  const q = extractQuantities(text);
-  if (q && !lead.quantities) lead.quantities = String(q);
-
-  const ms = extractMeasures(text);
-  if (ms && !lead.measures) lead.measures = ms;
-
-  if (!lead.timeline) {
-    if (/hoy|urgente|ya/i.test(t)) lead.timeline = "URGENTE";
-    else if (/semana|7 d/i.test(t)) lead.timeline = "1-2 SEM";
-    else if (/1\s*mes|mes|30 d/i.test(t)) lead.timeline = "1 MES";
-    else if (/más|2\s*mes|3\s*mes|\+1\s*mes/i.test(t)) lead.timeline = "+1 MES";
-  }
-
-  const em = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-  if (em?.[0] && !lead.email) lead.email = em[0].toLowerCase();
-
-  // Limpia pendientes
-  clearPendingIfAnswered(session, "customerType", lead.customerType);
-  clearPendingIfAnswered(session, "city", lead.city);
-  clearPendingIfAnswered(session, "products", (lead.products||[]).length ? "ok" : "");
-  clearPendingIfAnswered(session, "goal", lead.goal);
-  clearPendingIfAnswered(session, "quantities", lead.quantities);
-  clearPendingIfAnswered(session, "measures", lead.measures);
-  clearPendingIfAnswered(session, "timeline", lead.timeline);
-
-  return { prevType, newType: lead.customerType };
-}
-
-// ===================== Conversation =====================
-function getMissingKeys(lead) {
-  const missing = [];
-  if (!lead.customerType) missing.push("customerType");
-  if (!lead.city) missing.push("city");
-  if (!lead.products || lead.products.length === 0) missing.push("products");
-  if (!lead.goal) missing.push("goal");
-  if (!lead.quantities) missing.push("quantities");
-  if (!lead.measures) missing.push("measures");
-  if (!lead.timeline) missing.push("timeline");
-  return missing;
-}
-
-function questionFor(key) {
-  switch (key) {
-    case "customerType": return "¿Es para tu casa o para un local/negocio?";
-    case "city": return "¿En qué comuna/ciudad es el proyecto?";
-    case "products": return "¿Qué necesitas: ventanas, puertas, muro cortina o tabiques vidriados?";
-    case "goal": return "¿Qué te importa más: térmico, acústico o controlar condensación?";
-    case "quantities": return "¿Cuántas unidades son en total?";
-    case "measures": return "¿Medidas aproximadas? (ej: 1600x1900mm)";
-    case "timeline": return "¿Para cuándo lo necesitas?";
-    default: return "¿Me das un poquito más de detalle para cotizar?";
-  }
-}
-
-function summaryLine(lead) {
-  const bits = [];
-  if (lead.customerType) bits.push(lead.customerType.toLowerCase());
-  if (lead.city) bits.push(lead.city);
-  if ((lead.products||[]).length) bits.push(lead.products.join(", ").toLowerCase());
-  if (lead.goal) bits.push(lead.goal.toLowerCase().replace("_"," "));
-  return bits.length ? `Perfecto: ${bits.join(" · ")}.` : "Perfecto.";
-}
-
-function explainLine(goal) {
-  if (goal === "AISLACIÓN_TÉRMICA") {
-    return "Aislación térmica = que tu ventana deje pasar menos frío/calor. Se mide por transmitancia (U): mientras más baja, mejor confort y menos gasto en calefacción.";
-  }
-  if (goal === "AISLACIÓN_ACÚSTICA") {
-    return "Aislación acústica = reducir ruido exterior. La mejora real viene por el tipo de vidrio (laminado/espesores) y un buen sello/instalación.";
-  }
-  if (goal === "CONTROL_CONDENSACIÓN") {
-    return "Condensación = humedad que se pega al vidrio por diferencia de temperatura. DVH + sellos correctos reduce bastante, y la ventilación ayuda.";
-  }
-  return "Te lo explico en simple: es mejorar confort y desempeño según tu prioridad.";
-}
-
-function benefitLine(lead) {
-  if (lead.goal === "AISLACIÓN_TÉRMICA") {
-    return "En Temuco normalmente funciona excelente PVC + DVH; si quieres lo mejor, DVH con Low-E sube el rendimiento.";
-  }
-  if (lead.goal === "AISLACIÓN_ACÚSTICA") {
-    return "Para ruido recomiendo DVH con combinaciones asimétricas o laminado, más instalación y sellos bien hechos.";
-  }
-  if (lead.goal === "CONTROL_CONDENSACIÓN") {
-    return "Para condensación: DVH + sellos correctos + buena instalación. Te propongo una configuración que lo reduzca.";
-  }
-  if (lead.goal === "SEGURIDAD") {
-    return "Para seguridad: laminado + herrajes buenos + cierre multipunto si aplica.";
-  }
-  return "Te recomiendo una solución bien cerrada, pensando en desempeño y durabilidad.";
-}
-
-function readyToClose(lead) {
-  return Boolean(lead.city && lead.customerType && (lead.products?.length||0)>0 && lead.goal && (lead.quantities || lead.measures));
-}
-
-function chooseQuestions(session, missingKeys) {
-  const priority = ["products","goal","city","customerType","quantities","measures","timeline"];
-  const ordered = priority.filter((k) => missingKeys.includes(k));
-
-  const picked = [];
-  for (const k of ordered) {
-    if (picked.length >= 1) break; // IMPORTANT: 1 sola pregunta por respuesta (más humano)
-    if (pendingIsFresh(session, k)) continue;
-    picked.push(k);
-  }
-  if (!picked.length && session.pending.key) return [session.pending.key];
-  return picked;
-}
-
-// ===================== OpenAI =====================
-async function openaiChat(system, user) {
-  const r = await axios.post(
-    "https://api.openai.com/v1/chat/completions",
-    {
-      model: AI_MODEL_OPENAI,
-      temperature: 0.2,
-      max_tokens: 220,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
+async function waPostMessages(payload) {
+  const url = `${graphBase}/messages`;
+  return axios.post(url, payload, {
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json",
     },
-    {
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 12000,
-    }
-  );
-  return r?.data?.choices?.[0]?.message?.content?.trim() || "";
+    timeout: 15000,
+  });
 }
 
-async function buildCloseMessage(lead) {
-  const base =
-    `Listo, con esto ya puedo cotizar.\n` +
-    `Recomendación: ${lead.goal === "AISLACIÓN_TÉRMICA" ? "PVC + DVH y, si buscas lo mejor, Low-E" : "DVH + buen sellado/instalación"}.\n` +
-    `¿Agendamos medición o me mandas 2–3 fotos de los vanos para cotizar hoy?`;
+/**
+ * Marca el mensaje como leído y muestra el typing indicator.
+ * Esto hace que el cliente vea:
+ * - doble check en su mensaje (leído)
+ * - “escribiendo…” mientras procesas
+ */
+async function markReadAndTyping(message_id) {
+  if (!message_id) return;
+  try {
+    await waPostMessages({
+      messaging_product: "whatsapp",
+      status: "read",
+      message_id,
+      typing_indicator: { type: "text" },
+    });
+  } catch (e) {
+    warn("markReadAndTyping failed:", e?.response?.data || e.message);
+  }
+}
 
-  if (AI_PROVIDER !== "openai" || !OPENAI_API_KEY) return base;
-
-  const system =
-    `Eres un asesor comercial humano en Chile de ${BUSINESS_NAME}. ` +
-    `Responde corto y natural (máx 5 líneas). ` +
-    `PROHIBIDO inventar precios, stock, disponibilidad o plazos garantizados. ` +
-    `Si no hay datos, di "te confirmo al cotizar". ` +
-    `No repitas preguntas.`;
-
-  const user =
-    `Redacta un cierre corto y humano usando estos datos:\n` +
-    `ciudad=${lead.city}, tipo=${lead.customerType}, productos=${(lead.products||[]).join(", ")}, cantidad=${lead.quantities||"N/D"}, medidas=${lead.measures||"N/D"}, objetivo=${lead.goal}, vidrio=${lead.glazing||"N/D"}.\n` +
-    `Termina con 1 pregunta: "¿Agendamos medición o me mandas fotos de los vanos?"`;
+async function sendText(to, body, contextMessageId = null) {
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "text",
+    text: { body, preview_url: false },
+  };
+  if (contextMessageId) {
+    payload.context = { message_id: contextMessageId };
+  }
 
   try {
-    const txt = await openaiChat(system, user);
-    return txt || base;
+    const r = await waPostMessages(payload);
+    return r.data;
   } catch (e) {
-    console.error("AI close error:", e?.response?.data || e?.message || e);
-    return base;
+    err("sendText failed:", e?.response?.data || e.message);
+    throw e;
   }
 }
 
-async function generateReply(session, combinedUserText) {
-  const { prevType, newType } = parseLeadFromText(session, combinedUserText);
-  const lead = session.lead;
-
-  // Saludo 1 vez
-  if (!session.flags.greeted) {
-    session.flags.greeted = true;
-    setPending(session, "products");
-    return `Hola, soy ${BUSINESS_NAME}. ¿Qué necesitas cotizar: ventanas, puertas, muro cortina o tabiques vidriados?`;
+// ===== CRM webhook (opcional) =====
+async function pushToCrm(event) {
+  if (!CRM_WEBHOOK_URL) return;
+  try {
+    await axios.post(CRM_WEBHOOK_URL, event, {
+      headers: { "Content-Type": "application/json" },
+      timeout: 10000,
+    });
+  } catch (e) {
+    warn("CRM webhook failed:", e?.response?.data || e.message);
   }
-
-  // Confirmación de tipo solo si cambió
-  if (prevType && newType && prevType !== newType && !session.flags.typeConfirmAsked) {
-    session.flags.typeConfirmAsked = true;
-    setPending(session, "customerType");
-    return `Perfecto. Solo para no equivocarme: ¿confirmo que es **${newType.toLowerCase()}**?`;
-  }
-
-  // Si pide explicación, primero explico (1 bloque), luego 1 pregunta si hace falta
-  if (isExplainIntent(combinedUserText) && lead.goal) {
-    const missing = getMissingKeys(lead);
-    const picked = chooseQuestions(session, missing);
-    picked.forEach((k) => setPending(session, k));
-    return `${explainLine(lead.goal)}\n${benefitLine(lead)}${picked.length ? `\n${questionFor(picked[0])}` : ""}`;
-  }
-
-  // Si listo para cierre
-  if (readyToClose(lead)) return await buildCloseMessage(lead);
-
-  // Si falta info: resumen + beneficio + 1 pregunta
-  const missing = getMissingKeys(lead);
-  const picked = chooseQuestions(session, missing);
-  picked.forEach((k) => setPending(session, k));
-
-  if (picked.length === 1 && pendingIsFresh(session, picked[0])) {
-    return `${summaryLine(lead)}\n${benefitLine(lead)}\nCuando puedas: ${questionFor(picked[0])}`;
-  }
-
-  return `${summaryLine(lead)}\n${benefitLine(lead)}\n${picked.length ? questionFor(picked[0]) : "¿Me confirmas el objetivo principal?"}`;
 }
 
-// ===================== WhatsApp send (con dedupe de salida) =====================
-async function sendWhatsAppText(to, text) {
-  if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) throw new Error("Missing WHATSAPP_TOKEN or PHONE_NUMBER_ID");
+// ===== IA: 1 sola llamada que (1) actualiza perfil (2) responde humano (3) 1 pregunta max =====
+async function aiReply(session, userText) {
+  // Fallback sin IA:
+  if (!openai) return null;
 
-  // OUTBOUND DEDUPE: evita mensajes duplicados iguales
-  const outKey = sha1(`${to}|${normalize(text)}`);
-  const last = outboundWindow.get(outKey);
-  if (last && (now() - last) < OUTBOUND_TTL_MS) {
-    console.log("OUTBOUND_DEDUPE: skipped duplicate reply");
+  const system = `
+Eres un asesor comercial humano de ${COMPANY_NAME} (Chile). Vendes: ventanas y puertas (PVC/Aluminio), termopaneles, muros cortina y tabiques vidriados.
+Objetivo: ayudar, calificar el tipo de cliente y cerrar siguiente paso (medición/visita/cotización).
+Reglas estrictas:
+- Responde SIEMPRE en 1 solo mensaje corto (máx 5-7 líneas).
+- NO repitas preguntas ya respondidas (usa el perfil).
+- Si el usuario hace una pregunta directa (ej: "qué es eficiencia energética"), RESPONDE primero y recién después pregunta 1 cosa.
+- Haz MÁXIMO 1 pregunta por turno.
+- Evita sonar robótico: lenguaje cercano chileno, profesional, sin exagerar.
+- No prometas normas específicas si faltan datos; di "cumplimos exigencias térmicas vigentes y especificación del proyecto" y pide zona/comuna si aporta.
+- Si ya hay cantidad y medidas: no vuelvas a pedirlo; pide lo que falte para cotizar (apertura, color, tipo vidrio, instalación, etc.).
+- Cierre: propone siguiente paso claro (medición / fotos de vanos / llamada).
+`;
+
+  const profile = session.profile;
+
+  const schema = {
+    name: "SalesReply",
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        updates: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            customerType: { type: "string" },
+            city: { type: "string" },
+            comuna: { type: "string" },
+            products: { type: "array", items: { type: "string" } },
+            goal: { type: "string" },
+            qty: { type: ["number", "null"] },
+            timeline: { type: "string" },
+            dims: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  w_mm: { type: "number" },
+                  h_mm: { type: "number" },
+                  count: { type: ["number", "null"] },
+                },
+                required: ["w_mm", "h_mm", "count"],
+              },
+            },
+          },
+          required: ["customerType", "city", "comuna", "products", "goal", "qty", "timeline", "dims"],
+        },
+        reply: { type: "string" },
+        next_question_key: { type: "string" },
+        crm: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            lead_stage: { type: "string" },
+            tags: { type: "array", items: { type: "string" } },
+          },
+          required: ["lead_stage", "tags"],
+        },
+      },
+      required: ["updates", "reply", "next_question_key", "crm"],
+    },
+  };
+
+  const input = [
+    {
+      role: "system",
+      content: system.trim(),
+    },
+    {
+      role: "user",
+      content: `
+Contexto (perfil actual):
+${JSON.stringify(profile, null, 2)}
+
+Última pregunta hecha (para no repetir):
+${session.lastQuestionKey || "(ninguna)"}
+
+Mensaje del cliente:
+${userText}
+`.trim(),
+    },
+  ];
+
+  try {
+    const resp = await openai.responses.create({
+      model: AI_MODEL_OPENAI,
+      input,
+      response_format: { type: "json_schema", json_schema: schema },
+    });
+
+    const text = resp.output_text || "";
+    const parsed = JSON.parse(text);
+
+    return parsed;
+  } catch (e) {
+    warn("OpenAI failed, fallback:", e?.message || e);
+    return null;
+  }
+}
+
+// ===== Fallback no-IA (muy básico) =====
+function basicFallbackReply(session, userText) {
+  const p = session.profile;
+  const city = p.city || p.comuna || DEFAULT_CITY;
+
+  // Responder preguntas simples frecuentes:
+  const t = userText.toLowerCase();
+  if (t.includes("eficiencia") || t.includes("aislaci") || t.includes("transmit")) {
+    const cierre = "Si me dices 1) tipo de apertura (corredera/abatir) y 2) color (blanco/antracita), te cierro una propuesta y agendamos medición.";
+    return `Eficiencia energética en ventanas = que pase menos frío/calor. Se refleja en el valor U (mientras más bajo, mejor) y en el control de condensación con buen termopanel + sellos + instalación.\nEn ${city}, PVC + termopanel (DVH) suele andar excelente; si quieres subir nivel, Low-E ayuda bastante.\n${cierre}`;
+  }
+
+  // Si no hay producto definido:
+  if (!p.products?.length) {
+    return `Hola, soy ${COMPANY_NAME}. Para ayudarte rápido: ¿qué necesitas cotizar: ventanas, puertas, muro cortina o tabiques vidriados?`;
+  }
+
+  // Si ya hay producto, pedir 1 dato faltante:
+  return `Perfecto. Para cotizar bien en ${city}: ¿las ventanas serían corredera o abatible (oscilobatiente)? Con eso te doy recomendación y siguiente paso.`;
+}
+
+// ===== Orquestación por mensaje =====
+async function handleInboundMessage(message, value) {
+  const messageId = message.id;
+  const from = message.from; // wa_id (teléfono del cliente)
+  const type = message.type;
+
+  if (!from || !messageId) return;
+
+  // Deduplicación: si Meta reintenta, NO respondemos 2 veces
+  if (wasProcessed(messageId)) {
+    log("DUPLICATE webhook ignored:", messageId);
     return;
   }
-  outboundWindow.set(outKey, now());
+  rememberProcessed(messageId);
 
-  const url = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
-  const payload = { messaging_product: "whatsapp", to, type: "text", text: { body: text } };
+  // Marcar como leído + typing (human UX)
+  await markReadAndTyping(messageId);
 
-  await axios.post(url, payload, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-    timeout: 10000,
-  });
-}
+  const session = getSession(from);
 
-// ===================== CRM (optional) =====================
-async function sendToCRM(waId, lead) {
-  if (!CRM_WEBHOOK_URL) return;
-  await axios.post(
-    CRM_WEBHOOK_URL,
-    { waId, source: "whatsapp", business: BUSINESS_NAME, region: SALES_REGION, lead, ts: new Date().toISOString() },
-    { timeout: 10000 }
-  );
-}
-
-// ===================== Debounce inbound =====================
-function enqueueInbound(waId, text, flushFn) {
-  const entry = inboundBuffers.get(waId) || { texts: [], timer: null, processing: false };
-  entry.texts.push(text);
-
-  if (!entry.timer) {
-    entry.timer = setTimeout(async () => {
-      if (entry.processing) return;
-      entry.processing = true;
-
-      const combined = entry.texts.join("\n");
-      entry.texts = [];
-      entry.timer = null;
-      inboundBuffers.set(waId, entry);
-
-      try {
-        await flushFn(combined);
-      } finally {
-        entry.processing = false;
-
-        // Si llegaron más textos durante el proceso, dispara otra respuesta (también agrupada)
-        if (entry.texts.length > 0 && !entry.timer) {
-          entry.timer = setTimeout(async () => {
-            if (entry.processing) return;
-            entry.processing = true;
-            const combined2 = entry.texts.join("\n");
-            entry.texts = [];
-            entry.timer = null;
-            inboundBuffers.set(waId, entry);
-            try { await flushFn(combined2); } finally { entry.processing = false; }
-          }, DEBOUNCE_MS);
-        }
-      }
-    }, DEBOUNCE_MS);
+  // Obtener texto
+  let userText = "";
+  if (type === "text") userText = message.text?.body || "";
+  else if (type === "interactive") {
+    // si más adelante usas botones/listas
+    userText =
+      message.interactive?.button_reply?.title ||
+      message.interactive?.list_reply?.title ||
+      "";
+  } else {
+    userText = `(${type})`;
   }
 
-  inboundBuffers.set(waId, entry);
-}
+  userText = (userText || "").trim();
+  if (!userText) return;
 
-// ===================== Webhook verify =====================
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+  session.lastUserText = userText;
 
-  if (mode === "subscribe" && token && token === VERIFY_TOKEN) return res.status(200).send(challenge);
-  return res.sendStatus(403);
-});
+  // Delay aleatorio (parecer humano)
+  const delay = clamp(randInt(MIN_DELAY, MAX_DELAY), 250, 8000);
+  await sleep(delay);
 
-// ===================== Webhook POST (ACK inmediato) =====================
-app.post("/webhook", (req, res) => {
-  res.sendStatus(200);
-  setImmediate(() => {
-    handleWebhookEvent(req.body).catch((err) =>
-      console.error("handleWebhookEvent error:", err?.response?.data || err?.message || err)
-    );
-  });
-});
+  // Generar respuesta (IA o fallback)
+  let replyText = "";
+  let nextKey = "";
 
-async function handleWebhookEvent(body) {
-  cleanupStores();
-  if (body.object !== "whatsapp_business_account") return;
+  const ai = await aiReply(session, userText);
 
-  const entry = body.entry?.[0];
-  const change = entry?.changes?.[0];
-  const value = change?.value;
-  const messages = value?.messages;
+  if (ai?.reply) {
+    // Actualizar perfil para no repetir preguntas
+    session.profile = {
+      ...session.profile,
+      ...ai.updates,
+      products: Array.isArray(ai.updates?.products) ? ai.updates.products : session.profile.products,
+      dims: Array.isArray(ai.updates?.dims) ? ai.updates.dims : session.profile.dims,
+    };
 
-  if (!messages || !messages.length) return;
+    // Evitar repetir la misma pregunta si el modelo insiste
+    nextKey = (ai.next_question_key || "").trim();
+    if (nextKey && nextKey === session.lastQuestionKey) {
+      // si repite, le quitamos la pregunta al final (simple)
+      replyText = ai.reply.replace(/\?\s*$/, "").trim();
+      nextKey = "";
+    } else {
+      replyText = ai.reply.trim();
+    }
 
-  for (const msg of messages) {
-    if (msg.type !== "text") continue;
-
-    const msgId = msg.id;
-    const from = msg.from;
-    const text = msg?.text?.body || "";
-    if (!from || !msgId || !text) continue;
-
-    // Dedupe por msgId
-    if (processedMsgIds.has(msgId)) continue;
-    processedMsgIds.add(msgId);
-
-    // Dedupe por texto (cuando Meta reintenta raro)
-    const textKey = sha1(`${from}|${normalize(text)}`);
-    const lastSeen = seenTextWindow.get(textKey);
-    if (lastSeen && (now() - lastSeen) < SEEN_TEXT_TTL_MS) continue;
-    seenTextWindow.set(textKey, now());
-
-    enqueueInbound(from, text, async (combinedText) => {
-      const session = getSession(from);
-      const reply = await generateReply(session, combinedText);
-
-      await sendWhatsAppText(from, reply).catch((e) =>
-        console.error("sendWhatsAppText error:", e?.response?.data || e?.message || e)
-      );
-
-      // CRM opcional
-      if (CRM_WEBHOOK_URL) {
-        const lead = session.lead;
-        if (lead.city && (lead.products?.length || 0) > 0) {
-          sendToCRM(from, lead).catch((e) =>
-            console.error("sendToCRM error:", e?.response?.data || e?.message || e)
-          );
-        }
-      }
+    // Empujar evento al CRM (opcional)
+    await pushToCrm({
+      source: "whatsapp",
+      wa_id: from,
+      message_id: messageId,
+      user_text: userText,
+      profile: session.profile,
+      crm: ai.crm,
+      ts: new Date().toISOString(),
     });
+  } else {
+    replyText = basicFallbackReply(session, userText);
   }
+
+  // Anti-spam: 1 mensaje por turno, y no enviar si está vacío
+  if (!replyText) return;
+
+  // Enviar
+  await sendText(from, replyText, messageId);
+
+  // Guardar última pregunta
+  session.lastReplyAt = now();
+  session.lastQuestionKey = nextKey || session.lastQuestionKey;
 }
 
-// Health
-app.get("/", (req, res) => res.status(200).json({ ok: true, ts: new Date().toISOString() }));
+// ===== WEBHOOKS =====
+app.get("/webhook", (req, res) => {
+  try {
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Server running on port ${PORT}`);
+    if (mode === "subscribe" && token && token === VERIFY_TOKEN) {
+      return res.status(200).send(challenge);
+    }
+    return res.sendStatus(403);
+  } catch (e) {
+    err("GET /webhook error:", e);
+    return res.sendStatus(500);
+  }
+});
+
+app.post("/webhook", (req, res) => {
+  // IMPORTANT: responder 200 INMEDIATO para que Meta no reintente
+  res.sendStatus(200);
+
+  try {
+    const body = req.body;
+
+    if (body?.object !== "whatsapp_business_account") return;
+
+    const entries = body.entry || [];
+    for (const entry of entries) {
+      const changes = entry.changes || [];
+      for (const change of changes) {
+        const value = change.value || {};
+        const messages = value.messages || [];
+        if (!messages.length) continue;
+
+        // Procesar asíncrono (después del 200)
+        for (const message of messages) {
+          setImmediate(() => {
+            handleInboundMessage(message, value).catch((e) =>
+              err("handleInboundMessage crashed:", e?.response?.data || e.message)
+            );
+          });
+        }
+      }
+    }
+  } catch (e) {
+    err("POST /webhook parse error:", e);
+  }
+});
+
+// ===== Healthcheck =====
+app.get("/", (_req, res) => res.status(200).send("OK"));
+
+app.listen(PORT, () => {
+  log("BOOT: starting app...");
+  envCheck("PORT", String(PORT));
+  envCheck("PHONE_NUMBER_ID", PHONE_NUMBER_ID);
+  envCheck("WHATSAPP_TOKEN", WHATSAPP_TOKEN);
+  envCheck("VERIFY_TOKEN", VERIFY_TOKEN);
+  envCheck("OPENAI_API_KEY", OPENAI_API_KEY);
+  log("ENV AI_PROVIDER:", AI_PROVIDER || "NOT_SET");
+  log("ENV AI_MODEL_OPENAI:", AI_MODEL_OPENAI || "NOT_SET");
+  envCheck("CRM_WEBHOOK_URL", CRM_WEBHOOK_URL);
+  log(`✅ Server running on port ${PORT}`);
 });
