@@ -28,7 +28,7 @@ const REPLY_WITH_CONTEXT = String(process.env.REPLY_WITH_CONTEXT || "false").toL
 
 const TONE = (process.env.TONE || "usted").toLowerCase(); // "usted" o "tu"
 
-// Texto opcional (no afirma nada si está vacío)
+// Texto opcional (solo si usted lo define)
 const MINVU_EXPERT_NOTE = process.env.MINVU_EXPERT_NOTE || "";
 const MINVU_CREDENTIALS = process.env.MINVU_CREDENTIALS || "";
 
@@ -70,10 +70,20 @@ function getGreeting() {
     hour12: false,
   }).formatToParts(new Date());
   const hh = Number(parts.find(p => p.type === "hour")?.value || "12");
-
   if (hh >= 5 && hh < 12) return "Buenos días";
   if (hh >= 12 && hh < 20) return "Buenas tardes";
   return "Buenas noches";
+}
+
+function expertFooter() {
+  const lines = [];
+  if (MINVU_EXPERT_NOTE) lines.push(MINVU_EXPERT_NOTE);
+  if (MINVU_CREDENTIALS) lines.push(MINVU_CREDENTIALS);
+  return lines.length ? `\n${lines.join(" ")}` : "";
+}
+
+function ustedOn() {
+  return TONE === "usted";
 }
 
 // ===== Dedupe webhook =====
@@ -94,7 +104,7 @@ setInterval(() => {
   }
 }, 60 * 1000).unref();
 
-// ===== Sessions (anti-repreguntas) =====
+// ===== Sessions =====
 const sessions = new Map();
 const QUESTION_COOLDOWN_MS = 45 * 60 * 1000;
 
@@ -110,14 +120,14 @@ function getSession(wa_id) {
         customerType: "",
         city: "",
         comuna: "",
-        products: [],
-        goal: "",
+        products: [],   // SOLO: ["ventanas","puertas"]
+        priority: "",   // "térmico" | "acústico" | "seguridad" | "balance"
+        goal: "",       // "condensación" si el cliente lo menciona
         qty: null,
         dims: [],
-        timeline: "",
-        opening: "",
-        color: "",
-        install: "",
+        opening: "",    // corredera / abatible / oscilobatiente
+        install: "",    // con instalación / sin instalación
+        material: "",   // pvc europeo / pvc americano / aluminio (si aparece)
       },
     });
   }
@@ -131,7 +141,7 @@ function canAsk(session, key) {
 }
 function markAsked(session, key) { session.askedAt[key] = now(); }
 
-// ===== WhatsApp Cloud API =====
+// ===== WhatsApp API =====
 const graphBase = `https://graph.facebook.com/${META_GRAPH_VERSION}/${PHONE_NUMBER_ID}`;
 
 async function waPostMessages(payload) {
@@ -145,7 +155,7 @@ async function waPostMessages(payload) {
   });
 }
 
-// Mark as read + typing indicator
+// read + typing
 async function markReadAndTyping(message_id) {
   if (!message_id) return;
   try {
@@ -167,14 +177,12 @@ async function sendText(to, body, contextMessageId = null) {
     type: "text",
     text: { body, preview_url: false },
   };
-  if (REPLY_WITH_CONTEXT && contextMessageId) {
-    payload.context = { message_id: contextMessageId };
-  }
+  if (REPLY_WITH_CONTEXT && contextMessageId) payload.context = { message_id: contextMessageId };
   const r = await waPostMessages(payload);
   return r.data;
 }
 
-// ===== Extractor local =====
+// ===== Extractor =====
 function upsertUnique(arr, value) {
   if (!value) return arr;
   const v = value.toLowerCase();
@@ -192,15 +200,9 @@ function extractInfo(session, userTextRaw) {
     userText.match(/\b(soy|me llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){0,4})\b/i);
   if (nameMatch?.[2]) session.profile.name = titleCaseName(nameMatch[2]);
 
-  // Productos
-  const prodMap = [
-    { k: ["ventana", "ventanas"], v: "ventanas" },
-    { k: ["puerta", "puertas"], v: "puertas" },
-    { k: ["muro cortina", "muros cortina", "curtain wall"], v: "muro cortina" },
-    { k: ["tabique", "tabiques", "tabique vidriado", "tabiques vidriados"], v: "tabiques vidriados" },
-    { k: ["termopanel", "dvh", "doble vidrio", "igu", "ig u"], v: "termopanel" },
-  ];
-  for (const p of prodMap) if (p.k.some(kk => t.includes(kk))) upsertUnique(session.profile.products, p.v);
+  // SOLO productos permitidos
+  if (t.includes("ventana")) upsertUnique(session.profile.products, "ventanas");
+  if (t.includes("puerta")) upsertUnique(session.profile.products, "puertas");
 
   // Tipo cliente
   if (t.includes("casa") || t.includes("depto") || t.includes("departamento") || t.includes("residenc")) session.profile.customerType = "residencial";
@@ -208,10 +210,23 @@ function extractInfo(session, userTextRaw) {
   else if (t.includes("constructora") || t.includes("obra") || t.includes("licit")) session.profile.customerType = "constructora";
   else if (t.includes("arquitect") || t.includes("oficina técnica") || t.includes("ito")) session.profile.customerType = "arquitecto/oficina técnica";
 
-  // Objetivo
-  if (t.includes("acust") || t.includes("ruido") || t.includes("sonido")) session.profile.goal = "acústico";
-  else if (t.includes("condens")) session.profile.goal = "condensación";
-  else if (t.includes("térm") || t.includes("termic") || t.includes("aislaci")) session.profile.goal = "térmico";
+  // Ciudad/comuna (básico)
+  if (t.includes("temuco")) { session.profile.city = "Temuco"; session.profile.comuna = "Temuco"; }
+  if (t.includes("pucón") || t.includes("pucon")) { session.profile.city = "Pucón"; session.profile.comuna = "Pucón"; }
+
+  // Prioridad (3 pilares + balance)
+  if (t.includes("térm") || t.includes("termic") || t.includes("aislaci")) session.profile.priority = "térmico";
+  if (t.includes("acust") || t.includes("ruido") || t.includes("sonido")) session.profile.priority = "acústico";
+  if (t.includes("segur") || t.includes("antirrobo") || t.includes("cerradura")) session.profile.priority = "seguridad";
+  if (t.includes("todo") || t.includes("todas") || t.includes("balance")) session.profile.priority = "balance";
+
+  // Condensación (como tema, no como “prioridad”)
+  if (t.includes("condens")) session.profile.goal = "condensación";
+
+  // Material
+  if (t.includes("pvc") && (t.includes("europe") || t.includes("línea europea") || t.includes("linea europea"))) session.profile.material = "pvc línea europea";
+  else if (t.includes("pvc") && (t.includes("american") || t.includes("línea americana") || t.includes("linea americana"))) session.profile.material = "pvc americano";
+  else if (t.includes("alumin")) session.profile.material = "aluminio";
 
   // Apertura
   if (t.includes("corredera")) session.profile.opening = "corredera";
@@ -221,9 +236,6 @@ function extractInfo(session, userTextRaw) {
   if (t.includes("con instalación") || t.includes("instalacion") || t.includes("instalar")) session.profile.install = "con instalación";
   if (t.includes("sin instalación") || t.includes("sin instalacion")) session.profile.install = "sin instalación";
 
-  // Ciudad/comuna (básico)
-  if (t.includes("temuco")) { session.profile.city = "Temuco"; session.profile.comuna = "Temuco"; }
-
   // Cantidad
   const qtyMatch = t.match(/\b(\d{1,3})\b/);
   if (qtyMatch) {
@@ -231,7 +243,7 @@ function extractInfo(session, userTextRaw) {
     if (q >= 1 && q <= 500) session.profile.qty = q;
   }
 
-  // Medidas 1200x1400
+  // Medidas: 1200x1400
   const dimMatch = t.match(/\b(\d{3,4})\s*[x×]\s*(\d{3,4})\b/);
   if (dimMatch) {
     const w = Number(dimMatch[1]);
@@ -240,146 +252,149 @@ function extractInfo(session, userTextRaw) {
   }
 }
 
-// ===== Respuestas expertas (sin inventar números) =====
-function expertFooter() {
-  const lines = [];
-  if (MINVU_EXPERT_NOTE) lines.push(MINVU_EXPERT_NOTE);
-  if (MINVU_CREDENTIALS) lines.push(MINVU_CREDENTIALS);
-  return lines.length ? `\n${lines.join(" ")}` : "";
+// ===== Respuestas consultivas =====
+function condensationExplainer() {
+  // Técnica + consultiva, en “usted”
+  return (
+    "Sobre la condensación: normalmente aparece cuando hay **humedad relativa alta (sobre ~80%)** y una superficie fría (por ejemplo, en torno a **12°C**), por lo que el vapor del ambiente se “condensa” como agua.\n" +
+    "En ventanas bien diseñadas y bien instaladas, lo que más ayuda es: **DVH/termopanel**, buena **hermeticidad**, y evitar **puentes térmicos** en la instalación. En **PVC línea europea**, por el diseño multicámara y sellos, es muy difícil que se produzca condensación interior si el conjunto está correcto.\n" +
+    "También es importante la ventilación/uso del recinto (cocina, baños, secado de ropa), porque la humedad del ambiente manda."
+  );
+}
+
+function materialExplainer(material) {
+  const base =
+    "En cuanto a materiales, tanto **PVC americano**, **PVC línea europea** y **aluminio** pueden llevar **termopanel (DVH)**. La diferencia está en el comportamiento del marco, los sellos y la hermeticidad del sistema.";
+  if (!material) return base;
+
+  if (material.includes("europea")) {
+    return base + " En PVC línea europea suele lograrse muy buen desempeño térmico y hermético, ideal para confort y control de condensación.";
+  }
+  if (material.includes("americano")) {
+    return base + " En PVC americano también se puede lograr un muy buen resultado, especialmente si se especifica correctamente el DVH y la instalación.";
+  }
+  if (material.includes("aluminio")) {
+    return base + " En aluminio, lo clave para desempeño térmico es que sea sistema adecuado (idealmente con solución térmica cuando aplica) y un DVH bien especificado.";
+  }
+  return base;
 }
 
 function expertAnswer(session, userTextRaw) {
   const t = normalizeText(userTextRaw).toLowerCase();
   const city = session.profile.city || DEFAULT_CITY;
 
-  const usted = (TONE === "usted");
-  const qPrioridad = usted
-    ? "¿Su prioridad es térmico, acústico o controlar condensación?"
-    : "¿Tu prioridad es térmico, acústico o controlar condensación?";
-
-  // PDA
-  if (t.includes("pda") || t.includes("descontamin") || t.includes("smog") || t.includes("leña") || t.includes("temuco padre las casas")) {
+  // PDA / eficiencia / CES / zonas (se mantiene lo ya implementado)
+  if (t.includes("pda") || t.includes("descontamin") || t.includes("smog") || t.includes("leña")) {
     return (
-      `En ${city}, el PDA busca reducir emisiones (principalmente asociadas a calefacción). Las ventanas eficientes ayudan porque disminuyen pérdidas térmicas e infiltraciones, bajando la demanda de calefacción.\n` +
-      `Para un buen desempeño en obra: DVH, sellos correctos y una instalación que evite puentes térmicos y problemas de condensación.\n` +
-      `${qPrioridad}` +
+      `Sobre el PDA: busca reducir emisiones asociadas a calefacción. Ventanas eficientes ayudan porque disminuyen pérdidas térmicas e infiltraciones; eso reduce la necesidad de calefaccionar.\n` +
+      `En la práctica, el resultado depende de 3 cosas: buen **termopanel**, buen **sello/hermeticidad** y **correcta instalación**.\n` +
+      `¿Le preocupa más el confort térmico, el ruido o la seguridad?` +
       expertFooter()
     );
   }
 
-  // Eficiencia / normativa
   if (t.includes("eficiencia") || t.includes("valor u") || t.includes("transmit") || t.includes("normativa") || t.includes("minvu") || t.includes("oguc")) {
-    const qTipo = usted
-      ? "¿Es para vivienda (residencial) o para local/obra (comercial/constructora)?"
-      : "¿Es para vivienda (residencial) o para local/obra (comercial/constructora)?";
     return (
-      `La eficiencia energética en ventanas significa que pase menos frío/calor. Se refleja en el **valor U** (mientras más bajo, mejor) y en la hermeticidad (infiltración de aire), además de una instalación correcta.\n` +
-      `En términos prácticos: PVC + DVH funciona muy bien y, si se requiere un nivel superior, **Low-E** mejora el rendimiento y el confort.\n` +
-      `${qTipo}` +
+      `Eficiencia energética en ventanas significa que pase menos frío/calor. Se refleja en el **valor U** (mientras más bajo, mejor), y también en la **hermeticidad** (infiltración de aire) y una instalación sin puentes térmicos.\n` +
+      `Cuando hacemos venta consultiva, siempre buscamos equilibrar tres condiciones: **aislación térmica**, **aislación acústica** y **seguridad**.\n` +
+      `Para orientarle bien: ¿es casa nueva en ${city} y su foco principal es condensación, ruido o seguridad?` +
       expertFooter()
     );
   }
 
-  // Zonas térmicas / lluvias
-  if (t.includes("zona térmica") || t.includes("zona termica") || t.includes("zona de lluvia") || t.includes("lluvia") || t.includes("viento") || t.includes("agua")) {
-    const qComuna = usted
-      ? "¿En qué comuna está el proyecto y qué tipo de ventana requiere (corredera/abatible)?"
-      : "¿En qué comuna está el proyecto y qué tipo de ventana requiere (corredera/abatible)?";
-    return (
-      `En Chile se usa zonificación climática para definir exigencias de la envolvente. En simple: a mayor exigencia, más relevante es especificar DVH/Low-E, perfiles, sellos y detalles de instalación.\n` +
-      `La exposición a lluvia y viento influye en estanqueidad y desempeño: ahí importan drenajes, burletes, sellos y correcta instalación.\n` +
-      `${qComuna}` +
-      expertFooter()
-    );
-  }
-
-  // CES
   if (t.includes("ces") || t.includes("certificación edificio sustentable") || t.includes("sustentable")) {
-    const qTipo = usted
-      ? "¿Su proyecto es habitacional, comercial o institucional?"
-      : "¿Tu proyecto es habitacional, comercial o institucional?";
     return (
-      `La CES evalúa desempeño del edificio (energía, confort, entre otros). Las ventanas aportan fuerte si se definen especificaciones: DVH/Low-E, control de infiltraciones y detalles de instalación.\n` +
-      `Si el proyecto apunta a CES, conviene cerrar criterios técnicos desde el inicio para no sobredimensionar ni quedar corto.\n` +
-      `${qTipo}` +
+      `En proyectos con CES, la ventana aporta mucho en energía y confort. Lo importante es definir especificaciones (termopanel/DVH, hermeticidad, y detalles de instalación) desde el inicio.\n` +
+      `Si su proyecto apunta a ese estándar, le puedo proponer una configuración técnica equilibrada.\n` +
+      `¿Es proyecto residencial o comercial?` +
       expertFooter()
+    );
+  }
+
+  // Condensación (respuesta elaborada)
+  if (t.includes("condens") || t.includes("humedad") || t.includes("empaña") || t.includes("empañ")) {
+    return (
+      `${condensationExplainer()}\n` +
+      `${materialExplainer(session.profile.material)}\n` +
+      `Para recomendarle una configuración “cerrada” (térmico + acústico + seguridad), ¿sus ventanas las prefiere **correderas** o **abatibles/oscilobatientes**?`
     );
   }
 
   return null;
 }
 
-// ===== Pregunta única con cooldown =====
+// ===== Pregunta única (solo ventanas/puertas) =====
 function nextSingleQuestion(session) {
   const p = session.profile;
   const city = p.city || DEFAULT_CITY;
-  const usted = (TONE === "usted");
 
   if (!p.products.length && canAsk(session, "products")) {
     markAsked(session, "products");
-    return usted
-      ? "¿Qué necesita cotizar: ventanas, puertas, muro cortina o tabiques vidriados?"
-      : "¿Qué necesitas cotizar: ventanas, puertas, muro cortina o tabiques vidriados?";
+    return "¿Qué necesita cotizar: **ventanas** o **puertas**?";
   }
   if (!p.customerType && canAsk(session, "customerType")) {
     markAsked(session, "customerType");
-    return usted
-      ? `¿Es para vivienda (residencial) o para local/obra (comercial/constructora) en ${city}?`
-      : `¿Es para vivienda (residencial) o para local/obra (comercial/constructora) en ${city}?`;
+    return `¿Es para vivienda (residencial) o para local/obra (comercial/constructora) en ${city}?`;
   }
-  if (!p.goal && canAsk(session, "goal")) {
-    markAsked(session, "goal");
-    return usted
-      ? "¿Su prioridad es térmico, acústico o controlar condensación?"
-      : "¿Tu prioridad es térmico, acústico o controlar condensación?";
+  // Prioridad: se sugiere “balance” por defecto para consultivo
+  if (!p.priority && canAsk(session, "priority")) {
+    markAsked(session, "priority");
+    return "Para orientarle bien: ¿su foco principal es **térmico**, **acústico**, **seguridad**, o prefiere una solución **balanceada** (las tres)?";
   }
   if (!p.qty && canAsk(session, "qty")) {
     markAsked(session, "qty");
-    return usted ? "¿Cuántas unidades son en total?" : "¿Cuántas unidades son en total?";
+    return "¿Cuántas unidades son en total?";
   }
   if ((!p.dims || p.dims.length === 0) && canAsk(session, "dims")) {
     markAsked(session, "dims");
-    return usted ? "¿Tiene medidas aproximadas? (ej: 1200x1400)" : "¿Tienes medidas aproximadas? (ej: 1200x1400)";
+    return "¿Tiene medidas aproximadas? (ej: 1200x1400)";
   }
   if (!p.opening && canAsk(session, "opening")) {
     markAsked(session, "opening");
-    return usted ? "¿Las prefiere corredera o abatible/oscilobatiente?" : "¿Las prefieres corredera o abatible/oscilobatiente?";
+    return "¿Las prefiere **corredera** o **abatible/oscilobatiente**?";
   }
   if (!p.install && canAsk(session, "install")) {
     markAsked(session, "install");
-    return usted ? "¿Las necesita con instalación o solo fabricación?" : "¿Las necesitas con instalación o solo fabricación?";
+    return "¿Las necesita **con instalación** o solo **fabricación**?";
   }
   if (canAsk(session, "close")) {
     markAsked(session, "close");
-    return usted
-      ? "¿Prefiere que agendemos medición o que nos envíe fotos de los vanos para cerrar la cotización?"
-      : "¿Prefieres que agendemos medición o que me envíes fotos de los vanos para cerrar la cotización?";
+    return "Perfecto. ¿Prefiere que agendemos una medición o que nos envíe fotos de los vanos para cerrar la cotización?";
   }
   return "";
 }
 
-// ===== Respuesta principal (saludo 1 vez, 1 pregunta) =====
+// ===== Respuesta principal (consultiva y más cercana) =====
 function buildReply(session, userTextRaw) {
   const userText = normalizeText(userTextRaw);
   const p = session.profile;
-  const usted = (TONE === "usted");
+  const city = p.city || DEFAULT_CITY;
 
   let prefix = "";
   if (!session.flags.greeted) {
     const greet = getGreeting();
     const name = p.name ? ` ${p.name}` : "";
-    prefix = `${greet}${name}, un gusto saludarle. `;
+    prefix = `${greet}${name}, un gusto saludarle. Soy del equipo de ${COMPANY_NAME}. `;
     session.flags.greeted = true;
   }
 
-  // Respuestas expertas
+  // Respuesta experta si aplica
   const expert = expertAnswer(session, userText);
   if (expert) return `${prefix}${expert}`;
 
-  // Si piden cotizar primero
+  // Si el cliente dice “no sé nada, oriénteme”
   const t = userText.toLowerCase();
+  if (t.includes("no sé") || t.includes("no se") || t.includes("oriént") || t.includes("orient")) {
+    const base =
+      "Perfecto, le explico de forma simple y práctica. Para una buena ventana nos enfocamos en 3 pilares: " +
+      "**aislación térmica** (confort y ahorro), **aislación acústica** (menos ruido) y **seguridad** (herrajes/cierres y vidrio según riesgo). " +
+      "Luego ajustamos termopanel y tipo de apertura según su caso.\n";
+    const q = nextSingleQuestion(session);
+    return `${prefix}${base}${q}`;
+  }
+
+  // Si piden cotizar
   if (t.includes("cotiza") || t.includes("cotización") || t.includes("precio") || t.includes("presupuesto")) {
-    const city = p.city || DEFAULT_CITY;
     const prods = p.products.length ? p.products.join(", ") : "ventanas";
     const qty = p.qty ? `${p.qty}` : "—";
     const lastDim = p.dims?.length ? p.dims[p.dims.length - 1] : null;
@@ -387,22 +402,21 @@ function buildReply(session, userTextRaw) {
     const q = nextSingleQuestion(session);
 
     return (
-      `${prefix}Perfecto. Con lo que me indicó, puedo preparar una cotización base:\n` +
-      `• Producto: ${prods}\n• Ciudad: ${city}\n• Cantidad: ${qty}\n• Medida ref.: ${dimsText}\n` +
-      `${q ? `\n${q}` : `\nSi me confirma apertura (corredera/abatible) y si es con instalación, se la dejo cerrada.`}`
+      `${prefix}Perfecto. Con lo que me indicó, ya puedo armar una **cotización base** y luego la cerramos con 1 dato pendiente:\n` +
+      `• Producto: ${prods}\n• Comuna/ciudad: ${p.comuna || city}\n• Cantidad: ${qty}\n• Medida ref.: ${dimsText}\n` +
+      `${q ? `\n${q}` : "\nSi me confirma apertura y si es con instalación, se la dejo cerrada hoy."}`
     );
   }
 
+  // Flujo normal: 1 pregunta
   const q = nextSingleQuestion(session);
   if (!q) {
-    const city = p.city || DEFAULT_CITY;
-    return `${prefix}Perfecto. Con esta información avanzamos bien. Si le parece, agendamos medición en ${city} o nos envía fotos de los vanos y cierro la cotización.`;
+    return `${prefix}Excelente. Con esto avanzamos bien. Si le parece, coordinamos medición o nos envía fotos de los vanos y cierro la propuesta técnica y comercial.`;
   }
-
   return `${prefix}${q}`;
 }
 
-// ===== IA para pulir sin re-saludar =====
+// ===== IA para pulir estilo (sin duplicar saludos, sin pedir todo) =====
 function stripRepeatedGreeting(session, text) {
   if (!text) return text;
   if (!session.flags.greeted) return text;
@@ -415,13 +429,17 @@ async function aiPolish(session, userText, baseReply) {
   if (!openai) return baseReply;
 
   const system = `
-Eres asesor comercial humano de ${COMPANY_NAME} (Chile). Trato formal: USTED.
-Solo mejora redacción del mensaje base, sin cambiar el flujo.
+Usted es asesor comercial humano de ${COMPANY_NAME} (Chile). Trato formal: USTED.
+Objetivo: mejorar redacción sin perder el contenido técnico (venta consultiva).
 Reglas:
 - No saludar si greeted=true.
-- Máx 6 líneas, un solo mensaje.
+- Un solo mensaje, máximo 7 líneas.
+- No preguntar más de 1 cosa por turno.
 - No repetir solicitudes de información.
-- Si el cliente pregunta por PDA/eficiencia/CES/zonas, mantenga tono experto sin inventar cifras.
+- Ventas SOLO de: ventanas y puertas.
+- En ventanas siempre considerar 3 pilares: térmico, acústico y seguridad.
+- Si el cliente menciona condensación, explique (HR alta + superficie fría) y recomiende DVH + hermeticidad + instalación.
+- No inventar cifras normativas específicas ni artículos de ley.
 `.trim();
 
   const input = [
@@ -450,11 +468,7 @@ async function handleInboundMessage(message) {
   const type = message.type;
 
   if (!from || !messageId) return;
-
-  if (wasProcessed(messageId)) {
-    log("DUPLICATE ignored:", messageId);
-    return;
-  }
+  if (wasProcessed(messageId)) { log("DUPLICATE ignored:", messageId); return; }
   rememberProcessed(messageId);
 
   await markReadAndTyping(messageId);
@@ -472,7 +486,6 @@ async function handleInboundMessage(message) {
   if (!userText) return;
 
   const session = getSession(from);
-
   extractInfo(session, userText);
 
   await sleep(clamp(randInt(MIN_DELAY, MAX_DELAY), 250, 8000));
