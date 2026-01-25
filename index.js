@@ -2,6 +2,7 @@
 import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
+import pdfParse from "pdf-parse";
 
 // =====================
 // ENV / CONFIG
@@ -16,34 +17,31 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "";
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "";
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || "";
 
+// AI
 const AI_PROVIDER = (process.env.AI_PROVIDER || "openai").toLowerCase();
 const AI_MODEL_OPENAI = process.env.AI_MODEL_OPENAI || "gpt-4.1-mini";
+const AI_MODEL_VISION = process.env.AI_MODEL_VISION || "gpt-4o-mini";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 
+// Style / business
 const LANGUAGE = process.env.LANGUAGE || "es-CL";
 const COMPANY_NAME = process.env.COMPANY_NAME || "Activa Inversiones";
 const BRAND_SHORT = process.env.BRAND_SHORT || "Activa";
 const AGENT_NAME = process.env.AGENT_NAME || "Marcelo Cifuentes";
 
-const TONE = process.env.TONE || "consultivo, cercano y profesional (Chile)";
-const FORMALITY_LEVEL = Number(process.env.FORMALITY_LEVEL || 2);
-const EMOJI_LEVEL = Number(process.env.EMOJI_LEVEL || 0);
-const CTA_STYLE = process.env.CTA_STYLE || "SOFT";
+const DEFAULT_CITY = process.env.DEFAULT_CITY || "Temuco";
+const DEFAULT_PRIORITY = process.env.DEFAULT_PRIORITY || "aislación térmica, acústica y seguridad";
 
-const GREETING_MODE = process.env.GREETING_MODE || "first_message_only"; // first_message_only | every_message | none
-const SIGNATURE_MODE = process.env.SIGNATURE_MODE || "first_message_only";
+// Reply pacing (human)
+const WAIT_AFTER_LAST_USER_MESSAGE_MS = Number(process.env.WAIT_AFTER_LAST_USER_MESSAGE_MS || 2500);
+const HUMAN_DELAY_MS_MIN = Number(process.env.HUMAN_DELAY_MS_MIN || 700);
+const HUMAN_DELAY_MS_MAX = Number(process.env.HUMAN_DELAY_MS_MAX || 1600);
 
-const WAIT_AFTER_LAST_USER_MESSAGE_MS = Number(process.env.WAIT_AFTER_LAST_USER_MESSAGE_MS || 1800); // más rápido
-const HUMAN_DELAY_MS_MIN = Number(process.env.HUMAN_DELAY_MS_MIN || 450); // más rápido
-const HUMAN_DELAY_MS_MAX = Number(process.env.HUMAN_DELAY_MS_MAX || 1200); // más rápido
-const MIN_RESPONSE_DELAY_MS = Number(process.env.MIN_RESPONSE_DELAY_MS || 0);
-const MAX_RESPONSE_DELAY_MS = Number(process.env.MAX_RESPONSE_DELAY_MS || 0);
-
-const MAX_FIELDS_TO_REQUEST = Number(process.env.MAX_FIELDS_TO_REQUEST || 1);
-const ONE_QUESTION_PER_TURN = String(process.env.ONE_QUESTION_PER_TURN || "true") === "true";
-const MAX_LINES_PER_REPLY = Number(process.env.MAX_LINES_PER_REPLY || 12);
+const MAX_LINES_PER_REPLY = Number(process.env.MAX_LINES_PER_REPLY || 10);
 const MAX_REPLY_CHARS = Number(process.env.MAX_REPLY_CHARS || 1200);
+const ONE_QUESTION_PER_TURN = String(process.env.ONE_QUESTION_PER_TURN || "true") === "true";
 
+// Business hours
 const BUSINESS_TIMEZONE = process.env.BUSINESS_TIMEZONE || "America/Santiago";
 const BUSINESS_HOURS_ONLY = String(process.env.BUSINESS_HOURS_ONLY || "false") === "true";
 const BUSINESS_HOURS_START = process.env.BUSINESS_HOURS_START || "09:00";
@@ -52,31 +50,23 @@ const AFTER_HOURS_MESSAGE =
   process.env.AFTER_HOURS_MESSAGE ||
   "Hola, gracias por escribir. En este momento estamos fuera de horario, pero mañana a primera hora te respondemos y avanzamos con tu cotización.";
 
-const DEFAULT_CITY = process.env.DEFAULT_CITY || "Temuco";
-const DEFAULT_PRIORITY = process.env.DEFAULT_PRIORITY || "aislación térmica, acústica y seguridad";
-const PILLARS =
-  process.env.PILLARS ||
-  "Aislación térmica, aislación acústica y seguridad. En PVC línea europea, con DVH y correcta instalación, la condensación interior es muy poco probable; normalmente depende de humedad interior alta y ventilación.";
-
+// Handoff
 const HUMAN_HANDOFF_ENABLED = String(process.env.HUMAN_HANDOFF_ENABLED || "true") === "true";
 const HUMAN_HANDOFF_KEYWORDS = (process.env.HUMAN_HANDOFF_KEYWORDS || "humano,asesor,llamar,urgente,hablar con alguien,ejecutivo")
   .split(",")
   .map((s) => s.trim().toLowerCase())
   .filter(Boolean);
 
+// Rate limit / sessions
 const RATE_LIMIT_PER_USER_PER_MIN = Number(process.env.RATE_LIMIT_PER_USER_PER_MIN || 12);
 const SESSION_TTL_MINUTES = Number(process.env.SESSION_TTL_MINUTES || 60);
 
-const ALLOW_BULLETS = String(process.env.ALLOW_BULLETS || "true") === "true";
-const SEND_SINGLE_MESSAGE = String(process.env.SEND_SINGLE_MESSAGE || "true") === "true";
-const SPLIT_LONG_MESSAGES = String(process.env.SPLIT_LONG_MESSAGES || "true") === "true";
-
-// “Efecto humano” (acuse rápido)
-const ACK_ENABLED = String(process.env.ACK_ENABLED || "true") === "true";
-const ACK_COOLDOWN_MS = Number(process.env.ACK_COOLDOWN_MS || 60000); // 1 minuto
-const ACK_TEXT_DEFAULT =
-  process.env.ACK_TEXT_DEFAULT ||
-  "Perfecto, lo reviso un momento y ya te respondo.";
+// Typing indicator (puntitos)
+const TYPING_SIMULATION = String(process.env.TYPING_SIMULATION || "true") === "true";
+const TYPING_MIN_MS = Number(process.env.TYPING_MIN_MS || 900);
+const TYPING_MAX_MS = Number(process.env.TYPING_MAX_MS || 2100);
+// WhatsApp typing indicator drops after ~25s or when you answer. Keep under 20s for safety.
+const TYPING_HARD_CAP_MS = 20000;
 
 // =====================
 // OpenAI client (optional)
@@ -86,11 +76,16 @@ const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 // =====================
 // In-memory session store
 // =====================
-// key: waId => { lastAt, timer, greeted, lastReplyAt, rate, history, ttlAt, afterHoursSent, lastAckAt }
-const sessions = new Map();
+const sessions = new Map(); // waId => session
 
 function nowMs() {
   return Date.now();
+}
+
+function randomBetween(min, max) {
+  const a = Math.min(min, max);
+  const b = Math.max(min, max);
+  return Math.floor(a + Math.random() * (b - a + 1));
 }
 
 function clampText(text) {
@@ -102,12 +97,6 @@ function splitLines(text) {
   const lines = (text || "").split("\n");
   if (lines.length <= MAX_LINES_PER_REPLY) return text;
   return lines.slice(0, MAX_LINES_PER_REPLY).join("\n") + "\n…";
-}
-
-function randomBetween(min, max) {
-  const a = Math.min(min, max);
-  const b = Math.max(min, max);
-  return Math.floor(a + Math.random() * (b - a + 1));
 }
 
 function getTimeGreeting() {
@@ -137,7 +126,6 @@ function withinBusinessHours() {
     const cur = hh * 60 + mm;
     const start = sh * 60 + sm;
     const end = eh * 60 + em;
-
     return cur >= start && cur <= end;
   } catch {
     return true;
@@ -158,9 +146,7 @@ function getSession(waId) {
       timer: null,
       greeted: false,
       lastReplyAt: 0,
-      lastAckAt: 0,
       rate: { windowStart: t, count: 0 },
-      history: [],
       ttlAt: t + SESSION_TTL_MINUTES * 60_000,
       afterHoursSent: false,
     };
@@ -191,7 +177,7 @@ function rateLimitOk(sess) {
 }
 
 // =====================
-// WhatsApp send helpers
+// WhatsApp helpers
 // =====================
 async function waSendText(to, text) {
   const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
@@ -216,26 +202,47 @@ async function waMarkRead(messageId) {
   });
 }
 
-// WhatsApp Cloud API NO soporta typing indicator (“puntitos”).
-// Simulación: acuse inmediato + respuesta final.
-async function waSendAck(to, sess, kind = "default") {
-  if (!ACK_ENABLED) return;
-  const t = nowMs();
-  if (sess.lastAckAt && t - sess.lastAckAt < ACK_COOLDOWN_MS) return;
-
-  const text =
-    kind === "document"
-      ? "Perfecto, recibí el archivo. Dame un momento para revisarlo y ya te confirmo."
-      : kind === "image"
-      ? "Perfecto, recibí la imagen. Dame un momento para revisarla y ya te confirmo."
-      : ACK_TEXT_DEFAULT;
-
-  await waSendText(to, text);
-  sess.lastAckAt = t;
+// REAL typing indicator (WhatsApp Cloud API):
+// send status=read + typing_indicator with message_id (per Meta-style pattern). :contentReference[oaicite:1]{index=1}
+async function waTypingIndicator(messageId) {
+  if (!TYPING_SIMULATION) return;
+  const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
+  const payload = {
+    messaging_product: "whatsapp",
+    status: "read",
+    message_id: messageId,
+    typing_indicator: { type: "text" },
+  };
+  await axios.post(url, payload, {
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
+    timeout: 30_000,
+  });
 }
 
 // =====================
-// Extract measurements from plain text (PDF text or user text)
+// Media download (PDF / images)
+// =====================
+async function waGetMediaInfo(mediaId) {
+  const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${mediaId}`;
+  const resp = await axios.get(url, {
+    params: { fields: "url,mime_type,file_size,filename" },
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    timeout: 30_000,
+  });
+  return resp.data; // { url, mime_type, file_size, ... }
+}
+
+async function waDownloadMedia(downloadUrl) {
+  const resp = await axios.get(downloadUrl, {
+    responseType: "arraybuffer",
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    timeout: 60_000,
+  });
+  return Buffer.from(resp.data);
+}
+
+// =====================
+// Extract measurements from text
 // =====================
 function extractMeasurements(text) {
   const t = (text || "").replace(/\s+/g, " ");
@@ -253,45 +260,31 @@ function extractMeasurements(text) {
 
   const seen = new Set();
   return out.filter((x) => {
-    const k = x.raw;
-    if (seen.has(k)) return false;
-    seen.add(k);
+    if (seen.has(x.raw)) return false;
+    seen.add(x.raw);
     return true;
   });
 }
 
 // =====================
-// Build consultative answer (Windows/doors only)
+// Consultative response
 // =====================
 function buildBaseConsultativeNote() {
   return (
-    `Para recomendar bien, miramos 3 condiciones clave: ${DEFAULT_PRIORITY}.\n` +
-    `En general, la condensación interior no depende solo de la ventana: aparece cuando la humedad interior sube y la superficie interior baja su temperatura. En PVC línea europea + DVH (termopanel) + buena hermeticidad e instalación, esa situación es poco probable; y si ocurre, normalmente se corrige con ventilación/control de humedad.\n` +
-    `Trabajamos PVC americano, PVC línea europea y aluminio; todos pueden llevar DVH. Lo que cambia es la hermeticidad, refuerzo, herrajes y el desempeño final.`
+    `Para recomendar bien, siempre miramos 3 condiciones: ${DEFAULT_PRIORITY}.\n` +
+    `La condensación interior no depende solo de la ventana: aparece cuando sube la humedad interior y baja la temperatura de la superficie. En PVC línea europea + DVH + buena hermeticidad e instalación, es poco probable; y si ocurre, suele corregirse con ventilación/manejo de humedad.\n` +
+    `Trabajamos PVC (americano y línea europea) y aluminio; todos pueden llevar DVH (termopanel). Lo que cambia es hermeticidad, refuerzos, herrajes y desempeño final.`
   );
 }
 
 function maybeGreeting(sess) {
-  const g = getTimeGreeting();
-  if (GREETING_MODE === "none") return "";
-  if (GREETING_MODE === "every_message") return `${g}, soy ${AGENT_NAME}. `;
-  if (GREETING_MODE === "first_message_only" && !sess.greeted) return `${g}, soy ${AGENT_NAME}. `;
-  return "";
+  if (sess.greeted) return "";
+  return `${getTimeGreeting()}, soy ${AGENT_NAME}. `;
 }
 
 function maybeSignature(sess) {
-  if (SIGNATURE_MODE === "none") return "";
-  if (SIGNATURE_MODE === "every_message") return `\n\n— ${AGENT_NAME} | ${BRAND_SHORT}`;
-  if (SIGNATURE_MODE === "first_message_only" && !sess.greeted) return `\n\n— ${AGENT_NAME} | ${BRAND_SHORT}`;
-  return "";
-}
-
-function buildNextQuestion(context) {
-  if (!context.city) return "¿En qué ciudad se instalarían (por ejemplo, Temuco, Pucón, Villarrica)?";
-  if (!context.qty) return "¿Cuántas ventanas y/o puertas necesitas en total (número aproximado)?";
-  if (!context.hasMeasures) return "¿Me puedes enviar medidas (ancho x alto) o una foto/plano con las medidas? Con eso preparo una propuesta inicial.";
-  if (context.wantsInstall == null) return "¿Las necesitas con instalación incluida o solo fabricación?";
-  return "¿Prefieres corredera u oscilobatiente/proyectante, o quieres que te recomiende según ventilación y uso?";
+  if (sess.greeted) return "";
+  return `\n\n— ${AGENT_NAME} | ${BRAND_SHORT}`;
 }
 
 function inferContextFromText(text) {
@@ -304,8 +297,16 @@ function inferContextFromText(text) {
   return { city: city || null, qty: qty ? Number(qty) : null, wantsInstall, measures };
 }
 
+function buildNextQuestion(context) {
+  if (!context.city) return "¿En qué ciudad se instalarían (por ejemplo, Temuco, Pucón, Villarrica)?";
+  if (!context.qty) return "¿Cuántas ventanas y/o puertas necesitas en total (número aproximado)?";
+  if (!context.hasMeasures) return "¿Me envías medidas aproximadas (ancho x alto) o una foto/plano con las medidas?";
+  if (context.wantsInstall == null) return "¿Las necesitas con instalación incluida o solo fabricación?";
+  return "¿Prefieres corredera u oscilobatiente/proyectante, o te recomiendo según ventilación y uso?";
+}
+
 // =====================
-// AI (optional)
+// AI drafts (optional)
 // =====================
 async function aiDraftReply(userText, extractedMeasures) {
   if (!openai || AI_PROVIDER !== "openai") return null;
@@ -315,19 +316,18 @@ async function aiDraftReply(userText, extractedMeasures) {
     : "No se detectaron medidas en el texto.";
 
   const system = `
-Eres un asesor comercial-técnico chileno especializado SOLO en ventanas y puertas (no muros cortina).
+Eres un asesor comercial-técnico chileno especializado SOLO en ventanas y puertas.
 Estilo: consultivo, cercano, humano, profesional. Sin emojis.
-Siempre prioriza 3 pilares: aislación térmica, aislación acústica y seguridad.
-Explica brevemente si corresponde que la condensación se relaciona con humedad interior y temperatura de superficie.
-Siempre haz máximo 1 pregunta al final.
-Si el cliente enviará fotos o PDF, agradece y confirma que se revisarán medidas aproximadas.
-Firma: NO firmes (el sistema pone firma si corresponde).
+Prioriza 3 pilares: aislación térmica, aislación acústica y seguridad.
+Explica brevemente si corresponde condensación = humedad interior + temperatura de superficie.
+Máximo 1 pregunta al final.
+Respuesta corta.
 `;
 
   const user = `
 Cliente dice: ${userText}
 ${measuresTxt}
-Genera una respuesta corta, humana y clara, y cierra con 1 pregunta.`;
+Genera una respuesta corta, humana y clara.`;
 
   const resp = await openai.chat.completions.create({
     model: AI_MODEL_OPENAI,
@@ -335,24 +335,71 @@ Genera una respuesta corta, humana y clara, y cierra con 1 pregunta.`;
       { role: "system", content: system },
       { role: "user", content: user },
     ],
-    temperature: 0.4,
+    temperature: 0.35,
+  });
+
+  return resp.choices?.[0]?.message?.content?.trim() || null;
+}
+
+async function visionExtractTextFromImage(imageBuffer, mimeType) {
+  if (!openai || AI_PROVIDER !== "openai") return null;
+  const b64 = imageBuffer.toString("base64");
+  const dataUrl = `data:${mimeType || "image/jpeg"};base64,${b64}`;
+
+  const system = `
+Eres un especialista en interpretación de imágenes para cotización de ventanas.
+Tarea: extrae texto y especialmente medidas (ancho x alto), cantidades, tipos (corredera/proyectante), y cualquier nota.
+Devuelve SOLO texto plano en español, sin formato complejo.
+`;
+
+  const resp = await openai.chat.completions.create({
+    model: AI_MODEL_VISION,
+    messages: [
+      { role: "system", content: system },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Extrae el contenido útil para cotización (medidas, cantidades, tipos, observaciones)." },
+          { type: "image_url", image_url: { url: dataUrl } },
+        ],
+      },
+    ],
+    temperature: 0.2,
   });
 
   return resp.choices?.[0]?.message?.content?.trim() || null;
 }
 
 // =====================
-// Core delayed response logic
+// Typing simulation timing
 // =====================
-async function scheduleReply(waId, lastMessageId, collectedText, incomingKind = "text") {
+async function maybeTyping(messageId, startedAtMs) {
+  if (!TYPING_SIMULATION || !messageId) return;
+  try {
+    await waTypingIndicator(messageId);
+  } catch {
+    // If typing fails, continue silently.
+  }
+
+  // Ensure a minimum "typing" time, but never exceed safe cap.
+  const desired = Math.min(randomBetween(TYPING_MIN_MS, TYPING_MAX_MS), TYPING_HARD_CAP_MS);
+  const elapsed = nowMs() - startedAtMs;
+  const remaining = Math.max(0, desired - elapsed);
+  if (remaining > 0) await new Promise((r) => setTimeout(r, remaining));
+}
+
+// =====================
+// Core delayed reply logic
+// =====================
+async function scheduleReply(waId, lastMessageId, collectedText) {
   const sess = getSession(waId);
   sess.lastAt = nowMs();
 
   if (sess.timer) clearTimeout(sess.timer);
 
   sess.timer = setTimeout(async () => {
+    const startProcessing = nowMs();
     try {
-      // after-hours gate
       if (!withinBusinessHours()) {
         if (!sess.afterHoursSent) {
           await waSendText(waId, AFTER_HOURS_MESSAGE);
@@ -363,26 +410,17 @@ async function scheduleReply(waId, lastMessageId, collectedText, incomingKind = 
 
       if (!rateLimitOk(sess)) return;
 
-      // 1) Acuse inmediato (simula “estoy escribiendo”)
-      if (incomingKind === "document") await waSendAck(waId, sess, "document");
-      else if (incomingKind === "image") await waSendAck(waId, sess, "image");
-      else await waSendAck(waId, sess, "default");
+      // Turn on typing indicator early (so user sees dots while we "think")
+      await maybeTyping(lastMessageId, startProcessing);
 
-      // 2) Pausa breve antes de respuesta final
-      await new Promise((r) => setTimeout(r, 600));
-
-      // Human handoff
+      // Optional human handoff
       if (shouldHandoff(collectedText)) {
-        const msg =
-          `${maybeGreeting(sess)}` +
-          `Perfecto. Te derivo con un asesor para verlo en detalle. ¿Me confirmas tu ciudad y si es con instalación incluida?` +
-          `${maybeSignature(sess)}`;
+        const msg = `${maybeGreeting(sess)}Perfecto. Te derivo con un asesor para verlo en detalle. ¿Me confirmas tu ciudad y si es con instalación incluida?${maybeSignature(sess)}`;
         await waSendText(waId, msg);
         sess.greeted = true;
         return;
       }
 
-      // Build reply
       const ctx = inferContextFromText(collectedText);
       const hasMeasures = (ctx.measures?.length || 0) > 0;
 
@@ -391,38 +429,38 @@ async function scheduleReply(waId, lastMessageId, collectedText, incomingKind = 
         `Gracias por la información. ${buildBaseConsultativeNote()}\n`;
 
       if (hasMeasures) {
-        reply += `\nVi estas medidas aproximadas: ${ctx.measures.map((m) => m.raw).join(", ")}. Con esto preparo una propuesta inicial y después afinamos con verificación en terreno.\n`;
+        reply += `\nVi estas medidas aproximadas: ${ctx.measures.map((m) => m.raw).join(", ")}. Con esto preparo una propuesta inicial y luego afinamos con verificación en terreno.\n`;
       }
 
-      reply +=
-        `\nCuando la propuesta se aprueba, asignamos un especialista técnico que verifica medidas en terreno con telémetro láser y se entrega un informe técnico para fabricación e instalación.\n`;
+      reply += `\nCuando se aprueba la propuesta, verificamos medidas en terreno y dejamos listo para fabricación e instalación.\n`;
 
-      const question = buildNextQuestion({ city: ctx.city, qty: ctx.qty, hasMeasures, wantsInstall: ctx.wantsInstall });
-      if (ONE_QUESTION_PER_TURN) reply += `\n${question}`;
+      if (ONE_QUESTION_PER_TURN) {
+        const q = buildNextQuestion({ city: ctx.city, qty: ctx.qty, hasMeasures, wantsInstall: ctx.wantsInstall });
+        reply += `\n${q}`;
+      }
 
-      // Optional AI rephrase
+      // AI rewrite (optional)
       const ai = await aiDraftReply(collectedText, ctx.measures);
       if (ai) {
-        const g = maybeGreeting(sess);
-        const sig = maybeSignature(sess);
-        reply = `${g}${ai}${sig}`;
+        reply = `${maybeGreeting(sess)}${ai}${maybeSignature(sess)}`;
       } else {
         reply += `${maybeSignature(sess)}`;
       }
 
       reply = splitLines(clampText(reply));
 
-      // human delays
-      const waitBase = randomBetween(HUMAN_DELAY_MS_MIN, HUMAN_DELAY_MS_MAX);
-      const extra = randomBetween(MIN_RESPONSE_DELAY_MS, MAX_RESPONSE_DELAY_MS);
-      await new Promise((r) => setTimeout(r, Math.max(0, waitBase + extra)));
+      // Small human delay (already showed typing)
+      const humanDelay = randomBetween(HUMAN_DELAY_MS_MIN, HUMAN_DELAY_MS_MAX);
+      await new Promise((r) => setTimeout(r, humanDelay));
 
       await waSendText(waId, reply);
-
       sess.greeted = true;
       sess.lastReplyAt = nowMs();
 
-      if (lastMessageId) await waMarkRead(lastMessageId).catch(() => {});
+      // Mark read (safe)
+      if (lastMessageId) {
+        await waMarkRead(lastMessageId).catch(() => {});
+      }
     } catch (err) {
       console.error("Reply error:", err?.response?.data || err?.message || err);
     }
@@ -446,6 +484,7 @@ app.get("/webhook", (req, res) => {
 app.post("/webhook", async (req, res) => {
   try {
     const body = req.body;
+
     const entry = body?.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
@@ -454,36 +493,90 @@ app.post("/webhook", async (req, res) => {
     if (!messages.length) return res.sendStatus(200);
 
     const msg = messages[0];
-    const waId = msg.from;
+    const waId = msg.from; // user phone
+// Reset session command (simulate "new client")
+const incomingText = msg.type === "text" ? (msg.text?.body || "").trim().toLowerCase() : "";
+if (incomingText === "reset" || incomingText === "nuevo" || incomingText === "start") {
+  sessions.delete(waId);
+  await waSendText(waId, "Listo. Reinicié tu sesión. Escribe tu solicitud como si fuera primera vez.");
+  return res.sendStatus(200);
+}
+
     const messageId = msg.id;
 
     let collectedText = "";
-    let incomingKind = "text";
 
+    // TEXT
     if (msg.type === "text") {
       collectedText = msg.text?.body || "";
-      incomingKind = "text";
-    } else if (msg.type === "document") {
-      incomingKind = "document";
-      const doc = msg.document || {};
-      console.log("INCOMING DOCUMENT:", {
-        mime: doc.mime_type,
-        filename: doc.filename,
-        mediaId: doc.id,
-      });
-      collectedText = "El cliente envió un documento (por ejemplo PDF) con información del proyecto.";
-    } else if (msg.type === "image") {
-      incomingKind = "image";
-      const img = msg.image || {};
-      console.log("INCOMING IMAGE:", { mime: img.mime_type, mediaId: img.id });
-      collectedText = "El cliente envió una imagen con información del proyecto.";
-    } else {
-      incomingKind = msg.type || "other";
-      console.log("INCOMING OTHER:", { type: msg.type });
-      collectedText = "El cliente envió un archivo o contenido con información del proyecto.";
+      await scheduleReply(waId, messageId, collectedText);
+      return res.sendStatus(200);
     }
 
-    await scheduleReply(waId, messageId, collectedText, incomingKind);
+    // DOCUMENT (PDF)
+    if (msg.type === "document") {
+      const mime = msg.document?.mime_type || "";
+      const filename = msg.document?.filename || "archivo";
+      const mediaId = msg.document?.id;
+
+      console.log("INCOMING DOCUMENT:", { mime, filename, mediaId });
+
+      if (mediaId && mime.includes("pdf")) {
+        // show typing while we process
+        try { await waTypingIndicator(messageId); } catch {}
+
+        const info = await waGetMediaInfo(mediaId);
+        const fileBuf = await waDownloadMedia(info.url);
+        const parsed = await pdfParse(fileBuf);
+
+        const text = (parsed?.text || "").trim();
+        const measures = extractMeasurements(text);
+
+        collectedText =
+          `Cliente envió PDF: ${filename}\n` +
+          (measures.length ? `Medidas detectadas: ${measures.map((m) => m.raw).join(", ")}\n` : "") +
+          `Contenido:\n${text.slice(0, 6000)}`;
+
+        await scheduleReply(waId, messageId, collectedText);
+        return res.sendStatus(200);
+      }
+
+      collectedText = `Cliente envió documento (${filename}). Si trae medidas, ideal si me las confirmas como ancho x alto o en el PDF.`;
+      await scheduleReply(waId, messageId, collectedText);
+      return res.sendStatus(200);
+    }
+
+    // IMAGE
+    if (msg.type === "image") {
+      const mediaId = msg.image?.id;
+      const mime = msg.image?.mime_type || "image/jpeg";
+
+      console.log("INCOMING IMAGE:", { mime, mediaId });
+
+      if (mediaId && openai) {
+        try { await waTypingIndicator(messageId); } catch {}
+
+        const info = await waGetMediaInfo(mediaId);
+        const imgBuf = await waDownloadMedia(info.url);
+
+        const extracted = await visionExtractTextFromImage(imgBuf, mime);
+        collectedText =
+          `Cliente envió imagen con información del proyecto.\n` +
+          (extracted ? `Texto/medidas extraídas:\n${extracted}` : "No pude extraer texto con claridad. Si puedes, envía medidas como ancho x alto.");
+
+        await scheduleReply(waId, messageId, collectedText);
+        return res.sendStatus(200);
+      }
+
+      collectedText = "Cliente envió una imagen. Si me confirmas medidas (ancho x alto) y cantidad, preparo la propuesta inicial.";
+      await scheduleReply(waId, messageId, collectedText);
+      return res.sendStatus(200);
+    }
+
+    // Other types (audio/video/etc.)
+    collectedText = "Cliente envió un archivo. Si incluye medidas, por favor confírmalas en texto (ancho x alto) para cotizar rápido.";
+    await scheduleReply(waId, messageId, collectedText);
+
     return res.sendStatus(200);
   } catch (err) {
     console.error("Webhook error:", err?.response?.data || err?.message || err);
@@ -504,8 +597,6 @@ app.listen(PORT, () => {
   console.log(`ENV OPENAI_API_KEY: ${OPENAI_API_KEY ? "OK" : "MISSING"}`);
   console.log(`ENV AI_PROVIDER: ${AI_PROVIDER}`);
   console.log(`ENV AI_MODEL_OPENAI: ${AI_MODEL_OPENAI}`);
-  console.log(`STYLE GREETING_MODE: ${GREETING_MODE}`);
-  console.log(`STYLE FORMALITY_LEVEL: ${FORMALITY_LEVEL}`);
-  console.log(`STYLE EMOJI_LEVEL: ${EMOJI_LEVEL ? EMOJI_LEVEL : "off"}`);
-  console.log(`STYLE CTA_STYLE: ${CTA_STYLE}`);
+  console.log(`ENV AI_MODEL_VISION: ${AI_MODEL_VISION}`);
+  console.log(`TYPING_SIMULATION: ${TYPING_SIMULATION}`);
 });
