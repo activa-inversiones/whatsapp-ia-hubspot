@@ -257,3 +257,4 @@ function startTypingPinger(messageId, type = "text") {
   waTypingIndicator(messageId, type).catch(() => {});
 
   const intervalMs = 2000
+});
