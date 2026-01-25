@@ -233,6 +233,10 @@ async function waSendText(to, text, { replyToMessageId = null } = {}) {
  * Typing indicator:
  * POST /messages con status read + message_id + typing_indicator
  */
+/**
+ * Typing indicator:
+ * POST /messages con status read + message_id + typing_indicator
+ */
 async function waTypingIndicator(messageId, type = "text") {
   if (!TYPING_SIMULATION) return;
   if (!messageId) return;
@@ -256,5 +260,17 @@ function startTypingPinger(messageId, type = "text") {
   if (!TYPING_SIMULATION || !messageId) return () => {};
   waTypingIndicator(messageId, type).catch(() => {});
 
-  const intervalMs = 2000
-});
+  const intervalMs = 20000;
+  const startedAt = Date.now();
+  const maxMs = 65000;
+
+  const timer = setInterval(() => {
+    if (Date.now() - startedAt > maxMs) {
+      clearInterval(timer);
+      return;
+    }
+    waTypingIndicator(messageId, type).catch(() => {});
+  }, intervalMs);
+
+  return () => clearInterval(timer);
+}
