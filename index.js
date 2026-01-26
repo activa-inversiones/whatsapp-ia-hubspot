@@ -619,46 +619,45 @@ app.post("/webhook", async (req, res) => {
             await waMarkRead(messageId);
           }
 
-          let inboundText = "";
+        let inboundText = "";
 
-          if (msg.type === "text") {
-            inboundText = msg.text?.body || "";
-          ConsideredText:
-          } else if (msg.type === "audio" || msg.type === "voice") {
-            if (!ENV.ENABLE_VOICE_TRANSCRIPTION) {
-              inboundText = "";
-            } else {
-              const mediaId = msg.audio?.id || msg.voice?.id;
-              if (mediaId) {
-                const url = await waGetMediaUrl(mediaId);
-                const buf = await waDownloadMedia(url);
-                const tr = await transcribeAudio(buf);
-                inboundText = tr || "";
-              }
-            }
-          } else if (msg.type === "image") {
-            const mediaId = msg.image?.id;
-            if (mediaId) {
-              const url = await waGetMediaUrl(mediaId);
-              const buf = await waDownloadMedia(url);
-              const extracted = await extractFromImage(buf);
-              inboundText = extracted || "";
-            }
-          } else if (msg.type === "document") {
-            // Si mandan una planilla/foto como documento: intentamos igual con visión si es imagen
-            const mediaId = msg.document?.id;
-            const mime = msg.document?.mime_type || "";
-            if (mediaId && mime.startsWith("image/")) {
-              const url = await waGetMediaUrl(mediaId);
-              const buf = await waDownloadMedia(url);
-              const extracted = await extractFromImage(buf);
-              inboundText = extracted || "";
-            } else {
-              inboundText = msg.document?.caption || "";
-            }
-          } else {
-            inboundText = "";
-          }
+if (msg.type === "text") {
+  inboundText = msg.text?.body || "";
+} else if (msg.type === "audio" || msg.type === "voice") {
+  if (!ENV.ENABLE_VOICE_TRANSCRIPTION) {
+    inboundText = "";
+  } else {
+    const mediaId = msg.audio?.id || msg.voice?.id;
+    if (mediaId) {
+      const url = await waGetMediaUrl(mediaId);
+      const buf = await waDownloadMedia(url);
+      const tr = await transcribeAudio(buf);
+      inboundText = tr || "";
+    }
+  }
+} else if (msg.type === "image") {
+  const mediaId = msg.image?.id;
+  if (mediaId) {
+    const url = await waGetMediaUrl(mediaId);
+    const buf = await waDownloadMedia(url);
+    const extracted = await extractFromImage(buf);
+    inboundText = extracted || "";
+  }
+} else if (msg.type === "document") {
+  const mediaId = msg.document?.id;
+  const mime = msg.document?.mime_type || "";
+  if (mediaId && mime.startsWith("image/")) {
+    const url = await waGetMediaUrl(mediaId);
+    const buf = await waDownloadMedia(url);
+    const extracted = await extractFromImage(buf);
+    inboundText = extracted || "";
+  } else {
+    inboundText = msg.document?.caption || "";
+  }
+} else {
+  inboundText = "";
+}
+
 
           const angry = looksAngry(inboundText);
 
