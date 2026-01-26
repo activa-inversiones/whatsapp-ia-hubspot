@@ -1,34 +1,67 @@
-// index.js - WhatsApp IA HubSpot (Activa Ventanas) - Versión Conversacional/Consultiva
-// Node 18+ (Railway) - ESM
+// index.js — WhatsApp IA + Venta Consultiva (Activa Ventanas) — “Ferrari” Production-Ready
+// Runtime: Node 18+ (Railway) | ESM ("type":"module" en package.json)
+// Objetivo: ARRANQUE SIEMPRE. Todo lo “pesado” (PDF/FORMDATA) se carga LAZY para evitar crashes.
+// Soporta: texto, imagen (visión), audio (transcripción), PDF (lectura) + pre-cotización y PDF opcional.
+//
+// ENV requeridas:
+// WHATSAPP_TOKEN, VERIFY_TOKEN, (PHONE_NUMBER_ID opcional), META_VERSION opcional (v22.0)
+// OPENAI_API_KEY (opcional si quieres respuestas IA)
+// APP_SECRET (opcional) para verificar firma X-Hub-Signature-256
+//
+// Flags:
+// ENABLE_VOICE_TRANSCRIPTION=1|0
+// ENABLE_PDF_QUOTES=1|0
+// TYPING_SIMULATION=1|0
+//
+// Modelos (default razonables):
+// AI_MODEL_TEXT=gpt-4.1-mini
+// AI_MODEL_VISION=gpt-4o-mini
+// AI_MODEL_TRANSCRIBE=gpt-4o-mini-transcribe
+
 import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse");
-import PDFDocument from "pdfkit";
-import FormData from "form-data";
 import crypto from "crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
 
 // ======================================================
-// CONFIG BÁSICA
+// APP + RAW BODY (para verificación de firma opcional)
 // ======================================================
 const app = express();
-
-// Meta Webhooks envían JSON
-app.use(express.json({ limit: "20mb" }));
+app.use(
+  express.json({
+    limit: "20mb",
+    verify: (req, _res, buf) => {
+      req.rawBody = buf; // necesario si usas APP_SECRET
+    },
+  })
+);
 
 const PORT = process.env.PORT || 8080;
+
+// ======================================================
+// ENV + CONFIG
+// ======================================================
+function truthy(v) {
+  if (!v) return false;
+  const s = String(v).trim().toLowerCase();
+  return ["1", "true", "yes", "y", "on", "si", "sí"].includes(s);
+}
 
 const ENV = {
   // Meta / WhatsApp
   WHATSAPP_TOKEN: process.env.WHATSAPP_TOKEN,
-  PHONE_NUMBER_ID: process.env.PHONE_NUMBER_ID,
+  PHONE_NUMBER_ID: process.env.PHONE_NUMBER_ID, // fallback si Meta no manda metadata
   VERIFY_TOKEN: process.env.VERIFY_TOKEN,
   META_VERSION: process.env.META_GRAPH_VERSION || process.env.META_VERSION || "v22.0",
+
+  // Seguridad (opcional, recomendado)
+  APP_SECRET: process.env.APP_SECRET, // si lo setea, validamos X-Hub-Signature-256
 
   // OpenAI
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
@@ -41,13 +74,17 @@ const ENV = {
   ENABLE_PDF_QUOTES: truthy(process.env.ENABLE_PDF_QUOTES),
   TYPING_SIMULATION: truthy(process.env.TYPING_SIMULATION),
 
-  // Seguridad / control
+  // Límites y control
   MAX_REPLY_CHARS: Number(process.env.MAX_REPLY_CHARS || 1200),
-  DEDUPE_TTL_MS: Number(process.env.DEDUPE_TTL_MS || 5 * 60 * 1000), // 5 min
+  DEDUPE_TTL_MS: Number(process.env.DEDUPE_TTL_MS || 5 * 60 * 1000),
+  SESSION_TTL_MS: Number(process.env.SESSION_TTL_MS || 7 * 24 * 60 * 60 * 1000), // 7 días
+  MAX_IMAGE_BYTES: Number(process.env.MAX_IMAGE_BYTES || 3_000_000), // 3MB recomendado para visión base64
+  MAX_AUDIO_BYTES: Number(process.env.MAX_AUDIO_BYTES || 8_000_000), // 8MB
+  MAX_PDF_BYTES: Number(process.env.MAX_PDF_BYTES || 10_000_000), // 10MB
 };
 
 // ======================================================
-// IDENTIDAD Y TONO (ACTIVA)
+// BRAND / TONO
 // ======================================================
 const BRAND = {
   displayName: "Activa Ventanas",
@@ -55,79 +92,66 @@ const BRAND = {
   city: "Temuco / La Araucanía",
   whatWeDo:
     "Fabricamos e instalamos ventanas y puertas de PVC y aluminio, con termopanel y soluciones para clima frío (aislación térmica/acústica).",
-  values: [
-    "honorabilidad",
-    "respeto",
-    "paciencia",
-    "claridad",
-    "asesoría técnica",
-    "venta consultiva",
-  ],
+  values: ["honorabilidad", "respeto", "paciencia", "claridad", "asesoría técnica", "venta consultiva"],
   promise:
     "Te guiamos para elegir la mejor solución según frío, ruido, seguridad y presupuesto; sin letra chica.",
   nextSteps:
     "Para cotizar bien pedimos: comuna, tipo de abertura, medidas (ancho x alto), color, tipo de vidrio y si es obra nueva o recambio.",
 };
 
-// Este es el “system prompt” que estabas buscando.
-// NO es un archivo aparte: está aquí como constante.
 const SYSTEM_PROMPT_TEXT = `
 Eres el asistente comercial y técnico de ${BRAND.displayName} (${BRAND.legalHint}), en Chile.
-Tu objetivo es CONVERSAR de forma humana y consultiva, y convertir el interés en una cotización y visita/levantamiento.
+Objetivo: conversación humana y consultiva para convertir interés en cotización y visita/levantamiento.
 
-Reglas de tono (estrictas):
-- Siempre amable, cercano, con respeto y paciencia. Nada robótico.
-- Siempre confirmas lo que el cliente pidió y haces 1-3 preguntas útiles (no 10).
-- Si el cliente dice "paso frío", prioriza recomendación técnica: termopanel, Low-E, cámara, sellos, instalación.
-- Evita respuestas genéricas. Personaliza con lo que el cliente dijo.
-- Nunca inventes datos técnicos o precios como definitivos. Si faltan datos, das rango o “pre-cotización referencial”.
-- No uses emojis salvo que el cliente use emojis primero (por defecto: sin emojis).
+Reglas de tono:
+- Amable, cercano, respetuoso y paciente. Nada robótico.
+- Confirmas lo pedido y haces 1-3 preguntas útiles (no 10).
+- Si el cliente dice "paso frío" o "condensación", prioriza recomendación técnica: DVH/Low-E/cámara, sellos e instalación.
+- Evita respuestas genéricas. Personaliza con lo que dijo el cliente.
+- No inventes precios definitivos. Si faltan datos, entrega rango referencial y pide lo mínimo.
 - No digas “soy un bot” ni “modelo de IA”.
-- Si el cliente manda una foto con medidas/lista: reconoce y confirma que leerás la imagen para extraer medidas.
-- Si el cliente pide “modelos y precios”: ofrece 2-3 opciones claras y guía a la mejor según necesidad.
+- Mensajes cortos (2–6 líneas). Lista breve solo si aporta.
 
 Reglas comerciales:
-- Buscamos: nombre (si aparece), comuna, tipo (corredera/abatible/oscilobatiente/puerta), medidas ancho x alto, color, vidrio.
-- Si pregunta por “2x2 corredera”: pide si es 2 hojas o 4 hojas, y si requiere fijo/mosquitero.
-- Si pide “puerta 1.80x2.00”: pide si es 1 hoja o 2 hojas, si una fija y otra móvil, y si quiere cerradura de seguridad.
-- Cierra con un siguiente paso: “¿te parece si confirmamos X y Y para enviarte la pre-cotización hoy?”
-
-Formato:
-- Mensajes cortos, 2-6 líneas.
-- Lista breve solo cuando suma valor.
-- Siempre una frase de apertura cálida.
+- Captura: nombre, comuna, producto (ventana/puerta), tipo (corredera/abatible/oscilobatiente), medidas, color, vidrio.
+- Cierra con siguiente paso: “¿confirmamos X e Y para enviarte pre-cotización hoy?”.
 `;
 
-// Prompt de visión: SOLO extraer medidas/tablas de imagen (sin tono vendedor).
 const VISION_EXTRACT_PROMPT =
   "Eres un extractor de datos desde imagen (tablas/listas/fotos) para ventanas y puertas.\n" +
-  "Devuelve SOLO texto plano, sin saludo, sin explicaciones, sin viñetas.\n" +
-  "Formato de salida: UNA LÍNEA POR ÍTEM, exactamente:\n" +
+  "Devuelve SOLO texto plano, sin saludo, sin explicaciones.\n" +
+  "Formato: UNA LÍNEA POR ÍTEM:\n" +
   "QTY x ANCHO_MM x ALTO_MM | MODELO(opcional)\n" +
-  "\n" +
   "Reglas:\n" +
-  "- Interpreta separadores: 'x', 'X', '*', 'por'.\n" +
-  "- Si unidades están en m o cm, convierte a mm.\n" +
-  "- Si aparece 1,80 o 1.80 (metros), equivale a 1800 mm.\n" +
-  "- Si no indica cantidad, asume QTY=1.\n" +
-  "- Si hay 'modelo' (corredera/abatible/oscilobatiente/puerta), ponlo después de '|'.\n" +
-  "- Si algo no se ve claro, escribe: NO_CLARO: (qué faltó o qué parte es ilegible).\n" +
-  "- No inventes números.";
+  "- Convierte m/cm a mm. 1,80 o 1.80 m = 1800 mm.\n" +
+  "- Si no hay cantidad, QTY=1.\n" +
+  "- Si no se ve claro: NO_CLARO: (qué faltó).\n" +
+  "- No inventes números.\n";
 
 // ======================================================
-// OPENAI CLIENT
+// OPENAI CLIENT (opcional)
 // ======================================================
-const openai = ENV.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: ENV.OPENAI_API_KEY })
-  : null;
+const openai = ENV.OPENAI_API_KEY ? new OpenAI({ apiKey: ENV.OPENAI_API_KEY }) : null;
 
 // ======================================================
 // HELPERS
 // ======================================================
-function truthy(v) {
-  if (!v) return false;
-  const s = String(v).trim().toLowerCase();
-  return ["1", "true", "yes", "y", "on", "si", "sí"].includes(s);
+function nowISO() {
+  return new Date().toISOString();
+}
+
+function safeStr(s, max = 1200) {
+  const t = String(s ?? "").trim();
+  if (!t) return "";
+  return t.length > max ? t.slice(0, max - 1) + "…" : t;
+}
+
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 function mask(s) {
@@ -137,29 +161,31 @@ function mask(s) {
   return str.slice(0, 4) + "…" + str.slice(-4);
 }
 
-function nowISO() {
-  return new Date().toISOString();
+function toTitle(s) {
+  return String(s)
+    .split(" ")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : ""))
+    .join(" ");
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+function logInfo(...args) {
+  console.log("[INFO]", ...args);
 }
 
-function clamp(n, min, max) {
-  return Math.max(min, Math.min(max, n));
+function logWarn(...args) {
+  console.warn("[WARN]", ...args);
 }
 
-function safeStr(s, max = 1200) {
-  const t = String(s ?? "").trim();
-  if (!t) return "";
-  return t.length > max ? t.slice(0, max - 1) + "…" : t;
+function logErr(...args) {
+  console.error("[ERROR]", ...args);
 }
 
-// Deduplicación de mensajes para evitar loops/reintentos
+// ======================================================
+// DEDUPE (anti-loop / reintentos Meta)
+// ======================================================
 const seenMsg = new Map(); // msgId -> timestamp
 function dedupe(msgId) {
   const t = Date.now();
-  // purge
   for (const [k, ts] of seenMsg.entries()) {
     if (t - ts > ENV.DEDUPE_TTL_MS) seenMsg.delete(k);
   }
@@ -168,26 +194,30 @@ function dedupe(msgId) {
   return false;
 }
 
-// Sesiones simples (memoria en RAM)
+// ======================================================
+// SESSION STORE (RAM, TTL + cleanup)
+// ======================================================
 const sessions = new Map(); // wa_id -> session
-
 function getSession(wa_id) {
-  const s = sessions.get(wa_id) || {
-    wa_id,
-    createdAt: nowISO(),
-    lastAt: nowISO(),
-    turns: [],
-    facts: {
-      name: null,
-      comuna: null,
-      product: null, // ventana/puerta
-      type: null, // corredera/abatible/oscilobatiente
-      color: null,
-      glass: null, // dvh/low-e/laminado/etc
-      measures: [], // [{qty, w_mm, h_mm, model}]
-      notes: [],
-    },
-  };
+  const existing = sessions.get(wa_id);
+  const s =
+    existing ||
+    ({
+      wa_id,
+      createdAt: nowISO(),
+      lastAt: nowISO(),
+      turns: [],
+      facts: {
+        name: null,
+        comuna: null,
+        product: null,
+        type: null,
+        color: null,
+        glass: null,
+        measures: [],
+        notes: [],
+      },
+    });
   s.lastAt = nowISO();
   sessions.set(wa_id, s);
   return s;
@@ -195,12 +225,36 @@ function getSession(wa_id) {
 
 function addTurn(session, role, content) {
   session.turns.push({ at: nowISO(), role, content: safeStr(content, 1500) });
-  // Mantener las últimas 12 interacciones
   if (session.turns.length > 12) session.turns = session.turns.slice(-12);
 }
 
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, s] of sessions.entries()) {
+    const last = Date.parse(s.lastAt || s.createdAt || nowISO());
+    if (now - last > ENV.SESSION_TTL_MS) sessions.delete(k);
+  }
+}, 60_000).unref();
+
 // ======================================================
-// META GRAPH / WHATSAPP API
+// SIGNATURE VERIFY (OPCIONAL) — X-Hub-Signature-256
+// ======================================================
+function verifyMetaSignature(req) {
+  if (!ENV.APP_SECRET) return true; // si no hay secreto, no verificamos
+  const sig = req.headers["x-hub-signature-256"];
+  if (!sig || typeof sig !== "string" || !sig.startsWith("sha256=")) return false;
+  const their = sig.slice(7);
+  const raw = req.rawBody || Buffer.from("");
+  const ours = crypto.createHmac("sha256", ENV.APP_SECRET).update(raw).digest("hex");
+  try {
+    return crypto.timingSafeEqual(Buffer.from(their), Buffer.from(ours));
+  } catch {
+    return false;
+  }
+}
+
+// ======================================================
+// WHATSAPP CLOUD API
 // ======================================================
 const WA_BASE = () => `https://graph.facebook.com/${ENV.META_VERSION}`;
 
@@ -210,12 +264,13 @@ async function waMarkRead(phone_number_id, msg_id) {
     await axios.post(
       `${WA_BASE()}/${phone_number_id}/messages`,
       { messaging_product: "whatsapp", status: "read", message_id: msg_id },
-      { headers: { Authorization: `Bearer ${ENV.WHATSAPP_TOKEN}` } }
+      { headers: { Authorization: `Bearer ${ENV.WHATSAPP_TOKEN}` }, timeout: 30_000 }
     );
   } catch (_) {}
 }
 
 async function waSendText(phone_number_id, to, text) {
+  if (!ENV.WHATSAPP_TOKEN || !phone_number_id) throw new Error("Missing WHATSAPP_TOKEN/PHONE_NUMBER_ID");
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -225,14 +280,13 @@ async function waSendText(phone_number_id, to, text) {
 
   await axios.post(`${WA_BASE()}/${phone_number_id}/messages`, payload, {
     headers: { Authorization: `Bearer ${ENV.WHATSAPP_TOKEN}` },
-    timeout: 60000,
+    timeout: 60_000,
   });
 }
 
 async function waTypingSim(toText) {
   if (!ENV.TYPING_SIMULATION) return;
   const chars = (toText || "").length;
-  // 35ms por char aprox, acotado
   const ms = clamp(chars * 35, 700, 3500);
   await sleep(ms);
 }
@@ -240,7 +294,7 @@ async function waTypingSim(toText) {
 async function waGetMediaUrl(media_id) {
   const r = await axios.get(`${WA_BASE()}/${media_id}`, {
     headers: { Authorization: `Bearer ${ENV.WHATSAPP_TOKEN}` },
-    timeout: 60000,
+    timeout: 60_000,
   });
   return r?.data?.url;
 }
@@ -249,19 +303,17 @@ async function waDownloadMedia(media_url) {
   const r = await axios.get(media_url, {
     responseType: "arraybuffer",
     headers: { Authorization: `Bearer ${ENV.WHATSAPP_TOKEN}` },
-    timeout: 60000,
+    timeout: 60_000,
   });
   return Buffer.from(r.data);
 }
 
 // ======================================================
-// PARSERS / EXTRACCIÓN (NO IA)
+// PARSERS / HECHOS
 // ======================================================
 function parseMeasuresFromText(text) {
-  // Extrae patrones tipo: "2.00 x 2.00", "2000x1800", "1,80 por 2mt"
   const t = String(text || "").toLowerCase();
 
-  // Reemplazos comunes
   const normalized = t
     .replace(/,/g, ".")
     .replace(/mts|mt|metros|metro/g, "m")
@@ -277,21 +329,17 @@ function parseMeasuresFromText(text) {
     let b = Number(m[2]);
     const unit = m[3] || null;
 
-    // Heurística: si unit = m -> mm = *1000 ; si cm -> *10 ; si sin unit:
-    // - si a<=10 y b<=10 -> asumir metros
-    // - si a>50 -> asumir mm
-    // - si a<=50 -> asumir cm (poco probable) -> mejor metros si <=10
     const toMM = (v) => {
       if (unit === "m") return Math.round(v * 1000);
       if (unit === "cm") return Math.round(v * 10);
-      if (v <= 10) return Math.round(v * 1000);
-      if (v > 50) return Math.round(v);
-      return Math.round(v * 10);
+      if (v <= 10) return Math.round(v * 1000); // metros por defecto
+      if (v > 50) return Math.round(v); // ya mm
+      return Math.round(v * 10); // cm fallback
     };
 
     const w_mm = toMM(a);
     const h_mm = toMM(b);
-    // evitar basura
+
     if (w_mm >= 200 && h_mm >= 200 && w_mm <= 6000 && h_mm <= 6000) {
       matches.push({ qty: 1, w_mm, h_mm, model: null });
     }
@@ -299,30 +347,82 @@ function parseMeasuresFromText(text) {
   return matches;
 }
 
+function updateFactsFromText(session, text) {
+  const t = String(text || "").trim();
+  if (!t) return;
+  const lc = t.toLowerCase();
+
+  // Comunas (ampliable)
+  const comunaHints = [
+    "temuco",
+    "padre las casas",
+    "villarrica",
+    "pucón",
+    "pucon",
+    "cunco",
+    "labranza",
+    "imperial",
+    "carahue",
+    "freire",
+    "lautaro",
+    "nueva imperial",
+    "angol",
+    "collipulli",
+  ];
+  for (const c of comunaHints) {
+    if (lc.includes(c)) session.facts.comuna = toTitle(c.replace("pucon", "pucón"));
+  }
+
+  // Color
+  if (lc.includes("blanco")) session.facts.color = "Blanco";
+  if (lc.includes("nogal") || lc.includes("madera")) session.facts.color = "Nogal";
+  if (lc.includes("grafito")) session.facts.color = "Grafito";
+  if (lc.includes("negro")) session.facts.color = "Negro";
+
+  // Tipo / producto
+  if (lc.includes("corredera")) session.facts.type = "Corredera";
+  if (lc.includes("abatible")) session.facts.type = "Abatible";
+  if (lc.includes("oscil")) session.facts.type = "Oscilobatiente";
+  if (lc.includes("puerta")) session.facts.product = "Puerta";
+  if (lc.includes("ventana")) session.facts.product = "Ventana";
+
+  // Vidrio
+  if (lc.includes("termopanel") || lc.includes("dvh")) session.facts.glass = "Termopanel (DVH)";
+  if (lc.includes("low-e") || lc.includes("low e")) session.facts.glass = "Termopanel (DVH) con Low-E";
+  if (lc.includes("laminado")) session.facts.glass = "Laminado";
+  if (lc.includes("templado")) session.facts.glass = "Templado";
+
+  // Medidas
+  const parsed = parseMeasuresFromText(t);
+  if (parsed.length) {
+    const key = (x) => `${x.qty}|${x.w_mm}|${x.h_mm}|${x.model || ""}`;
+    const existing = new Set((session.facts.measures || []).map(key));
+    for (const it of parsed) {
+      if (!existing.has(key(it))) session.facts.measures.push(it);
+    }
+  }
+}
+
 function inferIntent(text) {
   const t = String(text || "").toLowerCase();
   if (!t.trim()) return "unknown";
-
-  if (t.includes("cotiz") || t.includes("precio") || t.includes("presupuesto"))
-    return "quote";
-  if (t.includes("inform") || t.includes("catálogo") || t.includes("modelos"))
-    return "info";
-  if (t.includes("frío") || t.includes("helado") || t.includes("condens"))
-    return "cold_problem";
-  if (t.includes("vidrio") || t.includes("laminado") || t.includes("templado"))
-    return "glass";
+  if (t.includes("cotiz") || t.includes("precio") || t.includes("presupuesto")) return "quote";
+  if (t.includes("inform") || t.includes("catálogo") || t.includes("catalogo") || t.includes("modelos")) return "info";
+  if (t.includes("frío") || t.includes("frio") || t.includes("helado") || t.includes("condens")) return "cold_problem";
+  if (t.includes("vidrio") || t.includes("laminado") || t.includes("templado")) return "glass";
   if (t.includes("puerta")) return "door";
   if (t.includes("ventana")) return "window";
-
   return "general";
 }
 
 // ======================================================
-// MOTOR PRE-COTIZACIÓN (DETERMINÍSTICO + CONSULTIVO)
+// PRE-COTIZACIÓN (referencial, determinística)
 // ======================================================
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
 function quoteEngine(session) {
-  // Motor simple referencial por m², para que la IA lo explique humano y pida datos faltantes.
-  // Ajusta valores a tu realidad luego.
   const facts = session.facts;
   const items = facts.measures || [];
   if (!items.length) return null;
@@ -332,18 +432,15 @@ function quoteEngine(session) {
   const type = (facts.type || "").toLowerCase();
   const product = (facts.product || "").toLowerCase();
 
-  // Base por m² (referencial)
-  let pricePerM2 = 150000; // blanco base
+  let pricePerM2 = 150000; // base referencial
   if (color.includes("nogal") || color.includes("madera")) pricePerM2 = 160000;
   if (color.includes("negro") || color.includes("grafito")) pricePerM2 = 165000;
 
-  // Ajuste por vidrio
   let glassFactor = 1.0;
-  if (glass.includes("low") || glass.includes("low-e")) glassFactor += 0.12;
+  if (glass.includes("low")) glassFactor += 0.12;
   if (glass.includes("laminado")) glassFactor += 0.18;
   if (glass.includes("templado")) glassFactor += 0.10;
 
-  // Ajuste por tipología
   let typeFactor = 1.0;
   if (type.includes("oscil")) typeFactor += 0.10;
   if (type.includes("abat")) typeFactor += 0.06;
@@ -374,7 +471,7 @@ function quoteEngine(session) {
     currency: "CLP",
     pricePerM2: Math.round(pricePerM2 * glassFactor * typeFactor),
     color: facts.color || "No indicado",
-    glass: facts.glass || "Termopanel estándar (DVH) sugerido",
+    glass: facts.glass || "Termopanel (DVH) sugerido",
     type: facts.type || "No indicado",
     product: facts.product || "Ventana/Puerta",
     totalArea: round2(totalArea),
@@ -387,22 +484,32 @@ function quoteEngine(session) {
   };
 }
 
-function round2(n) {
-  return Math.round(n * 100) / 100;
+// ======================================================
+// PDF (LAZY LOAD) — evita que el container se caiga al arrancar
+// ======================================================
+let pdfParse = null;
+let PDFDocument = null;
+let FormData = null;
+
+function loadPdfDeps() {
+  if (!pdfParse) {
+    pdfParse = require("pdf-parse");
+    PDFDocument = require("pdfkit");
+    FormData = require("form-data");
+  }
 }
 
-// ======================================================
-// PDF COTIZACIÓN (OPCIONAL)
-// ======================================================
 function buildQuotePdfBuffer(quote, session) {
   return new Promise((resolve, reject) => {
     try {
+      loadPdfDeps();
+
       const doc = new PDFDocument({ size: "A4", margin: 40 });
       const chunks = [];
       doc.on("data", (c) => chunks.push(c));
       doc.on("end", () => resolve(Buffer.concat(chunks)));
 
-      doc.fontSize(16).text(`${BRAND.displayName} - Pre-cotización`, { bold: true });
+      doc.fontSize(16).text(`${BRAND.displayName} - Pre-cotización`, { underline: true });
       doc.moveDown(0.5);
 
       doc.fontSize(10).text(`Fecha: ${new Date().toLocaleString("es-CL")}`);
@@ -410,7 +517,7 @@ function buildQuotePdfBuffer(quote, session) {
       doc.text(`Comuna: ${session.facts.comuna || "Por confirmar"}`);
       doc.moveDown(0.8);
 
-      doc.fontSize(12).text(`Resumen`, { underline: true });
+      doc.fontSize(12).text("Resumen", { underline: true });
       doc.fontSize(10).text(`Producto: ${quote.product}`);
       doc.text(`Tipo: ${quote.type}`);
       doc.text(`Color: ${quote.color}`);
@@ -419,7 +526,7 @@ function buildQuotePdfBuffer(quote, session) {
       doc.text(`Valor referencial: ${quote.pricePerM2.toLocaleString("es-CL")} + IVA / m²`);
       doc.moveDown(0.8);
 
-      doc.fontSize(12).text(`Detalle`, { underline: true });
+      doc.fontSize(12).text("Detalle", { underline: true });
       doc.moveDown(0.3);
 
       quote.lineItems.forEach((li, idx) => {
@@ -437,9 +544,9 @@ function buildQuotePdfBuffer(quote, session) {
 
       doc.moveDown(1.0);
       doc.fontSize(9).text(`Nota: ${quote.disclaimer}`);
+      doc.moveDown(1.0);
+      doc.fontSize(10).text(BRAND.promise);
 
-      doc.moveDown(1.2);
-      doc.fontSize(10).text(`${BRAND.promise}`);
       doc.end();
     } catch (e) {
       reject(e);
@@ -448,6 +555,8 @@ function buildQuotePdfBuffer(quote, session) {
 }
 
 async function waUploadMediaPDF(phone_number_id, pdfBuffer, filename = "cotizacion.pdf") {
+  loadPdfDeps();
+
   const form = new FormData();
   form.append("messaging_product", "whatsapp");
   form.append("type", "application/pdf");
@@ -459,7 +568,7 @@ async function waUploadMediaPDF(phone_number_id, pdfBuffer, filename = "cotizaci
       ...form.getHeaders(),
     },
     maxBodyLength: Infinity,
-    timeout: 60000,
+    timeout: 60_000,
   });
 
   return r?.data?.id;
@@ -474,17 +583,18 @@ async function waSendDocument(phone_number_id, to, media_id, filename, caption) 
   };
   await axios.post(`${WA_BASE()}/${phone_number_id}/messages`, payload, {
     headers: { Authorization: `Bearer ${ENV.WHATSAPP_TOKEN}` },
-    timeout: 60000,
+    timeout: 60_000,
   });
 }
 
 // ======================================================
-// OPENAI: TRANSCRIPCIÓN / VISIÓN / RESPUESTA TEXTO
+// OPENAI: AUDIO / VISIÓN / RESPUESTA (robusto)
 // ======================================================
 async function transcribeAudioBuffer(audioBuffer) {
   if (!openai || !ENV.ENABLE_VOICE_TRANSCRIPTION) return null;
+  if (!audioBuffer?.length) return null;
+  if (audioBuffer.length > ENV.MAX_AUDIO_BYTES) return null;
 
-  // Guardar temporal para usar ReadStream (más compatible)
   const tmp = path.join(os.tmpdir(), `wa-audio-${crypto.randomUUID()}.ogg`);
   fs.writeFileSync(tmp, audioBuffer);
 
@@ -495,15 +605,21 @@ async function transcribeAudioBuffer(audioBuffer) {
     });
     return (tr?.text || "").trim() || null;
   } catch (e) {
-    console.error("transcribeAudio error:", e?.message || e);
+    logErr("transcribeAudio error:", e?.message || e);
     return null;
   } finally {
-    try { fs.unlinkSync(tmp); } catch (_) {}
+    try {
+      fs.unlinkSync(tmp);
+    } catch (_) {}
   }
 }
 
 async function extractFromImageBuffer(imageBuffer) {
   if (!openai) return null;
+  if (!imageBuffer?.length) return null;
+  if (imageBuffer.length > ENV.MAX_IMAGE_BYTES) {
+    return { raw: "NO_CLARO: imagen muy pesada; envía una foto más nítida o recortada a la tabla.", items: [] };
+  }
 
   try {
     const b64 = imageBuffer.toString("base64");
@@ -525,10 +641,13 @@ async function extractFromImageBuffer(imageBuffer) {
     });
 
     const out = resp?.choices?.[0]?.message?.content?.trim() || "";
-    if (!out || out.includes("NO_CLARO")) return { raw: out, items: [] };
+    if (!out || out.includes("NO_CLARO")) return { raw: out || "NO_CLARO: no se pudo leer.", items: [] };
 
-    // Parse salida: "QTY x ANCHO x ALTO | MODELO"
-    const lines = out.split("\n").map((l) => l.trim()).filter(Boolean);
+    const lines = out
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+
     const items = [];
     for (const line of lines) {
       const m = line.match(/^(\d+)\s*x\s*(\d+)\s*x\s*(\d+)(?:\s*\|\s*(.*))?$/i);
@@ -542,15 +661,14 @@ async function extractFromImageBuffer(imageBuffer) {
     }
     return { raw: out, items };
   } catch (e) {
-    console.error("extractFromImage error:", e?.message || e);
+    logErr("extractFromImage error:", e?.message || e);
     return null;
   }
 }
 
 async function aiComposeReply({ session, userText, quote }) {
   if (!openai) {
-    // Fallback sin IA (no debería pasar si pagas IA)
-    return `Hola, gracias por escribirnos. Para ayudarte a cotizar, indícame comuna, tipo (corredera/abatible/oscilobatiente), medidas (ancho x alto) y color.`;
+    return `Hola, gracias por escribirnos. Para cotizar bien, indícame comuna, tipo (corredera/abatible/oscilobatiente), medidas (ancho x alto) y color.`;
   }
 
   const facts = session.facts;
@@ -574,245 +692,209 @@ async function aiComposeReply({ session, userText, quote }) {
     recentTurns: session.turns,
   };
 
-  const resp = await openai.chat.completions.create({
-    model: ENV.AI_MODEL_TEXT,
-    temperature: 0.55,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT_TEXT },
-      {
-        role: "user",
-        content:
-          "Contexto (JSON):\n" +
-          JSON.stringify(contextBlock, null, 2) +
-          "\n\nMensaje del cliente:\n" +
-          userText +
-          "\n\nInstrucciones:\n" +
-          "- Responde como Activa, humano y consultivo.\n" +
-          "- Resuelve lo preguntado y pide SOLO lo mínimo que falta.\n" +
-          "- Si hay pre-cotización disponible, entrégala clara y breve + disclaimer + siguiente paso.\n" +
-          "- Si el cliente reporta frío, recomienda mejoras concretas (DVH/Low-E/instalación) y pregunta 1 dato clave.\n",
-      },
-    ],
-  });
+  try {
+    const resp = await openai.chat.completions.create({
+      model: ENV.AI_MODEL_TEXT,
+      temperature: 0.55,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT_TEXT },
+        {
+          role: "user",
+          content:
+            "Contexto (JSON):\n" +
+            JSON.stringify(contextBlock, null, 2) +
+            "\n\nMensaje del cliente:\n" +
+            userText +
+            "\n\nInstrucciones:\n" +
+            "- Responde como Activa, humano y consultivo.\n" +
+            "- Pide SOLO lo mínimo faltante.\n" +
+            "- Si hay pre-cotización, entrégala clara y breve + disclaimer + siguiente paso.\n",
+        },
+      ],
+    });
 
-  const out = resp?.choices?.[0]?.message?.content || "";
-  return safeStr(out, ENV.MAX_REPLY_CHARS);
-}
-
-// ======================================================
-// NORMALIZACIÓN DE HECHOS (captura de datos)
-// ======================================================
-function updateFactsFromText(session, text) {
-  const t = String(text || "").trim();
-  if (!t) return;
-
-  // Comuna (heurística simple)
-  const lc = t.toLowerCase();
-  const comunaHints = ["temuco", "padre las casas", "villarrica", "pucón", "cunco", "labranza", "imperial", "carahue"];
-  for (const c of comunaHints) {
-    if (lc.includes(c)) session.facts.comuna = toTitle(c);
-  }
-
-  // Color
-  if (lc.includes("blanco")) session.facts.color = "Blanco";
-  if (lc.includes("nogal")) session.facts.color = "Nogal";
-  if (lc.includes("grafito")) session.facts.color = "Grafito";
-  if (lc.includes("negro")) session.facts.color = "Negro";
-
-  // Tipo / producto
-  if (lc.includes("corredera")) session.facts.type = "Corredera";
-  if (lc.includes("abatible")) session.facts.type = "Abatible";
-  if (lc.includes("oscil")) session.facts.type = "Oscilobatiente";
-  if (lc.includes("puerta")) session.facts.product = "Puerta";
-  if (lc.includes("ventana")) session.facts.product = "Ventana";
-
-  // Vidrio
-  if (lc.includes("termopanel") || lc.includes("dvh")) session.facts.glass = "Termopanel (DVH)";
-  if (lc.includes("low-e") || lc.includes("low e") || lc.includes("low")) {
-    session.facts.glass = "Termopanel (DVH) con Low-E";
-  }
-  if (lc.includes("laminado")) session.facts.glass = "Laminado";
-  if (lc.includes("templado")) session.facts.glass = "Templado";
-
-  // Medidas desde texto
-  const parsed = parseMeasuresFromText(t);
-  if (parsed.length) {
-    // si ya había, sumamos sin duplicar exactos
-    const key = (x) => `${x.qty}|${x.w_mm}|${x.h_mm}|${x.model || ""}`;
-    const existing = new Set((session.facts.measures || []).map(key));
-    for (const it of parsed) {
-      if (!existing.has(key(it))) session.facts.measures.push(it);
-    }
+    const out = resp?.choices?.[0]?.message?.content || "";
+    return safeStr(out, ENV.MAX_REPLY_CHARS);
+  } catch (e) {
+    logErr("aiComposeReply error:", e?.message || e);
+    // fallback humano, no tumbar
+    return `Gracias por tu mensaje. Para ayudarte bien, ¿me confirmas comuna y medidas (ancho x alto)? Si es para frío/ruido, dime también si quieres termopanel estándar o Low-E.`;
   }
 }
 
-function toTitle(s) {
-  return String(s)
-    .split(" ")
-    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : ""))
-    .join(" ");
-}
-
 // ======================================================
-// WEBHOOKS
+// ROUTES
 // ======================================================
-app.get("/health", (req, res) => res.status(200).send("ok"));
+app.get("/health", (_req, res) => res.status(200).send("ok"));
 
-// Verificación de webhook (Meta)
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === ENV.VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
-  }
+  if (mode === "subscribe" && token === ENV.VERIFY_TOKEN) return res.status(200).send(challenge);
   return res.sendStatus(403);
 });
 
-// Recepción de eventos
 app.post("/webhook", async (req, res) => {
+  // Verificación de firma opcional (recomendado si usas APP_SECRET)
+  if (!verifyMetaSignature(req)) {
+    // Responder 403 rápido; no procesar nada
+    return res.sendStatus(403);
+  }
+
+  // Responder 200 inmediato a Meta (anti-timeout)
+  res.sendStatus(200);
+
   try {
     const body = req.body;
-
-    // Confirmar rápido a Meta
-    res.sendStatus(200);
 
     const entry = body?.entry?.[0];
     const changes = entry?.changes?.[0]?.value;
 
-    const phone_number_id =
-      changes?.metadata?.phone_number_id || ENV.PHONE_NUMBER_ID;
+    const phone_number_id = changes?.metadata?.phone_number_id || ENV.PHONE_NUMBER_ID;
 
     const messages = changes?.messages;
     if (!messages || !messages.length) return;
 
     const contacts = changes?.contacts || [];
     const contact = contacts[0];
+
     const wa_id = contact?.wa_id || messages[0]?.from;
+    if (!wa_id) return;
 
     for (const msg of messages) {
       const msg_id = msg?.id;
       if (!msg_id) continue;
-
-      // Dedupe: evita loops por reintentos
       if (dedupe(msg_id)) continue;
 
-      // Mark read ASAP
+      // Marcar leído ASAP
       await waMarkRead(phone_number_id, msg_id);
 
       // Sesión
       const session = getSession(wa_id);
 
-      // Intentar capturar nombre
+      // Nombre (si viene)
       const profileName = contact?.profile?.name;
       if (profileName && !session.facts.name) session.facts.name = profileName;
 
       // Procesar por tipo
       let userText = "";
 
-      // TEXT
       if (msg.type === "text") {
         userText = msg?.text?.body || "";
-      }
-
-      // IMAGE
-      else if (msg.type === "image") {
+      } else if (msg.type === "image") {
         const media_id = msg?.image?.id;
         userText = msg?.image?.caption || "Imagen enviada";
-        if (media_id) {
-          const url = await waGetMediaUrl(media_id);
-          const buf = await waDownloadMedia(url);
 
-          const extracted = await extractFromImageBuffer(buf);
-          if (extracted?.items?.length) {
-            session.facts.measures.push(...extracted.items);
-            session.facts.notes.push("Medidas extraídas desde imagen.");
-            userText =
-              (userText ? userText + "\n\n" : "") +
-              "Adjunto imagen con medidas. Datos extraídos:\n" +
-              extracted.raw;
-          } else if (extracted?.raw) {
-            session.facts.notes.push("Imagen recibida pero extracción no concluyente.");
-            userText =
-              (userText ? userText + "\n\n" : "") +
-              "Adjunto imagen con medidas, pero no se pudo leer con certeza:\n" +
-              extracted.raw;
-          } else {
-            session.facts.notes.push("Imagen recibida (sin extracción).");
+        if (media_id) {
+          try {
+            const url = await waGetMediaUrl(media_id);
+            const buf = await waDownloadMedia(url);
+
+            const extracted = await extractFromImageBuffer(buf);
+            if (extracted?.items?.length) {
+              session.facts.measures.push(...extracted.items);
+              session.facts.notes.push("Medidas extraídas desde imagen.");
+              userText =
+                (userText ? userText + "\n\n" : "") +
+                "Adjunto imagen con medidas. Datos extraídos:\n" +
+                extracted.raw;
+            } else if (extracted?.raw) {
+              session.facts.notes.push("Imagen recibida pero extracción no concluyente.");
+              userText =
+                (userText ? userText + "\n\n" : "") +
+                "Adjunto imagen con medidas, pero no se pudo leer con certeza:\n" +
+                extracted.raw;
+            } else {
+              session.facts.notes.push("Imagen recibida (sin extracción).");
+            }
+          } catch (e) {
+            logErr("IMAGE flow error:", e?.message || e);
+            session.facts.notes.push("Imagen recibida (error al descargar/leer).");
           }
         }
-      }
-
-      // AUDIO / VOICE
-      else if (msg.type === "audio" || msg.type === "voice") {
+      } else if (msg.type === "audio" || msg.type === "voice") {
         const media_id = msg?.audio?.id || msg?.voice?.id;
         userText = "Audio recibido.";
+
         if (media_id && ENV.ENABLE_VOICE_TRANSCRIPTION) {
-          const url = await waGetMediaUrl(media_id);
-          const buf = await waDownloadMedia(url);
-          const tr = await transcribeAudioBuffer(buf);
-          if (tr) {
-            userText = `Audio transcrito: ${tr}`;
-            session.facts.notes.push("Audio transcrito.");
-          } else {
-            session.facts.notes.push("Audio recibido (sin transcripción).");
+          try {
+            const url = await waGetMediaUrl(media_id);
+            const buf = await waDownloadMedia(url);
+
+            const tr = await transcribeAudioBuffer(buf);
+            if (tr) {
+              userText = `Audio transcrito: ${tr}`;
+              session.facts.notes.push("Audio transcrito.");
+            } else {
+              session.facts.notes.push("Audio recibido (sin transcripción).");
+            }
+          } catch (e) {
+            logErr("AUDIO flow error:", e?.message || e);
+            session.facts.notes.push("Audio recibido (error en descarga/transcripción).");
           }
         }
-      }
-
-      // DOCUMENT (PDF/otros)
-      else if (msg.type === "document") {
+      } else if (msg.type === "document") {
         const media_id = msg?.document?.id;
         const filename = msg?.document?.filename || "documento";
         userText = `Documento recibido: ${filename}`;
+
         if (media_id && filename.toLowerCase().endsWith(".pdf")) {
-          const url = await waGetMediaUrl(media_id);
-          const buf = await waDownloadMedia(url);
-          const parsed = await pdfParse(buf);
-          const txt = (parsed?.text || "").trim();
-          if (txt) {
-            userText += `\nResumen PDF (extracto):\n${txt.slice(0, 1200)}`;
-            session.facts.notes.push("PDF recibido y leído.");
-          } else {
-            session.facts.notes.push("PDF recibido, sin texto extraíble.");
+          try {
+            const url = await waGetMediaUrl(media_id);
+            const buf = await waDownloadMedia(url);
+
+            if (buf.length > ENV.MAX_PDF_BYTES) {
+              session.facts.notes.push("PDF recibido pero muy pesado; no se procesó.");
+              userText += "\nNota: el PDF es muy pesado para leerlo automático; si puedes envía una versión más liviana o un extracto.";
+            } else {
+              try {
+                loadPdfDeps();
+                const parsed = await pdfParse(buf);
+                const txt = (parsed?.text || "").trim();
+                if (txt) {
+                  userText += `\nResumen PDF (extracto):\n${txt.slice(0, 1200)}`;
+                  session.facts.notes.push("PDF recibido y leído.");
+                } else {
+                  session.facts.notes.push("PDF recibido, sin texto extraíble.");
+                }
+              } catch (e) {
+                logErr("PDF parse error:", e?.message || e);
+                session.facts.notes.push("PDF recibido, pero no se pudo leer (fallback).");
+                userText += "\nNota: recibí el PDF, pero no pude extraer texto automáticamente. Si me indicas medidas y tipo, lo resolvemos igual.";
+              }
+            }
+          } catch (e) {
+            logErr("PDF flow error:", e?.message || e);
+            session.facts.notes.push("PDF recibido (error al descargar).");
           }
         }
-      }
-
-      else {
+      } else {
         userText = "Mensaje recibido.";
       }
 
-      // Registrar turno usuario
+      // Guardar turno y hechos
       addTurn(session, "user", userText);
-
-      // Actualizar hechos desde texto
       updateFactsFromText(session, userText);
 
-      // Si hay medidas y no hay vidrio definido, sugerir DVH
-      if (session.facts.measures.length && !session.facts.glass) {
-        session.facts.glass = "Termopanel (DVH)";
-      }
+      // Sugerir DVH si hay medidas pero no vidrio
+      if (session.facts.measures.length && !session.facts.glass) session.facts.glass = "Termopanel (DVH)";
 
-      // Generar pre-cotización si hay medidas
+      // Pre-cotización
       const quote = quoteEngine(session);
 
-      // IA compone respuesta humana
+      // Respuesta IA (o fallback)
       const reply = await aiComposeReply({ session, userText, quote });
 
       addTurn(session, "assistant", reply);
 
-      // Enviar con typing simulation
+      // Enviar respuesta
       await waTypingSim(reply);
       await waSendText(phone_number_id, wa_id, reply);
 
-      // Si cliente pide PDF y está habilitado + hay quote
-      if (
-        ENV.ENABLE_PDF_QUOTES &&
-        quote &&
-        /pdf/i.test(userText)
-      ) {
+      // PDF de salida solo si está habilitado, hay quote y el cliente lo pide
+      if (ENV.ENABLE_PDF_QUOTES && quote && /pdf/i.test(userText)) {
         try {
           const pdfBuf = await buildQuotePdfBuffer(quote, session);
           const mediaId = await waUploadMediaPDF(phone_number_id, pdfBuf, "cotizacion.pdf");
@@ -825,18 +907,17 @@ app.post("/webhook", async (req, res) => {
             "Adjunto pre-cotización referencial. Si confirmas comuna/tipo/color/vidrio, lo dejamos cerrado."
           );
         } catch (e) {
-          console.error("PDF flow error:", e?.message || e);
+          logErr("PDF output error:", e?.message || e);
         }
       }
     }
   } catch (e) {
-    // Ojo: ya respondimos 200 arriba, aquí solo log
-    console.error("Webhook error:", e?.message || e);
+    logErr("Webhook error:", e?.message || e);
   }
 });
 
 // ======================================================
-// STARTUP LOGS
+// STARTUP
 // ======================================================
 function envStatus() {
   const lines = [
@@ -845,17 +926,19 @@ function envStatus() {
     `ENV WHATSAPP_TOKEN: ${ENV.WHATSAPP_TOKEN ? "OK" : "MISSING"}`,
     `ENV PHONE_NUMBER_ID: ${ENV.PHONE_NUMBER_ID ? "OK" : "MISSING"}`,
     `ENV VERIFY_TOKEN: ${ENV.VERIFY_TOKEN ? "OK" : "MISSING"}`,
-    `ENV META_GRAPH_VERSION: ${ENV.META_VERSION}`,
+    `ENV META_VERSION: ${ENV.META_VERSION}`,
+    `ENV APP_SECRET(signature): ${ENV.APP_SECRET ? "OK" : "OFF"}`,
     `AI_MODEL_TEXT: ${ENV.AI_MODEL_TEXT}`,
     `AI_MODEL_VISION: ${ENV.AI_MODEL_VISION}`,
+    `AI_MODEL_TRANSCRIBE: ${ENV.AI_MODEL_TRANSCRIBE}`,
     `ENABLE_VOICE_TRANSCRIPTION: ${ENV.ENABLE_VOICE_TRANSCRIPTION}`,
     `ENABLE_PDF_QUOTES: ${ENV.ENABLE_PDF_QUOTES}`,
     `TYPING_SIMULATION: ${ENV.TYPING_SIMULATION}`,
   ];
-  for (const l of lines) console.log(l);
+  for (const l of lines) logInfo(l);
 }
 
 app.listen(PORT, () => {
   envStatus();
-  console.log(`Server running on port ${PORT}`);
+  logInfo(`Server running on port ${PORT}`);
 });
