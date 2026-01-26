@@ -1,237 +1,193 @@
-import "dotenv/config";
+// index.js (ESM) - WhatsApp IA + Cotización + PDF + Voz (Activa Inversiones)
+// Node 18.20+
+// Railway: responde 200 inmediato y procesa asíncrono
+
 import express from "express";
 import axios from "axios";
+import dotenv from "dotenv";
 import OpenAI from "openai";
-import pdfParse from "pdf-parse";
-import PDFDocument from "pdfkit";
 import FormData from "form-data";
+import PDFDocument from "pdfkit";
 import { Readable } from "stream";
 
-/**
- * WhatsApp IA Hub (Activa) - FULL
- * - Webhook verification (GET /webhook)
- * - Incoming messages (POST /webhook) -> 200 inmediato + procesamiento async
- * - Text + Image + PDF + Voice transcription (Whisper)
- * - Cotización referencial por m² + PDF automático
- * - Sesiones + checklist (evita preguntas infinitas)
- *
- * Node: ESM ("type":"module")
- */
+dotenv.config();
 
 const app = express();
-app.use(express.json({ limit: "15mb" }));
+app.use(express.json({ limit: "20mb" }));
 
 // =====================
-// ENV helpers
+// ENV / CONFIG
 // =====================
-const env = (k, d = undefined) => process.env[k] ?? d;
-const envBool = (k, d = false) => {
-  const v = (process.env[k] ?? "").toString().toLowerCase().trim();
-  if (!v) return d;
-  return ["1", "true", "yes", "y", "on"].includes(v);
-};
-const envInt = (k, d) => {
-  const n = parseInt(process.env[k] ?? "", 10);
-  return Number.isFinite(n) ? n : d;
-};
+const PORT = process.env.PORT || 8080;
+
+const META_VERSION = process.env.META_GRAPH_VERSION || "v22.0";
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const AI_MODEL_TEXT = process.env.AI_MODEL_OPENAI || process.env.AI_MODEL_TEXT || "gpt-4.1-mini";
+
+const TYPING_SIMULATION = String(process.env.TYPING_SIMULATION || "true").toLowerCase() === "true";
+const ENABLE_PDF_QUOTES = String(process.env.ENABLE_PDF_QUOTES || "true").toLowerCase() === "true";
+const ENABLE_VOICE_TRANSCRIPTION = String(process.env.ENABLE_VOICE_TRANSCRIPTION || "true").toLowerCase() === "true";
+
+if (!WHATSAPP_TOKEN) console.warn("ENV WHATSAPP_TOKEN: MISSING");
+if (!VERIFY_TOKEN) console.warn("ENV VERIFY_TOKEN: MISSING");
+if (!PHONE_NUMBER_ID) console.warn("ENV PHONE_NUMBER_ID: MISSING");
+if (!OPENAI_API_KEY) console.warn("ENV OPENAI_API_KEY: MISSING");
+
+const WA_BASE = `https://graph.facebook.com/${META_VERSION}/${PHONE_NUMBER_ID}`;
+
+// Cliente OpenAI
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+
+// Axios defaults
+axios.defaults.timeout = 25000;
 
 // =====================
-// Required ENV
+// Utilidades
 // =====================
-const PORT = envInt("PORT", 8080);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const WHATSAPP_TOKEN = env("WHATSAPP_TOKEN");
-const PHONE_NUMBER_ID = env("PHONE_NUMBER_ID");
-const VERIFY_TOKEN = env("VERIFY_TOKEN");
-const META_GRAPH_VERSION = env("META_GRAPH_VERSION", "v22.0");
-
-const OPENAI_API_KEY = env("OPENAI_API_KEY");
-const AI_MODEL_TEXT = env("AI_MODEL_TEXT", "gpt-4.1-mini");
-const AI_MODEL_VISION = env("AI_MODEL_VISION", "gpt-4o-mini");
-const AI_TEMPERATURE = Number(env("AI_TEMPERATURE", "0.35"));
-const AI_MAX_OUTPUT_TOKENS = envInt("AI_MAX_OUTPUT_TOKENS", 340);
-const AI_ENHANCE_ALWAYS = envBool("AI_ENHANCE_ALWAYS", true);
-
-// =====================
-// Feature flags
-// =====================
-const ENABLE_PDF_QUOTES = envBool("ENABLE_PDF_QUOTES", true);
-const ENABLE_VOICE_TRANSCRIPTION = envBool("ENABLE_VOICE_TRANSCRIPTION", true);
-const ENABLE_IMAGE_VISION = envBool("ENABLE_IMAGE_VISION", true);
-
-// =====================
-// Humanization / pacing
-// =====================
-const TYPING_SIMULATION = envBool("TYPING_SIMULATION", true);
-const WAIT_AFTER_LAST_USER_MESSAGE_MS = envInt("WAIT_AFTER_LAST_USER_MESSAGE_MS", 1200);
-const EXTRA_DELAY_MEDIA_MS = envInt("EXTRA_DELAY_MEDIA_MS", 1200);
-const TYPING_MIN_MS = envInt("TYPING_MIN_MS", 600);
-const TYPING_MAX_MS = envInt("TYPING_MAX_MS", 1400);
-
-const MAX_LINES_PER_REPLY = envInt("MAX_LINES_PER_REPLY", 8);
-const ONE_QUESTION_PER_TURN = envBool("ONE_QUESTION_PER_TURN", true);
-
-// Loop guard
-const LOOP_GUARD_MAX_REPLIES_PER_5MIN = envInt("LOOP_GUARD_MAX_REPLIES_PER_5MIN", 8);
-
-// =====================
-// Brand / positioning
-// =====================
-const COMPANY_NAME = env("COMPANY_NAME", "Fábrica de Ventanas Activa");
-const AGENT_NAME = env("AGENT_NAME", "Marcelo Cifuentes");
-const LANGUAGE = env("LANGUAGE", "es-CL");
-const TONO = env("TONO", "usted"); // usted | tu
-
-// Diferenciador de valor (sin prometer % “duro”)
-const VALUE_PITCH = env(
-  "VALUE_PITCH",
-  "Nos enfocamos en calidad y desempeño (hermeticidad, instalación y confort térmico). Trabajamos DVH/termopanel con separador warm-edge Thermoflex para reducir condensación frente al separador de aluminio tradicional."
-);
-
-// =====================
-// Pricing (m²) - NETO
-// =====================
-const PRICE_WHITE = envInt("PRICE_WHITE", 150000);
-const PRICE_WOOD = envInt("PRICE_WOOD", 160000); // nogal/roble
-const PRICE_DARK = envInt("PRICE_DARK", 170000); // grafito/negro
-const VAT_RATE = Number(env("VAT_RATE", "0.19"));
-
-// Colores disponibles
-const COLORS_EU = (env("PVC_EU_COLORS", "blanco,roble dorado,nogal,grafito,negro"))
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
-
-const COLORS_US = (env("PVC_US_COLORS", "blanco"))
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
-
-// Defaults controlados
-const DEFAULT_GLASS = env("DEFAULT_GLASS", "termopanel normal (DVH estándar)");
-const DEFAULT_SYSTEM = env("DEFAULT_SYSTEM", "pvc europeo"); // para pre-cotizar en valor
-const DEFAULT_TYPE = env("DEFAULT_TYPE", "corredera");
-const DEFAULT_COLOR = env("DEFAULT_COLOR", "blanco");
-const ALT_COLOR = env("ALT_COLOR", "nogal");
-
-// =====================
-// OpenAI client
-// =====================
-const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
-
-// =====================
-// Logs
-// =====================
-console.log("Starting Container");
-console.log(`Server running on port ${PORT}`);
-console.log(`ENV WHATSAPP_TOKEN: ${WHATSAPP_TOKEN ? "OK" : "MISSING"}`);
-console.log(`ENV PHONE_NUMBER_ID: ${PHONE_NUMBER_ID ? "OK" : "MISSING"}`);
-console.log(`ENV VERIFY_TOKEN: ${VERIFY_TOKEN ? "OK" : "MISSING"}`);
-console.log(`ENV OPENAI_API_KEY: ${OPENAI_API_KEY ? "OK" : "MISSING"}`);
-console.log(`AI_MODEL_TEXT: ${AI_MODEL_TEXT}`);
-console.log(`AI_MODEL_VISION: ${AI_MODEL_VISION}`);
-console.log(`TYPING_SIMULATION: ${TYPING_SIMULATION}`);
-console.log(`ENABLE_PDF_QUOTES: ${ENABLE_PDF_QUOTES}`);
-console.log(`ENABLE_VOICE_TRANSCRIPTION: ${ENABLE_VOICE_TRANSCRIPTION}`);
-
-// =====================
-// Health
-// =====================
-app.get("/", (req, res) => res.status(200).send("OK"));
-app.get("/health", (req, res) => res.status(200).json({ ok: true }));
-
-// =====================
-// Webhook verification
-// =====================
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-  if (mode === "subscribe" && token === VERIFY_TOKEN) return res.status(200).send(challenge);
-  return res.sendStatus(403);
-});
-
-// =====================
-// Session store (in-memory)
-// =====================
-const sessions = new Map(); // waId -> session
-const processedMsgIds = new Set();
-const maxProcessed = 4000;
-
-function addProcessed(id) {
-  if (!id) return;
-  processedMsgIds.add(id);
-  if (processedMsgIds.size > maxProcessed) {
-    const first = processedMsgIds.values().next().value;
-    processedMsgIds.delete(first);
-  }
+function nowIso() {
+  return new Date().toISOString();
 }
 
+function clampText(s, max = 3500) {
+  if (!s) return "";
+  const t = String(s);
+  return t.length <= max ? t : t.slice(0, max - 3) + "...";
+}
+
+// Dedupe simple
+const seenMessageIds = new Map(); // msgId -> ts
+function markSeen(msgId) {
+  if (!msgId) return false;
+  const t = Date.now();
+  // Limpieza TTL 10 min
+  for (const [k, v] of seenMessageIds.entries()) {
+    if (t - v > 10 * 60 * 1000) seenMessageIds.delete(k);
+  }
+  if (seenMessageIds.has(msgId)) return true;
+  seenMessageIds.set(msgId, t);
+  return false;
+}
+
+// Sesiones por cliente
+const sessions = new Map(); // waId -> { data, lastQuote, lastAskedMissing, updatedAt }
 function getSession(waId) {
   if (!sessions.has(waId)) {
     sessions.set(waId, {
-      waId,
-      createdAt: Date.now(),
-      lastSeenAt: 0,
-      lastReplyAt: 0,
-      repliesIn5Min: [],
-      history: [], // {role, content}
-      context: {
-        name: null,
-        comuna: null,
-        sector: null,
-        system: null,     // pvc europeo | pvc americano | aluminio
-        color: null,
-        type: null,       // corredera | abatible | proyectante | fija | puerta
-        glass: null,      // termopanel normal...
-        quantity: null,
-        items: [],        // [{wMm,hMm,qty,type,color,system}]
-        lastQuote: null
-      },
-      debounceTimer: null,
-      pendingText: ""
+      data: {},
+      lastQuote: null,
+      lastAskedMissing: null,
+      updatedAt: Date.now(),
     });
   }
-  return sessions.get(waId);
+  const s = sessions.get(waId);
+  s.updatedAt = Date.now();
+  return s;
 }
 
-function loopGuardOk(session) {
-  const now = Date.now();
-  session.repliesIn5Min = session.repliesIn5Min.filter((t) => now - t < 5 * 60 * 1000);
-  return session.repliesIn5Min.length < LOOP_GUARD_MAX_REPLIES_PER_5MIN;
-}
-function noteReply(session) {
-  session.repliesIn5Min.push(Date.now());
-  session.lastReplyAt = Date.now();
+// =====================
+// Precios / Reglas comerciales (inicial)
+// =====================
+const IVA_RATE = 0.19;
+
+const PRICE_M2 = {
+  blanco: 150000,
+  roble: 160000,
+  nogal: 160000,
+  grafito: 170000,
+  negro: 170000,
+};
+
+const PVC_EURO_COLORS = ["blanco", "roble", "roble dorado", "nogal", "grafito", "negro"];
+const PVC_US_COLORS = ["blanco"];
+
+// Normaliza color a clave base
+function normalizeColor(raw) {
+  if (!raw) return null;
+  const c = String(raw).toLowerCase().trim();
+
+  if (c.includes("roble")) return "roble";
+  if (c.includes("nogal")) return "nogal";
+  if (c.includes("grafit")) return "grafito";
+  if (c.includes("negro")) return "negro";
+  if (c.includes("blanc")) return "blanco";
+
+  return null;
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Normaliza sistema/marco
+function normalizeSystem(raw) {
+  if (!raw) return null;
+  const s = String(raw).toLowerCase();
+
+  if (s.includes("alum")) return "aluminio";
+  if (s.includes("americano")) return "pvc_americano";
+  if (s.includes("europe") || s.includes("euro")) return "pvc_europeo";
+  if (s.includes("pvc")) return "pvc_europeo";
+  return null;
+}
+
+function normalizeOpening(raw) {
+  if (!raw) return null;
+  const t = String(raw).toLowerCase();
+  if (t.includes("corre")) return "corredera";
+  if (t.includes("abat")) return "abatible";
+  if (t.includes("proyect")) return "proyectante";
+  if (t.includes("fija")) return "fija";
+  if (t.includes("puerta")) return "puerta";
+  return null;
+}
+
+function isPdfRequest(text) {
+  const t = (text || "").toLowerCase();
+  return t.includes("pdf") || t.includes("adjunt") || t.includes("archivo");
+}
+
+function isReset(text) {
+  const t = (text || "").toLowerCase().trim();
+  return t === "reset" || t === "/reset" || t.includes("reinicia");
+}
 
 // =====================
 // WhatsApp API helpers
 // =====================
-const WA_BASE = `https://graph.facebook.com/${META_GRAPH_VERSION}/${PHONE_NUMBER_ID}`;
-
-function waHeadersJSON() {
-  return { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" };
-}
-
 async function waSendText(to, text, { replyToMessageId = null } = {}) {
   const payload = {
     messaging_product: "whatsapp",
     to,
     type: "text",
-    text: { body: text }
+    text: { body: clampText(text) },
   };
-  if (replyToMessageId && envBool("REPLY_WITH_CONTEXT", true)) payload.context = { message_id: replyToMessageId };
+  if (replyToMessageId) payload.context = { message_id: replyToMessageId };
 
-  return axios.post(`${WA_BASE}/messages`, payload, { headers: waHeadersJSON(), timeout: 20000 });
+  const headers = {
+    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  // reintentos básicos
+  let lastErr;
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await axios.post(`${WA_BASE}/messages`, payload, { headers, timeout: 15000 });
+    } catch (e) {
+      lastErr = e;
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      console.error("waSendText error retry", { i, status, data });
+      await sleep(800 * (i + 1));
+    }
+  }
+  throw lastErr;
 }
 
-/**
- * Typing indicator correcto:
- * POST /messages con status:"read" + message_id + typing_indicator:{type:"text"}
- */
+// Indicador typing (opcional). Meta no tiene "typing on" real; aquí marcamos como "read" para simular actividad.
+// Si esto te molesta, lo desactivas con TYPING_SIMULATION=false
 async function waTypingIndicator(messageId, type = "text") {
   if (!TYPING_SIMULATION) return;
   if (!messageId) return;
@@ -240,282 +196,145 @@ async function waTypingIndicator(messageId, type = "text") {
     messaging_product: "whatsapp",
     status: "read",
     message_id: messageId,
-    typing_indicator: { type }
+    typing_indicator: { type },
   };
-  return axios.post(`${WA_BASE}/messages`, payload, { headers: waHeadersJSON(), timeout: 15000 });
+
+  const headers = {
+    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  try {
+    await axios.post(`${WA_BASE}/messages`, payload, { headers, timeout: 15000 });
+  } catch {
+    // silencioso
+  }
 }
 
-function startTypingPinger(messageId, type = "text") {
-  if (!TYPING_SIMULATION || !messageId) return () => {};
-  waTypingIndicator(messageId, type).catch(() => {});
-  const intervalMs = 20000;
-  const maxMs = 65000;
-  const startedAt = Date.now();
-  const timer = setInterval(() => {
-    if (Date.now() - startedAt > maxMs) return clearInterval(timer);
-    waTypingIndicator(messageId, type).catch(() => {});
-  }, intervalMs);
-  return () => clearInterval(timer);
-}
-
-// Media fetch (Cloud API)
-async function waGetMediaUrl(mediaId) {
-  const r = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${mediaId}`, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-    timeout: 20000
-  });
-  return r.data?.url;
-}
-async function waDownloadMediaBytes(mediaUrl) {
-  const r = await axios.get(mediaUrl, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-    responseType: "arraybuffer",
-    timeout: 30000
-  });
-  return Buffer.from(r.data);
-}
-
-/**
- * Upload media to WhatsApp /media (multipart)
- * Returns media_id
- */
+// Subir media a WhatsApp (/media) -> media_id
 async function waUploadMedia(buffer, mimeType, filename = "archivo.pdf") {
   const form = new FormData();
   form.append("messaging_product", "whatsapp");
+  form.append("type", mimeType);
   form.append("file", buffer, { filename, contentType: mimeType });
 
-  const r = await axios.post(`${WA_BASE}/media`, form, {
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, ...form.getHeaders() },
+  const headers = {
+    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+    ...form.getHeaders(),
+  };
+
+  const res = await axios.post(`${WA_BASE}/media`, form, {
+    headers,
     maxBodyLength: Infinity,
-    timeout: 60000
+    timeout: 60000,
   });
 
-  return r.data?.id;
+  return res?.data?.id;
 }
 
-async function waSendDocument(to, mediaId, filename, caption = "", { replyToMessageId = null } = {}) {
+// Enviar documento por WhatsApp (requiere media_id)
+async function waSendDocument(to, mediaId, filename, caption = "") {
   const payload = {
     messaging_product: "whatsapp",
     to,
     type: "document",
-    document: { id: mediaId, filename }
+    document: {
+      id: mediaId,
+      filename,
+      caption: clampText(caption, 900),
+    },
   };
-  if (caption) payload.document.caption = caption;
-  if (replyToMessageId && envBool("REPLY_WITH_CONTEXT", true)) payload.context = { message_id: replyToMessageId };
 
-  return axios.post(`${WA_BASE}/messages`, payload, { headers: waHeadersJSON(), timeout: 20000 });
+  const headers = {
+    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  return axios.post(`${WA_BASE}/messages`, payload, { headers, timeout: 20000 });
+}
+
+// Descargar media (para audio)
+async function waGetMediaUrl(mediaId) {
+  const headers = { Authorization: `Bearer ${WHATSAPP_TOKEN}` };
+  const res = await axios.get(`https://graph.facebook.com/${META_VERSION}/${mediaId}`, { headers, timeout: 20000 });
+  return res?.data?.url;
+}
+
+async function waDownloadMedia(mediaUrl) {
+  const headers = { Authorization: `Bearer ${WHATSAPP_TOKEN}` };
+  const res = await axios.get(mediaUrl, { headers, responseType: "arraybuffer", timeout: 40000 });
+  return Buffer.from(res.data);
 }
 
 // =====================
-// Text normalization & extraction
+// PDF (Cotización Automática)
 // =====================
-function norm(s) {
-  return (s || "").toString().trim();
-}
-function normLower(s) {
-  return norm(s).toLowerCase();
-}
-function stripAccents(s) {
-  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-}
-
-function toMm(value, unit) {
-  const v = Number(value);
-  if (!Number.isFinite(v)) return null;
-  const u = (unit || "mm").toLowerCase();
-  if (u.startsWith("m") && !u.startsWith("mm")) return Math.round(v * 1000);
-  if (u.startsWith("cm")) return Math.round(v * 10);
-  return Math.round(v);
-}
-
-function extractMeasurements(text) {
-  const out = [];
-  const clean = normLower(text).replace(/,/g, ".");
-  // 1000x1200 mm / 1.2x1.5 m / 120x150 cm
-  const reX = /(\d{1,4}(\.\d{1,3})?)\s*[x×]\s*(\d{1,4}(\.\d{1,3})?)\s*(mm|cm|m)?/g;
-  let m;
-  while ((m = reX.exec(clean))) {
-    const w = toMm(m[1], m[5] || "mm");
-    const h = toMm(m[3], m[5] || "mm");
-    if (w && h) out.push({ wMm: w, hMm: h, raw: m[0] });
-  }
-  return out;
-}
-
-function extractQuantity(text) {
-  const t = stripAccents(normLower(text));
-  // "son 2", "2 ventanas", "cantidad 7"
-  let m = t.match(/\b(?:son|cantidad|cant)\s*(\d{1,3})\b/);
-  if (m) return parseInt(m[1], 10);
-  m = t.match(/\b(\d{1,3})\s*(?:ventanas|puertas|unidades|uds|ud)\b/);
-  if (m) return parseInt(m[1], 10);
-  // "2" suelto (no perfecto)
-  m = t.match(/^\s*(\d{1,3})\s*$/);
-  if (m) return parseInt(m[1], 10);
-  return null;
-}
-
-function extractType(text) {
-  const t = stripAccents(normLower(text));
-  if (t.includes("corredera") || t.includes("corrediza")) return "corredera";
-  if (t.includes("abatible")) return "abatible";
-  if (t.includes("proyectante") || t.includes("basculante")) return "proyectante";
-  if (t.includes("fija")) return "fija";
-  if (t.includes("puerta")) return "puerta";
-  return null;
-}
-
-function extractSystem(text) {
-  const t = stripAccents(normLower(text));
-  if (t.includes("pvc europeo") || t.includes("linea europea") || t.includes("europea")) return "pvc europeo";
-  if (t.includes("pvc americano") || t.includes("linea americana") || t.includes("americana")) return "pvc americano";
-  if (t.includes("aluminio")) return "aluminio";
-  return null;
-}
-
-function extractColor(text) {
-  const t = stripAccents(normLower(text));
-
-  // Mapeos simples
-  if (t.includes("nogal")) return "nogal";
-  if (t.includes("roble")) return "roble dorado";
-  if (t.includes("grafito")) return "grafito";
-  if (t.includes("negro")) return "negro";
-  if (t.includes("blanco")) return "blanco";
-
-  return null;
-}
-
-function extractComuna(text) {
-  // Heurística simple: detecta comunas frecuentes; si no, intenta por “en <palabra>”
-  const t = stripAccents(normLower(text));
-  const known = ["temuco", "padre las casas", "villarrica", "pucon", "pucón", "freire", "lautaro", "angol", "collipulli", "loncoche"];
-  for (const k of known) {
-    const kk = stripAccents(k);
-    if (t.includes(kk)) return k.replace("pucón", "pucón");
-  }
-  const m = t.match(/\ben\s+([a-zñ\s]{3,30})\b/);
-  if (m) return m[1].trim();
-  return null;
-}
-
-function extractGlass(text) {
-  const t = stripAccents(normLower(text));
-  if (t.includes("termopanel") || t.includes("dvh") || t.includes("doble vidrio")) return DEFAULT_GLASS;
-  if (t.includes("vidrio normal") || t.includes("monolitico") || t.includes("simple")) return "vidrio normal";
-  return null;
-}
-
-// =====================
-// Quote calculator
-// =====================
-function pricePerM2ByColor(color) {
-  const c = stripAccents(normLower(color || ""));
-  if (c.includes("nogal") || c.includes("roble")) return PRICE_WOOD;
-  if (c.includes("grafito") || c.includes("negro")) return PRICE_DARK;
-  return PRICE_WHITE;
-}
-
-function mmToM(mm) {
-  return mm / 1000;
-}
-
-function computeQuote(items) {
-  // items: [{wMm,hMm,qty,color}]
-  const lines = [];
-  let net = 0;
-
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i];
-    const wM = mmToM(it.wMm);
-    const hM = mmToM(it.hMm);
-    const area = Math.max(0, wM * hM);
-    const unitNet = area * pricePerM2ByColor(it.color);
-    const qty = it.qty || 1;
-    const lineNet = unitNet * qty;
-
-    net += lineNet;
-
-    lines.push({
-      idx: i + 1,
-      wMm: it.wMm,
-      hMm: it.hMm,
-      qty,
-      area: Number(area.toFixed(3)),
-      color: it.color,
-      system: it.system,
-      type: it.type,
-      glass: it.glass,
-      unitNet: Math.round(unitNet),
-      lineNet: Math.round(lineNet)
-    });
-  }
-
-  const iva = Math.round(net * VAT_RATE);
-  const total = net + iva;
-
-  return { lines, net: Math.round(net), iva, total };
-}
-
-// =====================
-// PDF generator
-// =====================
-function moneyCLP(n) {
-  try {
-    return new Intl.NumberFormat("es-CL").format(n);
-  } catch {
-    return String(n);
-  }
-}
-
-async function generateQuotePDF({ session, quote, title = "Pre-cotización referencial" }) {
+async function generateQuotePDF({ customerName, waId, comuna, items, system, color, openingType, notes, totals }) {
   return new Promise((resolve) => {
-    const doc = new PDFDocument({ size: "A4", margin: 40 });
+    const doc = new PDFDocument({ margin: 40 });
     const buffers = [];
     doc.on("data", buffers.push.bind(buffers));
     doc.on("end", () => resolve(Buffer.concat(buffers)));
 
-    doc.fontSize(16).text(`${COMPANY_NAME}`, { align: "center" });
-    doc.moveDown(0.2);
-    doc.fontSize(12).text(`${title}`, { align: "center" });
+    doc.fontSize(18).text("Pre-Cotización Referencial", { align: "center" });
+    doc.moveDown(0.5);
+    doc.fontSize(10).text("Fábrica de Ventanas Activa (Activa Inversiones)", { align: "center" });
+    doc.fontSize(9).text(`Fecha: ${new Date().toLocaleString("es-CL")} | ID: ${waId}`, { align: "center" });
+
+    doc.moveDown(1);
+
+    doc.fontSize(12).text("Datos del cliente", { underline: true });
+    doc.fontSize(10).text(`Cliente: ${customerName || "Cliente WhatsApp"}`);
+    doc.text(`WhatsApp: ${waId}`);
+    if (comuna) doc.text(`Comuna/Sector: ${comuna}`);
+    if (system) doc.text(`Sistema marco: ${system}`);
+    if (color) doc.text(`Color: ${color}`);
+    if (openingType) doc.text(`Tipo apertura: ${openingType}`);
     doc.moveDown(0.8);
 
-    doc.fontSize(10).text(`Atiende: ${AGENT_NAME}`);
-    doc.text(`Cliente (WhatsApp): ${session.waId}`);
-    const comuna = session.context.comuna || session.context.sector || "No informado";
-    doc.text(`Comuna/Sector: ${comuna}`);
-    doc.text(`Fecha: ${new Date().toLocaleString("es-CL")}`);
-    doc.moveDown(0.8);
-
-    doc.fontSize(11).text("Especificación base considerada:", { underline: true });
-    doc.moveDown(0.3);
-    doc.fontSize(10).text(`- Vidrio: ${session.context.glass || DEFAULT_GLASS}`);
-    doc.text(`- Marco: ${session.context.system || DEFAULT_SYSTEM}`);
-    doc.text(`- Apertura: ${session.context.type || DEFAULT_TYPE}`);
-    doc.text(`- Enfoque: ${VALUE_PITCH}`);
-    doc.moveDown(0.8);
-
-    doc.fontSize(11).text("Detalle de ítems:", { underline: true });
+    doc.fontSize(12).text("Detalle", { underline: true });
     doc.moveDown(0.4);
 
-    quote.lines.forEach((l) => {
-      doc.fontSize(10).text(
-        `${l.idx}) ${l.qty} ud | ${l.wMm} x ${l.hMm} mm | ${l.type} | ${l.system} | color ${l.color} | área ${l.area} m² | neto línea $${moneyCLP(l.lineNet)}`
-      );
+    // Tabla simple
+    doc.fontSize(9);
+    doc.text("Ítem", 40, doc.y, { continued: true });
+    doc.text("Medidas (mm)", 90, doc.y, { continued: true });
+    doc.text("Cant.", 180, doc.y, { continued: true });
+    doc.text("m²", 230, doc.y, { continued: true });
+    doc.text("Precio/m²", 280, doc.y, { continued: true });
+    doc.text("Subtotal", 360, doc.y);
+
+    doc.moveDown(0.4);
+    doc.moveTo(40, doc.y).lineTo(555, doc.y).stroke();
+    doc.moveDown(0.4);
+
+    items.forEach((it, idx) => {
+      doc.text(String(idx + 1), 40, doc.y, { continued: true });
+      doc.text(`${it.w_mm} x ${it.h_mm}`, 90, doc.y, { continued: true });
+      doc.text(String(it.qty), 180, doc.y, { continued: true });
+      doc.text(it.area_m2.toFixed(2), 230, doc.y, { continued: true });
+      doc.text(`$${it.price_m2.toLocaleString("es-CL")}`, 280, doc.y, { continued: true });
+      doc.text(`$${it.subtotal.toLocaleString("es-CL")}`, 360, doc.y);
     });
 
     doc.moveDown(0.8);
-    doc.fontSize(11).text("Resumen:", { underline: true });
-    doc.moveDown(0.4);
+    doc.moveTo(40, doc.y).lineTo(555, doc.y).stroke();
+    doc.moveDown(0.6);
 
-    doc.fontSize(10).text(`Neto: $${moneyCLP(quote.net)}`);
-    doc.text(`IVA (${Math.round(VAT_RATE * 100)}%): $${moneyCLP(quote.iva)}`);
-    doc.fontSize(12).text(`Total: $${moneyCLP(quote.total)}`, { underline: true });
+    doc.fontSize(11).text("Totales", { underline: true });
+    doc.fontSize(10).text(`Neto: $${totals.net.toLocaleString("es-CL")}`);
+    doc.text(`IVA (19%): $${totals.iva.toLocaleString("es-CL")}`);
+    doc.text(`Total: $${totals.total.toLocaleString("es-CL")}`);
 
-    doc.moveDown(1);
+    doc.moveDown(0.8);
     doc.fontSize(9).text(
-      "Nota: Pre-cotización referencial sujeta a confirmación en terreno (medidas finales, condiciones de instalación y especificación definitiva).",
-      { align: "left" }
+      notes ||
+        "Cotización referencial sujeta a verificación de medidas en terreno, especificaciones finales, y condiciones de instalación."
+    );
+
+    doc.moveDown(0.8);
+    doc.fontSize(9).text(
+      "Incluye: Termopanel estándar (DVH) + enfoque en hermeticidad y confort. Opciones avanzadas (control solar/seguridad/Low-E) disponibles a solicitud."
     );
 
     doc.end();
@@ -523,502 +342,517 @@ async function generateQuotePDF({ session, quote, title = "Pre-cotización refer
 }
 
 // =====================
-// Voice transcription (Whisper)
+// Voz (Whisper)
 // =====================
 async function transcribeVoice(buffer) {
-  if (!openai) return "";
   const file = await OpenAI.toFile(Readable.from(buffer), "voice.ogg");
   const transcription = await openai.audio.transcriptions.create({
     file,
-    model: "whisper-1"
+    model: "whisper-1",
   });
   return transcription?.text || "";
 }
 
 // =====================
-// AI reply (mejora de redacción)
+// Extracción de datos (IA + fallback)
 // =====================
-function buildSystemPrompt(session) {
-  const tono = TONO === "tu" ? "tú" : "usted";
 
-  return [
-    `Idioma: ${LANGUAGE}. Tratar al cliente de "${tono}".`,
-    `Usted es ${AGENT_NAME} de ${COMPANY_NAME}.`,
-    `Posicionamiento: NO competir por precio; competir por valor (hermeticidad, instalación, confort térmico).`,
-    `Aclaración clave: "Termopanel/DVH es el vidrio; el marco puede ser PVC europeo, PVC americano o aluminio".`,
-    `No mencionar aluminio con RPT (no se vende).`,
-    `Siempre ser directo, sin exceso de "gracias".`,
-    `Máximo ${MAX_LINES_PER_REPLY} líneas.`,
-    ONE_QUESTION_PER_TURN ? `Hacer máximo 1 pregunta al final.` : `Puede hacer las preguntas necesarias.`,
-    `Si faltan datos, usar supuestos controlados: vidrio DVH estándar; color blanco (alternativa nogal); tipo corredera; sistema PVC europeo referencial.`,
-    `Cuando haya suficientes datos, entregar pre-cotización con subtotal neto, IVA y total, y ofrecer PDF si está habilitado.`,
-    `Si el cliente pide evaluación normativa/energética, ofrecer escalamiento a Equipo Alfa.`,
-    `Datos sesión: comuna=${session.context.comuna || "?"}, sistema=${session.context.system || "?"}, color=${session.context.color || "?"}, tipo=${session.context.type || "?"}.`
-  ].join("\n");
-}
-
-async function aiCompose({ session, intent, facts }) {
-  if (!openai) return null;
-
-  const sys = buildSystemPrompt(session);
-  const user = [
-    `INTENCIÓN: ${intent}`,
-    `HECHOS/CONTEXTO (no inventar):`,
-    facts,
-    `Redacte respuesta final lista para WhatsApp, clara, consultiva y breve.`
-  ].join("\n\n");
-
-  const r = await openai.chat.completions.create({
-    model: AI_MODEL_TEXT,
-    messages: [
-      { role: "system", content: sys },
-      ...session.history.slice(-10),
-      { role: "user", content: user }
-    ],
-    temperature: AI_TEMPERATURE,
-    max_tokens: AI_MAX_OUTPUT_TOKENS
-  });
-
-  return r.choices?.[0]?.message?.content?.trim() || null;
-}
-
-// =====================
-// Image vision (optional)
-// =====================
-async function visionExtract(buffer, mimeType) {
-  if (!openai || !ENABLE_IMAGE_VISION) return "";
-  try {
-    const b64 = buffer.toString("base64");
-    const r = await openai.chat.completions.create({
-      model: AI_MODEL_VISION,
-      messages: [
-        {
-          role: "system",
-          content:
-            "Extrae SOLO: (1) medidas ancho x alto y unidad, (2) cantidad si aparece, (3) tipo (corredera/proyectante/fija/abatible/puerta), (4) color si aparece. Si no se ve, diga 'sin datos legibles'."
-        },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "Analiza la imagen y extrae medidas/cantidad/tipo/color." },
-            { type: "image_url", image_url: { url: `data:${mimeType};base64,${b64}` } }
-          ]
-        }
-      ],
-      temperature: 0.2,
-      max_tokens: 220
-    });
-
-    return r.choices?.[0]?.message?.content?.trim() || "";
-  } catch (e) {
-    console.error("Vision error:", e?.message || e);
-    return "";
-  }
-}
-
-// =====================
-// State machine (evita preguntas infinitas)
-// =====================
-function applyExtractedToContext(session, text) {
-  const t = norm(text);
-  if (!t) return;
-
-  const ctx = session.context;
-
-  // Nombre (si el cliente se presenta)
-  const lc = stripAccents(normLower(t));
-  const nameMatch = lc.match(/\b(me llamo|soy)\s+([a-zñ\s]{3,40})\b/);
-  if (nameMatch && !ctx.name) ctx.name = nameMatch[2].trim().split(" ").slice(0, 3).join(" ");
-
-  const comuna = extractComuna(t);
-  if (comuna && !ctx.comuna) ctx.comuna = comuna;
-
-  const qty = extractQuantity(t);
-  if (qty && !ctx.quantity) ctx.quantity = qty;
-
-  const type = extractType(t);
-  if (type && !ctx.type) ctx.type = type;
-
-  const system = extractSystem(t);
-  if (system && !ctx.system) ctx.system = system;
-
-  const color = extractColor(t);
-  if (color && !ctx.color) ctx.color = color;
-
-  const glass = extractGlass(t);
-  if (glass && !ctx.glass) ctx.glass = glass;
-
-  const measures = extractMeasurements(t);
-  if (measures.length) {
-    // Si vienen varias, se asumen como ítems; si no hay qty por ítem, usa quantity global si existe.
-    for (const m of measures) {
-      ctx.items.push({
-        wMm: m.wMm,
-        hMm: m.hMm,
-        qty: 1,
-        type: ctx.type || null,
-        color: ctx.color || null,
-        system: ctx.system || null,
-        glass: ctx.glass || null
-      });
+// Fallback: extrae medidas como 1200x1500, 1200 x 1500, 1200*1500
+function extractMeasuresFallback(text) {
+  const t = text || "";
+  const re = /(\d{2,4})\s*[xX\*]\s*(\d{2,4})(?:\s*(?:mm|milimetros|milímetros))?/g;
+  const items = [];
+  let m;
+  while ((m = re.exec(t)) !== null) {
+    const w = parseInt(m[1], 10);
+    const h = parseInt(m[2], 10);
+    if (Number.isFinite(w) && Number.isFinite(h)) {
+      items.push({ w_mm: w, h_mm: h, qty: 1 });
     }
   }
+  return items;
 }
 
-function ensureDefaults(session) {
-  const ctx = session.context;
+function extractQtyFallback(text) {
+  const t = (text || "").toLowerCase();
+  // "son 2", "2 ventanas", "x2"
+  const m1 = t.match(/\bson\s+(\d{1,2})\b/);
+  if (m1) return parseInt(m1[1], 10);
 
-  if (!ctx.glass) ctx.glass = DEFAULT_GLASS;
-  if (!ctx.system) ctx.system = DEFAULT_SYSTEM;
-  if (!ctx.type) ctx.type = DEFAULT_TYPE;
+  const m2 = t.match(/\b(\d{1,2})\s*(?:ventanas|puertas|unidades|uds|ud)\b/);
+  if (m2) return parseInt(m2[1], 10);
 
-  // Color: si no hay, cotizar con blanco y ofrecer nogal como alternativa (no forzar)
-  if (!ctx.color) ctx.color = DEFAULT_COLOR;
+  const m3 = t.match(/\bx\s*(\d{1,2})\b/);
+  if (m3) return parseInt(m3[1], 10);
 
-  // Si no hay items pero hay medidas por contexto (no), aquí no aplica: items se arma con medidas.
-}
-
-function normalizeItems(session) {
-  const ctx = session.context;
-
-  // Si no hay items, no hay medidas => no cotiza
-  if (!ctx.items || !Array.isArray(ctx.items)) ctx.items = [];
-
-  // Si el cliente dijo “son 2” y solo hay 1 medida, aplicar qty a ese ítem
-  if (ctx.quantity && ctx.items.length === 1) ctx.items[0].qty = ctx.quantity;
-
-  // Si hay múltiples medidas y el cliente dijo “son 2” pero envió 2 medidas: qty=1 cada una (por defecto)
-  // Si el cliente dijo “son 2” y envió 2 medidas pero quería 2 de cada, se confirma luego.
-
-  // Completar campos faltantes por ítem
-  for (const it of ctx.items) {
-    if (!it.type) it.type = ctx.type || DEFAULT_TYPE;
-    if (!it.system) it.system = ctx.system || DEFAULT_SYSTEM;
-    if (!it.glass) it.glass = ctx.glass || DEFAULT_GLASS;
-    if (!it.color) it.color = ctx.color || DEFAULT_COLOR;
-    if (!it.qty) it.qty = 1;
-  }
-
-  // Validación: si sistema pvc americano, colores solo blanco
-  if ((ctx.system || "").includes("americano")) {
-    for (const it of ctx.items) {
-      if (!COLORS_US.includes(stripAccents(it.color))) it.color = "blanco";
-    }
-  }
-}
-
-function hasMinimumForQuote(session) {
-  const ctx = session.context;
-  const hasMeasures = ctx.items && ctx.items.length > 0;
-  const hasComuna = !!(ctx.comuna || ctx.sector);
-  // quantity puede venir por item (si items>0) así que no es obligatorio global
-  return hasMeasures && hasComuna;
-}
-
-function nextBestQuestion(session) {
-  const ctx = session.context;
-
-  if (!ctx.comuna && !ctx.sector) return "¿En qué comuna/sector de La Araucanía se instalarán?";
-  if (!ctx.items || ctx.items.length === 0) return "¿Me indica las medidas ancho x alto (mm) y cuántas unidades son?";
-  // Si hay items pero no tipo explícito y se está asumiendo corredera, pregunte solo si el cliente busca otra cosa
-  if (!extractType(ctx.pendingText || "") && !ctx.type) return "¿Qué tipo de apertura prefiere: corredera, abatible, proyectante, fija o puerta?";
-  // Si no hay color, ya usamos blanco; ofrecer alternativa sin frenar
   return null;
 }
 
-// =====================
-// Debounced reply scheduler (alto rendimiento)
-// =====================
-async function scheduleReply(waId, messageId, collectedText, { isMedia = false } = {}) {
-  const session = getSession(waId);
-  session.lastSeenAt = Date.now();
-  session.pendingText = collectedText || "";
-
-  // Debounce: acumula mensajes cercanos
-  session.pendingText = (session.pendingText ? session.pendingText + "\n" : "") + (collectedText || "");
-  if (session.debounceTimer) clearTimeout(session.debounceTimer);
-
-  session.debounceTimer = setTimeout(async () => {
-    try {
-      if (!loopGuardOk(session)) return;
-
-      const stopTyping = startTypingPinger(messageId, "text");
-      try {
-        await sleep(WAIT_AFTER_LAST_USER_MESSAGE_MS);
-        if (isMedia) await sleep(EXTRA_DELAY_MEDIA_MS);
-        const typingDelay = Math.floor(TYPING_MIN_MS + Math.random() * (Math.max(TYPING_MAX_MS, TYPING_MIN_MS + 50) - TYPING_MIN_MS));
-        await sleep(typingDelay);
-
-        const text = session.pendingText || collectedText || "";
-        session.pendingText = "";
-
-        // 1) Extraer y aplicar
-        applyExtractedToContext(session, text);
-
-        // 2) Defaults + normalización
-        ensureDefaults(session);
-        normalizeItems(session);
-
-        // 3) Decidir: cotizar o preguntar 1 cosa
-        let replyText = "";
-        let quote = null;
-
-        if (hasMinimumForQuote(session)) {
-          quote = computeQuote(session.context.items);
-          session.context.lastQuote = quote;
-
-          const colorWasDefault = stripAccents(normLower(text)).includes("color") ? false : false; // no perfecto; se maneja abajo
-          const usedColor = session.context.color || DEFAULT_COLOR;
-          const alt = ALT_COLOR;
-
-          const facts = [
-            `Comuna/sector: ${session.context.comuna || session.context.sector}`,
-            `Sistema: ${session.context.system}`,
-            `Tipo: ${session.context.type}`,
-            `Vidrio: ${session.context.glass}`,
-            `Color base usado: ${usedColor} (si no indicó color, este es el estándar).`,
-            `Tarifas netas por m²: blanco ${PRICE_WHITE}, nogal/roble ${PRICE_WOOD}, grafito/negro ${PRICE_DARK}.`,
-            `Detalle líneas:`,
-            quote.lines
-              .map(
-                (l) =>
-                  `${l.qty} ud ${l.wMm}x${l.hMm}mm | ${l.type} | ${l.system} | color ${l.color} | neto línea $${moneyCLP(l.lineNet)}`
-              )
-              .join("\n"),
-            `Neto $${moneyCLP(quote.net)} | IVA $${moneyCLP(quote.iva)} | Total $${moneyCLP(quote.total)}.`,
-            `Nota: pre-cotización referencial sujeta a confirmación en terreno.`
-          ].join("\n");
-
-          const intent = "ENTREGAR PRE-COTIZACIÓN + cierre (una pregunta si falta confirmación)";
-          const ai = AI_ENHANCE_ALWAYS ? await aiCompose({ session, intent, facts }) : null;
-
-          replyText =
-            ai ||
-            [
-              `${AGENT_NAME} • ${COMPANY_NAME}`,
-              `Pre-cotización referencial (DVH estándar + enfoque en hermeticidad).`,
-              ...quote.lines.map(
-                (l) => `• ${l.qty} ud ${l.wMm}x${l.hMm}mm (${l.type}) color ${l.color}: neto $${moneyCLP(l.lineNet)}`
-              ),
-              `Neto: $${moneyCLP(quote.net)} | IVA: $${moneyCLP(quote.iva)} | Total: $${moneyCLP(quote.total)}`,
-              `Si no indicó color, cotizamos base en ${DEFAULT_COLOR} (alternativa ${ALT_COLOR}).`,
-              ONE_QUESTION_PER_TURN ? "¿Confirmamos color y tipo para formalizar (y agendar visita si desea)?" : ""
-            ]
-              .filter(Boolean)
-              .join("\n");
-
-          // PDF automático (si habilitado)
-          if (ENABLE_PDF_QUOTES) {
-            const pdfBuffer = await generateQuotePDF({ session, quote, title: "Pre-cotización referencial" });
-            const filename = `PreCotizacion_${COMPANY_NAME.replace(/\s+/g, "_")}.pdf`;
-            const mediaId = await waUploadMedia(pdfBuffer, "application/pdf", filename);
-            await waSendDocument(waId, mediaId, filename, "Adjunto pre-cotización referencial (sujeta a confirmación en terreno).", {
-              replyToMessageId: messageId
-            });
-          }
-        } else {
-          // Falta algo: preguntar solo lo mínimo (1 pregunta)
-          const question = nextBestQuestion(session) || "¿Me indica comuna/sector y medidas ancho x alto (mm)?";
-
-          const facts = [
-            `Presentación corta + propuesta de valor.`,
-            `Aclarar: termopanel es el vidrio; marco puede ser PVC europeo/americano o aluminio.`,
-            `Supuestos: DVH estándar; color base blanco; alternativa nogal.`,
-            `Pregunta única: ${question}`
-          ].join("\n");
-
-          const intent = "PEDIR DATOS MÍNIMOS SIN ALARGAR (1 pregunta, sin exceso de gracias)";
-          const ai = AI_ENHANCE_ALWAYS ? await aiCompose({ session, intent, facts }) : null;
-
-          replyText =
-            ai ||
-            [
-              `Hola, le habla ${AGENT_NAME} de ${COMPANY_NAME}.`,
-              `${VALUE_PITCH}`,
-              `Para cotizar rápido: ${question}`
-            ].join("\n");
-        }
-
-        // Limitar líneas
-        const lines = replyText
-          .split("\n")
-          .map((l) => l.trim())
-          .filter(Boolean)
-          .slice(0, MAX_LINES_PER_REPLY);
-        replyText = lines.join("\n");
-
-        await waSendText(waId, replyText, { replyToMessageId: messageId });
-
-        // Guardar historial (para que AI sea coherente)
-        session.history.push({ role: "user", content: text || "" });
-        session.history.push({ role: "assistant", content: replyText });
-        noteReply(session);
-      } finally {
-        stopTyping();
-      }
-    } catch (e) {
-      console.error("scheduleReply error:", e?.response?.data || e?.message || e);
-    }
-  }, 450);
+function extractComunaFallback(text) {
+  const t = (text || "").toLowerCase();
+  // Lista mínima (ampliable)
+  const comunas = ["temuco", "padre las casas", "villarrica", "pucon", "pucón", "lautaro", "freire", "carahue"];
+  for (const c of comunas) {
+    if (t.includes(c)) return c.replace("pucón", "pucon");
+  }
+  return null;
 }
 
-// =====================
-// PDF parse for incoming docs
-// =====================
-async function parsePdfText(buffer) {
+async function parseUserInputWithAI(userText) {
+  if (!OPENAI_API_KEY) return null;
+
+  const system = `
+Eres un asistente comercial experto en ventanas/puertas. Debes extraer datos estructurados para cotizar SIN hacer bucles.
+Devuelve SOLO JSON válido (sin markdown) con este esquema:
+
+{
+  "intent": "quote" | "info" | "pdf" | "reset" | "other",
+  "customer_name": string|null,
+  "comuna": string|null,
+  "system": "pvc_europeo"|"pvc_americano"|"aluminio"|null,
+  "color": string|null,
+  "opening_type": "corredera"|"abatible"|"proyectante"|"fija"|"puerta"|null,
+  "installation": "si"|"no"|null,
+  "items": [{"w_mm": number, "h_mm": number, "qty": number}],
+  "notes": string|null
+}
+
+Reglas:
+- Si hay medidas en formato 1200x1500 o "1200 1500" interpretarlo como ancho x alto en mm.
+- Si no hay color, deja null (no inventes).
+- Si no hay sistema, deja null (no inventes).
+- Si el usuario pide "pdf", intent="pdf".
+- Si el usuario dice reset, intent="reset".
+- No escribas texto, solo JSON.
+`.trim();
+
   try {
-    const data = await pdfParse(buffer);
-    return (data.text || "").slice(0, 12000);
+    const res = await openai.chat.completions.create({
+      model: AI_MODEL_TEXT,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: userText || "" },
+      ],
+      response_format: { type: "json_object" },
+    });
+
+    const content = res?.choices?.[0]?.message?.content;
+    if (!content) return null;
+
+    return JSON.parse(content);
   } catch (e) {
-    console.error("PDF parse error:", e?.message || e);
-    return "";
+    console.error("AI parse error:", e?.message || e);
+    return null;
   }
 }
 
 // =====================
-// Webhook receiving (POST)
-// - responde 200 inmediato, procesa async
+// Motor de cotización (sin loops)
 // =====================
-app.post("/webhook", (req, res) => {
-  // RESPONDER 200 YA (evita reintentos/latencia)
-  res.sendStatus(200);
+function computeQuote({ items, colorKey }) {
+  const price_m2 = PRICE_M2[colorKey] || PRICE_M2.blanco;
 
-  // Procesar en background
-  setImmediate(async () => {
-    try {
-      const body = req.body;
+  const detailed = items.map((it) => {
+    const area_unit = (it.w_mm * it.h_mm) / 1_000_000; // mm2 -> m2
+    const area = area_unit * (it.qty || 1);
+    const subtotal = Math.round(area * price_m2);
+    return {
+      ...it,
+      area_m2: area,
+      price_m2,
+      subtotal,
+    };
+  });
 
-      const entry = body?.entry?.[0];
-      const change = entry?.changes?.[0];
-      const value = change?.value;
+  const net = detailed.reduce((acc, it) => acc + it.subtotal, 0);
+  const iva = Math.round(net * IVA_RATE);
+  const total = net + iva;
 
-      const messages = value?.messages || [];
-      if (!messages.length) return;
+  return {
+    items: detailed,
+    totals: { net, iva, total },
+  };
+}
 
-      const msg = messages[0];
-      const waId = msg.from;
-      const messageId = msg.id;
+function buildQuoteText({ customerName, comuna, system, colorKey, openingType, installation, quote }) {
+  const sysLabel =
+    system === "pvc_europeo"
+      ? "PVC europeo"
+      : system === "pvc_americano"
+      ? "PVC americano"
+      : system === "aluminio"
+      ? "Aluminio"
+      : "PVC europeo";
 
-      if (!waId || !messageId) return;
-      if (processedMsgIds.has(messageId)) return;
-      addProcessed(messageId);
+  const colorLabel = colorKey ? colorKey : "blanco";
+  const openLabel = openingType ? openingType : "corredera";
 
-      const session = getSession(waId);
+  const lines = [];
+  lines.push(`Hola, le habla Marcelo Cifuentes (Fábrica de Ventanas Activa).`);
+  if (comuna) lines.push(`Pre-cotización referencial para ${comuna}.`);
+  lines.push(`Sistema: ${sysLabel} | Color: ${colorLabel} | Apertura: ${openLabel} | Vidrio: Termopanel estándar (DVH).`);
+  if (installation) lines.push(`Instalación: ${installation === "si" ? "incluida" : "no incluida"}.`);
+  lines.push("");
+  lines.push("Detalle:");
+  quote.items.forEach((it, idx) => {
+    lines.push(` ${idx + 1}) ${it.qty} un — ${it.w_mm}x${it.h_mm} mm — ${it.area_m2.toFixed(2)} m² — Subtotal $${it.subtotal.toLocaleString("es-CL")}`);
+  });
+  lines.push("");
+  lines.push(`Neto: $${quote.totals.net.toLocaleString("es-CL")} | IVA: $${quote.totals.iva.toLocaleString("es-CL")} | Total: $${quote.totals.total.toLocaleString("es-CL")}`);
+  lines.push("");
+  lines.push("Nota: valores referenciales sujetos a confirmación de medidas en terreno y especificaciones finales.");
+  lines.push("Si desea, puedo adjuntar la misma cotización en PDF.");
 
-      const incomingText = msg.type === "text" ? norm(msg.text?.body) : "";
-      const lower = normLower(incomingText);
+  return lines.join("\n");
+}
 
-      // Reset
-      if (["reset", "reiniciar", "nuevo", "start", "comenzar"].includes(lower)) {
-        sessions.delete(waId);
-        await waSendText(
-          waId,
-          `Listo. Reinicié su sesión.\nEnvíeme: comuna/sector + medidas (mm) + cantidad + color (si aplica) + tipo (corredera/abatible/proyectante/fija/puerta).`,
-          { replyToMessageId: messageId }
-        );
-        return;
-      }
+function missingFieldsForQuote(data) {
+  const missing = [];
 
-      // ACK helper
-      const ack = async (text) => {
-        try {
-          await waSendText(waId, text, { replyToMessageId: messageId });
-        } catch {}
-      };
+  // Items/medidas
+  if (!Array.isArray(data.items) || data.items.length === 0) missing.push("medidas (ancho x alto en mm) y cantidad");
 
-      // TEXT
-      if (msg.type === "text") {
-        await scheduleReply(waId, messageId, incomingText);
-        return;
-      }
+  // Comuna/sector (para logística)
+  if (!data.comuna) missing.push("comuna/sector de instalación");
 
-      // IMAGE
-      if (msg.type === "image") {
-        const mediaId = msg.image?.id;
-        const mime = msg.image?.mime_type || "image/jpeg";
-        await ack("Recibido. Estoy revisando la imagen para extraer medidas y preparar la pre-cotización.");
+  return missing;
+}
 
-        try {
-          const url = await waGetMediaUrl(mediaId);
-          const bytes = await waDownloadMediaBytes(url);
-          const extracted = await visionExtract(bytes, mime);
-          const combined = `Imagen recibida.\n${extracted || ""}`.trim();
-          await scheduleReply(waId, messageId, combined, { isMedia: true });
-        } catch (e) {
-          console.error("image flow error:", e?.message || e);
-          await scheduleReply(waId, messageId, "No pude leer la imagen. Envíeme medidas ancho x alto (mm) y comuna/sector.", { isMedia: true });
-        }
-        return;
-      }
+function applyDefaults(data) {
+  const out = { ...data };
 
-      // DOCUMENT (PDF)
-      if (msg.type === "document") {
-        const mime = msg.document?.mime_type || "";
-        const filename = msg.document?.filename || "archivo";
-        const mediaId = msg.document?.id;
+  // default system
+  if (!out.system) out.system = "pvc_europeo";
 
-        await ack(`Recibido "${filename}". Estoy extrayendo texto/medidas para cotizar.`);
+  // default opening (si no viene y hablan de ventana, deja null para no asumir; pero para cotizar base usamos corredera si no hay info)
+  // lo definimos al construir el texto
 
-        try {
-          const url = await waGetMediaUrl(mediaId);
-          const bytes = await waDownloadMediaBytes(url);
+  // color: no forzamos, pero si falta, cotizaremos dos opciones (blanco y nogal) en vez de inventar
 
-          let parsedText = "";
-          if (mime.includes("pdf")) parsedText = await parsePdfText(bytes);
+  // installation: si no viene, null
 
-          const combined = [
-            `Documento: ${filename} (${mime || "documento"}).`,
-            parsedText ? `Texto extraído (resumen):\n${parsedText.slice(0, 2500)}` : ""
-          ]
-            .filter(Boolean)
-            .join("\n\n");
+  // termopanel estándar siempre, por ahora
 
-          await scheduleReply(waId, messageId, combined, { isMedia: true });
-        } catch (e) {
-          console.error("document flow error:", e?.message || e);
-          await scheduleReply(waId, messageId, "No pude leer el documento. Envíeme medidas ancho x alto (mm) y comuna/sector.", { isMedia: true });
-        }
-        return;
-      }
+  return out;
+}
 
-      // AUDIO / VOICE
-      if (msg.type === "audio" || msg.type === "voice") {
-        if (!ENABLE_VOICE_TRANSCRIPTION) {
-          await ack("Recibido. Por ahora respondo mejor si me envía el texto o medidas por escrito.");
-          return;
-        }
+// =====================
+// Mensajería principal (sin loops)
+// =====================
+async function handleInboundText({ waId, messageId, text }) {
+  const session = getSession(waId);
 
-        const mediaId = msg.audio?.id || msg.voice?.id;
-        const mime = msg.audio?.mime_type || msg.voice?.mime_type || "audio/ogg";
+  if (isReset(text)) {
+    session.data = {};
+    session.lastQuote = null;
+    session.lastAskedMissing = null;
+    await waSendText(waId, "Listo. Reinicié su sesión. Envíeme: comuna/sector + medidas (mm) + cantidad. Ej: “Temuco 2 ventanas 1200x1500”.", { replyToMessageId: messageId });
+    return;
+  }
 
-        await ack("Recibido. Estoy transcribiendo su audio para preparar la pre-cotización.");
+  // Si pide PDF y existe cotización previa
+  if (ENABLE_PDF_QUOTES && isPdfRequest(text) && session.lastQuote?.pdfReady) {
+    const { pdfBuffer, filename, caption } = session.lastQuote.pdfReady;
+    const mediaId = await waUploadMedia(pdfBuffer, "application/pdf", filename);
+    await waSendDocument(waId, mediaId, filename, caption);
+    return;
+  }
 
-        try {
-          const url = await waGetMediaUrl(mediaId);
-          const bytes = await waDownloadMediaBytes(url);
-          const text = await transcribeVoice(bytes);
+  await waTypingIndicator(messageId, "text");
 
-          const combined = `Audio transcrito:\n${text || ""}`.trim();
-          await scheduleReply(waId, messageId, combined, { isMedia: true });
-        } catch (e) {
-          console.error("voice flow error:", e?.message || e);
-          await scheduleReply(waId, messageId, "No pude transcribir el audio. Envíeme comuna/sector + medidas (mm) por texto.", { isMedia: true });
-        }
-        return;
-      }
+  // Parse IA (si falla, fallback)
+  let parsed = await parseUserInputWithAI(text);
+  if (!parsed) parsed = { intent: "other", items: [], notes: null };
 
-      // Fallback
+  // Fallback completar
+  const fbMeasures = extractMeasuresFallback(text);
+  if (!parsed.items || parsed.items.length === 0) parsed.items = fbMeasures;
+
+  // qty fallback
+  const fbQty = extractQtyFallback(text);
+  if (fbQty && parsed.items && parsed.items.length > 0) {
+    // si hay solo 1 medida, aplica cantidad a esa medida
+    if (parsed.items.length === 1) parsed.items[0].qty = fbQty;
+  }
+
+  // comuna fallback
+  if (!parsed.comuna) parsed.comuna = extractComunaFallback(text);
+
+  // normalizaciones
+  parsed.system = normalizeSystem(parsed.system) || normalizeSystem(text);
+  parsed.color = parsed.color || text;
+  parsed.opening_type = parsed.opening_type || normalizeOpening(text);
+  parsed.installation = parsed.installation || (text.toLowerCase().includes("instal") ? "si" : null);
+
+  // Guardar en sesión (merge)
+  const merged = {
+    ...session.data,
+    customer_name: parsed.customer_name ?? session.data.customer_name ?? null,
+    comuna: parsed.comuna ?? session.data.comuna ?? null,
+    system: parsed.system ?? session.data.system ?? null,
+    color: parsed.color ?? session.data.color ?? null,
+    opening_type: parsed.opening_type ?? session.data.opening_type ?? null,
+    installation: parsed.installation ?? session.data.installation ?? null,
+    items: (parsed.items && parsed.items.length ? parsed.items : session.data.items) ?? [],
+    notes: parsed.notes ?? session.data.notes ?? null,
+  };
+
+  session.data = applyDefaults(merged);
+
+  // Si el usuario pide PDF pero aún no hay quote, seguimos a cotizar si se puede
+  if (parsed.intent === "pdf" && session.lastQuote?.pdfReady) {
+    const { pdfBuffer, filename, caption } = session.lastQuote.pdfReady;
+    const mediaId = await waUploadMedia(pdfBuffer, "application/pdf", filename);
+    await waSendDocument(waId, mediaId, filename, caption);
+    return;
+  }
+
+  // Ver qué falta
+  const missing = missingFieldsForQuote(session.data);
+
+  // Si falta algo, preguntar MINIMO y evitar loop (no repetir lo mismo)
+  if (missing.length > 0) {
+    const key = missing.join("|");
+    if (session.lastAskedMissing === key) {
+      // Ya se lo preguntamos: ofrecer ejemplo claro + salida humana
       await waSendText(
         waId,
-        "Recibido. Puedo ayudar mejor con texto, imágenes, PDFs o audios. Envíeme: comuna/sector + medidas (mm) + cantidad + color (si aplica) + tipo.",
+        `Para cotizar hoy necesito solo:\n- ${missing.join("\n- ")}\n\nEjemplo rápido: “Temuco 2 ventanas 1200x1500” (mm).\nSi prefiere, envíe una foto de las medidas y lo reviso.`,
         { replyToMessageId: messageId }
       );
-    } catch (e) {
-      console.error("Webhook async error:", e?.message || e);
+      return;
     }
+    session.lastAskedMissing = key;
+    await waSendText(
+      waId,
+      `Para cotizar de inmediato, indíqueme:\n- ${missing.join("\n- ")}\nEj: “Temuco 2 ventanas 1200x1500”.`,
+      { replyToMessageId: messageId }
+    );
+    return;
+  }
+
+  // Ya tenemos lo mínimo: cotizar altiro
+  const colorKey = normalizeColor(session.data.color);
+
+  // Si no hay color claro, cotizamos 2 opciones base (blanco y nogal)
+  if (!colorKey) {
+    const quoteWhite = computeQuote({ items: session.data.items, colorKey: "blanco" });
+    const quoteNogal = computeQuote({ items: session.data.items, colorKey: "nogal" });
+
+    const baseText = [
+      `Hola, le habla Marcelo Cifuentes (Fábrica de Ventanas Activa).`,
+      `Pre-cotización referencial para ${session.data.comuna}.`,
+      `Base: ${session.data.system === "aluminio" ? "Aluminio" : session.data.system === "pvc_americano" ? "PVC americano" : "PVC europeo"} | Vidrio: Termopanel estándar (DVH).`,
+      "",
+      `Como no indicó color, le dejo 2 opciones base:`,
+      "",
+      `OPCIÓN A — Blanco ($${PRICE_M2.blanco.toLocaleString("es-CL")} + IVA / m²)`,
+      `Neto: $${quoteWhite.totals.net.toLocaleString("es-CL")} | IVA: $${quoteWhite.totals.iva.toLocaleString("es-CL")} | Total: $${quoteWhite.totals.total.toLocaleString("es-CL")}`,
+      "",
+      `OPCIÓN B — Nogal ($${PRICE_M2.nogal.toLocaleString("es-CL")} + IVA / m²)`,
+      `Neto: $${quoteNogal.totals.net.toLocaleString("es-CL")} | IVA: $${quoteNogal.totals.iva.toLocaleString("es-CL")} | Total: $${quoteNogal.totals.total.toLocaleString("es-CL")}`,
+      "",
+      `Si me confirma el color exacto (blanco/nogal/roble/grafito/negro), le cierro la cotización final. Si desea, se la adjunto en PDF.`,
+    ].join("\n");
+
+    // guardar última cotización (la de blanco por defecto para PDF si piden)
+    session.lastQuote = {
+      dataSnapshot: { ...session.data, colorKey: "blanco" },
+      quote: quoteWhite,
+      pdfReady: null,
+    };
+
+    // preparar PDF (blanco) para cuando pidan
+    if (ENABLE_PDF_QUOTES) {
+      const customerName = session.data.customer_name || "Cliente";
+      const openingType = session.data.opening_type || "corredera";
+      const sysLabel = session.data.system;
+      const pdf = await generateQuotePDF({
+        customerName,
+        waId,
+        comuna: session.data.comuna,
+        items: quoteWhite.items,
+        system: sysLabel,
+        color: "blanco",
+        openingType,
+        notes: "Cotización referencial (base blanco). Si confirma color final, ajustamos al valor correspondiente.",
+        totals: quoteWhite.totals,
+      });
+
+      session.lastQuote.pdfReady = {
+        pdfBuffer: pdf,
+        filename: "PreCotizacion_Fabrica_de_Ventanas_Activa.pdf",
+        caption: "Adjunto pre-cotización referencial (base blanco).",
+      };
+    }
+
+    await waSendText(waId, baseText, { replyToMessageId: messageId });
+    return;
+  }
+
+  // Validación color vs sistema (pvc americano solo blanco)
+  const sys = session.data.system || "pvc_europeo";
+  if (sys === "pvc_americano" && colorKey !== "blanco") {
+    await waSendText(
+      waId,
+      `Para PVC americano trabajamos solo color blanco. Si necesita ${colorKey}, le recomiendo PVC europeo (colores: blanco/roble/nogal/grafito/negro). ¿Qué prefiere?`,
+      { replyToMessageId: messageId }
+    );
+    return;
+  }
+
+  // Calcular cotización
+  const quote = computeQuote({ items: session.data.items, colorKey });
+
+  const customerName = session.data.customer_name || "Cliente";
+  const comuna = session.data.comuna;
+  const openingType = session.data.opening_type || "corredera";
+  const installation = session.data.installation;
+  const quoteText = buildQuoteText({
+    customerName,
+    comuna,
+    system: sys,
+    colorKey,
+    openingType,
+    installation,
+    quote,
   });
+
+  // Guardar quote para PDF posterior
+  session.lastQuote = {
+    dataSnapshot: { ...session.data, colorKey },
+    quote,
+    pdfReady: null,
+  };
+
+  if (ENABLE_PDF_QUOTES) {
+    const pdf = await generateQuotePDF({
+      customerName,
+      waId,
+      comuna,
+      items: quote.items,
+      system: sys,
+      color: colorKey,
+      openingType,
+      notes: "Cotización referencial sujeta a confirmación de medidas en terreno y especificaciones finales.",
+      totals: quote.totals,
+    });
+
+    session.lastQuote.pdfReady = {
+      pdfBuffer: pdf,
+      filename: "PreCotizacion_Fabrica_de_Ventanas_Activa.pdf",
+      caption: "Adjunto pre-cotización referencial (sujeta a confirmación en terreno).",
+    };
+  }
+
+  await waSendText(waId, quoteText, { replyToMessageId: messageId });
+}
+
+// =====================
+// Webhook Meta
+// =====================
+
+// Verificación webhook
+app.get("/webhook", (req, res) => {
+  try {
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+
+    if (mode === "subscribe" && token === VERIFY_TOKEN) {
+      return res.status(200).send(challenge);
+    }
+    return res.sendStatus(403);
+  } catch {
+    return res.sendStatus(403);
+  }
+});
+
+// Recepción eventos
+app.post("/webhook", async (req, res) => {
+  // responder inmediato
+  res.sendStatus(200);
+
+  try {
+    const body = req.body;
+
+    const entry = body?.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+
+    const messages = value?.messages || [];
+    if (!messages.length) return;
+
+    for (const msg of messages) {
+      const waId = msg?.from;
+      const messageId = msg?.id;
+
+      if (!waId || !messageId) continue;
+      if (markSeen(messageId)) continue;
+
+      // Texto
+      if (msg.type === "text") {
+        const text = msg?.text?.body || "";
+        await handleInboundText({ waId, messageId, text });
+        continue;
+      }
+
+      // Audio -> transcribir y pasar por el mismo motor
+      if (msg.type === "audio" && ENABLE_VOICE_TRANSCRIPTION) {
+        const mediaId = msg?.audio?.id;
+        if (!mediaId) continue;
+
+        await waTypingIndicator(messageId, "text");
+
+        try {
+          const mediaUrl = await waGetMediaUrl(mediaId);
+          const buffer = await waDownloadMedia(mediaUrl);
+          const transcription = await transcribeVoice(buffer);
+
+          const safeText = transcription?.trim();
+          if (!safeText) {
+            await waSendText(waId, "Recibí su audio, pero no pude transcribirlo. ¿Me envía las medidas en texto (ej: 1200x1500) y comuna?", { replyToMessageId: messageId });
+            continue;
+          }
+
+          // Procesar como si fuera texto
+          await handleInboundText({ waId, messageId, text: safeText });
+        } catch (e) {
+          console.error("voice error:", e?.message || e);
+          await waSendText(waId, "Recibí su audio. Tuve un problema al procesarlo. ¿Me envía las medidas en texto (ej: 1200x1500) y comuna?", { replyToMessageId: messageId });
+        }
+        continue;
+      }
+
+      // Otros tipos: pedir texto mínimo (sin loops)
+      await waSendText(
+        waId,
+        "Para cotizar rápido, envíeme: comuna/sector + cantidad + medidas (mm) en formato 1200x1500. Si quiere, también color (blanco/nogal/roble/grafito/negro).",
+        { replyToMessageId: messageId }
+      );
+    }
+  } catch (e) {
+    console.error("webhook handler error:", e?.message || e);
+  }
+});
+
+// Healthcheck
+app.get("/", (_req, res) => {
+  res.status(200).send(`OK ${nowIso()}`);
 });
 
 app.listen(PORT, () => {
+  console.log("Starting Container");
+  console.log(`Server running on port ${PORT}`);
+  console.log(`ENV META_GRAPH_VERSION: ${META_VERSION}`);
+  console.log(`ENV WHATSAPP_TOKEN: ${WHATSAPP_TOKEN ? "OK" : "MISSING"}`);
+  console.log(`ENV VERIFY_TOKEN: ${VERIFY_TOKEN ? "OK" : "MISSING"}`);
+  console.log(`ENV PHONE_NUMBER_ID: ${PHONE_NUMBER_ID ? "OK" : "MISSING"}`);
+  console.log(`ENV OPENAI_API_KEY: ${OPENAI_API_KEY ? "OK" : "MISSING"}`);
+  console.log(`AI_MODEL_TEXT: ${AI_MODEL_TEXT}`);
+  console.log(`TYPING_SIMULATION: ${TYPING_SIMULATION}`);
+  console.log(`ENABLE_PDF_QUOTES: ${ENABLE_PDF_QUOTES}`);
+  console.log(`ENABLE_VOICE_TRANSCRIPTION: ${ENABLE_VOICE_TRANSCRIPTION}`);
   console.log("Listening...");
 });
