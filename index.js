@@ -942,3 +942,88 @@ app.listen(PORT, () => {
   envStatus();
   logInfo(`Server running on port ${PORT}`);
 });
+// ==============================
+// ZOHO OAUTH (Auth + Callback)
+// ==============================
+const ZOHO_CLIENT_ID = process.env.ZOHO_CLIENT_ID;
+const ZOHO_CLIENT_SECRET = process.env.ZOHO_CLIENT_SECRET;
+const ZOHO_REDIRECT_URI = process.env.ZOHO_REDIRECT_URI; // https://.../zoho/callback
+const ZOHO_DC = process.env.ZOHO_DC || "com"; // com / eu / in / com.au / jp / uk / ca / sa
+
+function zohoAccountsBase(dc) {
+  // Para la mayoría en Chile: "com" => accounts.zoho.com
+  // Si usas otro DC: accounts.zoho.eu, accounts.zoho.in, etc.
+  if (dc === "com") return "https://accounts.zoho.com";
+  return `https://accounts.zoho.${dc}`;
+}
+
+// 1) Inicia autorización (abre Zoho Consent)
+app.get("/zoho/auth", (req, res) => {
+  if (!ZOHO_CLIENT_ID || !ZOHO_REDIRECT_URI) {
+    return res.status(500).send("Faltan variables ZOHO_CLIENT_ID o ZOHO_REDIRECT_URI");
+  }
+
+  // Scopes recomendados para CRM básico + leads/contacts/deals/notes
+  // Puedes ajustar luego a algo más acotado.
+  const scope = encodeURIComponent(
+    "ZohoCRM.modules.ALL,ZohoCRM.settings.ALL,ZohoCRM.users.ALL"
+  );
+
+  const state = encodeURIComponent("activa_zoho_" + Date.now());
+
+  const authUrl =
+    `${zohoAccountsBase(ZOHO_DC)}/oauth/v2/auth` +
+    `?scope=${scope}` +
+    `&client_id=${encodeURIComponent(ZOHO_CLIENT_ID)}` +
+    `&response_type=code` +
+    `&access_type=offline` +
+    `&prompt=consent` +
+    `&redirect_uri=${encodeURIComponent(ZOHO_REDIRECT_URI)}` +
+    `&state=${state}`;
+
+  return res.redirect(authUrl);
+});
+
+// 2) Callback: recibe code y canjea por access_token + refresh_token
+app.get("/zoho/callback", async (req, res) => {
+  try {
+    const { code } = req.query;
+    if (!code) {
+      return res.status(400).send("Callback recibido sin ?code=. Reintenta desde /zoho/auth");
+    }
+    if (!ZOHO_CLIENT_ID || !ZOHO_CLIENT_SECRET || !ZOHO_REDIRECT_URI) {
+      return res.status(500).send("Faltan variables ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET / ZOHO_REDIRECT_URI");
+    }
+
+    const tokenUrl = `${zohoAccountsBase(ZOHO_DC)}/oauth/v2/token`;
+
+    const params = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: ZOHO_CLIENT_ID,
+      client_secret: ZOHO_CLIENT_SECRET,
+      redirect_uri: ZOHO_REDIRECT_URI,
+      code: String(code),
+    });
+
+    const r = await axios.post(tokenUrl, params.toString(), {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      timeout: 20000,
+    });
+
+    const data = r.data;
+
+    // OJO: refresh_token normalmente viene SOLO la primera vez (con prompt=consent)
+    console.log("✅ ZOHO TOKEN RESPONSE:", data);
+
+    // Muestra algo claro en pantalla
+    return res
+      .status(200)
+      .send(
+        "Zoho conectado. Revisa los logs de Railway para ver access_token/refresh_token. " +
+        "Guarda el refresh_token en Railway como ZOHO_REFRESH_TOKEN."
+      );
+  } catch (err) {
+    console.error("❌ ZOHO CALLBACK ERROR:", err?.response?.data || err.message);
+    return res.status(500).send("Error en callback Zoho. Revisa logs en Railway.");
+  }
+});
