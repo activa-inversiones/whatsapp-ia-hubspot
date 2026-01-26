@@ -1,19 +1,24 @@
-// index.js — WhatsApp IA + Venta Consultiva (Activa Ventanas) — “Ferrari” Production-Ready
+// index.js — WhatsApp IA + Venta Consultiva (Activa Ventanas) + Zoho CRM (OAuth)
 // Runtime: Node 18+ (Railway) | ESM ("type":"module" en package.json)
-// Objetivo: ARRANQUE SIEMPRE. Todo lo “pesado” (PDF/FORMDATA) se carga LAZY para evitar crashes.
-// Soporta: texto, imagen (visión), audio (transcripción), PDF (lectura) + pre-cotización y PDF opcional.
 //
-// ENV requeridas:
-// WHATSAPP_TOKEN, VERIFY_TOKEN, (PHONE_NUMBER_ID opcional), META_VERSION opcional (v22.0)
-// OPENAI_API_KEY (opcional si quieres respuestas IA)
-// APP_SECRET (opcional) para verificar firma X-Hub-Signature-256
+// ENV requeridas WhatsApp:
+// WHATSAPP_TOKEN, VERIFY_TOKEN, PHONE_NUMBER_ID (o que venga en el webhook), META_VERSION opcional (v22.0)
+// OPENAI_API_KEY opcional
+// APP_SECRET opcional (verificación firma Meta)
+//
+// ENV Zoho (para CRM):
+// ZOHO_CLIENT_ID
+// ZOHO_CLIENT_SECRET
+// ZOHO_REDIRECT_URI   (https://TU-DOMINIO.railway.app/zoho/callback)
+// ZOHO_REFRESH_TOKEN  (se obtiene 1ra vez desde /zoho/auth -> /zoho/callback y se guarda)
+// ZOHO_DC             (com | eu | in | com.au | jp | uk | ca | sa)  -> normalmente "com" en Chile
 //
 // Flags:
 // ENABLE_VOICE_TRANSCRIPTION=1|0
 // ENABLE_PDF_QUOTES=1|0
 // TYPING_SIMULATION=1|0
 //
-// Modelos (default razonables):
+// Modelos (defaults):
 // AI_MODEL_TEXT=gpt-4.1-mini
 // AI_MODEL_VISION=gpt-4o-mini
 // AI_MODEL_TRANSCRIBE=gpt-4o-mini-transcribe
@@ -37,7 +42,7 @@ app.use(
   express.json({
     limit: "20mb",
     verify: (req, _res, buf) => {
-      req.rawBody = buf; // necesario si usas APP_SECRET
+      req.rawBody = buf;
     },
   })
 );
@@ -45,25 +50,63 @@ app.use(
 const PORT = process.env.PORT || 8080;
 
 // ======================================================
-// ENV + CONFIG
+// HELPERS
 // ======================================================
 function truthy(v) {
   if (!v) return false;
   const s = String(v).trim().toLowerCase();
   return ["1", "true", "yes", "y", "on", "si", "sí"].includes(s);
 }
+function nowISO() {
+  return new Date().toISOString();
+}
+function safeStr(s, max = 1200) {
+  const t = String(s ?? "").trim();
+  if (!t) return "";
+  return t.length > max ? t.slice(0, max - 1) + "…" : t;
+}
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+function mask(s) {
+  if (!s) return "MISSING";
+  const str = String(s);
+  if (str.length <= 10) return "OK";
+  return str.slice(0, 4) + "…" + str.slice(-4);
+}
+function toTitle(s) {
+  return String(s)
+    .split(" ")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : ""))
+    .join(" ");
+}
+function logInfo(...args) {
+  console.log("[INFO]", ...args);
+}
+function logWarn(...args) {
+  console.warn("[WARN]", ...args);
+}
+function logErr(...args) {
+  console.error("[ERROR]", ...args);
+}
 
+// ======================================================
+// ENV + CONFIG
+// ======================================================
 const ENV = {
   // Meta / WhatsApp
   WHATSAPP_TOKEN: process.env.WHATSAPP_TOKEN,
-  PHONE_NUMBER_ID: process.env.PHONE_NUMBER_ID, // fallback si Meta no manda metadata
+  PHONE_NUMBER_ID: process.env.PHONE_NUMBER_ID,
   VERIFY_TOKEN: process.env.VERIFY_TOKEN,
   META_VERSION: process.env.META_GRAPH_VERSION || process.env.META_VERSION || "v22.0",
 
   // Seguridad (opcional, recomendado)
-  APP_SECRET: process.env.APP_SECRET, // si lo setea, validamos X-Hub-Signature-256
+  APP_SECRET: process.env.APP_SECRET,
 
-  // OpenAI
+  // OpenAI (opcional)
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   AI_MODEL_TEXT: process.env.AI_MODEL_TEXT || process.env.MODEL_TEXT || "gpt-4.1-mini",
   AI_MODEL_VISION: process.env.AI_MODEL_VISION || "gpt-4o-mini",
@@ -74,13 +117,20 @@ const ENV = {
   ENABLE_PDF_QUOTES: truthy(process.env.ENABLE_PDF_QUOTES),
   TYPING_SIMULATION: truthy(process.env.TYPING_SIMULATION),
 
-  // Límites y control
+  // Límites
   MAX_REPLY_CHARS: Number(process.env.MAX_REPLY_CHARS || 1200),
   DEDUPE_TTL_MS: Number(process.env.DEDUPE_TTL_MS || 5 * 60 * 1000),
-  SESSION_TTL_MS: Number(process.env.SESSION_TTL_MS || 7 * 24 * 60 * 60 * 1000), // 7 días
-  MAX_IMAGE_BYTES: Number(process.env.MAX_IMAGE_BYTES || 3_000_000), // 3MB recomendado para visión base64
-  MAX_AUDIO_BYTES: Number(process.env.MAX_AUDIO_BYTES || 8_000_000), // 8MB
-  MAX_PDF_BYTES: Number(process.env.MAX_PDF_BYTES || 10_000_000), // 10MB
+  SESSION_TTL_MS: Number(process.env.SESSION_TTL_MS || 7 * 24 * 60 * 60 * 1000),
+  MAX_IMAGE_BYTES: Number(process.env.MAX_IMAGE_BYTES || 3_000_000),
+  MAX_AUDIO_BYTES: Number(process.env.MAX_AUDIO_BYTES || 8_000_000),
+  MAX_PDF_BYTES: Number(process.env.MAX_PDF_BYTES || 10_000_000),
+
+  // Zoho
+  ZOHO_CLIENT_ID: process.env.ZOHO_CLIENT_ID,
+  ZOHO_CLIENT_SECRET: process.env.ZOHO_CLIENT_SECRET,
+  ZOHO_REDIRECT_URI: process.env.ZOHO_REDIRECT_URI,
+  ZOHO_REFRESH_TOKEN: process.env.ZOHO_REFRESH_TOKEN,
+  ZOHO_DC: process.env.ZOHO_DC || "com",
 };
 
 // ======================================================
@@ -134,56 +184,9 @@ const VISION_EXTRACT_PROMPT =
 const openai = ENV.OPENAI_API_KEY ? new OpenAI({ apiKey: ENV.OPENAI_API_KEY }) : null;
 
 // ======================================================
-// HELPERS
+// DEDUPE (anti-loop Meta)
 // ======================================================
-function nowISO() {
-  return new Date().toISOString();
-}
-
-function safeStr(s, max = 1200) {
-  const t = String(s ?? "").trim();
-  if (!t) return "";
-  return t.length > max ? t.slice(0, max - 1) + "…" : t;
-}
-
-function clamp(n, min, max) {
-  return Math.max(min, Math.min(max, n));
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function mask(s) {
-  if (!s) return "MISSING";
-  const str = String(s);
-  if (str.length <= 8) return "OK";
-  return str.slice(0, 4) + "…" + str.slice(-4);
-}
-
-function toTitle(s) {
-  return String(s)
-    .split(" ")
-    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : ""))
-    .join(" ");
-}
-
-function logInfo(...args) {
-  console.log("[INFO]", ...args);
-}
-
-function logWarn(...args) {
-  console.warn("[WARN]", ...args);
-}
-
-function logErr(...args) {
-  console.error("[ERROR]", ...args);
-}
-
-// ======================================================
-// DEDUPE (anti-loop / reintentos Meta)
-// ======================================================
-const seenMsg = new Map(); // msgId -> timestamp
+const seenMsg = new Map();
 function dedupe(msgId) {
   const t = Date.now();
   for (const [k, ts] of seenMsg.entries()) {
@@ -195,9 +198,9 @@ function dedupe(msgId) {
 }
 
 // ======================================================
-// SESSION STORE (RAM, TTL + cleanup)
+// SESSION STORE (RAM, TTL)
 // ======================================================
-const sessions = new Map(); // wa_id -> session
+const sessions = new Map();
 function getSession(wa_id) {
   const existing = sessions.get(wa_id);
   const s =
@@ -217,17 +220,16 @@ function getSession(wa_id) {
         measures: [],
         notes: [],
       },
+      zoho: { leadId: null },
     });
   s.lastAt = nowISO();
   sessions.set(wa_id, s);
   return s;
 }
-
 function addTurn(session, role, content) {
   session.turns.push({ at: nowISO(), role, content: safeStr(content, 1500) });
   if (session.turns.length > 12) session.turns = session.turns.slice(-12);
 }
-
 setInterval(() => {
   const now = Date.now();
   for (const [k, s] of sessions.entries()) {
@@ -237,10 +239,10 @@ setInterval(() => {
 }, 60_000).unref();
 
 // ======================================================
-// SIGNATURE VERIFY (OPCIONAL) — X-Hub-Signature-256
+// SIGNATURE VERIFY (opcional) — X-Hub-Signature-256
 // ======================================================
 function verifyMetaSignature(req) {
-  if (!ENV.APP_SECRET) return true; // si no hay secreto, no verificamos
+  if (!ENV.APP_SECRET) return true;
   const sig = req.headers["x-hub-signature-256"];
   if (!sig || typeof sig !== "string" || !sig.startsWith("sha256=")) return false;
   const their = sig.slice(7);
@@ -277,7 +279,6 @@ async function waSendText(phone_number_id, to, text) {
     type: "text",
     text: { body: safeStr(text, 4096), preview_url: false },
   };
-
   await axios.post(`${WA_BASE()}/${phone_number_id}/messages`, payload, {
     headers: { Authorization: `Bearer ${ENV.WHATSAPP_TOKEN}` },
     timeout: 60_000,
@@ -313,7 +314,6 @@ async function waDownloadMedia(media_url) {
 // ======================================================
 function parseMeasuresFromText(text) {
   const t = String(text || "").toLowerCase();
-
   const normalized = t
     .replace(/,/g, ".")
     .replace(/mts|mt|metros|metro/g, "m")
@@ -332,9 +332,9 @@ function parseMeasuresFromText(text) {
     const toMM = (v) => {
       if (unit === "m") return Math.round(v * 1000);
       if (unit === "cm") return Math.round(v * 10);
-      if (v <= 10) return Math.round(v * 1000); // metros por defecto
-      if (v > 50) return Math.round(v); // ya mm
-      return Math.round(v * 10); // cm fallback
+      if (v <= 10) return Math.round(v * 1000);
+      if (v > 50) return Math.round(v);
+      return Math.round(v * 10);
     };
 
     const w_mm = toMM(a);
@@ -352,7 +352,6 @@ function updateFactsFromText(session, text) {
   if (!t) return;
   const lc = t.toLowerCase();
 
-  // Comunas (ampliable)
   const comunaHints = [
     "temuco",
     "padre las casas",
@@ -373,26 +372,22 @@ function updateFactsFromText(session, text) {
     if (lc.includes(c)) session.facts.comuna = toTitle(c.replace("pucon", "pucón"));
   }
 
-  // Color
   if (lc.includes("blanco")) session.facts.color = "Blanco";
   if (lc.includes("nogal") || lc.includes("madera")) session.facts.color = "Nogal";
   if (lc.includes("grafito")) session.facts.color = "Grafito";
   if (lc.includes("negro")) session.facts.color = "Negro";
 
-  // Tipo / producto
   if (lc.includes("corredera")) session.facts.type = "Corredera";
   if (lc.includes("abatible")) session.facts.type = "Abatible";
   if (lc.includes("oscil")) session.facts.type = "Oscilobatiente";
   if (lc.includes("puerta")) session.facts.product = "Puerta";
   if (lc.includes("ventana")) session.facts.product = "Ventana";
 
-  // Vidrio
   if (lc.includes("termopanel") || lc.includes("dvh")) session.facts.glass = "Termopanel (DVH)";
   if (lc.includes("low-e") || lc.includes("low e")) session.facts.glass = "Termopanel (DVH) con Low-E";
   if (lc.includes("laminado")) session.facts.glass = "Laminado";
   if (lc.includes("templado")) session.facts.glass = "Templado";
 
-  // Medidas
   const parsed = parseMeasuresFromText(t);
   if (parsed.length) {
     const key = (x) => `${x.qty}|${x.w_mm}|${x.h_mm}|${x.model || ""}`;
@@ -416,12 +411,11 @@ function inferIntent(text) {
 }
 
 // ======================================================
-// PRE-COTIZACIÓN (referencial, determinística)
+// PRE-COTIZACIÓN (referencial)
 // ======================================================
 function round2(n) {
   return Math.round(n * 100) / 100;
 }
-
 function quoteEngine(session) {
   const facts = session.facts;
   const items = facts.measures || [];
@@ -432,7 +426,7 @@ function quoteEngine(session) {
   const type = (facts.type || "").toLowerCase();
   const product = (facts.product || "").toLowerCase();
 
-  let pricePerM2 = 150000; // base referencial
+  let pricePerM2 = 150000;
   if (color.includes("nogal") || color.includes("madera")) pricePerM2 = 160000;
   if (color.includes("negro") || color.includes("grafito")) pricePerM2 = 165000;
 
@@ -485,7 +479,7 @@ function quoteEngine(session) {
 }
 
 // ======================================================
-// PDF (LAZY LOAD) — evita que el container se caiga al arrancar
+// PDF (LAZY LOAD)
 // ======================================================
 let pdfParse = null;
 let PDFDocument = null;
@@ -588,7 +582,7 @@ async function waSendDocument(phone_number_id, to, media_id, filename, caption) 
 }
 
 // ======================================================
-// OPENAI: AUDIO / VISIÓN / RESPUESTA (robusto)
+// OPENAI: AUDIO / VISIÓN / RESPUESTA
 // ======================================================
 async function transcribeAudioBuffer(audioBuffer) {
   if (!openai || !ENV.ENABLE_VOICE_TRANSCRIPTION) return null;
@@ -717,16 +711,171 @@ async function aiComposeReply({ session, userText, quote }) {
     return safeStr(out, ENV.MAX_REPLY_CHARS);
   } catch (e) {
     logErr("aiComposeReply error:", e?.message || e);
-    // fallback humano, no tumbar
     return `Gracias por tu mensaje. Para ayudarte bien, ¿me confirmas comuna y medidas (ancho x alto)? Si es para frío/ruido, dime también si quieres termopanel estándar o Low-E.`;
   }
 }
 
 // ======================================================
-// ROUTES
+// ZOHO OAUTH + API HELPERS
+// ======================================================
+function zohoAccountsBase(dc) {
+  if (dc === "com") return "https://accounts.zoho.com";
+  return `https://accounts.zoho.${dc}`;
+}
+function zohoApiBase(dc) {
+  if (dc === "com") return "https://www.zohoapis.com";
+  return `https://www.zohoapis.${dc}`;
+}
+
+async function zohoGetAccessToken() {
+  const { ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN, ZOHO_DC } = ENV;
+  if (!ZOHO_CLIENT_ID || !ZOHO_CLIENT_SECRET || !ZOHO_REFRESH_TOKEN) {
+    throw new Error("Faltan ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET / ZOHO_REFRESH_TOKEN");
+  }
+
+  const tokenUrl = `${zohoAccountsBase(ZOHO_DC)}/oauth/v2/token`;
+  const params = new URLSearchParams({
+    grant_type: "refresh_token",
+    client_id: ZOHO_CLIENT_ID,
+    client_secret: ZOHO_CLIENT_SECRET,
+    refresh_token: ZOHO_REFRESH_TOKEN,
+  });
+
+  const r = await axios.post(tokenUrl, params.toString(), {
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    timeout: 20000,
+  });
+
+  const access_token = r.data?.access_token;
+  if (!access_token) throw new Error("No se obtuvo access_token desde refresh_token");
+  return access_token;
+}
+
+async function zohoFindLeadByMobile(accessToken, mobileDigits) {
+  // Zoho criteria es sensible: Mobile:equals:XXXXXXXX
+  // WA wa_id viene sin "+" normalmente.
+  const url = `${zohoApiBase(ENV.ZOHO_DC)}/crm/v2/Leads/search?criteria=(Mobile:equals:${encodeURIComponent(
+    mobileDigits
+  )})`;
+
+  const r = await axios.get(url, {
+    headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
+    timeout: 20000,
+  });
+
+  const data = r.data?.data || [];
+  return data.length ? data[0] : null;
+}
+
+async function zohoCreateLead(accessToken, session) {
+  const name = session.facts.name || session.wa_id;
+  const payload = {
+    data: [
+      {
+        Last_Name: String(name).slice(0, 80),
+        Company: "WhatsApp",
+        Mobile: String(session.wa_id),
+        Lead_Source: "WhatsApp",
+        Description: buildZohoDescription(session),
+      },
+    ],
+    trigger: [],
+  };
+
+  const r = await axios.post(`${zohoApiBase(ENV.ZOHO_DC)}/crm/v2/Leads`, payload, {
+    headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
+    timeout: 20000,
+  });
+
+  const id = r.data?.data?.[0]?.details?.id || null;
+  return id;
+}
+
+async function zohoUpdateLead(accessToken, leadId, session) {
+  const payload = {
+    data: [
+      {
+        id: leadId,
+        Description: buildZohoDescription(session),
+      },
+    ],
+    trigger: [],
+  };
+
+  await axios.put(`${zohoApiBase(ENV.ZOHO_DC)}/crm/v2/Leads`, payload, {
+    headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
+    timeout: 20000,
+  });
+}
+
+async function zohoAddNote(accessToken, leadId, note) {
+  const payload = {
+    data: [
+      {
+        Note_Title: "WhatsApp - Interacción",
+        Note_Content: safeStr(note, 5000),
+        Parent_Id: leadId,
+        se_module: "Leads",
+      },
+    ],
+  };
+
+  await axios.post(`${zohoApiBase(ENV.ZOHO_DC)}/crm/v2/Notes`, payload, {
+    headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
+    timeout: 20000,
+  });
+}
+
+function buildZohoDescription(session) {
+  const f = session.facts;
+  const measures = (f.measures || [])
+    .slice(-10)
+    .map((m) => `${m.qty || 1}x ${m.w_mm}x${m.h_mm}mm`)
+    .join(" | ");
+
+  return [
+    `Nombre: ${f.name || "-"}`,
+    `Comuna: ${f.comuna || "-"}`,
+    `Producto: ${f.product || "-"}`,
+    `Tipo: ${f.type || "-"}`,
+    `Color: ${f.color || "-"}`,
+    `Vidrio: ${f.glass || "-"}`,
+    `Medidas: ${measures || "-"}`,
+    `Notas: ${(f.notes || []).slice(-5).join(" | ") || "-"}`,
+    `Último contacto: ${session.lastAt}`,
+  ].join("\n");
+}
+
+async function zohoUpsertLeadSafe(session, userText, replyText) {
+  // No romper WhatsApp si Zoho falla
+  if (!ENV.ZOHO_CLIENT_ID || !ENV.ZOHO_CLIENT_SECRET || !ENV.ZOHO_REFRESH_TOKEN) return;
+
+  try {
+    const accessToken = await zohoGetAccessToken();
+    let lead = await zohoFindLeadByMobile(accessToken, String(session.wa_id));
+    let leadId = lead?.id || session.zoho?.leadId || null;
+
+    if (!leadId) {
+      leadId = await zohoCreateLead(accessToken, session);
+      session.zoho.leadId = leadId;
+    } else {
+      await zohoUpdateLead(accessToken, leadId, session);
+    }
+
+    // Nota con lo último (cliente + respuesta)
+    const note = `Cliente: ${safeStr(userText, 2000)}\n\nActiva: ${safeStr(replyText, 2000)}`;
+    await zohoAddNote(accessToken, leadId, note);
+  } catch (e) {
+    logErr("Zoho upsert error:", e?.response?.data || e?.message || e);
+  }
+}
+
+// ======================================================
+// ROUTES: HEALTH + WEBHOOK + ZOHO
 // ======================================================
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 
+// Meta webhook verify
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -736,24 +885,107 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-app.post("/webhook", async (req, res) => {
-  // Verificación de firma opcional (recomendado si usas APP_SECRET)
-  if (!verifyMetaSignature(req)) {
-    // Responder 403 rápido; no procesar nada
-    return res.sendStatus(403);
+// ZOHO: iniciar autorización
+app.get("/zoho/auth", (req, res) => {
+  if (!ENV.ZOHO_CLIENT_ID || !ENV.ZOHO_REDIRECT_URI) {
+    return res.status(500).send("Faltan variables ZOHO_CLIENT_ID o ZOHO_REDIRECT_URI");
   }
 
-  // Responder 200 inmediato a Meta (anti-timeout)
+  const scope = encodeURIComponent("ZohoCRM.modules.ALL,ZohoCRM.settings.ALL,ZohoCRM.users.ALL");
+  const state = encodeURIComponent("activa_zoho_" + Date.now());
+
+  const authUrl =
+    `${zohoAccountsBase(ENV.ZOHO_DC)}/oauth/v2/auth` +
+    `?scope=${scope}` +
+    `&client_id=${encodeURIComponent(ENV.ZOHO_CLIENT_ID)}` +
+    `&response_type=code` +
+    `&access_type=offline` +
+    `&prompt=consent` +
+    `&redirect_uri=${encodeURIComponent(ENV.ZOHO_REDIRECT_URI)}` +
+    `&state=${state}`;
+
+  return res.redirect(authUrl);
+});
+
+// ZOHO: callback (obtiene refresh_token 1ra vez)
+app.get("/zoho/callback", async (req, res) => {
+  try {
+    const { code } = req.query;
+    if (!code) return res.status(400).send("Callback sin ?code=. Reintenta desde /zoho/auth");
+
+    if (!ENV.ZOHO_CLIENT_ID || !ENV.ZOHO_CLIENT_SECRET || !ENV.ZOHO_REDIRECT_URI) {
+      return res.status(500).send("Faltan ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET / ZOHO_REDIRECT_URI");
+    }
+
+    const tokenUrl = `${zohoAccountsBase(ENV.ZOHO_DC)}/oauth/v2/token`;
+    const params = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: ENV.ZOHO_CLIENT_ID,
+      client_secret: ENV.ZOHO_CLIENT_SECRET,
+      redirect_uri: ENV.ZOHO_REDIRECT_URI,
+      code: String(code),
+    });
+
+    const r = await axios.post(tokenUrl, params.toString(), {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      timeout: 20000,
+    });
+
+    const data = r.data || {};
+    // Seguridad: solo mostramos “masked” en logs
+    logInfo("Zoho token OK (masked):", {
+      access_token: mask(data.access_token),
+      refresh_token: mask(data.refresh_token),
+      api_domain: data.api_domain,
+      expires_in: data.expires_in,
+    });
+
+    return res
+      .status(200)
+      .send(
+        "Zoho conectado. Ahora ve a Railway > Variables y guarda el refresh_token como ZOHO_REFRESH_TOKEN. " +
+          "Luego redeploy y prueba /zoho/test."
+      );
+  } catch (err) {
+    logErr("Zoho callback error:", err?.response?.data || err?.message || err);
+    return res.status(500).send("Error en callback Zoho. Revisa logs en Railway.");
+  }
+});
+
+// ZOHO: test (usa refresh_token y llama a CurrentUser)
+app.get("/zoho/test", async (_req, res) => {
+  try {
+    const accessToken = await zohoGetAccessToken();
+    const r = await axios.get(`${zohoApiBase(ENV.ZOHO_DC)}/crm/v2/users?type=CurrentUser`, {
+      headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
+      timeout: 20000,
+    });
+
+    return res.status(200).json({
+      ok: true,
+      dc: ENV.ZOHO_DC,
+      user: r.data?.users?.[0]?.full_name || null,
+      email: r.data?.users?.[0]?.email || null,
+    });
+  } catch (e) {
+    return res.status(500).json({
+      ok: false,
+      error: e?.response?.data || e?.message || String(e),
+    });
+  }
+});
+
+// Webhook WhatsApp
+app.post("/webhook", async (req, res) => {
+  if (!verifyMetaSignature(req)) return res.sendStatus(403);
   res.sendStatus(200);
 
   try {
     const body = req.body;
-
     const entry = body?.entry?.[0];
     const changes = entry?.changes?.[0]?.value;
 
     const phone_number_id = changes?.metadata?.phone_number_id || ENV.PHONE_NUMBER_ID;
-
     const messages = changes?.messages;
     if (!messages || !messages.length) return;
 
@@ -768,17 +1000,13 @@ app.post("/webhook", async (req, res) => {
       if (!msg_id) continue;
       if (dedupe(msg_id)) continue;
 
-      // Marcar leído ASAP
       await waMarkRead(phone_number_id, msg_id);
 
-      // Sesión
       const session = getSession(wa_id);
 
-      // Nombre (si viene)
       const profileName = contact?.profile?.name;
       if (profileName && !session.facts.name) session.facts.name = profileName;
 
-      // Procesar por tipo
       let userText = "";
 
       if (msg.type === "text") {
@@ -847,7 +1075,7 @@ app.post("/webhook", async (req, res) => {
 
             if (buf.length > ENV.MAX_PDF_BYTES) {
               session.facts.notes.push("PDF recibido pero muy pesado; no se procesó.");
-              userText += "\nNota: el PDF es muy pesado para leerlo automático; si puedes envía una versión más liviana o un extracto.";
+              userText += "\nNota: el PDF es muy pesado; envía versión más liviana o extracto.";
             } else {
               try {
                 loadPdfDeps();
@@ -861,8 +1089,8 @@ app.post("/webhook", async (req, res) => {
                 }
               } catch (e) {
                 logErr("PDF parse error:", e?.message || e);
-                session.facts.notes.push("PDF recibido, pero no se pudo leer (fallback).");
-                userText += "\nNota: recibí el PDF, pero no pude extraer texto automáticamente. Si me indicas medidas y tipo, lo resolvemos igual.";
+                session.facts.notes.push("PDF recibido, pero no se pudo leer.");
+                userText += "\nNota: recibí el PDF, pero no pude extraer texto. Indica medidas/tipo y listo.";
               }
             }
           } catch (e) {
@@ -874,26 +1102,23 @@ app.post("/webhook", async (req, res) => {
         userText = "Mensaje recibido.";
       }
 
-      // Guardar turno y hechos
       addTurn(session, "user", userText);
       updateFactsFromText(session, userText);
 
-      // Sugerir DVH si hay medidas pero no vidrio
       if (session.facts.measures.length && !session.facts.glass) session.facts.glass = "Termopanel (DVH)";
 
-      // Pre-cotización
       const quote = quoteEngine(session);
-
-      // Respuesta IA (o fallback)
       const reply = await aiComposeReply({ session, userText, quote });
 
       addTurn(session, "assistant", reply);
 
-      // Enviar respuesta
       await waTypingSim(reply);
       await waSendText(phone_number_id, wa_id, reply);
 
-      // PDF de salida solo si está habilitado, hay quote y el cliente lo pide
+      // Registrar en Zoho (Lead + Note) en background (sin romper WhatsApp)
+      zohoUpsertLeadSafe(session, userText, reply).catch(() => {});
+
+      // PDF de salida si lo piden y está habilitado
       if (ENV.ENABLE_PDF_QUOTES && quote && /pdf/i.test(userText)) {
         try {
           const pdfBuf = await buildQuotePdfBuffer(quote, session);
@@ -934,6 +1159,11 @@ function envStatus() {
     `ENABLE_VOICE_TRANSCRIPTION: ${ENV.ENABLE_VOICE_TRANSCRIPTION}`,
     `ENABLE_PDF_QUOTES: ${ENV.ENABLE_PDF_QUOTES}`,
     `TYPING_SIMULATION: ${ENV.TYPING_SIMULATION}`,
+    `ZOHO_DC: ${ENV.ZOHO_DC}`,
+    `ZOHO_CLIENT_ID: ${ENV.ZOHO_CLIENT_ID ? "OK" : "MISSING"}`,
+    `ZOHO_CLIENT_SECRET: ${ENV.ZOHO_CLIENT_SECRET ? "OK" : "MISSING"}`,
+    `ZOHO_REDIRECT_URI: ${ENV.ZOHO_REDIRECT_URI ? "OK" : "MISSING"}`,
+    `ZOHO_REFRESH_TOKEN: ${ENV.ZOHO_REFRESH_TOKEN ? "OK" : "MISSING"}`,
   ];
   for (const l of lines) logInfo(l);
 }
@@ -941,89 +1171,4 @@ function envStatus() {
 app.listen(PORT, () => {
   envStatus();
   logInfo(`Server running on port ${PORT}`);
-});
-// ==============================
-// ZOHO OAUTH (Auth + Callback)
-// ==============================
-const ZOHO_CLIENT_ID = process.env.ZOHO_CLIENT_ID;
-const ZOHO_CLIENT_SECRET = process.env.ZOHO_CLIENT_SECRET;
-const ZOHO_REDIRECT_URI = process.env.ZOHO_REDIRECT_URI; // https://.../zoho/callback
-const ZOHO_DC = process.env.ZOHO_DC || "com"; // com / eu / in / com.au / jp / uk / ca / sa
-
-function zohoAccountsBase(dc) {
-  // Para la mayoría en Chile: "com" => accounts.zoho.com
-  // Si usas otro DC: accounts.zoho.eu, accounts.zoho.in, etc.
-  if (dc === "com") return "https://accounts.zoho.com";
-  return `https://accounts.zoho.${dc}`;
-}
-
-// 1) Inicia autorización (abre Zoho Consent)
-app.get("/zoho/auth", (req, res) => {
-  if (!ZOHO_CLIENT_ID || !ZOHO_REDIRECT_URI) {
-    return res.status(500).send("Faltan variables ZOHO_CLIENT_ID o ZOHO_REDIRECT_URI");
-  }
-
-  // Scopes recomendados para CRM básico + leads/contacts/deals/notes
-  // Puedes ajustar luego a algo más acotado.
-  const scope = encodeURIComponent(
-    "ZohoCRM.modules.ALL,ZohoCRM.settings.ALL,ZohoCRM.users.ALL"
-  );
-
-  const state = encodeURIComponent("activa_zoho_" + Date.now());
-
-  const authUrl =
-    `${zohoAccountsBase(ZOHO_DC)}/oauth/v2/auth` +
-    `?scope=${scope}` +
-    `&client_id=${encodeURIComponent(ZOHO_CLIENT_ID)}` +
-    `&response_type=code` +
-    `&access_type=offline` +
-    `&prompt=consent` +
-    `&redirect_uri=${encodeURIComponent(ZOHO_REDIRECT_URI)}` +
-    `&state=${state}`;
-
-  return res.redirect(authUrl);
-});
-
-// 2) Callback: recibe code y canjea por access_token + refresh_token
-app.get("/zoho/callback", async (req, res) => {
-  try {
-    const { code } = req.query;
-    if (!code) {
-      return res.status(400).send("Callback recibido sin ?code=. Reintenta desde /zoho/auth");
-    }
-    if (!ZOHO_CLIENT_ID || !ZOHO_CLIENT_SECRET || !ZOHO_REDIRECT_URI) {
-      return res.status(500).send("Faltan variables ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET / ZOHO_REDIRECT_URI");
-    }
-
-    const tokenUrl = `${zohoAccountsBase(ZOHO_DC)}/oauth/v2/token`;
-
-    const params = new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: ZOHO_CLIENT_ID,
-      client_secret: ZOHO_CLIENT_SECRET,
-      redirect_uri: ZOHO_REDIRECT_URI,
-      code: String(code),
-    });
-
-    const r = await axios.post(tokenUrl, params.toString(), {
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      timeout: 20000,
-    });
-
-    const data = r.data;
-
-    // OJO: refresh_token normalmente viene SOLO la primera vez (con prompt=consent)
-    console.log("✅ ZOHO TOKEN RESPONSE:", data);
-
-    // Muestra algo claro en pantalla
-    return res
-      .status(200)
-      .send(
-        "Zoho conectado. Revisa los logs de Railway para ver access_token/refresh_token. " +
-        "Guarda el refresh_token en Railway como ZOHO_REFRESH_TOKEN."
-      );
-  } catch (err) {
-    console.error("❌ ZOHO CALLBACK ERROR:", err?.response?.data || err.message);
-    return res.status(500).send("Error en callback Zoho. Revisa logs en Railway.");
-  }
 });
