@@ -1,5 +1,5 @@
 {
-  "name": "whatsapp-ia-zoho",
+  "name": "whatsapp-ia-hubspot",
   "version": "1.0.0",
   "type": "module",
   "main": "index.js",
@@ -11,9 +11,9 @@
   },
   "dependencies": {
     "axios": "^1.7.9",
-    "express": "^4.19.2",
+    "express": "^4.21.2",
     "form-data": "^4.0.0",
-    "openai": "^4.67.3",
+    "openai": "^4.67.0",
     "pdf-parse": "^1.1.1",
     "pdfkit": "^0.15.0"
   }
