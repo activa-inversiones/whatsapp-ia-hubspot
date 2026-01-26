@@ -3,7 +3,9 @@
 import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
-import pdfParse from "pdf-parse";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const pdfParse = require("pdf-parse");
 import PDFDocument from "pdfkit";
 import FormData from "form-data";
 import crypto from "crypto";
