@@ -1,4 +1,4 @@
-// index.js — WhatsApp IA + Venta Consultiva (Activa Ventanas) + ZOHO OAuth (refresh/test)
+// index.js — WhatsApp IA + Venta Consultiva (Activa Ventanas) + ZOHO CRM (Leads) + PDF Auto
 // Runtime: Node 18+ (Railway) | ESM ("type":"module" en package.json)
 
 import express from "express";
@@ -64,6 +64,10 @@ const ENV = {
   MAX_IMAGE_BYTES: Number(process.env.MAX_IMAGE_BYTES || 3_000_000),
   MAX_AUDIO_BYTES: Number(process.env.MAX_AUDIO_BYTES || 8_000_000),
   MAX_PDF_BYTES: Number(process.env.MAX_PDF_BYTES || 10_000_000),
+
+  // Comportamiento “Ferrari”
+  AUTO_SEND_PDF_WHEN_READY: truthy(process.env.AUTO_SEND_PDF_WHEN_READY ?? "true"), // default true
+  DONT_SHOW_PRICES_IN_CHAT: truthy(process.env.DONT_SHOW_PRICES_IN_CHAT ?? "true"), // default true
 };
 
 // ======================================================
@@ -74,7 +78,9 @@ const ZOHO = {
   CLIENT_SECRET: process.env.ZOHO_CLIENT_SECRET,
   REDIRECT_URI: process.env.ZOHO_REDIRECT_URI, // https://tu-app/zoho/callback
   DC: process.env.ZOHO_DC || "com", // com / eu / in / com.au / jp / uk / ca / sa
-  REFRESH_TOKEN: process.env.ZOHO_REFRESH_TOKEN, // <- ESTE ES EL QUE DEBE SER refresh_token
+  REFRESH_TOKEN: process.env.ZOHO_REFRESH_TOKEN, // refresh_token
+  API_DOMAIN_OVERRIDE: process.env.ZOHO_API_DOMAIN || null, // opcional (no necesario si refresh devuelve api_domain)
+  CRM_API_VERSION: process.env.ZOHO_CRM_API_VERSION || "v2",
 };
 
 // ======================================================
@@ -86,7 +92,6 @@ const BRAND = {
   city: "Temuco / La Araucanía",
   whatWeDo:
     "Fabricamos e instalamos ventanas y puertas de PVC y aluminio, con termopanel y soluciones para clima frío (aislación térmica/acústica).",
-  values: ["honorabilidad", "respeto", "paciencia", "claridad", "asesoría técnica", "venta consultiva"],
   promise:
     "Te guiamos para elegir la mejor solución según frío, ruido, seguridad y presupuesto; sin letra chica.",
   nextSteps:
@@ -102,13 +107,13 @@ Reglas de tono:
 - Confirmas lo pedido y haces 1-3 preguntas útiles (no 10).
 - Si el cliente dice "paso frío" o "condensación", prioriza recomendación técnica: DVH/Low-E/cámara, sellos e instalación.
 - Evita respuestas genéricas. Personaliza con lo que dijo el cliente.
-- No inventes precios definitivos. Si faltan datos, entrega rango referencial y pide lo mínimo.
+- No inventes precios definitivos. Si faltan datos, pide lo mínimo.
 - No digas “soy un bot” ni “modelo de IA”.
 - Mensajes cortos (2–6 líneas). Lista breve solo si aporta.
 
 Reglas comerciales:
 - Captura: nombre, comuna, producto (ventana/puerta), tipo (corredera/abatible/oscilobatiente), medidas, color, vidrio.
-- Cierra con siguiente paso: “¿confirmamos X e Y para enviarte pre-cotización hoy?”.
+- Cierra con siguiente paso: “¿confirmamos X e Y para enviarte cotización PDF?”.
 `;
 
 const VISION_EXTRACT_PROMPT =
@@ -123,7 +128,7 @@ const VISION_EXTRACT_PROMPT =
   "- No inventes números.\n";
 
 // ======================================================
-// OPENAI CLIENT (opcional)
+// OPENAI CLIENT
 // ======================================================
 const openai = ENV.OPENAI_API_KEY ? new OpenAI({ apiKey: ENV.OPENAI_API_KEY }) : null;
 
@@ -196,6 +201,14 @@ function getSession(wa_id) {
         glass: null,
         measures: [],
         notes: [],
+      },
+      zoho: {
+        leadId: null,
+        loadedAt: null,
+      },
+      pdf: {
+        lastSentAt: null,
+        lastQuoteHash: null,
       },
     });
   s.lastAt = nowISO();
@@ -308,9 +321,9 @@ function parseMeasuresFromText(text) {
     const toMM = (v) => {
       if (unit === "m") return Math.round(v * 1000);
       if (unit === "cm") return Math.round(v * 10);
-      if (v <= 10) return Math.round(v * 1000);
-      if (v > 50) return Math.round(v);
-      return Math.round(v * 10);
+      if (v <= 10) return Math.round(v * 1000); // asume metros si <=10
+      if (v > 50) return Math.round(v); // mm
+      return Math.round(v * 10); // cm
     };
 
     const w_mm = toMM(a);
@@ -378,8 +391,7 @@ function inferIntent(text) {
   const t = String(text || "").toLowerCase();
   if (!t.trim()) return "unknown";
   if (t.includes("cotiz") || t.includes("precio") || t.includes("presupuesto")) return "quote";
-  if (t.includes("inform") || t.includes("catálogo") || t.includes("catalogo") || t.includes("modelos")) return "info";
-  if (t.includes("frío") || t.includes("frio") || t.includes("helado") || t.includes("condens")) return "cold_problem";
+  if (t.includes("frío") || t.includes("frio") || t.includes("condens")) return "cold_problem";
   if (t.includes("vidrio") || t.includes("laminado") || t.includes("templado")) return "glass";
   if (t.includes("puerta")) return "door";
   if (t.includes("ventana")) return "window";
@@ -455,6 +467,31 @@ function quoteEngine(session) {
   };
 }
 
+function quoteHash(quote, facts) {
+  const base = JSON.stringify({
+    comuna: facts.comuna,
+    product: facts.product,
+    type: facts.type,
+    color: facts.color,
+    glass: facts.glass,
+    measures: facts.measures,
+    total: quote?.total,
+  });
+  return crypto.createHash("sha1").update(base).digest("hex");
+}
+
+function isQuoteReady(session) {
+  const f = session.facts;
+  if (!f.measures?.length) return false;
+  // mínimo para emitir PDF “serio”
+  if (!f.comuna) return false;
+  if (!f.product) return false;
+  if (!f.type) return false;
+  if (!f.color) return false;
+  if (!f.glass) return false;
+  return true;
+}
+
 // ======================================================
 // PDF (lazy load)
 // ======================================================
@@ -480,21 +517,21 @@ function buildQuotePdfBuffer(quote, session) {
       doc.on("data", (c) => chunks.push(c));
       doc.on("end", () => resolve(Buffer.concat(chunks)));
 
-      doc.fontSize(16).text(`${BRAND.displayName} - Pre-cotización`, { underline: true });
+      doc.fontSize(16).text(`${BRAND.displayName} - Cotización (Referencial)`, { underline: true });
       doc.moveDown(0.5);
 
       doc.fontSize(10).text(`Fecha: ${new Date().toLocaleString("es-CL")}`);
       doc.text(`Cliente: ${session.facts.name || session.wa_id}`);
+      doc.text(`WhatsApp: ${session.wa_id}`);
       doc.text(`Comuna: ${session.facts.comuna || "Por confirmar"}`);
       doc.moveDown(0.8);
 
-      doc.fontSize(12).text("Resumen", { underline: true });
+      doc.fontSize(12).text("Resumen técnico", { underline: true });
       doc.fontSize(10).text(`Producto: ${quote.product}`);
       doc.text(`Tipo: ${quote.type}`);
       doc.text(`Color: ${quote.color}`);
       doc.text(`Vidrio: ${quote.glass}`);
       doc.text(`Área total: ${quote.totalArea} m²`);
-      doc.text(`Valor referencial: ${quote.pricePerM2.toLocaleString("es-CL")} + IVA / m²`);
       doc.moveDown(0.8);
 
       doc.fontSize(12).text("Detalle", { underline: true });
@@ -515,7 +552,7 @@ function buildQuotePdfBuffer(quote, session) {
 
       doc.moveDown(1.0);
       doc.fontSize(9).text(`Nota: ${quote.disclaimer}`);
-      doc.moveDown(1.0);
+      doc.moveDown(0.6);
       doc.fontSize(10).text(BRAND.promise);
 
       doc.end();
@@ -634,14 +671,17 @@ async function extractFromImageBuffer(imageBuffer) {
   }
 }
 
-async function aiComposeReply({ session, userText, quote }) {
+async function aiComposeReply({ session, userText, quote, willSendPdf }) {
+  // Si no hay OpenAI, fallback básico
   if (!openai) {
-    return `Hola, gracias por escribirnos. Para cotizar bien, indícame comuna, tipo (corredera/abatible/oscilobatiente), medidas (ancho x alto) y color.`;
+    if (willSendPdf) return "Perfecto ✅ Te envío la cotización en PDF ahora. ¿Es obra nueva o recambio?";
+    return "Hola 👋 Para cotizar bien, indícame comuna, tipo (corredera/abatible/oscilobatiente), medidas (ancho x alto), color y tipo de vidrio.";
   }
 
   const facts = session.facts;
   const intent = inferIntent(userText);
 
+  // Para evitar “precios en chat”, pasamos el quote pero instruimos no mostrar total.
   const contextBlock = {
     time: new Date().toLocaleString("es-CL"),
     brand: BRAND,
@@ -657,6 +697,7 @@ async function aiComposeReply({ session, userText, quote }) {
       notes: facts.notes?.slice(-5),
     },
     quote: quote || null,
+    willSendPdf: !!willSendPdf,
     recentTurns: session.turns,
   };
 
@@ -676,7 +717,8 @@ async function aiComposeReply({ session, userText, quote }) {
             "\n\nInstrucciones:\n" +
             "- Responde como Activa, humano y consultivo.\n" +
             "- Pide SOLO lo mínimo faltante.\n" +
-            "- Si hay pre-cotización, entrégala clara y breve + disclaimer + siguiente paso.\n",
+            "- Si hay cotización lista y se enviará PDF, NO des valores ni totales en el chat: solo confirma y pide 1 dato final si falta.\n" +
+            "- Si faltan datos, pide lo mínimo faltante.\n",
         },
       ],
     });
@@ -685,12 +727,12 @@ async function aiComposeReply({ session, userText, quote }) {
     return safeStr(out, ENV.MAX_REPLY_CHARS);
   } catch (e) {
     logErr("aiComposeReply error:", e?.message || e);
-    return `Gracias por tu mensaje. Para ayudarte bien, ¿me confirmas comuna y medidas (ancho x alto)? Si es para frío/ruido, dime también si quieres termopanel estándar o Low-E.`;
+    return "Gracias por tu mensaje. Para ayudarte bien, ¿me confirmas comuna y medidas (ancho x alto), y si es corredera o abatible?";
   }
 }
 
 // ======================================================
-// ZOHO HELPERS (auth + refresh + test)
+// ZOHO HELPERS (auth + refresh + cache + CRM)
 // ======================================================
 function zohoAccountsBase(dc) {
   if (dc === "com") return "https://accounts.zoho.com";
@@ -717,7 +759,6 @@ async function zohoRefreshAccessToken() {
       timeout: 20000,
     });
 
-    // r.data debe traer access_token
     if (!r.data?.access_token) {
       return { ok: false, error: "Zoho no devolvió access_token", raw: r.data };
     }
@@ -725,7 +766,7 @@ async function zohoRefreshAccessToken() {
     return {
       ok: true,
       access_token: r.data.access_token,
-      api_domain: r.data.api_domain || "https://www.zohoapis.com",
+      api_domain: ZOHO.API_DOMAIN_OVERRIDE || r.data.api_domain || "https://www.zohoapis.com",
       expires_in: r.data.expires_in,
       raw: r.data,
     };
@@ -735,6 +776,203 @@ async function zohoRefreshAccessToken() {
       error: "No se obtuvo access_token desde refresh_token",
       raw: err?.response?.data || err?.message || String(err),
     };
+  }
+}
+
+// --- cache token (evita refresh por cada mensaje) ---
+let ZOHO_TOKEN_CACHE = { access_token: null, api_domain: null, exp_at: 0 };
+
+async function zohoGetTokenCached() {
+  const now = Date.now();
+  if (ZOHO_TOKEN_CACHE.access_token && now < ZOHO_TOKEN_CACHE.exp_at) {
+    return { ok: true, ...ZOHO_TOKEN_CACHE };
+  }
+  const r = await zohoRefreshAccessToken();
+  if (!r.ok) return r;
+
+  const ttlMs = Math.max(10 * 60 * 1000, (Number(r.expires_in || 3600) - 600) * 1000); // 10 min mínimo
+  ZOHO_TOKEN_CACHE = {
+    access_token: r.access_token,
+    api_domain: r.api_domain || "https://www.zohoapis.com",
+    exp_at: now + ttlMs,
+  };
+  return { ok: true, ...ZOHO_TOKEN_CACHE };
+}
+
+function zohoHeaders(access_token) {
+  return { Authorization: `Zoho-oauthtoken ${access_token}` };
+}
+
+// --- Buscar Lead por wa_id (guardado en Mobile/Phone) ---
+async function zohoFindLeadByWA(waId) {
+  const tk = await zohoGetTokenCached();
+  if (!tk.ok) return tk;
+
+  const api = tk.api_domain;
+  const headers = zohoHeaders(tk.access_token);
+
+  const trySearch = async (criteria) => {
+    const url = `${api}/crm/${ZOHO.CRM_API_VERSION}/Leads/search?criteria=${encodeURIComponent(criteria)}`;
+    const r = await axios.get(url, { headers, timeout: 20000 });
+    return r?.data?.data?.[0] || null;
+  };
+
+  try {
+    let rec = await trySearch(`(Mobile:equals:${waId})`);
+    if (rec) return { ok: true, record: rec };
+    rec = await trySearch(`(Phone:equals:${waId})`);
+    return { ok: true, record: rec };
+  } catch (e) {
+    return { ok: false, error: "Error buscando Lead", raw: e?.response?.data || e?.message || String(e) };
+  }
+}
+
+// --- Merge Zoho -> session.facts (anti repetición) ---
+function mergeZohoLeadIntoSession(session, lead) {
+  if (!lead) return;
+  // NOTE: Zoho fields típicos: Full_Name, Last_Name, City, Description, Mobile, Phone...
+  const f = session.facts;
+
+  // Nombre (si no lo tenemos)
+  if (!f.name) {
+    const nm =
+      lead.Full_Name ||
+      lead.Last_Name ||
+      lead.First_Name ||
+      (lead.Salutation ? `${lead.Salutation} ${lead.Last_Name || ""}` : null);
+    if (nm) f.name = String(nm).trim();
+  }
+
+  // Comuna (si tu layout usa "City" o campo similar)
+  if (!f.comuna && lead.City) f.comuna = String(lead.City).trim();
+
+  // Si tuvieras campos custom, aquí los mapearías.
+  // Como fallback, si Description incluye líneas tipo "Comuna:", etc.
+  if (!f.product && typeof lead.Description === "string" && lead.Description.includes("Producto:")) {
+    const m = lead.Description.match(/Producto:\s*(.+)/i);
+    if (m?.[1]) f.product = m[1].trim();
+  }
+  if (!f.type && typeof lead.Description === "string" && lead.Description.includes("Tipo:")) {
+    const m = lead.Description.match(/Tipo:\s*(.+)/i);
+    if (m?.[1]) f.type = m[1].trim();
+  }
+  if (!f.color && typeof lead.Description === "string" && lead.Description.includes("Color:")) {
+    const m = lead.Description.match(/Color:\s*(.+)/i);
+    if (m?.[1]) f.color = m[1].trim();
+  }
+  if (!f.glass && typeof lead.Description === "string" && lead.Description.includes("Vidrio:")) {
+    const m = lead.Description.match(/Vidrio:\s*(.+)/i);
+    if (m?.[1]) f.glass = m[1].trim();
+  }
+}
+
+// --- Payload Lead desde session ---
+function zohoLeadPayloadFromSession(session) {
+  const f = session.facts || {};
+  const lastName = (f.name || "Cliente WhatsApp").trim(); // Zoho exige Last_Name en Leads
+
+  const descParts = [
+    `WA_ID: ${session.wa_id}`,
+    f.comuna ? `Comuna: ${f.comuna}` : null,
+    f.product ? `Producto: ${f.product}` : null,
+    f.type ? `Tipo: ${f.type}` : null,
+    f.color ? `Color: ${f.color}` : null,
+    f.glass ? `Vidrio: ${f.glass}` : null,
+    f.measures?.length ? `Medidas: ${f.measures.map((m) => `${m.qty || 1}x${m.w_mm}x${m.h_mm}`).join(", ")}` : null,
+  ].filter(Boolean);
+
+  return {
+    Last_Name: lastName,
+    Company: "Activa Ventanas",
+    Mobile: session.wa_id,
+    Phone: session.wa_id,
+    Description: descParts.join("\n"),
+  };
+}
+
+// --- Upsert Lead ---
+async function zohoUpsertLead(session) {
+  const waId = session.wa_id;
+
+  const found = await zohoFindLeadByWA(waId);
+  if (!found.ok) return found;
+
+  const tk = await zohoGetTokenCached();
+  if (!tk.ok) return tk;
+
+  const api = tk.api_domain;
+  const headers = zohoHeaders(tk.access_token);
+  const payload = zohoLeadPayloadFromSession(session);
+
+  try {
+    if (!found.record) {
+      const r = await axios.post(`${api}/crm/${ZOHO.CRM_API_VERSION}/Leads`, { data: [payload] }, { headers, timeout: 20000 });
+      const id = r?.data?.data?.[0]?.details?.id;
+      return { ok: true, action: "created", id };
+    } else {
+      const id = found.record.id;
+      await axios.put(
+        `${api}/crm/${ZOHO.CRM_API_VERSION}/Leads`,
+        { data: [{ id, ...payload }] },
+        { headers, timeout: 20000 }
+      );
+      return { ok: true, action: "updated", id, record: found.record };
+    }
+  } catch (e) {
+    return { ok: false, error: "Error upsert Lead", raw: e?.response?.data || e?.message || String(e) };
+  }
+}
+
+// --- Nota en Lead ---
+async function zohoAddNoteToLead(leadId, noteText) {
+  const tk = await zohoGetTokenCached();
+  if (!tk.ok) return tk;
+
+  const api = tk.api_domain;
+  const headers = zohoHeaders(tk.access_token);
+
+  const payload = {
+    data: [
+      {
+        Note_Title: "WhatsApp",
+        Note_Content: safeStr(noteText, 4000),
+        Parent_Id: leadId,
+        se_module: "Leads",
+      },
+    ],
+  };
+
+  try {
+    await axios.post(`${api}/crm/${ZOHO.CRM_API_VERSION}/Notes`, payload, { headers, timeout: 20000 });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: "Error creando Nota", raw: e?.response?.data || e?.message || String(e) };
+  }
+}
+
+// --- Adjuntar PDF al Lead ---
+async function zohoAttachPdfToLead(leadId, pdfBuffer, filename = "cotizacion.pdf") {
+  loadPdfDeps();
+
+  const tk = await zohoGetTokenCached();
+  if (!tk.ok) return tk;
+
+  const api = tk.api_domain;
+  const headers = { ...zohoHeaders(tk.access_token) };
+
+  const form = new FormData();
+  form.append("file", pdfBuffer, { filename, contentType: "application/pdf" });
+
+  try {
+    const url = `${api}/crm/${ZOHO.CRM_API_VERSION}/Leads/${leadId}/Attachments`;
+    await axios.post(url, form, {
+      headers: { ...headers, ...form.getHeaders() },
+      maxBodyLength: Infinity,
+      timeout: 60_000,
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: "Error adjuntando PDF a Lead", raw: e?.response?.data || e?.message || String(e) };
   }
 }
 
@@ -756,7 +994,6 @@ app.get("/webhook", (req, res) => {
 // WhatsApp webhook receiver
 app.post("/webhook", async (req, res) => {
   if (!verifyMetaSignature(req)) return res.sendStatus(403);
-
   res.sendStatus(200);
 
   try {
@@ -783,8 +1020,19 @@ app.post("/webhook", async (req, res) => {
 
       const session = getSession(wa_id);
 
+      // Nombre perfil
       const profileName = contact?.profile?.name;
       if (profileName && !session.facts.name) session.facts.name = profileName;
+
+      // 1) Antes de procesar, si no hemos cargado Zoho en esta sesión, lo intentamos
+      if (!session.zoho.loadedAt && ZOHO.REFRESH_TOKEN) {
+        const found = await zohoFindLeadByWA(session.wa_id);
+        if (found?.ok && found.record) {
+          session.zoho.leadId = found.record.id;
+          mergeZohoLeadIntoSession(session, found.record);
+        }
+        session.zoho.loadedAt = nowISO();
+      }
 
       let userText = "";
 
@@ -869,7 +1117,6 @@ app.post("/webhook", async (req, res) => {
               } catch (e) {
                 logErr("PDF parse error:", e?.message || e);
                 session.facts.notes.push("PDF recibido, pero no se pudo leer.");
-                userText += "\nNota: recibí el PDF, pero no pude extraer texto. Si me indicas medidas y tipo, lo resolvemos igual.";
               }
             }
           } catch (e) {
@@ -884,27 +1131,71 @@ app.post("/webhook", async (req, res) => {
       addTurn(session, "user", userText);
       updateFactsFromText(session, userText);
 
+      // Defaults técnicos
       if (session.facts.measures.length && !session.facts.glass) session.facts.glass = "Termopanel (DVH)";
+
+      // Genera quote si hay medidas
       const quote = quoteEngine(session);
 
-      const reply = await aiComposeReply({ session, userText, quote });
+      // Determina si corresponde PDF automático
+      const ready = quote && isQuoteReady(session) && ENV.ENABLE_PDF_QUOTES && ENV.AUTO_SEND_PDF_WHEN_READY;
+
+      // Evita reenviar PDF idéntico muchas veces
+      const qh = ready ? quoteHash(quote, session.facts) : null;
+      const alreadySentSame = ready && session.pdf.lastQuoteHash === qh;
+
+      const willSendPdf = ready && !alreadySentSame;
+
+      const reply = await aiComposeReply({ session, userText, quote, willSendPdf });
       addTurn(session, "assistant", reply);
 
       await waTypingSim(reply);
       await waSendText(phone_number_id, wa_id, reply);
 
-      if (ENV.ENABLE_PDF_QUOTES && quote && /pdf/i.test(userText)) {
+      // Zoho: upsert lead + nota (siempre)
+      let leadId = session.zoho.leadId || null;
+      if (ZOHO.REFRESH_TOKEN) {
+        const up = await zohoUpsertLead(session);
+        if (up?.ok && up.id) {
+          leadId = up.id;
+          session.zoho.leadId = up.id;
+
+          // nota con lo recibido (y breve resumen)
+          await zohoAddNoteToLead(
+            leadId,
+            `Cliente: ${session.facts.name || session.wa_id}\n` +
+              `Mensaje: ${safeStr(userText, 1200)}\n` +
+              `Estado: comuna=${session.facts.comuna || "-"}; producto=${session.facts.product || "-"}; tipo=${session.facts.type || "-"}; color=${session.facts.color || "-"}; vidrio=${session.facts.glass || "-"}; medidas=${session.facts.measures?.length || 0}`
+          );
+        } else if (!up?.ok) {
+          logWarn("Zoho upsert fail:", up?.error, up?.raw);
+        }
+      }
+
+      // PDF: si listo, envía PDF + adjunta a Zoho
+      if (willSendPdf) {
         try {
           const pdfBuf = await buildQuotePdfBuffer(quote, session);
+
+          // 1) Adjuntar a Zoho (si hay lead)
+          if (leadId) {
+            const att = await zohoAttachPdfToLead(leadId, pdfBuf, "cotizacion.pdf");
+            if (!att?.ok) logWarn("Zoho attach PDF fail:", att?.error, att?.raw);
+          }
+
+          // 2) Enviar por WhatsApp como documento
           const mediaId = await waUploadMediaPDF(phone_number_id, pdfBuf, "cotizacion.pdf");
-          await waTypingSim("Adjunto PDF de pre-cotización.");
+          await waTypingSim("Adjunto cotización PDF.");
           await waSendDocument(
             phone_number_id,
             wa_id,
             mediaId,
             "cotizacion.pdf",
-            "Adjunto pre-cotización referencial. Si confirmas comuna/tipo/color/vidrio, lo dejamos cerrado."
+            "Adjunto cotización referencial en PDF. Si confirmas obra nueva/recambio y dirección (comuna ya OK), coordinamos visita/medición."
           );
+
+          session.pdf.lastSentAt = nowISO();
+          session.pdf.lastQuoteHash = qh;
         } catch (e) {
           logErr("PDF output error:", e?.message || e);
         }
@@ -916,7 +1207,7 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ==============================
-// ZOHO OAUTH: AUTH + CALLBACK + TEST
+// ZOHO OAUTH: AUTH + CALLBACK + TEST (para regenerar refresh_token si lo necesitas)
 // ==============================
 app.get("/zoho/auth", (req, res) => {
   if (!ZOHO.CLIENT_ID || !ZOHO.REDIRECT_URI) {
@@ -978,7 +1269,6 @@ app.get("/zoho/callback", async (req, res) => {
   }
 });
 
-// Test de refresh + llamada real a CRM
 app.get("/zoho/test", async (_req, res) => {
   const r = await zohoRefreshAccessToken();
   if (!r.ok) {
@@ -986,15 +1276,10 @@ app.get("/zoho/test", async (_req, res) => {
       ok: false,
       error: r.error,
       raw: r.raw,
-      hint:
-        "1) Asegura que ZOHO_REFRESH_TOKEN sea el refresh_token (no access_token) y esté completo sin comillas. " +
-        "2) ZOHO_DC debe ser 'com' si api_domain es https://www.zohoapis.com. " +
-        "3) Si persiste, regenera desde /zoho/auth y usa el nuevo refresh_token.",
     });
   }
 
   try {
-    // Llamada simple: usuario actual
     const api = r.api_domain || "https://www.zohoapis.com";
     const me = await axios.get(`${api}/crm/v2/users?type=CurrentUser`, {
       headers: { Authorization: `Zoho-oauthtoken ${r.access_token}` },
@@ -1033,12 +1318,15 @@ function envStatus() {
     `AI_MODEL_TRANSCRIBE: ${ENV.AI_MODEL_TRANSCRIBE}`,
     `ENABLE_VOICE_TRANSCRIPTION: ${ENV.ENABLE_VOICE_TRANSCRIPTION}`,
     `ENABLE_PDF_QUOTES: ${ENV.ENABLE_PDF_QUOTES}`,
+    `AUTO_SEND_PDF_WHEN_READY: ${ENV.AUTO_SEND_PDF_WHEN_READY}`,
+    `DONT_SHOW_PRICES_IN_CHAT: ${ENV.DONT_SHOW_PRICES_IN_CHAT}`,
     `TYPING_SIMULATION: ${ENV.TYPING_SIMULATION}`,
     `ZOHO_DC: ${ZOHO.DC}`,
     `ZOHO_CLIENT_ID: ${ZOHO.CLIENT_ID ? "OK" : "MISSING"}`,
     `ZOHO_CLIENT_SECRET: ${ZOHO.CLIENT_SECRET ? "OK" : "MISSING"}`,
     `ZOHO_REDIRECT_URI: ${ZOHO.REDIRECT_URI ? "OK" : "MISSING"}`,
     `ZOHO_REFRESH_TOKEN: ${ZOHO.REFRESH_TOKEN ? "OK" : "MISSING"}`,
+    `ZOHO_API_DOMAIN_OVERRIDE: ${ZOHO.API_DOMAIN_OVERRIDE ? "ON" : "OFF"}`,
   ];
   for (const l of lines) logInfo(l);
 }
