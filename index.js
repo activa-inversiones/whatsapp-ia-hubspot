@@ -494,9 +494,11 @@ app.post("/webhook", async (req, res) => {
   }
 
   const incoming = extractIncoming(req.body);
-  if (!incoming.ok) {
-    if (incoming.reason !== "status_update") console.log("⏭️ skip", incoming.reason);
-    return;
+if (incoming.ok && incoming.type !== "text" && incoming.type !== "button") {
+  await waSendText(incoming.waId, "¿Me lo puedes escribir por aquí? Así te cotizo más rápido 🙌");
+  return;
+}
+
   }
 
   const { waId, msgId, text } = incoming;
