@@ -82,6 +82,14 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 // ---------- Util ----------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function normalizeCLPhone(raw) {
+  const s = String(raw || "").replace(/[^\d+]/g, "");
+  if (!s) return "";
+  if (s.startsWith("+")) return s;          // ya E164
+  if (s.startsWith("56")) return `+${s}`;   // 56xxxxxxxxx -> +56...
+  return `+${s}`;                            // 569xxxxxxx -> +569...
+}
+
 
 // ---------- WhatsApp Graph base ----------
 const waBase = () => `https://graph.facebook.com/${META.GRAPH_VERSION}`;
@@ -518,32 +526,83 @@ async function getZohoToken() {
   return zohoCache.token;
 }
 
-async function zohoUpsertLead(d, phone, retries = 1) {
-  if (!REQUIRE_ZOHO) return;
+async function zohoFindLeadIdByMobile(phoneE164) {
+  const token = await getZohoToken();
+
+  // Search criteria: (Mobile:equals:+569xxxxxxxx)
+  const criteria = `(Mobile:equals:${phoneE164})`;
+  const url = `${ZOHO.API_DOMAIN}/crm/v2/Leads/search?criteria=${encodeURIComponent(criteria)}`;
+
   try {
-    const token = await getZohoToken();
-    const url = `${ZOHO.API_DOMAIN}/crm/v2/Leads/upsert`;
-
-    const payload = {
-      data: [
-        {
-          Last_Name: d.name || `Cliente WhatsApp ${String(phone).slice(-4)}`,
-          Mobile: phone,
-          Lead_Source: "WhatsApp IA",
-          Company: "Activa Inversiones Lead",
-          Description: `Producto: ${d.product} | Medidas: ${d.measures} | Vidrio: ${d.glass} | Instalación: ${d.install} | Comuna/Dirección: ${d.address || d.comuna} | Notas: ${d.notes || ""}`,
-        },
-      ],
-      duplicate_check_fields: ["Mobile"],
-      trigger: ["workflow"],
-    };
-
-    const r = await axios.post(url, payload, {
+    const r = await axios.get(url, {
       headers: { Authorization: `Zoho-oauthtoken ${token}` },
       timeout: 15000,
     });
 
-    console.log("✅ Zoho upsert", r.data?.data?.[0]?.code || "SUCCESS");
+    const id = r.data?.data?.[0]?.id;
+    return id || null;
+  } catch (e) {
+    const status = e?.response?.status;
+    // Zoho cuando no hay registros suele devolver 204
+    if (status === 204) return null;
+    return null;
+  }
+}
+
+async function zohoCreateLead(payload) {
+  const token = await getZohoToken();
+  const url = `${ZOHO.API_DOMAIN}/crm/v2/Leads`;
+
+  const r = await axios.post(
+    url,
+    { data: [payload], trigger: ["workflow"] },
+    { headers: { Authorization: `Zoho-oauthtoken ${token}` }, timeout: 15000 }
+  );
+
+  return r.data;
+}
+
+async function zohoUpdateLead(id, payload) {
+  const token = await getZohoToken();
+  const url = `${ZOHO.API_DOMAIN}/crm/v2/Leads/${id}`;
+
+  const r = await axios.put(
+    url,
+    { data: [payload], trigger: ["workflow"] },
+    { headers: { Authorization: `Zoho-oauthtoken ${token}` }, timeout: 15000 }
+  );
+
+  return r.data;
+}
+
+async function zohoUpsertLead(d, phone, retries = 1) {
+  if (!REQUIRE_ZOHO) return;
+
+  const phoneE164 = normalizeCLPhone(phone);
+  if (!phoneE164) return;
+
+  const leadPayload = {
+    Last_Name: d.name || `Cliente WhatsApp ${String(phone).slice(-4)}`,
+    Mobile: phoneE164,
+    Lead_Source: "WhatsApp IA",
+    Company: "Activa Inversiones Lead",
+    Description:
+      `Producto: ${d.product || ""} | Medidas: ${d.measures || ""} | Vidrio: ${d.glass || ""} | ` +
+      `Instalación: ${d.install || ""} | Comuna/Dirección: ${d.address || d.comuna || ""} | ` +
+      `Notas: ${d.notes || ""}`,
+  };
+
+  try {
+    const existingId = await zohoFindLeadIdByMobile(phoneE164);
+
+    if (existingId) {
+      await zohoUpdateLead(existingId, leadPayload);
+      console.log("✅ Zoho UPDATE lead", existingId, phoneE164);
+    } else {
+      const created = await zohoCreateLead(leadPayload);
+      const newId = created?.data?.[0]?.details?.id || "CREATED";
+      console.log("✅ Zoho CREATE lead", newId, phoneE164);
+    }
   } catch (e) {
     const status = e?.response?.status;
     if (status === 401 && retries > 0) {
@@ -776,8 +835,19 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // Zoho (async)
-    zohoUpsertLead(session.data, waId).catch(() => {});
+  // Zoho (async) — solo si hay datos útiles (evita spam)
+const hasUsefulData =
+  session.data.product ||
+  session.data.measures ||
+  session.data.comuna ||
+  session.data.address ||
+  session.data.glass ||
+  session.data.install;
+
+if (hasUsefulData) {
+  zohoUpsertLead(session.data, waId).catch(() => {});
+}
+
 
     // PDF saliente
     const complete = isComplete(session.data);
