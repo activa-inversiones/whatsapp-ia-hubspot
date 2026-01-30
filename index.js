@@ -52,6 +52,7 @@ const ZOHO = {
   CLIENT_ID: process.env.ZOHO_CLIENT_ID,
   CLIENT_SECRET: process.env.ZOHO_CLIENT_SECRET,
   REFRESH_TOKEN: process.env.ZOHO_REFRESH_TOKEN,
+  REDIRECT_URI: process.env.ZOHO_REDIRECT_URI, // 👈 agrega esto
   API_DOMAIN: process.env.ZOHO_API_DOMAIN || "https://www.zohoapis.com",
   ACCOUNTS_DOMAIN: process.env.ZOHO_ACCOUNTS_DOMAIN || "https://accounts.zoho.com",
 };
@@ -557,6 +558,85 @@ async function zohoUpsertLead(d, phone, retries = 1) {
 
 // ---------- Routes ----------
 app.get("/health", (req, res) => res.status(200).send("ok"));
+// ===== ZOHO AUTH / CALLBACK / TEST =====
+app.get("/zoho/auth", (req, res) => {
+  if (!ZOHO.CLIENT_ID || !ZOHO.CLIENT_SECRET || !ZOHO.REDIRECT_URI) {
+    return res.status(500).send("Faltan env Zoho: ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET / ZOHO_REDIRECT_URI");
+  }
+
+  const scope = encodeURIComponent("ZohoCRM.modules.ALL,ZohoCRM.users.ALL");
+  const url =
+    `${ZOHO.ACCOUNTS_DOMAIN}/oauth/v2/auth` +
+    `?scope=${scope}` +
+    `&client_id=${encodeURIComponent(ZOHO.CLIENT_ID)}` +
+    `&response_type=code` +
+    `&access_type=offline` +
+    `&prompt=consent` +
+    `&redirect_uri=${encodeURIComponent(ZOHO.REDIRECT_URI)}`;
+
+  return res.redirect(url);
+});
+
+app.get("/zoho/callback", async (req, res) => {
+  try {
+    const code = req.query.code;
+    if (!code) return res.status(400).send("Falta ?code en callback");
+
+    const params = new URLSearchParams();
+    params.set("grant_type", "authorization_code");
+    params.set("client_id", ZOHO.CLIENT_ID);
+    params.set("client_secret", ZOHO.CLIENT_SECRET);
+    params.set("redirect_uri", ZOHO.REDIRECT_URI);
+    params.set("code", code);
+
+    const tokenUrl = `${ZOHO.ACCOUNTS_DOMAIN}/oauth/v2/token`;
+    const { data } = await axios.post(tokenUrl, params, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      timeout: 15000,
+    });
+
+    return res.status(200).json({
+      ok: true,
+      got_refresh_token: Boolean(data.refresh_token),
+      refresh_token: data.refresh_token || null,
+      access_token_preview: data.access_token ? data.access_token.slice(0, 8) + "..." : null,
+      msg: "Copia refresh_token y pégalo en Railway como ZOHO_REFRESH_TOKEN",
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e?.response?.data || e.message });
+  }
+});
+
+app.get("/zoho/test", async (req, res) => {
+  try {
+    if (!ZOHO.REFRESH_TOKEN) return res.status(400).send("Falta ZOHO_REFRESH_TOKEN. Primero /zoho/auth");
+
+    const tokenUrl = `${ZOHO.ACCOUNTS_DOMAIN}/oauth/v2/token`;
+    const params = new URLSearchParams();
+    params.set("grant_type", "refresh_token");
+    params.set("client_id", ZOHO.CLIENT_ID);
+    params.set("client_secret", ZOHO.CLIENT_SECRET);
+    params.set("refresh_token", ZOHO.REFRESH_TOKEN);
+
+    const { data: t } = await axios.post(tokenUrl, params, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      timeout: 15000,
+    });
+
+    const access = t.access_token;
+    const url = `${ZOHO.API_DOMAIN}/crm/v2/users?type=CurrentUser`;
+
+    const { data } = await axios.get(url, {
+      headers: { Authorization: `Zoho-oauthtoken ${access}` },
+      timeout: 15000,
+    });
+
+    res.json({ ok: true, data });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.response?.data || e.message });
+  }
+});
+
 
 // Webhook verification
 app.get("/webhook", (req, res) => {
