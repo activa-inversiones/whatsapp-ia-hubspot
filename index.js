@@ -1,74 +1,66 @@
-// index.js — WhatsApp IA + PDF + Zoho (Production-Ready)
+// index.js — WhatsApp IA (OpenAI Tools) + PDF + Zoho CRM
+// Ferrari 2.1 — Stable / Anti-dup / TTL / RateLimit / Signature OK
 // Node 18+ | Railway | ESM
+
 import express from "express";
 import axios from "axios";
 import dotenv from "dotenv";
 import crypto from "crypto";
 import FormData from "form-data";
 import PDFDocument from "pdfkit";
-import { OpenAI } from "openai";
+import OpenAI from "openai";
 
 dotenv.config();
 
 const app = express();
 
-// ===== Meta sends JSON =====
-app.use(express.json({ limit: "5mb" }));
+// ============ Raw body for Meta signature ============
+app.use(
+  express.json({
+    limit: "5mb",
+    verify: (req, res, buf) => {
+      req.rawBody = buf; // Buffer
+    },
+  })
+);
 
-// =====================
-// ENV
-// =====================
+// ============ ENV ============
 const PORT = process.env.PORT || 8080;
 const TZ = process.env.TZ || "America/Santiago";
 
 const META = {
-  GRAPH_VERSION: process.env.META_GRAPH_VERSION || "v24.0",
+  GRAPH_VERSION: process.env.META_GRAPH_VERSION || "v22.0",
   TOKEN: process.env.WHATSAPP_TOKEN,
-  PHONE_NUMBER_ID: process.env.PHONE_NUMBER_ID || process.env.PHONE_NUMBER_ID_FALLBACK,
+  PHONE_NUMBER_ID: process.env.PHONE_NUMBER_ID,
   VERIFY_TOKEN: process.env.VERIFY_TOKEN,
-  APP_SECRET: process.env.APP_SECRET || "", // optional (recommended)
+  APP_SECRET: process.env.APP_SECRET || "", // opcional
 };
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const AI_MODEL_TEXT = process.env.AI_MODEL_OPENAI || "gpt-4.1-mini";
+const AI_MODEL = process.env.AI_MODEL_OPENAI || "gpt-4o-mini";
 
-const FEATURES = {
-  TYPING_SIMULATION: String(process.env.TYPING_SIMULATION || "true") === "true",
-  TYPING_MIN_MS: Number(process.env.TYPING_MIN_MS || 500),
-  TYPING_MAX_MS: Number(process.env.TYPING_MAX_MS || 1600),
-  WAIT_AFTER_LAST_USER_MESSAGE_MS: Number(process.env.WAIT_AFTER_LAST_USER_MESSAGE_MS || 900),
-  ENABLE_PDF_QUOTES: String(process.env.ENABLE_PDF_QUOTES || "true") === "true",
-  AUTO_SEND_PDF_WHEN_READY: String(process.env.AUTO_SEND_PDF_WHEN_READY || "true") === "true",
-  DONT_SHOW_PRICES_IN_CHAT: String(process.env.DONT_SHOW_PRICES_IN_CHAT || "true") === "true",
-};
-
-// Zoho
+// Zoho (opcional: puedes desactivar con REQUIRE_ZOHO=false)
+const REQUIRE_ZOHO = String(process.env.REQUIRE_ZOHO || "true") === "true";
 const ZOHO = {
   CLIENT_ID: process.env.ZOHO_CLIENT_ID,
   CLIENT_SECRET: process.env.ZOHO_CLIENT_SECRET,
   REFRESH_TOKEN: process.env.ZOHO_REFRESH_TOKEN,
-  REDIRECT_URI: process.env.ZOHO_REDIRECT_URI, // recomendado aunque refresh no siempre lo exige
-  DC: process.env.ZOHO_DC || "com",
   API_DOMAIN: process.env.ZOHO_API_DOMAIN || "https://www.zohoapis.com",
   ACCOUNTS_DOMAIN: process.env.ZOHO_ACCOUNTS_DOMAIN || "https://accounts.zoho.com",
 };
 
-// =====================
-// HARD FAIL if missing critical env
-// =====================
+// ============ Guard: ENV ============
 function assertEnv() {
   const missing = [];
   if (!META.TOKEN) missing.push("WHATSAPP_TOKEN");
   if (!META.PHONE_NUMBER_ID) missing.push("PHONE_NUMBER_ID");
   if (!META.VERIFY_TOKEN) missing.push("VERIFY_TOKEN");
   if (!OPENAI_API_KEY) missing.push("OPENAI_API_KEY");
-
-  // Zoho is optional at runtime (you can run bot without Zoho),
-  // but you already want it connected, so we validate it too:
-  if (!ZOHO.CLIENT_ID) missing.push("ZOHO_CLIENT_ID");
-  if (!ZOHO.CLIENT_SECRET) missing.push("ZOHO_CLIENT_SECRET");
-  if (!ZOHO.REFRESH_TOKEN) missing.push("ZOHO_REFRESH_TOKEN");
-
+  if (REQUIRE_ZOHO) {
+    if (!ZOHO.CLIENT_ID) missing.push("ZOHO_CLIENT_ID");
+    if (!ZOHO.CLIENT_SECRET) missing.push("ZOHO_CLIENT_SECRET");
+    if (!ZOHO.REFRESH_TOKEN) missing.push("ZOHO_REFRESH_TOKEN");
+  }
   if (missing.length) {
     console.error("[FATAL] Missing ENV:", missing.join(", "));
     process.exit(1);
@@ -76,141 +68,326 @@ function assertEnv() {
 }
 assertEnv();
 
-// =====================
-// OpenAI client
-// =====================
+// ============ OpenAI ============
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// =====================
-// Bot profile (EDITABLE)
-// =====================
-// Aquí cambias “cómo habla”, tono, reglas, etc.
-const BOT_PROFILE = `
-Eres el asistente comercial de Activa Inversiones (ventanas/puertas PVC y aluminio en Temuco y La Araucanía).
-Objetivo: atender rápido, humano y técnico, y cerrar visita/medición o enviar cotización PDF.
+// ============ WhatsApp base ============
+const waBase = () => `https://graph.facebook.com/${META.GRAPH_VERSION}/${META.PHONE_NUMBER_ID}`;
 
-REGLAS DE COMUNICACIÓN:
-- Responde corto (1–4 líneas). Nada de discursos.
-- No repitas preguntas si ya tienes el dato.
-- Si el cliente pide “PDF”, envía PDF si tienes: producto + medidas + comuna/dirección + teléfono.
-- No muestres precios en el chat. Si preguntan por precio: “Te lo envío en PDF para que quede formal”.
-- Prioriza: (1) confirmar producto y medidas, (2) comuna/dirección, (3) teléfono, (4) correo solo si es necesario.
-- Si ya tienes teléfono (viene por WhatsApp), no lo pidas.
-- Si el usuario pide visita: agenda (día/horario) y confirma dirección.
-- Sé técnico cuando corresponde: U-value, Low-E, termopanel, herrajes, etc., pero siempre breve.
+async function waSendText(to, text) {
+  const url = `${waBase()}/messages`;
+  const payload = { messaging_product: "whatsapp", to, type: "text", text: { body: text } };
+  try {
+    const r = await axios.post(url, payload, {
+      headers: { Authorization: `Bearer ${META.TOKEN}` },
+      timeout: 15000,
+    });
+    console.log("✅ WA send text", r.status, to);
+  } catch (e) {
+    console.error("❌ WA send text FAIL", e?.response?.status, e?.response?.data || e.message);
+    throw e;
+  }
+}
 
-DATOS QUE DEBES CAPTURAR (solo si faltan):
-1) comuna o dirección
-2) tipo de producto y apertura
-3) medidas (ancho x alto)
-4) vidrio (normal / termopanel / Low-E)
-5) instalación (sí/no) y si es obra nueva o recambio
+async function waUploadPdf(buffer, filename = "Cotizacion_Activa.pdf") {
+  const url = `${waBase()}/media`;
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("file", buffer, { filename, contentType: "application/pdf" });
 
-FORMATO:
-- Haz 1 pregunta a la vez.
-- Si falta algo, pregunta SOLO lo que falta.
-`;
+  try {
+    const r = await axios.post(url, form, {
+      headers: { Authorization: `Bearer ${META.TOKEN}`, ...form.getHeaders() },
+      maxBodyLength: Infinity,
+      timeout: 30000,
+    });
+    console.log("✅ WA upload pdf", r.status, r.data?.id);
+    return r.data.id;
+  } catch (e) {
+    console.error("❌ WA upload pdf FAIL", e?.response?.status, e?.response?.data || e.message);
+    throw e;
+  }
+}
 
-// =====================
-// In-memory session store (simple + efectivo)
-// =====================
+async function waSendPdfById(to, mediaId, caption) {
+  const url = `${waBase()}/messages`;
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "document",
+    document: { id: mediaId, filename: "Cotizacion_Activa.pdf", caption },
+  };
+  try {
+    const r = await axios.post(url, payload, {
+      headers: { Authorization: `Bearer ${META.TOKEN}` },
+      timeout: 20000,
+    });
+    console.log("✅ WA send pdf", r.status, to, mediaId);
+  } catch (e) {
+    console.error("❌ WA send pdf FAIL", e?.response?.status, e?.response?.data || e.message);
+    throw e;
+  }
+}
+
+// ============ Meta Signature ============
+function verifyMetaSignature(req) {
+  if (!META.APP_SECRET) return true;
+  const sig = req.get("X-Hub-Signature-256") || req.get("x-hub-signature-256");
+  if (!sig) return false;
+  if (!req.rawBody || !Buffer.isBuffer(req.rawBody)) return false;
+
+  const expected =
+    "sha256=" + crypto.createHmac("sha256", META.APP_SECRET).update(req.rawBody).digest("hex");
+
+  try {
+    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+  } catch {
+    return false;
+  }
+}
+
+// ============ Sessions + TTL cleanup ============
 const sessions = new Map();
-// session shape:
-// { lastUserAt, data: {name?, address?, comuna?, email?, product?, measures?, glass?, install?}, lastBotMsg, pdfSent }
+const SESSION_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
+const MAX_SESSIONS = 10000;
 
 function getSession(waId) {
   if (!sessions.has(waId)) {
-    sessions.set(waId, { lastUserAt: 0, data: {}, lastBotMsg: "", pdfSent: false });
+    sessions.set(waId, {
+      lastUserAt: Date.now(),
+      data: {
+        name: "",
+        product: "",
+        measures: "",
+        address: "",
+        comuna: "",
+        glass: "",
+        install: "",
+        wants_pdf: false,
+      },
+      history: [],
+      pdfSent: false,
+    });
   }
   return sessions.get(waId);
 }
 
-function now() {
-  return Date.now();
-}
+function cleanupSessions() {
+  const cutoff = Date.now() - SESSION_TTL_MS;
+  let deleted = 0;
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-// typing simulation (no “typing indicator” oficial; hacemos delay realista)
-async function simulateTyping() {
-  if (!FEATURES.TYPING_SIMULATION) return;
-  const ms =
-    FEATURES.TYPING_MIN_MS +
-    Math.floor(Math.random() * (FEATURES.TYPING_MAX_MS - FEATURES.TYPING_MIN_MS + 1));
-  await sleep(ms);
-}
-
-// =====================
-// WhatsApp helpers
-// =====================
-const graphBase = `https://graph.facebook.com/${META.GRAPH_VERSION}/${META.PHONE_NUMBER_ID}`;
-
-async function waMarkRead(messageId) {
-  try {
-    await axios.post(
-      `${graphBase}/messages`,
-      { messaging_product: "whatsapp", status: "read", message_id: messageId },
-      { headers: { Authorization: `Bearer ${META.TOKEN}` } }
-    );
-  } catch (e) {
-    console.warn("[WA] mark_read failed:", e?.response?.data || e.message);
+  for (const [waId, s] of sessions.entries()) {
+    if ((s.lastUserAt || 0) < cutoff) {
+      sessions.delete(waId);
+      deleted++;
+    }
   }
+
+  if (sessions.size > MAX_SESSIONS) {
+    const sorted = [...sessions.entries()].sort((a, b) => (a[1].lastUserAt || 0) - (b[1].lastUserAt || 0));
+    const toDelete = sorted.slice(0, sessions.size - MAX_SESSIONS);
+    for (const [waId] of toDelete) {
+      sessions.delete(waId);
+      deleted++;
+    }
+  }
+
+  if (deleted) console.log(`🧹 sessions cleaned: ${deleted}`);
+}
+setInterval(cleanupSessions, 60 * 60 * 1000);
+
+// ============ Dedupe by msgId (Meta retries) ============
+const processedMsgIds = new Map(); // msgId -> ts
+const MSGID_TTL_MS = 2 * 60 * 60 * 1000; // 2 horas
+
+function isDuplicateMsg(msgId) {
+  if (!msgId) return false;
+  const now = Date.now();
+  const ts = processedMsgIds.get(msgId);
+  if (ts && now - ts < MSGID_TTL_MS) return true;
+  processedMsgIds.set(msgId, now);
+  return false;
 }
 
-async function waSendText(to, text) {
-  await axios.post(
-    `${graphBase}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body: text },
-    },
-    { headers: { Authorization: `Bearer ${META.TOKEN}` } }
-  );
+setInterval(() => {
+  const cutoff = Date.now() - MSGID_TTL_MS;
+  for (const [id, ts] of processedMsgIds.entries()) {
+    if (ts < cutoff) processedMsgIds.delete(id);
+  }
+}, 10 * 60 * 1000);
+
+// ============ Per-waId lock (anti race condition) ============
+const locks = new Map(); // waId -> Promise
+
+async function acquireLock(waId, timeoutMs = 30000) {
+  if (locks.has(waId)) {
+    await locks.get(waId);
+  }
+  let release;
+  const p = new Promise((r) => (release = r));
+  const t = setTimeout(() => {
+    release?.();
+    locks.delete(waId);
+  }, timeoutMs);
+
+  locks.set(waId, p);
+
+  return () => {
+    clearTimeout(t);
+    release?.();
+    locks.delete(waId);
+  };
 }
 
-async function waUploadMedia(buffer, filename, mimeType) {
-  const form = new FormData();
-  form.append("messaging_product", "whatsapp");
-  form.append("file", buffer, { filename, contentType: mimeType });
+// ============ Rate limit (simple) ============
+const rate = new Map(); // waId -> {count, resetAt}
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 10;
 
-  const res = await axios.post(`${graphBase}/media`, form, {
-    headers: { Authorization: `Bearer ${META.TOKEN}`, ...form.getHeaders() },
-    maxBodyLength: Infinity,
+function checkRate(waId) {
+  const now = Date.now();
+  if (!rate.has(waId)) {
+    rate.set(waId, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return { allowed: true };
+  }
+  const r = rate.get(waId);
+  if (now >= r.resetAt) {
+    r.count = 1;
+    r.resetAt = now + RATE_WINDOW_MS;
+    return { allowed: true };
+  }
+  r.count++;
+  if (r.count > RATE_MAX) {
+    const resetIn = Math.ceil((r.resetAt - now) / 1000);
+    return { allowed: false, msg: `Has enviado muchos mensajes. Espera ${resetIn}s y continuamos.` };
+  }
+  return { allowed: true };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [waId, r] of rate.entries()) {
+    if (now > r.resetAt + RATE_WINDOW_MS) rate.delete(waId);
+  }
+}, 5 * 60 * 1000);
+
+// ============ Webhook payload validation ============
+function extractIncoming(reqBody) {
+  const entry = reqBody?.entry?.[0];
+  const changes = entry?.changes?.[0];
+  const value = changes?.value;
+
+  // Ignorar statuses
+  if (value?.statuses?.length) return { ok: false, reason: "status_update" };
+
+  const msg = value?.messages?.[0];
+  if (!msg) return { ok: false, reason: "no_message" };
+  if (!msg.from || !msg.id || !msg.type) return { ok: false, reason: "incomplete_message" };
+
+  // Texto (si no es texto, igual lo registramos)
+  let text = "";
+  if (msg.type === "text") text = msg.text?.body || "";
+  else if (msg.type === "button") text = msg.button?.text || "";
+  else if (msg.type === "interactive") text = JSON.stringify(msg.interactive || {});
+  else text = `[${msg.type}]`;
+
+  return { ok: true, waId: msg.from, msgId: msg.id, text, type: msg.type };
+}
+
+// ============ OpenAI Tools ============
+const tools = [
+  {
+    type: "function",
+    function: {
+      name: "update_customer_data",
+      description: "Actualiza datos del cliente para cotización/visita (ventanas/puertas).",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          product: { type: "string" },
+          measures: { type: "string" },
+          address: { type: "string" },
+          comuna: { type: "string" },
+          glass: { type: "string" },
+          install: { type: "string", enum: ["Si", "No"] },
+          wants_pdf: { type: "boolean" }
+        },
+        required: []
+      }
+    }
+  }
+];
+
+const SYSTEM_PROMPT = `
+Eres el asistente comercial de Activa Inversiones (Temuco / La Araucanía) para ventanas y puertas PVC/Aluminio.
+Objetivo: cerrar visita/medición o enviar PDF referencial.
+
+Reglas:
+- Responde breve (1–4 líneas) y humano.
+- NO entregues precios por chat. Si preguntan precio: "Te lo envío en PDF formal".
+- Si el cliente entrega datos (producto, medidas, comuna/dirección, vidrio, instalación), llama la tool update_customer_data.
+- Si falta info para PDF, pide SOLO 1 dato a la vez (el más importante).
+- Si ya tienes el dato, NO lo vuelvas a pedir.
+`;
+
+// Completo mínimo para PDF
+function isComplete(d) {
+  return !!(d.product && d.measures && (d.address || d.comuna) && d.glass && d.install);
+}
+
+// ============ PDF ============
+function createPdf(data) {
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument({ size: "A4", margin: 48 });
+      const chunks = [];
+      doc.on("data", (c) => chunks.push(c));
+      doc.on("error", (e) => reject(e));
+      doc.on("end", () => {
+        const buf = Buffer.concat(chunks);
+        if (buf.length < 200) return reject(new Error("PDF demasiado pequeño"));
+        resolve(buf);
+      });
+
+      doc.fontSize(18).text("Cotización Referencial — Activa Inversiones");
+      doc.moveDown(0.5);
+      doc.fontSize(10).fillColor("#444").text(`Fecha: ${new Date().toLocaleString("es-CL", { timeZone: TZ })}`);
+      doc.moveDown();
+
+      doc.fillColor("#000").fontSize(12).text("Cliente");
+      doc.fontSize(11);
+      doc.text(`Nombre: ${data.name || "—"}`);
+      doc.text(`Comuna/Dirección: ${data.address || data.comuna || "—"}`);
+      doc.text(`Teléfono: (WhatsApp)`);
+      doc.moveDown();
+
+      doc.fontSize(12).text("Solicitud");
+      doc.fontSize(11);
+      doc.text(`Producto: ${data.product || "—"}`);
+      doc.text(`Medidas: ${data.measures || "—"}`);
+      doc.text(`Vidrio: ${data.glass || "—"}`);
+      doc.text(`Instalación: ${data.install || "—"}`);
+
+      doc.moveDown();
+      doc.fontSize(10).fillColor("#444").text(
+        "Nota: Valores y plazos se confirman tras visita/medición. Documento referencial generado automáticamente."
+      );
+
+      doc.end();
+    } catch (e) {
+      reject(e);
+    }
   });
-
-  return res.data.id;
 }
 
-async function waSendDocumentById(to, mediaId, filename, caption) {
-  await axios.post(
-    `${graphBase}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "document",
-      document: {
-        id: mediaId,
-        filename,
-        caption: caption || undefined,
-      },
-    },
-    { headers: { Authorization: `Bearer ${META.TOKEN}` } }
-  );
-}
+// ============ Zoho ============
+let zohoCache = { token: "", expiresAt: 0 };
 
-// =====================
-// Zoho token (refresh)
-// =====================
-let zohoAccessToken = "";
-let zohoExpiresAt = 0;
-
-async function getZohoAccessToken() {
-  const safetyMs = 60_000;
-  if (zohoAccessToken && now() < zohoExpiresAt - safetyMs) return zohoAccessToken;
+async function getZohoToken() {
+  if (!REQUIRE_ZOHO) return "";
+  const now = Date.now();
+  if (zohoCache.token && now < zohoCache.expiresAt) return zohoCache.token;
 
   const url = `${ZOHO.ACCOUNTS_DOMAIN}/oauth/v2/token`;
   const params = new URLSearchParams();
@@ -221,300 +398,211 @@ async function getZohoAccessToken() {
 
   const { data } = await axios.post(url, params.toString(), {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    timeout: 15000,
   });
 
-  if (!data.access_token) throw new Error(`Zoho token response missing access_token: ${JSON.stringify(data)}`);
-
-  zohoAccessToken = data.access_token;
-  const expiresInSec = Number(data.expires_in || 3600);
-  zohoExpiresAt = now() + expiresInSec * 1000;
-
-  console.log("ZOHO_TOKEN_OK expiresIn", expiresInSec);
-  return zohoAccessToken;
+  if (!data.access_token) throw new Error("Zoho no devolvió access_token");
+  const expiresIn = Number(data.expires_in || 3600);
+  zohoCache.token = data.access_token;
+  zohoCache.expiresAt = now + expiresIn * 1000 - 60_000;
+  console.log("🔄 Zoho token OK", expiresIn);
+  return zohoCache.token;
 }
 
-// Minimal example: create/update Lead (puedes ampliar después)
-async function zohoUpsertLead({ name, phone, email, address, notes }) {
+async function zohoUpsertLead(d, phone, retries = 1) {
+  if (!REQUIRE_ZOHO) return;
   try {
-    const token = await getZohoAccessToken();
+    const token = await getZohoToken();
     const url = `${ZOHO.API_DOMAIN}/crm/v2/Leads/upsert`;
     const payload = {
       data: [
         {
-          Last_Name: name || phone || "Lead WhatsApp",
+          Last_Name: d.name || `Cliente WhatsApp ${String(phone).slice(-4)}`,
           Mobile: phone,
-          Email: email || undefined,
-          Street: address || undefined,
-          Description: notes || undefined,
+          Lead_Source: "WhatsApp IA",
+          Company: "Activa Inversiones Lead",
+          Description: `Producto: ${d.product} | Medidas: ${d.measures} | Vidrio: ${d.glass} | Instalación: ${d.install} | Comuna/Dirección: ${d.address || d.comuna}`,
         },
       ],
-      duplicate_check_fields: ["Mobile", "Email"],
+      duplicate_check_fields: ["Mobile"],
+      trigger: ["workflow"],
     };
 
-    const { data } = await axios.post(url, payload, {
+    const r = await axios.post(url, payload, {
       headers: { Authorization: `Zoho-oauthtoken ${token}` },
+      timeout: 15000,
     });
 
-    return data;
+    console.log("✅ Zoho upsert", r.data?.data?.[0]?.code);
   } catch (e) {
-    console.warn("[ZOHO] upsert lead failed:", e?.response?.data || e.message);
-    return null;
+    const status = e?.response?.status;
+    if (status === 401 && retries > 0) {
+      console.warn("🔁 Zoho 401 retry");
+      zohoCache = { token: "", expiresAt: 0 };
+      await new Promise((r) => setTimeout(r, 500));
+      return zohoUpsertLead(d, phone, retries - 1);
+    }
+    console.warn("⚠️ Zoho upsert fail", status, e?.response?.data || e.message);
   }
 }
 
-// =====================
-// PDF generation
-// =====================
-function buildQuotePdfBuffer({ customerName, phone, address, product, measures, glass, install }) {
-  return new Promise((resolve) => {
-    const doc = new PDFDocument({ size: "A4", margin: 48 });
-    const chunks = [];
-    doc.on("data", (c) => chunks.push(c));
-    doc.on("end", () => resolve(Buffer.concat(chunks)));
-
-    doc.fontSize(18).text("Cotización Referencial — Activa Inversiones", { align: "left" });
-    doc.moveDown(0.5);
-    doc.fontSize(10).fillColor("#444").text(`Fecha: ${new Date().toLocaleString("es-CL", { timeZone: TZ })}`);
-    doc.moveDown();
-
-    doc.fillColor("#000").fontSize(12).text("Datos del cliente");
-    doc.moveDown(0.3);
-    doc.fontSize(11);
-    doc.text(`Nombre: ${customerName || "-"}`);
-    doc.text(`Teléfono: ${phone || "-"}`);
-    doc.text(`Dirección/Comuna: ${address || "-"}`);
-
-    doc.moveDown();
-    doc.fontSize(12).text("Detalle técnico solicitado");
-    doc.moveDown(0.3);
-    doc.fontSize(11);
-    doc.text(`Producto: ${product || "-"}`);
-    doc.text(`Medidas: ${measures || "-"}`);
-    doc.text(`Vidrio: ${glass || "-"}`);
-    doc.text(`Instalación: ${install || "-"}`);
-
-    doc.moveDown();
-    doc.fontSize(10).fillColor("#444").text(
-      "Nota: Valores finales y plazos se confirman tras visita/medición. Documento generado automáticamente para formalizar la solicitud."
-    );
-
-    doc.end();
-  });
-}
-
-// =====================
-// AI Orchestration
-// =====================
-function extractQuickFacts(text) {
-  const t = (text || "").toLowerCase();
-
-  const wantsPdf = /\bpdf\b/.test(t) || /cotiz/.test(t);
-  const wantsVisit = /visita|medici|levantamiento|agendar/.test(t);
-
-  return { wantsPdf, wantsVisit };
-}
-
-function missingFields(s) {
-  const d = s.data || {};
-  // teléfono viene de WhatsApp (waId), así que no lo pedimos como “campo”
-  const missing = [];
-  if (!d.product) missing.push("product");
-  if (!d.measures) missing.push("measures");
-  if (!d.glass) missing.push("glass");
-  if (!d.address && !d.comuna) missing.push("address");
-  if (!d.install) missing.push("install");
-  return missing;
-}
-
-async function aiReply({ waId, userText, session }) {
-  const d = session.data;
-
+// ============ AI Orchestration ============
+async function runAI(session, userText) {
   const messages = [
-    { role: "system", content: BOT_PROFILE.trim() },
-    {
-      role: "system",
-      content:
-        `Contexto (memoria corta): ${JSON.stringify(d)}\n` +
-        `Regla: No repitas datos ya presentes. Si falta algo, pregunta SOLO 1 cosa.`,
-    },
+    { role: "system", content: SYSTEM_PROMPT.trim() },
+    { role: "system", content: `Memoria: ${JSON.stringify(session.data)}` },
+    ...session.history.slice(-6),
     { role: "user", content: userText },
   ];
 
-  const resp = await openai.chat.completions.create({
-    model: AI_MODEL_TEXT,
-    messages,
-    temperature: 0.3,
-  });
+  try {
+    const resp = await openai.chat.completions.create({
+      model: AI_MODEL,
+      messages,
+      tools,
+      tool_choice: "auto",
+      temperature: 0.3,
+      max_tokens: 350,
+      timeout: 15000,
+    });
 
-  return (resp.choices?.[0]?.message?.content || "").trim();
+    const msg = resp.choices?.[0]?.message;
+    return msg || { role: "assistant", content: "Disculpa, ¿me repites tu consulta?" };
+  } catch (e) {
+    console.error("❌ OpenAI error", e.message);
+    return { role: "assistant", content: "Tuve un problema técnico. ¿Me confirmas solo medidas (ancho x alto) y comuna?" };
+  }
 }
 
-// =====================
-// Signature verification (optional, but recommended)
-// =====================
-function verifyMetaSignature(req) {
-  if (!META.APP_SECRET) return true; // not enabled
-  const signature = req.get("X-Hub-Signature-256");
-  if (!signature) return false;
-
-  const expected =
-    "sha256=" +
-    crypto.createHmac("sha256", META.APP_SECRET).update(JSON.stringify(req.body)).digest("hex");
-
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
-}
-
-// =====================
-// Routes
-// =====================
+// ============ Routes ============
 app.get("/health", (req, res) => res.status(200).send("ok"));
 
-app.get("/zoho/test", async (req, res) => {
-  try {
-    const token = await getZohoAccessToken();
-    // example call: users (simple sanity)
-    const { data } = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/users?type=CurrentUser`, {
-      headers: { Authorization: `Zoho-oauthtoken ${token}` },
-    });
-    res.json({ ok: true, api_domain: ZOHO.API_DOMAIN, expires_in: Math.floor((zohoExpiresAt - now()) / 1000), sample: data });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e?.response?.data || e.message });
-  }
-});
-
-// Webhook verification
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token === META.VERIFY_TOKEN) {
-    console.log("WEBHOOK_VERIFY_OK");
-    return res.status(200).send(challenge);
-  }
-  console.log("WEBHOOK_VERIFY_FAIL");
+  if (mode === "subscribe" && token === META.VERIFY_TOKEN) return res.status(200).send(challenge);
   return res.sendStatus(403);
 });
 
-// Webhook receiver
 app.post("/webhook", async (req, res) => {
-  // Always respond quickly
+  // ACK inmediato
   res.sendStatus(200);
 
+  // Firma (si está activa)
+  if (!verifyMetaSignature(req)) {
+    console.warn("⚠️ META signature fail");
+    return;
+  }
+
+  const incoming = extractIncoming(req.body);
+  if (!incoming.ok) {
+    if (incoming.reason !== "status_update") console.log("⏭️ skip", incoming.reason);
+    return;
+  }
+
+  const { waId, msgId, text } = incoming;
+
+  // Dedupe por msgId (Meta retries)
+  if (isDuplicateMsg(msgId)) {
+    console.log("⏭️ duplicate msgId", msgId);
+    return;
+  }
+
+  // Rate limit
+  const r = checkRate(waId);
+  if (!r.allowed) {
+    await waSendText(waId, r.msg);
+    return;
+  }
+
+  // Lock por usuario (anti duplicados)
+  const release = await acquireLock(waId);
   try {
-    if (!verifyMetaSignature(req)) {
-      console.warn("META_SIGNATURE_FAIL");
-      return;
-    }
-
-    const entry = req.body?.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
-
-    const message = value?.messages?.[0];
-    if (!message) return;
-
-    const waId = message.from; // phone of user
-    const msgId = message.id;
-
-    const text =
-      message.type === "text" ? (message.text?.body || "") :
-      message.type === "button" ? (message.button?.text || "") :
-      message.type === "interactive" ? JSON.stringify(message.interactive) :
-      "[mensaje no-texto]";
-
     const session = getSession(waId);
-    session.lastUserAt = now();
+    session.lastUserAt = Date.now();
 
-    // mark read early (feels human)
-    await waMarkRead(msgId);
+    console.log("📩 IN", { waId, msgId, text });
 
-    // store some quick facts
-    // (aquí podrías meter extractores de dirección/medidas si quieres después)
-    const { wantsPdf, wantsVisit } = extractQuickFacts(text);
+    // AI (puede incluir tool_calls)
+    const aiMsg = await runAI(session, text);
 
-    // IMPORTANT: wait a bit to avoid “instant bot”
-    await sleep(FEATURES.WAIT_AFTER_LAST_USER_MESSAGE_MS);
-    await simulateTyping();
+    // Procesar tool calls (pueden venir varios)
+    let triggerPDF = false;
 
-    // Decide PDF flow
-    const miss = missingFields(session);
-    const haveEnoughForPdf = miss.length === 0;
+    if (aiMsg.tool_calls?.length) {
+      for (const tc of aiMsg.tool_calls) {
+        if (tc.type !== "function") continue;
+        if (tc.function?.name !== "update_customer_data") continue;
 
-    // If user asks PDF and we have everything, send PDF (and do not keep asking)
-    if (FEATURES.ENABLE_PDF_QUOTES && wantsPdf && haveEnoughForPdf && !session.pdfSent) {
-      const pdf = await buildQuotePdfBuffer({
-        customerName: session.data.name || "Cliente",
-        phone: waId,
-        address: session.data.address || session.data.comuna || "",
-        product: session.data.product,
-        measures: session.data.measures,
-        glass: session.data.glass,
-        install: session.data.install,
-      });
+        let args = {};
+        try {
+          args = JSON.parse(tc.function.arguments || "{}");
+        } catch {
+          args = {};
+        }
 
-      const mediaId = await waUploadMedia(pdf, "cotizacion.pdf", "application/pdf");
-      await waSendDocumentById(
-        waId,
-        mediaId,
-        "cotizacion.pdf",
-        "Adjunto PDF referencial. Si confirmas dirección y horario, coordinamos visita/medición."
-      );
+        session.data = { ...session.data, ...args };
+        if (args.wants_pdf === true) triggerPDF = true;
 
-      session.pdfSent = true;
+        // Respuesta “tool ack” para que el modelo continúe con texto final
+        const follow = await openai.chat.completions.create({
+          model: AI_MODEL,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT.trim() },
+            { role: "system", content: `Memoria: ${JSON.stringify(session.data)}` },
+            ...session.history.slice(-6),
+            { role: "user", content: text },
+            aiMsg,
+            { role: "tool", tool_call_id: tc.id, content: "OK, datos guardados." },
+          ],
+          temperature: 0.3,
+          max_tokens: 250,
+          timeout: 15000,
+        });
 
-      // Zoho upsert (opcional)
-      await zohoUpsertLead({
-        name: session.data.name,
-        phone: waId,
-        email: session.data.email,
-        address: session.data.address || session.data.comuna,
-        notes: `Solicitud PDF. Producto=${session.data.product} Medidas=${session.data.measures} Vidrio=${session.data.glass} Instalación=${session.data.install}`,
-      });
-
-      return;
-    }
-
-    // If wants visit: ask only address or schedule
-    if (wantsVisit) {
-      if (!session.data.address && !session.data.comuna) {
-        await waSendText(waId, "Perfecto. ¿Me confirmas la comuna y dirección exacta para coordinar la visita/medición?");
-        return;
+        const finalText = follow.choices?.[0]?.message?.content?.trim();
+        if (finalText) {
+          await waSendText(waId, finalText);
+          session.history.push({ role: "user", content: text });
+          session.history.push({ role: "assistant", content: finalText });
+        }
       }
-      await waSendText(waId, "Listo. ¿Qué día y rango horario te acomoda para la visita (mañana/tarde) en esa dirección?");
-      return;
+    } else {
+      // Respuesta normal
+      const reply = (aiMsg.content || "").trim();
+      if (reply) {
+        await waSendText(waId, reply);
+        session.history.push({ role: "user", content: text });
+        session.history.push({ role: "assistant", content: reply });
+      }
     }
 
-    // Otherwise use AI reply (short + non repetitive)
-    const reply = await aiReply({ waId, userText: text, session });
+    // Sincroniza Zoho (no bloqueante “perfecto”, pero aquí simple)
+    zohoUpsertLead(session.data, waId).catch(() => {});
 
-    // Safety: prevent repeating same bot message
-    if (reply && reply !== session.lastBotMsg) {
-      await waSendText(waId, reply);
-      session.lastBotMsg = reply;
+    // PDF: si completo y (lo pidió o triggerPDF), envía una sola vez
+    const complete = isComplete(session.data);
+    const askedPdf = /\bpdf\b/i.test(text) || /cotiz/i.test(text);
+    if (!session.pdfSent && complete && (triggerPDF || askedPdf)) {
+      await waSendText(waId, "Perfecto, ya tengo todo. Te envío el PDF referencial ahora.");
+      const pdf = await createPdf(session.data);
+      const mediaId = await waUploadPdf(pdf);
+      await waSendPdfById(waId, mediaId, "Aquí tienes tu cotización referencial 📄");
+      session.pdfSent = true;
     }
-
-    // Lightweight Zoho logging
-    await zohoUpsertLead({
-      name: session.data.name,
-      phone: waId,
-      email: session.data.email,
-      address: session.data.address || session.data.comuna,
-      notes: `Último mensaje: ${text}`,
-    });
   } catch (e) {
-    console.error("WEBHOOK_HANDLER_ERR:", e?.response?.data || e.message);
+    console.error("🔥 webhook error", e?.response?.data || e.message);
+  } finally {
+    release();
   }
 });
 
-// =====================
-// Boot
-// =====================
+// ============ Boot ============
 console.log(`SERVER_OK port=${PORT} tz=${TZ}`);
 console.log(`[INFO] META_VER=${META.GRAPH_VERSION}`);
-console.log(`[INFO] AI_MODEL_TEXT=${AI_MODEL_TEXT}`);
-console.log(`[INFO] TYPING_SIMULATION=${FEATURES.TYPING_SIMULATION}`);
+console.log(`[INFO] PHONE_NUMBER_ID=${META.PHONE_NUMBER_ID}`);
+console.log(`[INFO] MODEL=${AI_MODEL}`);
+console.log(`[INFO] REQUIRE_ZOHO=${REQUIRE_ZOHO}`);
 
-app.listen(PORT, () => {
-  console.log(`[INFO] Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Server activo en puerto ${PORT}`));
