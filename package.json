@@ -1,16 +1,21 @@
 {
-  "name": "whatsapp-ia-ferrari",
-  "version": "2.1.0",
+  "name": "whatsapp-ia-zoho-ferrari",
+  "version": "3.0.0",
   "type": "module",
   "main": "index.js",
-  "engines": { "node": ">=18" },
-  "scripts": { "start": "node index.js" },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
     "axios": "^1.7.9",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
     "form-data": "^4.0.1",
     "openai": "^4.73.1",
-    "pdfkit": "^0.15.0"
+    "pdfkit": "^0.15.0",
+    "pdf-parse": "^1.1.1"
   }
 }

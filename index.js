@@ -1,5 +1,5 @@
-// index.js — WhatsApp IA (OpenAI Tools) + PDF + Zoho CRM
-// Ferrari 2.2 — Stable / Anti-dup / TTL / RateLimit / Signature OK
+// index.js — WhatsApp IA (OpenAI Tools + Vision + Audio STT) + PDF Quotes + Zoho CRM
+// Ferrari 3.0 — Stable / Anti-dup / Locks / TTL / RateLimit / Media (audio+image+pdf)
 // Node 18+ | Railway | ESM
 
 import express from "express";
@@ -9,22 +9,27 @@ import crypto from "crypto";
 import FormData from "form-data";
 import PDFDocument from "pdfkit";
 import OpenAI from "openai";
+import { toFile } from "openai/uploads";
+import { createRequire } from "module";
 
 dotenv.config();
 
+const require = createRequire(import.meta.url);
+const pdfParse = require("pdf-parse"); // evita problemas ESM/default export
+
 const app = express();
 
-// ============ Raw body for Meta signature ============
+// ---------- Raw body para firma Meta ----------
 app.use(
   express.json({
-    limit: "5mb",
+    limit: "20mb",
     verify: (req, res, buf) => {
       req.rawBody = buf; // Buffer
     },
   })
 );
 
-// ============ ENV ============
+// ---------- ENV ----------
 const PORT = process.env.PORT || 8080;
 const TZ = process.env.TZ || "America/Santiago";
 
@@ -33,13 +38,15 @@ const META = {
   TOKEN: process.env.WHATSAPP_TOKEN,
   PHONE_NUMBER_ID: process.env.PHONE_NUMBER_ID,
   VERIFY_TOKEN: process.env.VERIFY_TOKEN,
-  APP_SECRET: process.env.APP_SECRET || "", // opcional
+  APP_SECRET: process.env.APP_SECRET || "", // opcional (recomendado)
 };
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const AI_MODEL = process.env.AI_MODEL_OPENAI || "gpt-4o-mini";
+const AI_MODEL = process.env.AI_MODEL_OPENAI || "gpt-4o-mini"; // texto+vision
+const STT_MODEL = process.env.AI_MODEL_STT || "whisper-1";      // audio->texto
 
-// Zoho (puedes desactivar con REQUIRE_ZOHO=false)
+const AUTO_SEND_PDF_WHEN_READY = String(process.env.AUTO_SEND_PDF_WHEN_READY || "true") === "true";
+
 const REQUIRE_ZOHO = String(process.env.REQUIRE_ZOHO || "true") === "true";
 const ZOHO = {
   CLIENT_ID: process.env.ZOHO_CLIENT_ID,
@@ -49,7 +56,6 @@ const ZOHO = {
   ACCOUNTS_DOMAIN: process.env.ZOHO_ACCOUNTS_DOMAIN || "https://accounts.zoho.com",
 };
 
-// ============ Guard: ENV ============
 function assertEnv() {
   const missing = [];
   if (!META.TOKEN) missing.push("WHATSAPP_TOKEN");
@@ -70,30 +76,47 @@ function assertEnv() {
 }
 assertEnv();
 
-// ============ OpenAI ============
+// ---------- OpenAI ----------
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// ============ WhatsApp base ============
-const waBase = () => `https://graph.facebook.com/${META.GRAPH_VERSION}/${META.PHONE_NUMBER_ID}`;
+// ---------- Util ----------
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ---------- WhatsApp Graph base ----------
+const waBase = () => `https://graph.facebook.com/${META.GRAPH_VERSION}`;
+
+// ---------- Meta Signature (opcional) ----------
+function verifyMetaSignature(req) {
+  if (!META.APP_SECRET) return true;
+  const sig = req.get("X-Hub-Signature-256") || req.get("x-hub-signature-256");
+  if (!sig) return false;
+  if (!req.rawBody || !Buffer.isBuffer(req.rawBody)) return false;
+
+  const expected =
+    "sha256=" + crypto.createHmac("sha256", META.APP_SECRET).update(req.rawBody).digest("hex");
+
+  try {
+    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+  } catch {
+    return false;
+  }
+}
+
+// ---------- WhatsApp Send ----------
 async function waSendText(to, text) {
-  const url = `${waBase()}/messages`;
-  const payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: { body: text },
-  };
+  const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
+  const payload = { messaging_product: "whatsapp", to, type: "text", text: { body: text } };
 
   const r = await axios.post(url, payload, {
     headers: { Authorization: `Bearer ${META.TOKEN}` },
     timeout: 20000,
   });
+
   console.log("✅ WA send text", r.status, to);
 }
 
 async function waUploadPdf(buffer, filename = "Cotizacion_Activa.pdf") {
-  const url = `${waBase()}/media`;
+  const url = `${waBase()}/${META.PHONE_NUMBER_ID}/media`;
   const form = new FormData();
   form.append("messaging_product", "whatsapp");
   form.append("file", buffer, { filename, contentType: "application/pdf" });
@@ -109,7 +132,7 @@ async function waUploadPdf(buffer, filename = "Cotizacion_Activa.pdf") {
 }
 
 async function waSendPdfById(to, mediaId, caption) {
-  const url = `${waBase()}/messages`;
+  const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -121,30 +144,87 @@ async function waSendPdfById(to, mediaId, caption) {
     headers: { Authorization: `Bearer ${META.TOKEN}` },
     timeout: 20000,
   });
+
   console.log("✅ WA send pdf", r.status, to, mediaId);
 }
 
-// ============ Meta Signature ============
-function verifyMetaSignature(req) {
-  if (!META.APP_SECRET) return true;
-
-  const sig = req.get("X-Hub-Signature-256") || req.get("x-hub-signature-256");
-  if (!sig) return false;
-  if (!req.rawBody || !Buffer.isBuffer(req.rawBody)) return false;
-
-  const expected =
-    "sha256=" + crypto.createHmac("sha256", META.APP_SECRET).update(req.rawBody).digest("hex");
-
-  try {
-    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
-  } catch {
-    return false;
-  }
+// ---------- WhatsApp Media Download ----------
+async function waGetMediaMeta(mediaId) {
+  const url = `${waBase()}/${mediaId}`;
+  const { data } = await axios.get(url, {
+    headers: { Authorization: `Bearer ${META.TOKEN}` },
+    timeout: 20000,
+  });
+  // data: { url, mime_type, sha256, file_size, id }
+  return data;
 }
 
-// ============ Sessions + TTL cleanup ============
+async function waDownloadMedia(mediaUrl) {
+  const { data, headers } = await axios.get(mediaUrl, {
+    responseType: "arraybuffer",
+    headers: { Authorization: `Bearer ${META.TOKEN}` },
+    timeout: 30000,
+  });
+  const mime = headers["content-type"] || "application/octet-stream";
+  return { buffer: Buffer.from(data), mime };
+}
+
+// ---------- Audio -> Text ----------
+async function transcribeAudio(buffer, mime) {
+  const file = await toFile(buffer, "audio.ogg", { type: mime });
+  const r = await openai.audio.transcriptions.create({
+    model: STT_MODEL,
+    file,
+    language: "es",
+  });
+  return (r.text || "").trim();
+}
+
+// ---------- Image -> Text (Vision) ----------
+async function describeImage(buffer, mime) {
+  // Convert to data URL (sin subir a internet)
+  const b64 = buffer.toString("base64");
+  const dataUrl = `data:${mime};base64,${b64}`;
+
+  const prompt = `
+Describe brevemente la imagen y extrae datos útiles para cotizar ventanas/puertas:
+- producto (ventana/puerta y tipo apertura si se entiende)
+- medidas (si aparecen en el texto, croquis o etiqueta)
+- comuna/dirección (si aparece)
+- vidrio (termopanel/low-e/etc si aparece)
+Responde en español, máximo 8 líneas. Si no hay datos, dilo.
+`.trim();
+
+  const resp = await openai.chat.completions.create({
+    model: AI_MODEL,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: prompt },
+          { type: "image_url", image_url: { url: dataUrl } },
+        ],
+      },
+    ],
+    temperature: 0.2,
+    max_tokens: 300,
+  });
+
+  return (resp.choices?.[0]?.message?.content || "").trim();
+}
+
+// ---------- PDF entrante -> Text ----------
+async function parsePdfToText(buffer) {
+  const r = await pdfParse(buffer);
+  const text = (r?.text || "").trim();
+  // Control de tamaño para no mandar PDFs gigantes al LLM
+  const clipped = text.length > 6000 ? text.slice(0, 6000) + "\n...[recortado]" : text;
+  return clipped;
+}
+
+// ---------- Sessions + TTL ----------
 const sessions = new Map();
-const SESSION_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
+const SESSION_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 const MAX_SESSIONS = 10000;
 
 function getSession(waId) {
@@ -160,6 +240,7 @@ function getSession(waId) {
         glass: "",
         install: "",
         wants_pdf: false,
+        notes: "",
       },
       history: [],
       pdfSent: false,
@@ -171,32 +252,27 @@ function getSession(waId) {
 function cleanupSessions() {
   const cutoff = Date.now() - SESSION_TTL_MS;
   let deleted = 0;
-
   for (const [waId, s] of sessions.entries()) {
     if ((s.lastUserAt || 0) < cutoff) {
       sessions.delete(waId);
       deleted++;
     }
   }
-
   if (sessions.size > MAX_SESSIONS) {
-    const sorted = [...sessions.entries()].sort(
-      (a, b) => (a[1].lastUserAt || 0) - (b[1].lastUserAt || 0)
-    );
+    const sorted = [...sessions.entries()].sort((a, b) => (a[1].lastUserAt || 0) - (b[1].lastUserAt || 0));
     const toDelete = sorted.slice(0, sessions.size - MAX_SESSIONS);
     for (const [waId] of toDelete) {
       sessions.delete(waId);
       deleted++;
     }
   }
-
   if (deleted) console.log(`🧹 sessions cleaned: ${deleted}`);
 }
 setInterval(cleanupSessions, 60 * 60 * 1000);
 
-// ============ Dedupe by msgId (Meta retries) ============
-const processedMsgIds = new Map(); // msgId -> ts
-const MSGID_TTL_MS = 2 * 60 * 60 * 1000; // 2 horas
+// ---------- Dedupe msgId ----------
+const processedMsgIds = new Map();
+const MSGID_TTL_MS = 2 * 60 * 60 * 1000;
 
 function isDuplicateMsg(msgId) {
   if (!msgId) return false;
@@ -206,7 +282,6 @@ function isDuplicateMsg(msgId) {
   processedMsgIds.set(msgId, now);
   return false;
 }
-
 setInterval(() => {
   const cutoff = Date.now() - MSGID_TTL_MS;
   for (const [id, ts] of processedMsgIds.entries()) {
@@ -214,22 +289,17 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000);
 
-// ============ Per-waId lock (anti race condition) ============
-const locks = new Map(); // waId -> Promise
-
+// ---------- Lock por waId (anti race) ----------
+const locks = new Map();
 async function acquireLock(waId, timeoutMs = 30000) {
-  if (locks.has(waId)) {
-    await locks.get(waId);
-  }
+  if (locks.has(waId)) await locks.get(waId);
   let release;
   const p = new Promise((r) => (release = r));
   const t = setTimeout(() => {
     release?.();
     locks.delete(waId);
   }, timeoutMs);
-
   locks.set(waId, p);
-
   return () => {
     clearTimeout(t);
     release?.();
@@ -237,10 +307,10 @@ async function acquireLock(waId, timeoutMs = 30000) {
   };
 }
 
-// ============ Rate limit ============
-const rate = new Map(); // waId -> {count, resetAt}
+// ---------- Rate limit ----------
+const rate = new Map();
 const RATE_WINDOW_MS = 60_000;
-const RATE_MAX = 10;
+const RATE_MAX = 12;
 
 function checkRate(waId) {
   const now = Date.now();
@@ -261,7 +331,6 @@ function checkRate(waId) {
   }
   return { allowed: true };
 }
-
 setInterval(() => {
   const now = Date.now();
   for (const [waId, r] of rate.entries()) {
@@ -269,7 +338,7 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
-// ============ Webhook payload validation ============
+// ---------- Webhook payload validate & extract ----------
 function extractIncoming(reqBody) {
   const entry = reqBody?.entry?.[0];
   const changes = entry?.changes?.[0];
@@ -282,16 +351,27 @@ function extractIncoming(reqBody) {
   if (!msg) return { ok: false, reason: "no_message" };
   if (!msg.from || !msg.id || !msg.type) return { ok: false, reason: "incomplete_message" };
 
-  let text = "";
-  if (msg.type === "text") text = msg.text?.body || "";
-  else if (msg.type === "button") text = msg.button?.text || "";
-  else if (msg.type === "interactive") text = JSON.stringify(msg.interactive || {});
-  else text = `[${msg.type}]`;
+  const waId = msg.from;
+  const msgId = msg.id;
+  const type = msg.type;
 
-  return { ok: true, waId: msg.from, msgId: msg.id, text, type: msg.type };
+  // ids de media
+  const audioId = type === "audio" ? msg.audio?.id : null;
+  const imageId = type === "image" ? msg.image?.id : null;
+  const docId = type === "document" ? msg.document?.id : null;
+  const docMime = type === "document" ? msg.document?.mime_type : null;
+  const docFilename = type === "document" ? msg.document?.filename : null;
+
+  let text = "";
+  if (type === "text") text = msg.text?.body || "";
+  else if (type === "button") text = msg.button?.text || "";
+  else if (type === "interactive") text = JSON.stringify(msg.interactive || {});
+  else text = `[${type}]`;
+
+  return { ok: true, waId, msgId, type, text, audioId, imageId, docId, docMime, docFilename };
 }
 
-// ============ OpenAI Tools ============
+// ---------- AI Tools ----------
 const tools = [
   {
     type: "function",
@@ -309,6 +389,7 @@ const tools = [
           glass: { type: "string" },
           install: { type: "string", enum: ["Si", "No"] },
           wants_pdf: { type: "boolean" },
+          notes: { type: "string" },
         },
         required: [],
       },
@@ -326,15 +407,40 @@ Reglas:
 - Si el cliente entrega datos (producto, medidas, comuna/dirección, vidrio, instalación), llama la tool update_customer_data.
 - Si falta info para PDF, pide SOLO 1 dato a la vez (el más importante).
 - Si ya tienes el dato, NO lo vuelvas a pedir.
+- Si llega una imagen o PDF con info, úsala para completar datos.
 `.trim();
 
-// Completo mínimo para PDF
 function isComplete(d) {
   return !!(d.product && d.measures && (d.address || d.comuna) && d.glass && d.install);
 }
 
-// ============ PDF ============
-function createPdf(data) {
+async function runAI(session, userText) {
+  const messages = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: `Memoria actual: ${JSON.stringify(session.data)}` },
+    ...session.history.slice(-6),
+    { role: "user", content: userText },
+  ];
+
+  try {
+    const resp = await openai.chat.completions.create({
+      model: AI_MODEL,
+      messages,
+      tools,
+      tool_choice: "auto",
+      temperature: 0.3,
+      max_tokens: 380,
+    });
+
+    return resp.choices?.[0]?.message || { role: "assistant", content: "¿Me confirmas medidas y comuna?" };
+  } catch (e) {
+    console.error("❌ OpenAI error", e?.response?.data || e.message);
+    return { role: "assistant", content: "Tuve un problema técnico. ¿Me confirmas medidas (ancho x alto) y comuna?" };
+  }
+}
+
+// ---------- PDF de cotización (saliente) ----------
+function createQuotePdf(data) {
   return new Promise((resolve, reject) => {
     try {
       const doc = new PDFDocument({ size: "A4", margin: 48 });
@@ -366,6 +472,11 @@ function createPdf(data) {
       doc.text(`Vidrio: ${data.glass || "—"}`);
       doc.text(`Instalación: ${data.install || "—"}`);
 
+      if (data.notes) {
+        doc.moveDown();
+        doc.fontSize(11).text(`Notas: ${data.notes}`);
+      }
+
       doc.moveDown();
       doc.fontSize(10).fillColor("#444").text(
         "Nota: Valores y plazos se confirman tras visita/medición. Documento referencial generado automáticamente."
@@ -378,7 +489,7 @@ function createPdf(data) {
   });
 }
 
-// ============ Zoho ============
+// ---------- Zoho ----------
 let zohoCache = { token: "", expiresAt: 0 };
 
 async function getZohoToken() {
@@ -411,6 +522,7 @@ async function zohoUpsertLead(d, phone, retries = 1) {
   try {
     const token = await getZohoToken();
     const url = `${ZOHO.API_DOMAIN}/crm/v2/Leads/upsert`;
+
     const payload = {
       data: [
         {
@@ -418,7 +530,7 @@ async function zohoUpsertLead(d, phone, retries = 1) {
           Mobile: phone,
           Lead_Source: "WhatsApp IA",
           Company: "Activa Inversiones Lead",
-          Description: `Producto: ${d.product} | Medidas: ${d.measures} | Vidrio: ${d.glass} | Instalación: ${d.install} | Comuna/Dirección: ${d.address || d.comuna}`,
+          Description: `Producto: ${d.product} | Medidas: ${d.measures} | Vidrio: ${d.glass} | Instalación: ${d.install} | Comuna/Dirección: ${d.address || d.comuna} | Notas: ${d.notes || ""}`,
         },
       ],
       duplicate_check_fields: ["Mobile"],
@@ -436,41 +548,14 @@ async function zohoUpsertLead(d, phone, retries = 1) {
     if (status === 401 && retries > 0) {
       console.warn("🔁 Zoho 401 retry");
       zohoCache = { token: "", expiresAt: 0 };
-      await new Promise((r) => setTimeout(r, 500));
+      await sleep(500);
       return zohoUpsertLead(d, phone, retries - 1);
     }
     console.warn("⚠️ Zoho upsert fail", status, e?.response?.data || e.message);
   }
 }
 
-// ============ AI Orchestration (SIN timeout en OpenAI) ============
-async function runAI(session, userText) {
-  const messages = [
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "system", content: `Memoria: ${JSON.stringify(session.data)}` },
-    ...session.history.slice(-6),
-    { role: "user", content: userText },
-  ];
-
-  try {
-    const resp = await openai.chat.completions.create({
-      model: AI_MODEL,
-      messages,
-      tools,
-      tool_choice: "auto",
-      temperature: 0.3,
-      max_tokens: 350,
-    });
-
-    const msg = resp.choices?.[0]?.message;
-    return msg || { role: "assistant", content: "Disculpa, ¿me repites tu consulta?" };
-  } catch (e) {
-    console.error("❌ OpenAI error", e?.response?.data || e.message);
-    return { role: "assistant", content: "Tuve un problema técnico. ¿Me confirmas solo medidas (ancho x alto) y comuna?" };
-  }
-}
-
-// ============ Routes ============
+// ---------- Routes ----------
 app.get("/health", (req, res) => res.status(200).send("ok"));
 
 // Webhook verification
@@ -487,51 +572,85 @@ app.post("/webhook", async (req, res) => {
   // ACK inmediato
   res.sendStatus(200);
 
-  // Firma (si está activa)
+  // Firma Meta (si APP_SECRET está seteado)
   if (!verifyMetaSignature(req)) {
     console.warn("⚠️ META signature fail");
     return;
   }
 
   const incoming = extractIncoming(req.body);
-if (incoming.ok && incoming.type !== "text" && incoming.type !== "button") {
-  await waSendText(incoming.waId, "¿Me lo puedes escribir por aquí? Así te cotizo más rápido 🙌");
-  return;
-}
-
+  if (!incoming.ok) {
+    if (incoming.reason !== "status_update") console.log("⏭️ skip", incoming.reason);
+    return;
   }
 
-  const { waId, msgId, text } = incoming;
+  const { waId, msgId, type } = incoming;
 
-  // Dedupe por msgId (Meta retries)
   if (isDuplicateMsg(msgId)) {
     console.log("⏭️ duplicate msgId", msgId);
     return;
   }
 
-  // Rate limit
-  const r = checkRate(waId);
-  if (!r.allowed) {
-    await waSendText(waId, r.msg);
+  const rateCheck = checkRate(waId);
+  if (!rateCheck.allowed) {
+    await waSendText(waId, rateCheck.msg);
     return;
   }
 
-  // Lock por usuario (anti duplicados)
   const release = await acquireLock(waId);
   try {
     const session = getSession(waId);
     session.lastUserAt = Date.now();
 
-    console.log("📩 IN", { waId, msgId, text });
+    // Construimos userText enriquecido (texto + transcripción + vision + pdf text)
+    let userText = incoming.text;
 
-    // AI (puede incluir tool_calls)
-    const aiMsg = await runAI(session, text);
+    // AUDIO
+    if (type === "audio" && incoming.audioId) {
+      console.log("🎧 AUDIO_IN", { waId, msgId, audioId: incoming.audioId });
+      const meta = await waGetMediaMeta(incoming.audioId);
+      const { buffer, mime } = await waDownloadMedia(meta.url);
+      const transcript = await transcribeAudio(buffer, mime);
+      console.log("📝 AUDIO_TXT", transcript);
+      userText = transcript ? `Cliente envió audio (transcrito): ${transcript}` : "Cliente envió un audio pero no se pudo transcribir.";
+    }
 
-    // Procesar tool calls
+    // IMAGE
+    if (type === "image" && incoming.imageId) {
+      console.log("🖼️ IMG_IN", { waId, msgId, imageId: incoming.imageId });
+      const meta = await waGetMediaMeta(incoming.imageId);
+      const { buffer, mime } = await waDownloadMedia(meta.url);
+      const imgText = await describeImage(buffer, mime);
+      console.log("🧠 IMG_TXT", imgText);
+      userText = `Cliente envió una imagen. Interpretación: ${imgText}`;
+    }
+
+    // PDF (document)
+    if (type === "document" && incoming.docId) {
+      console.log("📄 DOC_IN", { waId, msgId, docId: incoming.docId, mime: incoming.docMime, name: incoming.docFilename });
+      const meta = await waGetMediaMeta(incoming.docId);
+      const { buffer, mime } = await waDownloadMedia(meta.url);
+
+      if ((incoming.docMime || mime) === "application/pdf") {
+        const pdfText = await parsePdfToText(buffer);
+        console.log("📄 PDF_TXT_LEN", pdfText.length);
+        userText = `Cliente envió un PDF. Texto extraído (recortado):\n${pdfText}`;
+      } else {
+        // si no es PDF, pedir texto
+        await waSendText(waId, "Recibí el archivo. ¿Me puedes escribir el detalle (producto, medidas, comuna, vidrio e instalación) para cotizar?");
+        return;
+      }
+    }
+
+    console.log("📩 IN", { waId, msgId, type, userTextPreview: String(userText).slice(0, 120) });
+
+    // IA (tools)
+    const aiMsg = await runAI(session, userText);
+
     let triggerPDF = false;
 
+    // Tool calls
     if (aiMsg.tool_calls?.length) {
-      // Ejecutar todos los tool_calls
       for (const tc of aiMsg.tool_calls) {
         if (tc.type !== "function") continue;
         if (tc.function?.name !== "update_customer_data") continue;
@@ -546,48 +665,48 @@ if (incoming.ok && incoming.type !== "text" && incoming.type !== "button") {
         session.data = { ...session.data, ...args };
         if (args.wants_pdf === true) triggerPDF = true;
 
-        // Follow-up para texto final (SIN timeout)
+        // Follow-up para texto final
         const follow = await openai.chat.completions.create({
           model: AI_MODEL,
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
-            { role: "system", content: `Memoria: ${JSON.stringify(session.data)}` },
+            { role: "system", content: `Memoria actual: ${JSON.stringify(session.data)}` },
             ...session.history.slice(-6),
-            { role: "user", content: text },
+            { role: "user", content: userText },
             aiMsg,
             { role: "tool", tool_call_id: tc.id, content: "OK, datos guardados." },
           ],
           temperature: 0.3,
-          max_tokens: 250,
+          max_tokens: 260,
         });
 
         const finalText = follow.choices?.[0]?.message?.content?.trim();
         if (finalText) {
           await waSendText(waId, finalText);
-          session.history.push({ role: "user", content: text });
+          session.history.push({ role: "user", content: userText });
           session.history.push({ role: "assistant", content: finalText });
         }
       }
     } else {
-      // Respuesta normal
       const reply = (aiMsg.content || "").trim();
       if (reply) {
         await waSendText(waId, reply);
-        session.history.push({ role: "user", content: text });
+        session.history.push({ role: "user", content: userText });
         session.history.push({ role: "assistant", content: reply });
       }
     }
 
-    // Zoho (background)
+    // Zoho (async)
     zohoUpsertLead(session.data, waId).catch(() => {});
 
-    // PDF: si completo y (lo pidió o triggerPDF)
+    // PDF saliente
     const complete = isComplete(session.data);
-    const askedPdf = /\bpdf\b/i.test(text) || /cotiz/i.test(text);
+    const askedPdf = /\bpdf\b/i.test(incoming.text) || /cotiz/i.test(incoming.text);
+    const shouldSend = complete && !session.pdfSent && (triggerPDF || askedPdf || AUTO_SEND_PDF_WHEN_READY);
 
-    if (!session.pdfSent && complete && (triggerPDF || askedPdf)) {
+    if (shouldSend) {
       await waSendText(waId, "Perfecto, ya tengo todo. Te envío el PDF referencial ahora.");
-      const pdf = await createPdf(session.data);
+      const pdf = await createQuotePdf(session.data);
       const mediaId = await waUploadPdf(pdf);
       await waSendPdfById(waId, mediaId, "Aquí tienes tu cotización referencial 📄");
       session.pdfSent = true;
@@ -599,11 +718,13 @@ if (incoming.ok && incoming.type !== "text" && incoming.type !== "button") {
   }
 });
 
-// ============ Boot ============
+// ---------- Boot ----------
 console.log(`SERVER_OK port=${PORT} tz=${TZ}`);
 console.log(`[INFO] META_VER=${META.GRAPH_VERSION}`);
 console.log(`[INFO] PHONE_NUMBER_ID=${META.PHONE_NUMBER_ID}`);
 console.log(`[INFO] MODEL=${AI_MODEL}`);
+console.log(`[INFO] STT_MODEL=${STT_MODEL}`);
 console.log(`[INFO] REQUIRE_ZOHO=${REQUIRE_ZOHO}`);
+console.log(`[INFO] AUTO_SEND_PDF_WHEN_READY=${AUTO_SEND_PDF_WHEN_READY}`);
 
 app.listen(PORT, () => console.log(`🚀 Server activo en puerto ${PORT}`));
