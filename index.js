@@ -1,5 +1,5 @@
 // index.js — WhatsApp IA (OpenAI Tools + Vision + Audio STT) + PDF Quotes + Zoho CRM
-// Ferrari 5.0 — Leads + Deals automático + Perfil Psicológico ("Detective") + Tono Dinámico ("Camaleón") + Normativa + Anti-dup/locks/TTL
+// Ferrari 5.3 — Leads + Deals automático + Perfil Psicológico ("Detective") + Tono Dinámico ("Camaleón") + Normativa + Anti-dup/locks/TTL
 // Node 18+ | Railway | ESM
 
 import express from "express";
@@ -50,17 +50,6 @@ const STT_MODEL = process.env.AI_MODEL_STT || "whisper-1";
 
 const AUTO_SEND_PDF_WHEN_READY = String(process.env.AUTO_SEND_PDF_WHEN_READY || "true") === "true";
 
-// ----- Human-like sending (delays / chunking) -----
-// Nota: WhatsApp Cloud API NO soporta indicador real de "typing...". Simulamos con delays y fraccionamiento.
-const HUMAN = {
-  ENABLED: String(process.env.HUMAN_ENABLED || "true") === "true",
-  MIN_DELAY_MS: Number(process.env.HUMAN_MIN_DELAY_MS || 650),
-  MAX_DELAY_MS: Number(process.env.HUMAN_MAX_DELAY_MS || 2200),
-  CHUNK_MAX_CHARS: Number(process.env.HUMAN_CHUNK_MAX_CHARS || 900),
-  EXTRA_DELAY_PER_100CH: Number(process.env.HUMAN_EXTRA_DELAY_PER_100CH || 220),
-  MEDIA_ACK: String(process.env.HUMAN_MEDIA_ACK || "true") === "true",
-};
-
 // ----- Zoho -----
 const REQUIRE_ZOHO = String(process.env.REQUIRE_ZOHO || "true") === "true";
 const ZOHO = {
@@ -77,13 +66,16 @@ const ZOHO = {
   // Campos personalizados en Deals/Potentials (opcional)
   DEAL_PROFILE_FIELD: process.env.ZOHO_DEAL_PROFILE_FIELD || "",
 
-  // Nombre de cuenta por defecto para Deals (requerido por Zoho)
+  // Si creas un campo personalizado en Deals para guardar el teléfono, pon aquí su API Name.
+  // Ej: Phone_E164 / WhatsApp_Phone / Mobile_1
+  DEAL_PHONE_FIELD: process.env.ZOHO_DEAL_PHONE_FIELD || "",
+
+  // Nombre de cuenta por defecto para Deals (si Account_Name es obligatorio)
   DEFAULT_ACCOUNT_NAME: process.env.ZOHO_DEFAULT_ACCOUNT_NAME || "Clientes WhatsApp IA",
 };
 
 // ---------- Etapas del Pipeline (Tratos/Deals) ----------
-// Deben coincidir EXACTO con los valores picklist en Zoho (incluye acentos/paréntesis).
-// Puedes sobre-escribir por ENV si cambias nombres en Zoho.
+// IMPORTANTE: Los valores deben coincidir EXACTAMENTE con el picklist "Fase/Stage" en Zoho.
 const STAGE_MAP = {
   diagnostico: process.env.ZOHO_STAGE_DIAGNOSTICO || "Diagnóstico y Perfilado",
   siembra: process.env.ZOHO_STAGE_SIEMBRA || "Siembra de Confianza + Marco Normativo (OGUC/RT)",
@@ -96,7 +88,8 @@ const STAGE_MAP = {
   competencia: process.env.ZOHO_STAGE_COMPETENCIA || "Perdido y cerrado para la competencia",
 };
 
-const STAGE_ORDER = {
+// Orden (nunca retroceder en el funnel automáticamente)
+const STAGE_RANK = {
   diagnostico: 10,
   siembra: 20,
   propuesta: 40,
@@ -107,33 +100,6 @@ const STAGE_ORDER = {
   perdido: 0,
   competencia: 0,
 };
-
-function stageKeyFromName(name = "") {
-  const n = String(name).trim();
-  for (const [k, v] of Object.entries(STAGE_MAP)) {
-    if (v === n) return k;
-  }
-  // fallback por contains (por si hay espacios o sufijos)
-  const lower = n.toLowerCase();
-  if (lower.includes("diagn")) return "diagnostico";
-  if (lower.includes("siembra")) return "siembra";
-  if (lower.includes("propu")) return "propuesta";
-  if (lower.includes("objec")) return "objeciones";
-  if (lower.includes("valid")) return "validacion";
-  if (lower.includes("cierre") && !lower.includes("cerrado")) return "cierre";
-  if (lower.includes("cerrado ganado")) return "ganado";
-  if (lower.includes("competenc")) return "competencia";
-  if (lower.includes("cerrado perdido")) return "perdido";
-  return "diagnostico";
-}
-
-function maxStage(a, b) {
-  // lost stages (0) should override if detected
-  if (a === "ganado" || b === "ganado") return "ganado";
-  if (a === "competencia" || b === "competencia") return "competencia";
-  if (a === "perdido" || b === "perdido") return "perdido";
-  return STAGE_ORDER[a] >= STAGE_ORDER[b] ? a : b;
-}
 
 function assertEnv() {
   const missing = [];
@@ -225,76 +191,36 @@ async function waSendText(to, text) {
   console.log("✅ WA send text", r.status, to);
 }
 
-async function waMarkRead(to, messageId) {
-  try {
-    const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
-    const payload = { messaging_product: "whatsapp", status: "read", message_id: messageId };
-    await axios.post(url, payload, { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 20000 });
-  } catch (e) {
-    console.warn("⚠️ WA mark read fail", e?.response?.status, e?.response?.data || e.message);
-  }
-}
 
-function clamp(n, a, b) {
-  return Math.max(a, Math.min(b, n));
-}
+async function waMarkReadAndTyping(messageId, type = "text") {
+  // WhatsApp Cloud API: marca como leído y muestra indicador de "escribiendo..."
+  // Requiere msgId del mensaje entrante.
+  if (!messageId) return;
+  const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
 
-function splitIntoChunks(text, maxChars) {
-  const t = String(text || "").trim();
-  if (!t) return [];
-  if (t.length <= maxChars) return [t];
-
-  // primero intenta por párrafos
-  const paras = t.split(/\n\n+/).map(s => s.trim()).filter(Boolean);
-  const chunks = [];
-  let current = "";
-
-  const push = () => {
-    if (current.trim()) chunks.push(current.trim());
-    current = "";
+  const payload = {
+    messaging_product: "whatsapp",
+    status: "read",
+    message_id: messageId,
+    typing_indicator: { type }, // "text"
   };
 
-  for (const p of paras) {
-    if ((current + "\n\n" + p).trim().length <= maxChars) {
-      current = current ? (current + "\n\n" + p) : p;
-    } else {
-      push();
-      if (p.length <= maxChars) {
-        current = p;
-      } else {
-        // fallback por frases
-        const parts = p.split(/(?<=[\.!\?])\s+/);
-        for (const part of parts) {
-          if ((current + " " + part).trim().length <= maxChars) current = current ? (current + " " + part) : part;
-          else { push(); current = part; }
-        }
-      }
-    }
+  try {
+    await axios.post(url, payload, {
+      headers: { Authorization: `Bearer ${META.TOKEN}` },
+      timeout: 15000,
+    });
+  } catch (e) {
+    // No bloquea el flujo si falla.
+    console.warn("⚠️ WA typing/read fail", e?.response?.status || "", e?.response?.data?.error?.message || e.message);
   }
-  push();
-  return chunks;
 }
 
-function computeHumanDelayMs(text) {
-  const base = clamp(HUMAN.MIN_DELAY_MS, 0, HUMAN.MAX_DELAY_MS);
-  const extra = clamp(Math.round((String(text).length / 100) * HUMAN.EXTRA_DELAY_PER_100CH), 0, 6000);
-  const jitter = Math.round(Math.random() * 250);
-  return clamp(base + extra + jitter, HUMAN.MIN_DELAY_MS, HUMAN.MAX_DELAY_MS + 2500);
-}
-
-async function waSendTextHuman(to, text) {
-  if (!HUMAN.ENABLED) {
-    await waSendText(to, text);
-    return;
-  }
-  const chunks = splitIntoChunks(text, HUMAN.CHUNK_MAX_CHARS);
-  for (let i = 0; i < chunks.length; i++) {
-    const delay = computeHumanDelayMs(chunks[i]);
-    await sleep(delay);
-    await waSendText(to, chunks[i]);
-    // pausa breve entre chunks
-    if (i < chunks.length - 1) await sleep(clamp(450 + Math.random() * 350, 250, 900));
-  }
+function humanDelayMs(text) {
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean).length;
+  // 700ms base + 110ms por palabra, cap 6s
+  const ms = 700 + Math.min(5300, words * 110);
+  return ms;
 }
 
 async function waUploadPdf(buffer, filename = "Cotizacion_Activa.pdf") {
@@ -682,49 +608,82 @@ function containsPriceLike(text) {
 }
 
 // ---------- Determinar etapa automáticamente ----------
-function detectSignalsFromText(text = "") {
-  const t = String(text).toLowerCase();
+function bumpStage(session, nextKey) {
+  const prev = session.data?.stageKey || "diagnostico";
+  const prevRank = STAGE_RANK[prev] ?? 10;
+  const nextRank = STAGE_RANK[nextKey] ?? prevRank;
 
-  const lost = /no( gracias)?|ya no|no me interesa|cancela|cancelar|dejemoslo|no sigo|no continuar/.test(t);
-  const competencia = /competencia|ya compr(e|é)|otra empresa|ya lo hice con|me fui con/.test(t);
-  const won = /confirm(o|o\.?)|listo|compr(o|o\.?)|pagar(e|é)|transferencia|env(i|í)a los datos para pago|factura|boleta|OC|orden de compra/.test(t);
-  const close = /agend(a|emos)|visita|medici(o|ó)n|instalaci(o|ó)n|cierre|firmar|contrato/.test(t);
-  const objection = /car(o|a)|muy caro|descuento|rebaja|oferta|precio|cotiz|comparar|presupuesto/.test(t);
+  // Lost stages are terminal but low probability. Only set them if explicitly detected.
+  const isLost = nextKey === "perdido" || nextKey === "competencia";
+  const isWon = nextKey === "ganado";
 
-  return { lost, competencia, won, close, objection };
+  if (isLost || isWon) {
+    session.data.stageKey = nextKey;
+    return;
+  }
+
+  if (nextRank > prevRank) session.data.stageKey = nextKey;
 }
 
-function determineStage(session, lastUserText = "") {
-  const d = session.data;
-  const complete = isComplete(d);
+function detectSignals(textRaw) {
+  const t = String(textRaw || "").toLowerCase();
 
-  // señales de intención (no dependen de datos completos)
-  const sig = detectSignalsFromText(lastUserText);
-  if (sig.won) return "ganado";
-  if (sig.competencia) return "competencia";
-  if (sig.lost) return "perdido";
+  // Admin/operador override (útil cuando tú escribes desde el mismo WA)
+  if (/^#ganado/.test(t)) return { won: true };
+  if (/^#perdido/.test(t)) return { lost: true };
+  if (/^#competencia/.test(t)) return { competitor: true };
 
-  // si hay objeción de precio y ya hay propuesta o PDF, pasa a objeciones
-  if (sig.objection && (session.pdfSent || complete)) return "objeciones";
+  const buying =
+    /(comprar|compr[oé]|lo compro|me lo quedo|acepto|confirmo|dale|hag[aá]moslo|cerrar|firmar)/.test(t) ||
+    /(envi[aá]me (los )?datos|cuenta|transferencia|pagar|pago|pag[ué]|abono|anticipo)/.test(t);
 
-  // si pide visita/cierre, pasa a cierre
-  if (sig.close && (session.pdfSent || complete)) return "cierre";
+  const wantsAll =
+    /(envi[aá]me todo|m[eé]ndame todo|pdf|cotizaci[oó]n|propuesta)/.test(t);
 
-  // PDF enviado => propuesta
-  if (session.pdfSent) return "propuesta";
+  const objection =
+    /(muy caro|car[oí]simo|descuento|rebaja|mejor precio|competencia|otra empresa|me sale menos|presupuesto)/.test(t);
 
-  // Datos completos => validación técnica
-  if (complete) return "validacion";
+  const technical =
+    /(oguc|reglamento t[eé]rmico|rt|minvu|transmitancia|u-?value|uw|ac[uú]stic|rw|laminad|termopanel|dv?h|perfil|mm|herrajes|microventilaci[oó]n|ruptura puente t[eé]rmico)/.test(t);
 
-  // Aún faltan datos: a medida que se completa, pasa a siembra
-  const missingCount = missingFields(d).length;
-  if (missingCount <= 2) return "siembra";
+  const schedule =
+    /(agendar|agenda|visita|medici[oó]n|medir|instalaci[oó]n|instalar|fecha|hora|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado)/.test(t);
 
-  return "diagnostico";
+  const lost =
+    /(no gracias|ya no|cancelar|no me interesa|olvida|deja|ya compr[eé]|no voy|descarto)/.test(t);
+
+  const competitor =
+    /(otra empresa|competencia|ya cotiz[eé] con|ya lo hice con|me voy con)/.test(t);
+
+  return { buying, wantsAll, objection, technical, schedule, lost, competitor };
+}
+
+function determineStage(session) {
+  const d = session.data || {};
+  const text = session.lastUserText || "";
+
+  // Base: por avance de datos (sin saltarse el funnel)
+  const hasSome = !!(d.product || d.measures || d.comuna);
+  if (hasSome) bumpStage(session, "siembra");
+
+  // Señales del cliente (esto sí puede acelerar etapas)
+  const s = detectSignals(text);
+
+  if (s.competitor) bumpStage(session, "competencia");
+  else if (s.lost) bumpStage(session, "perdido");
+  else {
+    if (session.pdfSent) bumpStage(session, "propuesta");
+    if (s.objection) bumpStage(session, "objeciones");
+    if (s.technical) bumpStage(session, "validacion");
+    if (s.schedule || s.buying) bumpStage(session, "cierre");
+    // Ganado solo con señal fuerte
+    if (s.won) bumpStage(session, "ganado");
+  }
+
+  return session.data.stageKey || "diagnostico";
 }
 
 // ---------- AI Tools ----------
-
 const tools = [
   {
     type: "function",
@@ -917,6 +876,56 @@ async function zohoFindLeadByMobile(phoneE164) {
   }
 }
 
+
+let zohoDefaultAccountCache = { id: null, name: null, expiresAt: 0 };
+
+async function zohoFindAccountByName(accountName) {
+  const token = await getZohoToken();
+  const criteria = `(Account_Name:equals:${accountName})`;
+  const url = `${ZOHO.API_DOMAIN}/crm/v2/Accounts/search?criteria=${encodeURIComponent(criteria)}`;
+  try {
+    const r = await axios.get(url, { headers: { Authorization: `Zoho-oauthtoken ${token}` }, timeout: 15000 });
+    return r.data?.data?.[0] || null;
+  } catch (e) {
+    if (e?.response?.status === 204) return null;
+    throw e;
+  }
+}
+
+async function zohoCreateAccount(accountName) {
+  const token = await getZohoToken();
+  const url = `${ZOHO.API_DOMAIN}/crm/v2/Accounts`;
+  const payload = { data: [{ Account_Name: accountName }] };
+  const r = await axios.post(url, payload, { headers: { Authorization: `Zoho-oauthtoken ${token}` }, timeout: 20000 });
+  return r.data;
+}
+
+async function zohoEnsureDefaultAccountId() {
+  const name = ZOHO.DEFAULT_ACCOUNT_NAME;
+  if (!name) return null;
+
+  if (zohoDefaultAccountCache.id && zohoDefaultAccountCache.name === name && Date.now() < zohoDefaultAccountCache.expiresAt) {
+    return zohoDefaultAccountCache.id;
+  }
+
+  let acc = await zohoFindAccountByName(name);
+  if (!acc) {
+    const created = await zohoCreateAccount(name);
+    const id = created?.details?.id || null;
+    zohoDefaultAccountCache = { id, name, expiresAt: Date.now() + 1000 * 60 * 60 * 6 }; // 6h
+    return id;
+  }
+
+  zohoDefaultAccountCache = { id: acc.id, name, expiresAt: Date.now() + 1000 * 60 * 60 * 6 };
+  return acc.id;
+}
+
+function isZohoInvalidStageError(e) {
+  const data = e?.response?.data;
+  const txt = JSON.stringify(data || {});
+  return /Stage/i.test(txt) && /INVALID_DATA/i.test(txt);
+}
+
 async function zohoCreateLead(payload) {
   const token = await getZohoToken();
   const url = `${ZOHO.API_DOMAIN}/crm/v2/Leads`;
@@ -946,46 +955,33 @@ async function zohoUpdateLead(id, payload) {
 // ----- DEALS (Tratos/Potentials) -----
 async function zohoFindDealByPhone(phoneE164) {
   const token = await getZohoToken();
-  const phoneDigits = String(phoneE164 || "").replace(/\D/g, "");
-  if (!phoneDigits) return null;
 
-  // 1) Si existe campo custom para teléfono en Deals, úsalo (recomendado)
+  const digits = String(phoneE164 || "").replace(/\D/g, "");
+  const last9 = digits.slice(-9);
+
+  // Preferir campo personalizado si existe
   if (ZOHO.DEAL_PHONE_FIELD) {
-    const criteria = `(${ZOHO.DEAL_PHONE_FIELD}:equals:${phoneDigits})`;
+    const criteria = `(${ZOHO.DEAL_PHONE_FIELD}:equals:${phoneE164})`;
     const url = `${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=${encodeURIComponent(criteria)}`;
     try {
       const r = await axios.get(url, { headers: { Authorization: `Zoho-oauthtoken ${token}` }, timeout: 15000 });
       return r.data?.data?.[0] || null;
     } catch (e) {
       if (e?.response?.status === 204) return null;
+      return null;
     }
   }
 
-  // 2) Fallback: buscar en Description (si guardamos Teléfono: ...)
-  {
-    const criteria = `(Description:contains:${phoneDigits.slice(-8)})`;
-    const url = `${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=${encodeURIComponent(criteria)}`;
-    try {
-      const r = await axios.get(url, { headers: { Authorization: `Zoho-oauthtoken ${token}` }, timeout: 15000 });
-      return r.data?.data?.[0] || null;
-    } catch (e) {
-      if (e?.response?.status === 204) return null;
-    }
+  // Fallback: buscar por nombre que contenga los últimos 9 dígitos (mucho mejor que últimos 4)
+  const criteria = `(Deal_Name:contains:${last9})`;
+  const url = `${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=${encodeURIComponent(criteria)}`;
+  try {
+    const r = await axios.get(url, { headers: { Authorization: `Zoho-oauthtoken ${token}` }, timeout: 15000 });
+    return r.data?.data?.[0] || null;
+  } catch (e) {
+    if (e?.response?.status === 204) return null;
+    return null;
   }
-
-  // 3) Fallback simple: nombre contiene últimos 4 dígitos
-  {
-    const criteria = `(Deal_Name:contains:${phoneDigits.slice(-4)})`;
-    const url = `${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=${encodeURIComponent(criteria)}`;
-    try {
-      const r = await axios.get(url, { headers: { Authorization: `Zoho-oauthtoken ${token}` }, timeout: 15000 });
-      return r.data?.data?.[0] || null;
-    } catch (e) {
-      if (e?.response?.status === 204) return null;
-    }
-  }
-
-  return null;
 }
 
 async function zohoCreateDeal(payload) {
@@ -1013,45 +1009,6 @@ async function zohoUpdateDeal(id, payload) {
 
   return r.data?.data?.[0];
 }
-// ----- ACCOUNTS (para cumplir Account_Name obligatorio en Deals) -----
-async function zohoFindAccountByName(accountName) {
-  const token = await getZohoToken();
-  const name = String(accountName || "").trim();
-  if (!name) return null;
-  const criteria = `(Account_Name:equals:${name.replace(/\)/g,"").replace(/\(/g,"")})`;
-  const url = `${ZOHO.API_DOMAIN}/crm/v2/Accounts/search?criteria=${encodeURIComponent(criteria)}`;
-  try {
-    const r = await axios.get(url, { headers: { Authorization: `Zoho-oauthtoken ${token}` }, timeout: 15000 });
-    return r.data?.data?.[0] || null;
-  } catch (e) {
-    if (e?.response?.status === 204) return null;
-    return null;
-  }
-}
-
-async function zohoCreateAccount(accountName, phoneE164) {
-  const token = await getZohoToken();
-  const url = `${ZOHO.API_DOMAIN}/crm/v2/Accounts`;
-  const phoneDigits = String(phoneE164 || "").replace(/\D/g, "");
-  const payload = { Account_Name: accountName };
-  if (phoneDigits) payload.Phone = phoneDigits;
-
-  const r = await axios.post(
-    url,
-    { data: [payload], trigger: ["workflow"] },
-    { headers: { Authorization: `Zoho-oauthtoken ${token}` }, timeout: 15000 }
-  );
-  return r.data?.data?.[0];
-}
-
-async function zohoGetOrCreateDefaultAccountId(phoneE164) {
-  const name = ZOHO.DEFAULT_ACCOUNT_NAME;
-  let acc = await zohoFindAccountByName(name);
-  if (acc?.id) return acc.id;
-  const created = await zohoCreateAccount(name, phoneE164);
-  return created?.details?.id || null;
-}
-
 
 // ----- UPSERT COMPLETO (Lead + Deal) -----
 function buildLeadPayload(d, phoneE164) {
@@ -1061,7 +1018,7 @@ function buildLeadPayload(d, phoneE164) {
     Lead_Source: "WhatsApp IA",
     Company: d.address || d.comuna || "Por confirmar",
     Description:
-      `🤖 WhatsApp IA - Ferrari 5.0\n` +
+      `🤖 WhatsApp IA - Ferrari 5.3\n` +
       `━━━━━━━━━━━━━━━━━━━━━\n` +
       `Perfil: ${d.profile || "—"}\n` +
       `Producto: ${d.product || "—"}\n` +
@@ -1082,16 +1039,21 @@ function buildLeadPayload(d, phoneE164) {
 
 function buildDealPayload(d, phoneE164, stageKey, accountId = null) {
   const stageName = STAGE_MAP[stageKey] || STAGE_MAP.diagnostico;
-  const phoneDigits = String(phoneE164 || "").replace(/\D/g, "");
-  const dealName = `${d.product || "Ventana"} - ${d.name || phoneDigits.slice(-4) || "Cliente"} - ${d.comuna || "Chile"}`;
+
+  const digits = String(phoneE164 || "").replace(/\D/g, "");
+  const productPart = d.product || "Ventanas";
+  const comunaPart = d.comuna || "Chile";
+  const measuresPart = d.measures ? ` ${d.measures}` : "";
+  const dealName = `${productPart}${measuresPart} - ${comunaPart} [WA ${digits}]`;
 
   const payload = {
     Deal_Name: dealName,
     Stage: stageName,
     Closing_Date: formatDateZoho(addDays(new Date(), 30)), // +30 días
     Description:
-      `🤖 WhatsApp IA - Ferrari 5.2\n` +
+      `🤖 WhatsApp IA - Ferrari 5.3\n` +
       `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `Etapa: ${stageName}\n` +
       `Perfil: ${d.profile || "—"}\n` +
       `Producto: ${d.product || "—"}\n` +
       `Medidas: ${d.measures || "—"}\n` +
@@ -1103,19 +1065,17 @@ function buildDealPayload(d, phoneE164, stageKey, accountId = null) {
       `Notas: ${d.notes || "—"}`,
   };
 
-  // Account obligatorio (Nombre de Cuenta / Account_Name)
-  if (accountId) {
-    payload.Account_Name = { id: accountId };
-  }
+  // Si Account_Name es obligatorio en tu layout, este campo evita fallos de creación.
+  if (accountId) payload.Account_Name = { id: accountId };
 
-  // Campo custom recomendado para dedupe por teléfono
-  if (ZOHO.DEAL_PHONE_FIELD && phoneDigits) {
-    payload[ZOHO.DEAL_PHONE_FIELD] = phoneDigits;
-  }
-
-  // Perfil en campo custom si existe
+  // Campo personalizado (opcional) para perfil
   if (ZOHO.DEAL_PROFILE_FIELD && d.profile) {
     payload[ZOHO.DEAL_PROFILE_FIELD] = d.profile;
+  }
+
+  // Campo personalizado (opcional) para teléfono
+  if (ZOHO.DEAL_PHONE_FIELD && phoneE164) {
+    payload[ZOHO.DEAL_PHONE_FIELD] = phoneE164;
   }
 
   return payload;
@@ -1128,7 +1088,7 @@ async function zohoUpsertFull(session, phone, retries = 1) {
   if (!phoneE164) return;
 
   const d = session.data;
-  const computedStageKey = determineStage(session, session._lastUserText || "");
+  const stageKey = determineStage(session);
 
   try {
     // 1) LEAD: buscar o crear
@@ -1145,34 +1105,43 @@ async function zohoUpsertFull(session, phone, retries = 1) {
       console.log("✅ Zoho LEAD created", session.zohoLeadId);
     }
 
-    // 2) DEAL: buscar o crear (solo si hay datos mínimos)
-    const hasMinData = d.product || d.measures || d.comuna;
-    if (!hasMinData) {
-      console.log("⏭️ Zoho DEAL skip (sin datos mínimos)");
-      return;
-    }
-
-        const accountId = await zohoGetOrCreateDefaultAccountId(phoneE164);
-
+    // 2) DEAL: buscar o crear (siempre, para que el funnel avance)
+    const accountId = await zohoEnsureDefaultAccountId();
     let deal = await zohoFindDealByPhone(phoneE164);
 
-    // Evita regresión de etapa: respeta la etapa más avanzada ya guardada en Zoho
-    const existingStageKey = deal?.Stage ? stageKeyFromName(deal.Stage) : "diagnostico";
-    const stageKey = maxStage(existingStageKey, computedStageKey);
-
     const dealPayload = buildDealPayload(d, phoneE164, stageKey, accountId);
+    const stageName = dealPayload.Stage;
 
     if (deal) {
-      await zohoUpdateDeal(deal.id, dealPayload);
+      try {
+        await zohoUpdateDeal(deal.id, dealPayload);
+      } catch (e) {
+        // Si la etapa no existe (picklist mismatch), reintenta sin Stage para que al menos guarde los datos
+        if (isZohoInvalidStageError(e)) {
+          console.warn("⚠️ Zoho Stage inválida (picklist no coincide). Reintentando sin Stage:", stageName);
+          const p2 = { ...dealPayload };
+          delete p2.Stage;
+          await zohoUpdateDeal(deal.id, p2);
+        } else throw e;
+      }
+
       session.zohoDealId = deal.id;
-      console.log("✅ Zoho DEAL updated", deal.id, "Stage:", STAGE_MAP[stageKey]);
+      console.log("✅ Zoho DEAL updated", deal.id, "StageKey:", stageKey, "Stage:", stageName);
     } else {
-      const created = await zohoCreateDeal(dealPayload);
-      session.zohoDealId = created?.details?.id || null;
-      console.log("✅ Zoho DEAL created", session.zohoDealId, "Stage:", STAGE_MAP[stageKey]);
+      try {
+        const created = await zohoCreateDeal(dealPayload);
+        session.zohoDealId = created?.details?.id || null;
+      } catch (e) {
+        if (isZohoInvalidStageError(e)) {
+          console.warn("⚠️ Zoho Stage inválida (picklist no coincide). Creando Deal sin Stage:", stageName);
+          const p2 = { ...dealPayload };
+          delete p2.Stage;
+          const created = await zohoCreateDeal(p2);
+          session.zohoDealId = created?.details?.id || null;
+        } else throw e;
+      }
+      console.log("✅ Zoho DEAL created", session.zohoDealId, "StageKey:", stageKey, "Stage:", stageName);
     }
-
-
 
   } catch (e) {
     const status = e?.response?.status;
@@ -1189,9 +1158,9 @@ async function zohoUpsertFull(session, phone, retries = 1) {
 // ---------- Routes ----------
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 app.get("/", (_req, res) => res.status(200).json({ 
-  status: "Ferrari 5.0 running",
-  version: "5.0.0",
-  features: ["Leads+Deals", "Perfil Psicológico", "Tono Dinámico", "Anti-precio", "Normativa OGUC"]
+  status: "Ferrari 5.3 running",
+  version: "5.3.0",
+  features: ["Leads+Deals", "Pipeline inteligente", "Typing indicator", "Perfil Psicológico", "Anti-precio"]
 }));
 
 // ===== ZOHO AUTH / CALLBACK / TEST =====
@@ -1267,7 +1236,7 @@ app.get("/zoho/test-deal", async (req, res) => {
     
     // Crear deal de prueba
     const testPayload = {
-      Deal_Name: "TEST - WhatsApp IA Ferrari 5.0",
+      Deal_Name: "TEST - WhatsApp IA Ferrari 5.3",
       Stage: STAGE_MAP.diagnostico,
       Closing_Date: formatDateZoho(addDays(new Date(), 30)),
       Description: "Deal de prueba creado desde WhatsApp IA",
@@ -1312,9 +1281,6 @@ app.post("/webhook", async (req, res) => {
 
   const { waId, msgId, type } = incoming;
 
-  // Marcar como leído (sensación humana de presencia)
-  await waMarkRead(waId, msgId);
-
   if (isDuplicateMsg(msgId)) {
     console.log("⏭️ duplicate msgId", msgId);
     return;
@@ -1322,7 +1288,7 @@ app.post("/webhook", async (req, res) => {
 
   const rateCheck = checkRate(waId);
   if (!rateCheck.allowed) {
-    await waSendTextHuman(waId, rateCheck.msg);
+    await waSendText(waId, rateCheck.msg);
     return;
   }
 
@@ -1330,6 +1296,12 @@ app.post("/webhook", async (req, res) => {
   try {
     const session = getSession(waId);
     session.lastUserAt = Date.now();
+
+    // Guardar último texto para inferir etapa del funnel
+    session.lastUserText = "";
+
+    // Mostrar 'escribiendo...' mientras procesamos
+    await waMarkReadAndTyping(msgId, "text");
 
     let userText = incoming.text;
 
@@ -1364,13 +1336,16 @@ app.post("/webhook", async (req, res) => {
         console.log("📄 PDF_TXT_LEN", pdfText.length);
         userText = `[PDF recibido]:\n${pdfText}`;
       } else {
-        await waSendTextHuman(waId, "Recibí el archivo. ¿Me puedes escribir qué producto necesitas (ventana/puerta), medidas, comuna y tipo de vidrio?");
+        await waSendText(waId, "Recibí el archivo. ¿Me puedes escribir qué producto necesitas (ventana/puerta), medidas, comuna y tipo de vidrio?");
         return;
       }
     }
 
-    console.log("📩 IN", { waId, type, preview: String(userText).slice(0, 80) });
-    session._lastUserText = String(userText || "");
+    session.lastUserText = userText;
+    // Inferir etapa con señales del mensaje (sin retroceder)
+    determineStage(session);
+
+    console.log("📩 IN", { waId, type, preview: String(userText).slice(0, 80), stageKey: session.data.stageKey });
 
     // 1) Detective: clasificar perfil
     const profile = await classifyProfile(userText);
@@ -1432,7 +1407,8 @@ app.post("/webhook", async (req, res) => {
         }
 
         if (finalText) {
-          await waSendTextHuman(waId, finalText);
+          await sleep(humanDelayMs(finalText));
+          await waSendText(waId, finalText);
           session.history.push({ role: "user", content: userText });
           session.history.push({ role: "assistant", content: finalText });
         }
@@ -1446,7 +1422,8 @@ app.post("/webhook", async (req, res) => {
       }
 
       if (reply) {
-        await waSendTextHuman(waId, reply);
+        await sleep(humanDelayMs(reply));
+        await waSendText(waId, reply);
         session.history.push({ role: "user", content: userText });
         session.history.push({ role: "assistant", content: reply });
       }
@@ -1464,11 +1441,14 @@ app.post("/webhook", async (req, res) => {
     const shouldSend = complete && !session.pdfSent && (triggerPDF || askedPdf || AUTO_SEND_PDF_WHEN_READY);
 
     if (shouldSend) {
-      await waSendTextHuman(waId, "Perfecto, ya tengo todo. Te envío el PDF de cotización referencial 📄");
+      await waMarkReadAndTyping(msgId, "text");
+      await sleep(1200);
+      await waSendText(waId, "Perfecto, ya tengo todo. Te envío el PDF de cotización referencial 📄");
       const pdf = await createQuotePdf(session.data);
       const mediaId = await waUploadPdf(pdf);
       await waSendPdfById(waId, mediaId, "Cotización referencial — Activa Inversiones");
       session.pdfSent = true;
+      bumpStage(session, "propuesta");
 
       // Actualizar Zoho con etapa "propuesta"
       zohoUpsertFull(session, waId).catch((e) => console.warn("⚠️ Zoho post-PDF fail", e.message));
