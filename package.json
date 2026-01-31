@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-ia-ferrari5",
-  "version": "5.3.0",
-  "description": "Ferrari 5.3 — WhatsApp IA + Zoho CRM (Deals pipeline + typing indicator)",
+  "version": "5.0.0",
+  "description": "WhatsApp IA + Zoho CRM - Ferrari 5.0 (Leads + Deals automático)",
   "type": "module",
   "main": "index.js",
   "scripts": {
