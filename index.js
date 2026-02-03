@@ -1463,7 +1463,7 @@ app.post("/webhook", async (req, res) => {
 
 // ---------- Boot ----------
 console.log("═══════════════════════════════════════════════════");
-console.log("  🏎️  FERRARI 5.0 — WhatsApp IA + Zoho CRM");
+console.log("  🏎️  FERRARI 5.3 — WhatsApp IA + Zoho CRM");
 console.log("═══════════════════════════════════════════════════");
 console.log(`  PORT=${PORT}`);
 console.log(`  TZ=${TZ}`);

@@ -147,3 +147,7 @@ vite.config.ts.timestamp-*
 # deps
 node_modules/
 
+
+.env
+node_modules/
+
