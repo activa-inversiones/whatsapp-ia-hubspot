@@ -1,5 +1,5 @@
 // index.js — WhatsApp IA + Zoho CRM
-// Ferrari 6.4 — FIX DEFINITIVO (Audio/Imagen OK + No Loops + Logs Limpios)
+// Ferrari 6.4.1 — FIX ZOHO SEARCH (Eliminado Fallback inválido para limpiar logs)
 // Node 18+ | Railway | ESM
 
 import express from "express";
@@ -229,7 +229,7 @@ async function waMarkReadAndTyping(waId, messageId) {
   try {
     if (messageId) await axios.post(url, { messaging_product: "whatsapp", status: "read", message_id: messageId }, { headers: { Authorization: `Bearer ${META.TOKEN}` } });
     if (waId) await axios.post(url, { messaging_product: "whatsapp", to: waId, typing_indicator: { type: "text" } }, { headers: { Authorization: `Bearer ${META.TOKEN}` } });
-  } catch (e) { }
+  } catch (e) { /* Ignorar errores de typing */ }
 }
 
 async function waUploadPdf(buffer, filename = "Cotizacion.pdf") {
@@ -267,7 +267,7 @@ async function waDownloadMedia(mediaUrl) {
 }
 
 // ============================================================
-// MEDIA PROCESSING (Audio + Imagen)
+// MEDIA PROCESSING
 // ============================================================
 async function transcribeAudio(buffer, mime) {
   try {
@@ -330,6 +330,17 @@ function saveSession(waId, session) {
   sessions.set(waId, session);
 }
 
+function cleanupSessions() {
+  const cutoff = Date.now() - SESSION_TTL_MS;
+  for (const [waId, s] of sessions.entries()) {
+    if ((s.lastUserAt || 0) < cutoff) sessions.delete(waId);
+  }
+}
+setInterval(cleanupSessions, 3600000);
+
+// ============================================================
+// RATE LIMITING & LOCKS
+// ============================================================
 const processedMsgIds = new Map();
 function isDuplicateMsg(msgId) {
   if (!msgId) return false;
@@ -362,7 +373,7 @@ function checkRate(waId) {
 }
 
 // ============================================================
-// WEBHOOK EXTRACTION (CORREGIDO - AHORA EXTRAE MULTIMEDIA)
+// WEBHOOK EXTRACTION
 // ============================================================
 function extractIncoming(reqBody) {
   const entry = reqBody?.entry?.[0];
@@ -378,7 +389,6 @@ function extractIncoming(reqBody) {
   const msgId = msg.id;
   const type = msg.type;
 
-  // 🔴 FIX: Extracción correcta de IDs
   const audioId = type === "audio" ? msg.audio?.id : null;
   const imageId = type === "image" ? msg.image?.id : null;
   const docId = type === "document" ? msg.document?.id : null;
@@ -394,7 +404,7 @@ function extractIncoming(reqBody) {
 }
 
 // ============================================================
-// LÓGICA DE NEGOCIO Y ETAPAS
+// LÓGICA DE NEGOCIO
 // ============================================================
 function nextMissingKey(d) {
   if (!d.product) return "producto";
@@ -406,13 +416,6 @@ function nextMissingKey(d) {
 
 function isComplete(d) {
   return !!(d.product && d.measures && (d.address || d.comuna) && d.glass);
-}
-
-function determineStage(session) {
-  const d = session.data;
-  if (session.pdfSent) { session.data.stageKey = "propuesta"; return; }
-  if (!d.product || !d.measures || !d.glass) { session.data.stageKey = "diagnostico"; return; }
-  session.data.stageKey = "siembra";
 }
 
 // ============================================================
@@ -427,9 +430,15 @@ const tools = [
       parameters: {
         type: "object",
         properties: {
-          name: { type: "string" }, product: { type: "string" }, measures: { type: "string" },
-          address: { type: "string" }, comuna: { type: "string" }, glass: { type: "string" },
-          install: { type: "string" }, wants_pdf: { type: "boolean" }, notes: { type: "string" },
+          name: { type: "string" },
+          product: { type: "string" },
+          measures: { type: "string" },
+          address: { type: "string" },
+          comuna: { type: "string" },
+          glass: { type: "string" },
+          install: { type: "string" },
+          wants_pdf: { type: "boolean" },
+          notes: { type: "string" },
         },
       },
     },
@@ -537,7 +546,10 @@ async function runAI(session, userText) {
   const d = session.data;
   const missingKey = nextMissingKey(d);
   const complete = isComplete(d);
-  const statusMsg = complete ? "DATOS COMPLETOS. Confirma si quiere PDF formal." : `FALTA: "${missingKey}". Conversa o pídelo amablemente.`;
+  
+  const statusMsg = complete
+    ? "DATOS COMPLETOS. Confirma si quiere PDF formal."
+    : `FALTA: "${missingKey}". Conversa o pídelo amablemente.`;
 
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
@@ -549,7 +561,12 @@ async function runAI(session, userText) {
 
   try {
     const resp = await openai.chat.completions.create({
-      model: AI_MODEL, messages, tools, tool_choice: "auto", temperature: 0.3, max_tokens: 400,
+      model: AI_MODEL,
+      messages,
+      tools,
+      tool_choice: "auto",
+      temperature: 0.3,
+      max_tokens: 400,
     });
     
     const aiMsg = resp.choices?.[0]?.message;
@@ -557,9 +574,12 @@ async function runAI(session, userText) {
       const match = aiMsg.content.match(/<PROFILE:(\w+)>/i);
       if (match) {
         const detected = match[1].toUpperCase();
-        if (["PRECIO", "CALIDAD", "TECNICO", "AFINIDAD"].includes(detected)) session.data.profile = detected;
+        if (["PRECIO", "CALIDAD", "TECNICO", "AFINIDAD"].includes(detected)) {
+          session.data.profile = detected;
+        }
       }
     }
+    
     return aiMsg;
   } catch (e) {
     logError("OpenAI Run", e);
@@ -568,7 +588,7 @@ async function runAI(session, userText) {
 }
 
 // ============================================================
-// PDF Y ZOHO
+// PDF
 // ============================================================
 async function createQuotePdf(data, quoteNumber) {
   return new Promise((resolve, reject) => {
@@ -600,7 +620,11 @@ async function createQuotePdf(data, quoteNumber) {
       doc.fillColor(primaryColor).fontSize(12).font("Helvetica-Bold").text("DETALLE", 50);
       doc.moveDown(0.5);
       
-      const items = [ ["Producto", data.product], ["Medidas", data.measures], ["Vidrio", data.glass], ["Instalación", data.install], ["Notas", data.notes] ];
+      const items = [
+        ["Producto", data.product], ["Medidas", data.measures],
+        ["Vidrio", data.glass], ["Instalación", data.install], ["Notas", data.notes]
+      ];
+      
       let rowY = doc.y;
       doc.font("Helvetica");
       for (const [l, v] of items) {
@@ -623,6 +647,9 @@ async function createQuotePdf(data, quoteNumber) {
   });
 }
 
+// ============================================================
+// ZOHO CRM
+// ============================================================
 let zohoCache = { token: "", expiresAt: 0 };
 let tokenRefreshPromise = null;
 
@@ -657,20 +684,17 @@ async function zohoFindLead(phone) {
   } catch (e) { if (e.response?.status !== 204) logError("Zoho Find Lead", e); return null; }
 }
 
+// 🔴 FIX: Solo buscar por teléfono para evitar error 400
 async function zohoFindDeal(phone) {
+  if (!ZOHO.DEAL_PHONE_FIELD) return null;
   const t = await getZohoToken();
-  const digits = String(phone).replace(/\D/g, "").slice(-8);
-  if (ZOHO.DEAL_PHONE_FIELD) {
-    try {
-      const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=(${ZOHO.DEAL_PHONE_FIELD}:equals:${encodeURIComponent(phone)})`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
-      if (r.data?.data?.[0]) return r.data.data[0];
-    } catch (e) { }
-  }
   try {
-    const criteria = `(Deal_Name:contains:${digits})`;
-    const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=${encodeURIComponent(criteria)}`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
+    const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=(${ZOHO.DEAL_PHONE_FIELD}:equals:${encodeURIComponent(phone)})`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
     return r.data?.data?.[0];
-  } catch (e) { if (e.response?.status !== 204) logError("Zoho Find Deal (Fallback)", e); return null; }
+  } catch (e) {
+    if (e.response?.status !== 204) logError("Zoho Find Deal", e);
+    return null;
+  }
 }
 
 async function zohoCreate(module, data) {
@@ -690,7 +714,9 @@ async function zohoUpdate(module, id, data) {
 
 async function zohoCloseDeal(dealId) {
     if (!REQUIRE_ZOHO || !dealId) return;
-    try { await zohoUpdate("Deals", dealId, { Stage: "Cerrado perdido", Description: "Cliente reinició cotización via WhatsApp" }); } catch (e) { }
+    try {
+        await zohoUpdate("Deals", dealId, { Stage: "Cerrado perdido", Description: "Cliente reinició cotización via WhatsApp" });
+    } catch (e) { logError("Zoho Close Deal", e); }
 }
 
 async function zohoEnsureDefaultAccountId() {
@@ -708,9 +734,8 @@ async function zohoUpsertFull(session, phone) {
   if (!REQUIRE_ZOHO) return;
   const d = session.data;
   const phoneE164 = normalizeCLPhone(phone);
-  const stageName = STAGE_MAP[session.data.stageKey] || STAGE_MAP.diagnostico;
-
   try {
+    // Lead
     let lead = await zohoFindLead(phoneE164);
     const leadData = { Last_Name: d.name || `Lead WA`, Mobile: phoneE164, Lead_Source: "WhatsApp IA", Description: `Perfil: ${d.profile}` };
     if (ZOHO.LEAD_PROFILE_FIELD && d.profile) leadData[ZOHO.LEAD_PROFILE_FIELD] = d.profile;
@@ -718,12 +743,18 @@ async function zohoUpsertFull(session, phone) {
     if (lead) await zohoUpdate("Leads", lead.id, leadData);
     else await zohoCreate("Leads", leadData);
 
+    // Deal
     let deal = await zohoFindDeal(phoneE164);
     const dealData = {
         Deal_Name: `${d.product || "Ventanas"} [WA ${phone.slice(-4)}]`,
-        Stage: stageName, Closing_Date: formatDateZoho(addDays(new Date(), 30)),
+        Stage: STAGE_MAP.diagnostico, // Default
+        Closing_Date: formatDateZoho(addDays(new Date(), 30)),
         Description: `Producto: ${d.product}\nMedidas: ${d.measures}\nPrecio: ${d.internal_price}`
     };
+    // 🔴 FIX: Solo cambiar etapa si ya enviamos PDF
+    if (session.pdfSent) dealData.Stage = STAGE_MAP.propuesta;
+    else if (d.product || d.measures) dealData.Stage = STAGE_MAP.siembra;
+
     if (ZOHO.DEAL_PHONE_FIELD) dealData[ZOHO.DEAL_PHONE_FIELD] = phoneE164;
     
     if (deal) {
@@ -782,14 +813,18 @@ app.post("/webhook", async (req, res) => {
     // RESET
     if (/^reset|nueva cotizaci[oó]n|empezar de nuevo/i.test(userText)) {
         if (session.zohoDealId) await zohoCloseDeal(session.zohoDealId);
-        session.data = createEmptySession().data; session.data.name = "Cliente";
-        session.zohoDealId = null; session.pdfSent = false;
+        
+        session.data = createEmptySession().data;
+        session.data.name = "Cliente";
+        session.zohoDealId = null;
+        session.pdfSent = false;
+        
         await waSendText(waId, "🔄 *Carpeta Nueva Abierta*\n\nHe guardado el historial anterior. Empecemos de cero.");
-        saveSession(waId, session); release(); return;
+        saveSession(waId, session);
+        release(); return;
     }
 
     session.history.push({ role: "user", content: userText });
-    determineStage(session);
 
     const aiMsg = await runAI(session, userText);
     
@@ -799,8 +834,6 @@ app.post("/webhook", async (req, res) => {
         if (tc.function.name === "update_customer_data") {
             const args = JSON.parse(tc.function.arguments);
             session.data = { ...session.data, ...args };
-            
-            determineStage(session);
             
             if (isComplete(session.data) || args.wants_pdf) {
                 const m = normalizeMeasures(session.data.measures);
@@ -815,20 +848,18 @@ app.post("/webhook", async (req, res) => {
                 const pdfBuf = await createQuotePdf(session.data, qNum);
                 const mediaId = await waUploadPdf(pdfBuf);
                 await waSendPdfById(waId, mediaId, "Cotización Formal");
+                
                 await waSendText(waId, "📄 *Cotización Lista*\n\nEl *Equipo Alfa* ya tiene copia de esto para apoyarte en el cierre.");
+                
                 session.pdfSent = true;
-                session.data.stageKey = "propuesta"; 
                 await zohoUpsertFull(session, waId);
             } else {
-                // 🔴 CORRECCIÓN: Sincronizar SIEMPRE en herramientas (Lead en tiempo real)
-                zohoUpsertFull(session, waId).catch(e => console.error(e));
-
                 const follow = await openai.chat.completions.create({
                     model: AI_MODEL,
                     messages: [
                         { role: "system", content: SYSTEM_PROMPT },
                         ...session.history.slice(-12),
-                        aiMsg, // FIX: No repetir userText
+                        aiMsg,
                         { role: "tool", tool_call_id: tc.id, content: "Datos guardados." }
                     ],
                     temperature: 0.4
@@ -837,6 +868,9 @@ app.post("/webhook", async (req, res) => {
                 const reply = follow.choices[0].message.content.replace(/<PROFILE:.*?>/gi, "").trim();
                 await waSendText(waId, reply);
                 session.history.push({ role: "assistant", content: reply });
+                
+                // 🔴 FIX: Sincronizar Zoho aunque no haya PDF (para crear Lead)
+                zohoUpsertFull(session, waId).catch(() => {});
             }
         }
     } else {
@@ -853,4 +887,4 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`🚀 Ferrari 6.4 ACTIVO`));
+app.listen(PORT, () => console.log(`🚀 Ferrari 6.4.1 ACTIVO`));
