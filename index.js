@@ -1,5 +1,5 @@
 // index.js — WhatsApp IA + Zoho CRM
-// Ferrari 6.3.2 — AJUSTE FINO: Etapas Lentas + Anti-Duplicados (Diagnóstico Real)
+// Ferrari 6.4 — FIX DEFINITIVO (Audio/Imagen OK + No Loops + Logs Limpios)
 // Node 18+ | Railway | ESM
 
 import express from "express";
@@ -30,18 +30,14 @@ app.use(
 );
 
 // ============================================================
-// HELPER LOGS (Anti-Spam)
+// HELPER LOGS (Anti-Spam Railway)
 // ============================================================
 function logError(context, e) {
   if (e.response) {
-    // Si es error 400 de búsqueda, aviso limpio
-    if (e.response.status === 400 && context.includes("Find")) {
-        console.warn(`⚠️ ${context}: Búsqueda por campo falló (Zoho no indexó aún). Usando Plan B.`);
-    } else {
-        console.error(`❌ ${context} [API]: ${e.response.status} - ${JSON.stringify(e.response.data).slice(0, 200)}...`);
-    }
+    // Errores de API resumidos
+    console.error(`❌ ${context} [API]: ${e.response.status} - ${JSON.stringify(e.response.data).slice(0, 150)}...`);
   } else if (e.request) {
-    console.error(`❌ ${context} [Network]: Sin respuesta del servidor.`);
+    console.error(`❌ ${context} [Network]: Sin respuesta.`);
   } else {
     console.error(`❌ ${context} [Code]: ${e.message}`);
   }
@@ -65,10 +61,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const AI_MODEL = process.env.AI_MODEL_OPENAI || "gpt-4o-mini";
 const STT_MODEL = process.env.AI_MODEL_STT || "whisper-1";
 
-// Freno de mano PDF
 const AUTO_SEND_PDF_WHEN_READY = false;
 
-// ----- Zoho -----
 const REQUIRE_ZOHO = String(process.env.REQUIRE_ZOHO || "true") === "true";
 const ZOHO = {
   CLIENT_ID: process.env.ZOHO_CLIENT_ID,
@@ -83,7 +77,6 @@ const ZOHO = {
   DEFAULT_ACCOUNT_NAME: process.env.ZOHO_DEFAULT_ACCOUNT_NAME || "Clientes WhatsApp IA",
 };
 
-// ----- Empresa -----
 const COMPANY = {
   NAME: process.env.COMPANY_NAME || "Activa Inversiones",
   PHONE: process.env.COMPANY_PHONE || "+56 9 1234 5678",
@@ -93,7 +86,6 @@ const COMPANY = {
   RUT: process.env.COMPANY_RUT || "76.XXX.XXX-X",
 };
 
-// ---------- Etapas del Pipeline ----------
 const STAGE_MAP = {
   diagnostico: process.env.ZOHO_STAGE_DIAGNOSTICO || "Diagnóstico y Perfilado",
   siembra: process.env.ZOHO_STAGE_SIEMBRA || "Siembra de Confianza + Marco Normativo (OGUC/RT)",
@@ -104,18 +96,6 @@ const STAGE_MAP = {
   ganado: process.env.ZOHO_STAGE_GANADO || "Cerrado ganado",
   perdido: process.env.ZOHO_STAGE_PERDIDO || "Cerrado perdido",
   competencia: process.env.ZOHO_STAGE_COMPETENCIA || "Perdido y cerrado para la competencia",
-};
-
-const STAGE_RANK = {
-  diagnostico: 10,
-  siembra: 20,
-  propuesta: 40,
-  objeciones: 60,
-  validacion: 75,
-  cierre: 90,
-  ganado: 100,
-  perdido: 0,
-  competencia: 0,
 };
 
 // ============================================================
@@ -287,7 +267,7 @@ async function waDownloadMedia(mediaUrl) {
 }
 
 // ============================================================
-// MEDIA PROCESSING
+// MEDIA PROCESSING (Audio + Imagen)
 // ============================================================
 async function transcribeAudio(buffer, mime) {
   try {
@@ -320,7 +300,7 @@ async function parsePdfToText(buffer) {
 }
 
 // ============================================================
-// SESSIONS & RATE LIMITING
+// SESSIONS
 // ============================================================
 const sessions = new Map();
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000; 
@@ -382,16 +362,35 @@ function checkRate(waId) {
 }
 
 // ============================================================
-// WEBHOOK EXTRACTION
+// WEBHOOK EXTRACTION (CORREGIDO - AHORA EXTRAE MULTIMEDIA)
 // ============================================================
 function extractIncoming(reqBody) {
   const entry = reqBody?.entry?.[0];
   const changes = entry?.changes?.[0];
   const value = changes?.value;
+
   if (value?.statuses?.length) return { ok: false, reason: "status_update" };
+
   const msg = value?.messages?.[0];
   if (!msg) return { ok: false, reason: "no_message" };
-  return { ok: true, waId: msg.from, msgId: msg.id, type: msg.type, text: msg.text?.body || "" };
+  
+  const waId = msg.from;
+  const msgId = msg.id;
+  const type = msg.type;
+
+  // 🔴 FIX: Extracción correcta de IDs
+  const audioId = type === "audio" ? msg.audio?.id : null;
+  const imageId = type === "image" ? msg.image?.id : null;
+  const docId = type === "document" ? msg.document?.id : null;
+  const docMime = type === "document" ? msg.document?.mime_type : null;
+  
+  let text = "";
+  if (type === "text") text = msg.text?.body || "";
+  else if (type === "button") text = msg.button?.text || "";
+  else if (type === "interactive") text = JSON.stringify(msg.interactive || {});
+  else text = `[${type}]`;
+
+  return { ok: true, waId, msgId, type, text, audioId, imageId, docId, docMime };
 }
 
 // ============================================================
@@ -411,20 +410,8 @@ function isComplete(d) {
 
 function determineStage(session) {
   const d = session.data;
-  
-  // 1. Si enviamos PDF -> Propuesta (Estado FINAL)
-  if (session.pdfSent) {
-    session.data.stageKey = "propuesta";
-    return;
-  }
-  
-  // 2. Si NO tenemos todos los datos, forzamos Diagnóstico
-  if (!d.product || !d.measures || !d.glass) {
-     session.data.stageKey = "diagnostico";
-     return;
-  }
-
-  // 3. Solo si tenemos TODO (Producto + Medidas + Vidrio) pasamos a Siembra
+  if (session.pdfSent) { session.data.stageKey = "propuesta"; return; }
+  if (!d.product || !d.measures || !d.glass) { session.data.stageKey = "diagnostico"; return; }
   session.data.stageKey = "siembra";
 }
 
@@ -440,15 +427,9 @@ const tools = [
       parameters: {
         type: "object",
         properties: {
-          name: { type: "string" },
-          product: { type: "string" },
-          measures: { type: "string" },
-          address: { type: "string" },
-          comuna: { type: "string" },
-          glass: { type: "string" },
-          install: { type: "string" },
-          wants_pdf: { type: "boolean" },
-          notes: { type: "string" },
+          name: { type: "string" }, product: { type: "string" }, measures: { type: "string" },
+          address: { type: "string" }, comuna: { type: "string" }, glass: { type: "string" },
+          install: { type: "string" }, wants_pdf: { type: "boolean" }, notes: { type: "string" },
         },
       },
     },
@@ -456,15 +437,21 @@ const tools = [
 ];
 
 const SYSTEM_PROMPT = `
-Eres un ASESOR ESPECIALISTA EN SOLUCIONES DE VENTANAS Y CERRAMIENTOS de ${COMPANY.NAME}.
-NO eres un vendedor agresivo. NO empujas ventas. NO presionas decisiones.
+Eres un ASESOR ESPECIALISTA EN SOLUCIONES DE VENTANAS Y CERRAMIENTOS
+de ${COMPANY.NAME}.
 
-Tu rol es acompañar, orientar y ayudar al cliente a tomar una BUENA decisión técnica y económica.
+NO eres un vendedor agresivo.
+NO empujas ventas.
+NO presionas decisiones.
+
+Tu rol es acompañar, orientar y ayudar al cliente
+a tomar una BUENA decisión técnica y económica.
 
 ────────────────────────
 ENFOQUE PRINCIPAL: VENTA POR VALOR
 ────────────────────────
-Las personas compran por confianza, durabilidad, confort y respaldo.
+Las personas compran por confianza, durabilidad,
+confort térmico/acústico y respaldo.
 Tu misión es transmitir ese valor SIN imponerlo.
 
 ────────────────────────
@@ -472,39 +459,85 @@ CÓMO TE COMPORTAS
 ────────────────────────
 - Conversas como un asesor experimentado, humano y chileno.
 - Escuchas primero, hablas después.
-- Si el cliente escribe poco o desordenado, NO lo apuras.
+- Si el cliente escribe poco o desordenado (fotos, audios), NO lo apuras.
+  Agradeces y ordenas tú.
 - Si el cliente solo está explorando, lo acompañas sin exigir datos.
+
+Ejemplo de tono correcto:
+“Perfecto 👍 con lo que me comentas ya se puede ir entendiendo el proyecto.”
 
 ────────────────────────
 RELACIÓN CON EL PRECIO
 ────────────────────────
 - El precio NO es el centro de la conversación.
-- Explicas rangos y QUÉ influye (vidrio, perfil, instalación).
+- Si preguntan, explicas rangos orientativos y QUÉ influye
+  (vidrio, perfil, instalación, uso del espacio).
+- Dejas claro que el valor exacto requiere entender bien el proyecto
+  para evitar errores posteriores.
 - NUNCA uses urgencia artificial ni presión comercial.
 
 ────────────────────────
 PROCESO NATURAL (NO FORZADO)
 ────────────────────────
-1. Entender el proyecto (Diagnóstico).
-2. Aclarar dudas y proponer soluciones.
-3. Solo cuando esté claro o el cliente lo pida: ofrecer cotización formal (PDF).
+1. Entender el proyecto.
+2. Aclarar dudas y proponer soluciones (explicando el “por qué”).
+3. Solo cuando esté claro o el cliente lo pida:
+   ofrecer cotización formal (PDF).
+
+Si el cliente no está listo para cotizar, NO lo empujes.
 
 ────────────────────────
-INSTRUCCIONES TÉCNICAS (OBLIGATORIAS)
+TRASPASO A HUMANOS (SUAVE)
 ────────────────────────
-1. HERRAMIENTAS: Si el cliente entrega datos (producto, medidas, comuna, vidrio), DEBES llamar a 'update_customer_data'.
-2. DATOS FALTANTES: Pídelos de a uno y con lenguaje humano.
-3. PERFILADO: Analiza y etiqueta al final con <PROFILE:TIPO> (PRECIO, CALIDAD, TECNICO, AFINIDAD).
+Cuando corresponda, presenta al Equipo Alfa como apoyo:
+
+“Si quieres, un consultor del Equipo Alfa
+puede revisar contigo los detalles finos del proyecto.”
+
+Nunca como presión. Siempre como respaldo.
+
+────────────────────────
+INSTRUCCIONES TÉCNICAS (OBLIGATORIAS PARA TI)
+────────────────────────
+1. USO DE HERRAMIENTAS:
+   Si el cliente entrega datos nuevos (producto, medidas, comuna,
+   vidrio, instalación, correo, etc.),
+   DEBES llamar inmediatamente a la función:
+   update_customer_data
+
+2. DATOS FALTANTES:
+   Si necesitas información para cotizar,
+   pídela de a uno y con lenguaje humano,
+   nunca como interrogatorio.
+
+3. PERFILADO INTERNO (SILENCIOSO):
+   Analiza el comportamiento y clasifica al cliente como UNO solo:
+   - PRECIO → busca economía. Enfócate en durabilidad.
+   - CALIDAD → busca estándar alto. Habla de terminaciones y garantía.
+   - TECNICO → sabe del tema. Usa mm, DVH, normativa.
+   - AFINIDAD → compra por confianza. Sé cercano.
+
+────────────────────────
+ETIQUETA INTERNA (OBLIGATORIA)
+────────────────────────
+Al FINAL de cada respuesta tuya,
+incluye SOLO UNO de estos tags,
+en una línea aparte y SIN explicarlo,
+para uso interno del sistema:
+
+<PROFILE:PRECIO>
+<PROFILE:CALIDAD>
+<PROFILE:TECNICO>
+<PROFILE:AFINIDAD>
+
+El cliente NUNCA debe notar estos tags.
 `.trim();
 
 async function runAI(session, userText) {
   const d = session.data;
   const missingKey = nextMissingKey(d);
   const complete = isComplete(d);
-  
-  const statusMsg = complete
-    ? "DATOS COMPLETOS. Confirma si quiere PDF formal."
-    : `FALTA: "${missingKey}". Conversa o pídelo amablemente.`;
+  const statusMsg = complete ? "DATOS COMPLETOS. Confirma si quiere PDF formal." : `FALTA: "${missingKey}". Conversa o pídelo amablemente.`;
 
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
@@ -567,11 +600,7 @@ async function createQuotePdf(data, quoteNumber) {
       doc.fillColor(primaryColor).fontSize(12).font("Helvetica-Bold").text("DETALLE", 50);
       doc.moveDown(0.5);
       
-      const items = [
-        ["Producto", data.product], ["Medidas", data.measures],
-        ["Vidrio", data.glass], ["Instalación", data.install], ["Notas", data.notes]
-      ];
-      
+      const items = [ ["Producto", data.product], ["Medidas", data.measures], ["Vidrio", data.glass], ["Instalación", data.install], ["Notas", data.notes] ];
       let rowY = doc.y;
       doc.font("Helvetica");
       for (const [l, v] of items) {
@@ -628,30 +657,20 @@ async function zohoFindLead(phone) {
   } catch (e) { if (e.response?.status !== 204) logError("Zoho Find Lead", e); return null; }
 }
 
-// 🔴 BÚSQUEDA HÍBRIDA ANTI-DUPLICADOS
 async function zohoFindDeal(phone) {
   const t = await getZohoToken();
   const digits = String(phone).replace(/\D/g, "").slice(-8);
-
-  // 1. Intento por Campo Único
   if (ZOHO.DEAL_PHONE_FIELD) {
     try {
       const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=(${ZOHO.DEAL_PHONE_FIELD}:equals:${encodeURIComponent(phone)})`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
       if (r.data?.data?.[0]) return r.data.data[0];
-    } catch (e) {
-      // Ignoramos error 400 si el campo no está indexado y seguimos al fallback
-    }
+    } catch (e) { }
   }
-
-  // 2. Intento por Nombre (Fallback)
   try {
     const criteria = `(Deal_Name:contains:${digits})`;
     const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=${encodeURIComponent(criteria)}`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
     return r.data?.data?.[0];
-  } catch (e) {
-    if (e.response?.status !== 204) logError("Zoho Find Deal (Fallback)", e);
-    return null;
-  }
+  } catch (e) { if (e.response?.status !== 204) logError("Zoho Find Deal (Fallback)", e); return null; }
 }
 
 async function zohoCreate(module, data) {
@@ -671,9 +690,7 @@ async function zohoUpdate(module, id, data) {
 
 async function zohoCloseDeal(dealId) {
     if (!REQUIRE_ZOHO || !dealId) return;
-    try {
-        await zohoUpdate("Deals", dealId, { Stage: "Cerrado perdido", Description: "Cliente reinició cotización via WhatsApp" });
-    } catch (e) { logError("Zoho Close Deal", e); }
+    try { await zohoUpdate("Deals", dealId, { Stage: "Cerrado perdido", Description: "Cliente reinició cotización via WhatsApp" }); } catch (e) { }
 }
 
 async function zohoEnsureDefaultAccountId() {
@@ -691,12 +708,9 @@ async function zohoUpsertFull(session, phone) {
   if (!REQUIRE_ZOHO) return;
   const d = session.data;
   const phoneE164 = normalizeCLPhone(phone);
-  
-  // 🔴 CORRECCIÓN: Etapa correcta
   const stageName = STAGE_MAP[session.data.stageKey] || STAGE_MAP.diagnostico;
 
   try {
-    // Lead
     let lead = await zohoFindLead(phoneE164);
     const leadData = { Last_Name: d.name || `Lead WA`, Mobile: phoneE164, Lead_Source: "WhatsApp IA", Description: `Perfil: ${d.profile}` };
     if (ZOHO.LEAD_PROFILE_FIELD && d.profile) leadData[ZOHO.LEAD_PROFILE_FIELD] = d.profile;
@@ -704,12 +718,10 @@ async function zohoUpsertFull(session, phone) {
     if (lead) await zohoUpdate("Leads", lead.id, leadData);
     else await zohoCreate("Leads", leadData);
 
-    // Deal
     let deal = await zohoFindDeal(phoneE164);
     const dealData = {
         Deal_Name: `${d.product || "Ventanas"} [WA ${phone.slice(-4)}]`,
-        Stage: stageName, 
-        Closing_Date: formatDateZoho(addDays(new Date(), 30)),
+        Stage: stageName, Closing_Date: formatDateZoho(addDays(new Date(), 30)),
         Description: `Producto: ${d.product}\nMedidas: ${d.measures}\nPrecio: ${d.internal_price}`
     };
     if (ZOHO.DEAL_PHONE_FIELD) dealData[ZOHO.DEAL_PHONE_FIELD] = phoneE164;
@@ -727,7 +739,7 @@ async function zohoUpsertFull(session, phone) {
 }
 
 // ============================================================
-// WEBHOOK (MAIN)
+// WEBHOOK (Lógica Final)
 // ============================================================
 app.get("/webhook", (req, res) => {
   if (req.query["hub.verify_token"] === META.VERIFY_TOKEN) return res.send(req.query["hub.challenge"]);
@@ -770,20 +782,13 @@ app.post("/webhook", async (req, res) => {
     // RESET
     if (/^reset|nueva cotizaci[oó]n|empezar de nuevo/i.test(userText)) {
         if (session.zohoDealId) await zohoCloseDeal(session.zohoDealId);
-        
-        session.data = createEmptySession().data;
-        session.data.name = "Cliente";
-        session.zohoDealId = null;
-        session.pdfSent = false;
-        
+        session.data = createEmptySession().data; session.data.name = "Cliente";
+        session.zohoDealId = null; session.pdfSent = false;
         await waSendText(waId, "🔄 *Carpeta Nueva Abierta*\n\nHe guardado el historial anterior. Empecemos de cero.");
-        saveSession(waId, session);
-        release(); return;
+        saveSession(waId, session); release(); return;
     }
 
     session.history.push({ role: "user", content: userText });
-    
-    // 🔴 RE-CALCULO DE ETAPA
     determineStage(session);
 
     const aiMsg = await runAI(session, userText);
@@ -795,7 +800,6 @@ app.post("/webhook", async (req, res) => {
             const args = JSON.parse(tc.function.arguments);
             session.data = { ...session.data, ...args };
             
-            // Re-evaluar etapa
             determineStage(session);
             
             if (isComplete(session.data) || args.wants_pdf) {
@@ -811,14 +815,12 @@ app.post("/webhook", async (req, res) => {
                 const pdfBuf = await createQuotePdf(session.data, qNum);
                 const mediaId = await waUploadPdf(pdfBuf);
                 await waSendPdfById(waId, mediaId, "Cotización Formal");
-                
                 await waSendText(waId, "📄 *Cotización Lista*\n\nEl *Equipo Alfa* ya tiene copia de esto para apoyarte en el cierre.");
-                
                 session.pdfSent = true;
-                session.data.stageKey = "propuesta"; // Forzar etapa propuesta
+                session.data.stageKey = "propuesta"; 
                 await zohoUpsertFull(session, waId);
             } else {
-                // Sincronizar Zoho en tiempo real (en Diagnóstico/Siembra)
+                // 🔴 CORRECCIÓN: Sincronizar SIEMPRE en herramientas (Lead en tiempo real)
                 zohoUpsertFull(session, waId).catch(e => console.error(e));
 
                 const follow = await openai.chat.completions.create({
@@ -826,8 +828,7 @@ app.post("/webhook", async (req, res) => {
                     messages: [
                         { role: "system", content: SYSTEM_PROMPT },
                         ...session.history.slice(-12),
-                        { role: "user", content: userText },
-                        aiMsg,
+                        aiMsg, // FIX: No repetir userText
                         { role: "tool", tool_call_id: tc.id, content: "Datos guardados." }
                     ],
                     temperature: 0.4
@@ -852,4 +853,4 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`🚀 Ferrari 6.3.2 ACTIVO (Fix Etapas)`));
+app.listen(PORT, () => console.log(`🚀 Ferrari 6.4 ACTIVO`));
