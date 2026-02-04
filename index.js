@@ -94,7 +94,6 @@ const COMPANY = {
 };
 
 // ---------- Etapas del Pipeline ----------
-// Asegúrate de que estos nombres coincidan con tu Zoho
 const STAGE_MAP = {
   diagnostico: process.env.ZOHO_STAGE_DIAGNOSTICO || "Diagnóstico y Perfilado",
   siembra: process.env.ZOHO_STAGE_SIEMBRA || "Siembra de Confianza + Marco Normativo (OGUC/RT)",
@@ -396,7 +395,7 @@ function extractIncoming(reqBody) {
 }
 
 // ============================================================
-// LÓGICA DE NEGOCIO Y ETAPAS (CORREGIDA)
+// LÓGICA DE NEGOCIO Y ETAPAS
 // ============================================================
 function nextMissingKey(d) {
   if (!d.product) return "producto";
@@ -420,7 +419,6 @@ function determineStage(session) {
   }
   
   // 2. Si NO tenemos todos los datos, forzamos Diagnóstico
-  // Esto evita que salte a Siembra solo por decir "ventana"
   if (!d.product || !d.measures || !d.glass) {
      session.data.stageKey = "diagnostico";
      return;
@@ -537,7 +535,7 @@ async function runAI(session, userText) {
 }
 
 // ============================================================
-// PDF Y ZOHO (HOTFIX 6.3.1 INTEGRADO)
+// PDF Y ZOHO
 // ============================================================
 async function createQuotePdf(data, quoteNumber) {
   return new Promise((resolve, reject) => {
@@ -641,7 +639,7 @@ async function zohoFindDeal(phone) {
       const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=(${ZOHO.DEAL_PHONE_FIELD}:equals:${encodeURIComponent(phone)})`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
       if (r.data?.data?.[0]) return r.data.data[0];
     } catch (e) {
-      if (e.response?.status !== 204 && e.response?.status !== 400) logError("Zoho Find Deal (Field)", e);
+      // Ignoramos error 400 si el campo no está indexado y seguimos al fallback
     }
   }
 
@@ -760,4 +758,98 @@ app.post("/webhook", async (req, res) => {
     // AUDIO / IMAGEN
     if (type === "audio" && incoming.audioId) {
       const meta = await waGetMediaMeta(incoming.audioId);
-      const { buffer, mime } = await waDownloadMedia(meta.
+      const { buffer, mime } = await waDownloadMedia(meta.url);
+      userText = `[Audio]: ${await transcribeAudio(buffer, mime)}`;
+    }
+    if (type === "image" && incoming.imageId) {
+      const meta = await waGetMediaMeta(incoming.imageId);
+      const { buffer, mime } = await waDownloadMedia(meta.url);
+      userText = `[Imagen]: ${await describeImage(buffer, mime)}`;
+    }
+
+    // RESET
+    if (/^reset|nueva cotizaci[oó]n|empezar de nuevo/i.test(userText)) {
+        if (session.zohoDealId) await zohoCloseDeal(session.zohoDealId);
+        
+        session.data = createEmptySession().data;
+        session.data.name = "Cliente";
+        session.zohoDealId = null;
+        session.pdfSent = false;
+        
+        await waSendText(waId, "🔄 *Carpeta Nueva Abierta*\n\nHe guardado el historial anterior. Empecemos de cero.");
+        saveSession(waId, session);
+        release(); return;
+    }
+
+    session.history.push({ role: "user", content: userText });
+    
+    // 🔴 RE-CALCULO DE ETAPA
+    determineStage(session);
+
+    const aiMsg = await runAI(session, userText);
+    
+    // TOOLS
+    if (aiMsg?.tool_calls) {
+        const tc = aiMsg.tool_calls[0];
+        if (tc.function.name === "update_customer_data") {
+            const args = JSON.parse(tc.function.arguments);
+            session.data = { ...session.data, ...args };
+            
+            // Re-evaluar etapa
+            determineStage(session);
+            
+            if (isComplete(session.data) || args.wants_pdf) {
+                const m = normalizeMeasures(session.data.measures);
+                if (m) session.data.internal_price = calculateInternalPrice({ ...m, glass: session.data.glass });
+            }
+
+            const shouldSendPDF = (isComplete(session.data) && (args.wants_pdf || /pdf|cotiza/i.test(userText)));
+
+            if (shouldSendPDF && !session.pdfSent) {
+                await waSendText(waId, "Perfecto, genero tu cotización formal... 📄");
+                const qNum = generateQuoteNumber();
+                const pdfBuf = await createQuotePdf(session.data, qNum);
+                const mediaId = await waUploadPdf(pdfBuf);
+                await waSendPdfById(waId, mediaId, "Cotización Formal");
+                
+                await waSendText(waId, "📄 *Cotización Lista*\n\nEl *Equipo Alfa* ya tiene copia de esto para apoyarte en el cierre.");
+                
+                session.pdfSent = true;
+                session.data.stageKey = "propuesta"; // Forzar etapa propuesta
+                await zohoUpsertFull(session, waId);
+            } else {
+                // Sincronizar Zoho en tiempo real (en Diagnóstico/Siembra)
+                zohoUpsertFull(session, waId).catch(e => console.error(e));
+
+                const follow = await openai.chat.completions.create({
+                    model: AI_MODEL,
+                    messages: [
+                        { role: "system", content: SYSTEM_PROMPT },
+                        ...session.history.slice(-12),
+                        { role: "user", content: userText },
+                        aiMsg,
+                        { role: "tool", tool_call_id: tc.id, content: "Datos guardados." }
+                    ],
+                    temperature: 0.4
+                });
+                
+                const reply = follow.choices[0].message.content.replace(/<PROFILE:.*?>/gi, "").trim();
+                await waSendText(waId, reply);
+                session.history.push({ role: "assistant", content: reply });
+            }
+        }
+    } else {
+        const reply = aiMsg?.content?.replace(/<PROFILE:.*?>/gi, "").trim() || "No te entendí bien, ¿puedes repetir?";
+        await waSendText(waId, reply);
+        session.history.push({ role: "assistant", content: reply });
+    }
+
+    saveSession(waId, session);
+  } catch (e) {
+    logError("Critical Webhook", e);
+  } finally {
+    release();
+  }
+});
+
+app.listen(PORT, () => console.log(`🚀 Ferrari 6.3.2 ACTIVO (Fix Etapas)`));
