@@ -160,6 +160,50 @@ function normalizeYesNo(v) {
   return "";
 }
 
+
+function formatDateZoho(date = new Date()) {
+  return date.toISOString().split("T")[0];
+}
+if (["no", "n", "0", "false"].includes(s)) return "No";
+  return "";
+}
+
+// ============================================================
+// 👇👇 AQUÍ PEGASTE EL CÓDIGO NUEVO 👇👇
+// ============================================================
+function normalizeMeasures(measures) {
+  const t = String(measures || "").toLowerCase();
+  let nums = t.match(/(\d+([.,]\d+)?)/g);
+  if (!nums || nums.length < 2) return null;
+  
+  let a = parseFloat(nums[0].replace(',', '.'));
+  let b = parseFloat(nums[1].replace(',', '.'));
+  
+  if (a < 10) a *= 1000;
+  if (b < 10) b *= 1000;
+  if (a >= 10 && a < 100) a *= 10;
+  if (b >= 10 && b < 100) b *= 10;
+  
+  return { ancho_mm: Math.round(a), alto_mm: Math.round(b) };
+}
+
+function calculateInternalPrice({ ancho_mm, alto_mm, color, glass }) {
+  if (!ancho_mm || !alto_mm) return 0;
+  const area = (ancho_mm * alto_mm) / 1_000_000; 
+  let base = area * 120000; // PRECIO BASE
+
+  const colorUpper = String(color || "").toUpperCase();
+  const glassUpper = String(glass || "").toUpperCase();
+
+  if (["NEGRO", "ANTRACITA", "GRAFITO", "NOGAL"].some(c => colorUpper.includes(c))) base *= 1.15;
+  if (/TERMOPANEL|DVH|6-12-6|LOW/.test(glassUpper)) base *= 1.25;
+  
+  return Math.max(Math.round(base), 50000);
+}
+// ============================================================
+// 👆👆 FIN DEL CÓDIGO NUEVO 👆👆
+// ============================================================
+
 function formatDateZoho(date = new Date()) {
   return date.toISOString().split("T")[0];
 }
@@ -893,14 +937,18 @@ async function createQuotePdf(data, quoteNumber) {
 
       doc.y = rowY + 20;
 
-      // ===== VALOR =====
-      doc.fillColor(primaryColor).fontSize(12).font("Helvetica-Bold").text("VALOR");
+     // ===== VALOR =====
+      doc.fillColor(primaryColor).fontSize(12).font("Helvetica-Bold").text("VALOR ESTIMADO");
       doc.moveDown(0.3);
       
+      let precioTexto = "Por confirmar tras visita técnica.";
+      if (data.internal_price) {
+          precioTexto = `$ ${data.internal_price.toLocaleString('es-CL')} + IVA (Referencial)`;
+      }
+
       doc.rect(50, doc.y, 512, 50).fill("#f7fafc").stroke(lightGray);
-      doc.fillColor(primaryColor).fontSize(11).font("Helvetica");
-      doc.text("El valor final será confirmado tras la visita técnica y medición en terreno.", 60, doc.y + 10, { width: 490 });
-      doc.text("Incluye: fabricación, materiales de primera calidad y garantía.", 60, doc.y + 25, { width: 490 });
+      doc.fillColor(primaryColor).fontSize(14).font("Helvetica-Bold");
+      doc.text(precioTexto, 60, doc.y + 15, { width: 490, align: 'center' });
 
       doc.y += 70;
 
@@ -1471,11 +1519,26 @@ app.post("/webhook", async (req, res) => {
           args = {};
         }
 
-        if (args.install) {
+      if (args.install) {
           const yn = normalizeYesNo(args.install);
           if (yn) args.install = yn;
           else delete args.install;
         }
+
+        // --- CÁLCULO DE PRECIO AUTOMÁTICO ---
+        if (args.measures || session.data.measures) {
+            const m = normalizeMeasures(args.measures || session.data.measures);
+            if (m) {
+                const precio = calculateInternalPrice({
+                    ...m,
+                    color: args.color || session.data.color || "BLANCO",
+                    glass: args.glass || session.data.glass
+                });
+                session.data.internal_price = precio;
+                console.log(`💰 Precio Calculado: $${precio.toLocaleString('es-CL')}`);
+            }
+        }
+        // ------------------------------------
 
         session.data = { ...session.data, ...args };
         if (args.wants_pdf === true) triggerPDF = true;
