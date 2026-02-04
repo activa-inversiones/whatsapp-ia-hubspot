@@ -1,5 +1,5 @@
 // index.js — WhatsApp IA + Zoho CRM
-// Ferrari 6.3 — Sincronización Real + Etapas Dinámicas (Fix Lead/Deal Update)
+// Ferrari 6.3.1 — HOTFIX: Búsqueda Híbrida (Soluciona duplicados por error de indexación)
 // Node 18+ | Railway | ESM
 
 import express from "express";
@@ -34,7 +34,12 @@ app.use(
 // ============================================================
 function logError(context, e) {
   if (e.response) {
-    console.error(`❌ ${context} [API]: ${e.response.status} - ${JSON.stringify(e.response.data).slice(0, 200)}...`);
+    // Si es error 400 de búsqueda, lo mostramos limpio para no saturar
+    if (e.response.status === 400 && context.includes("Find")) {
+        console.warn(`⚠️ ${context}: Zoho no permite buscar por este campo todavía. Usando Plan B.`);
+    } else {
+        console.error(`❌ ${context} [API]: ${e.response.status} - ${JSON.stringify(e.response.data).slice(0, 200)}...`);
+    }
   } else if (e.request) {
     console.error(`❌ ${context} [Network]: Sin respuesta del servidor.`);
   } else {
@@ -101,7 +106,6 @@ const STAGE_MAP = {
   competencia: process.env.ZOHO_STAGE_COMPETENCIA || "Perdido y cerrado para la competencia",
 };
 
-// Ranking para saber si subimos o bajamos de etapa
 const STAGE_RANK = {
   diagnostico: 10,
   siembra: 20,
@@ -445,7 +449,6 @@ function bumpStage(session, nextKey) {
 }
 
 function determineStage(session) {
-  // Lógica simple para mover la aguja
   const d = session.data;
   
   // 1. Si ya tenemos datos básicos -> Siembra
@@ -453,7 +456,7 @@ function determineStage(session) {
     bumpStage(session, "siembra");
   }
   
-  // 2. Si enviamos PDF -> Propuesta (esto se hace manual en el envío)
+  // 2. Si enviamos PDF -> Propuesta
   if (session.pdfSent) {
     bumpStage(session, "propuesta");
   }
@@ -728,13 +731,31 @@ async function zohoFindLead(phone) {
   } catch (e) { if (e.response?.status !== 204) logError("Zoho Find Lead", e); return null; }
 }
 
+// 🔴 FIX CRÍTICO: Búsqueda híbrida (Custom Field -> Fallback a Nombre)
 async function zohoFindDeal(phone) {
   const t = await getZohoToken();
-  if (!ZOHO.DEAL_PHONE_FIELD) return null;
+  const digits = String(phone).replace(/\D/g, "").slice(-8); // Últimos 8 dígitos para búsqueda laxa
+
+  // 1. INTENTO OFICIAL (Por campo WhatsApp_Phone)
+  if (ZOHO.DEAL_PHONE_FIELD) {
+    try {
+      const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=(${ZOHO.DEAL_PHONE_FIELD}:equals:${encodeURIComponent(phone)})`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
+      if (r.data?.data?.[0]) return r.data.data[0];
+    } catch (e) {
+      // Si falla por "campo no disponible" (error 400), continuamos al fallback
+      if (e.response?.status !== 204 && e.response?.status !== 400) logError("Zoho Find Deal (Field)", e);
+    }
+  }
+
+  // 2. INTENTO FALLBACK (Por nombre de trato que contiene el teléfono)
   try {
-    const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=(${ZOHO.DEAL_PHONE_FIELD}:equals:${encodeURIComponent(phone)})`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
+    const criteria = `(Deal_Name:contains:${digits})`;
+    const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=${encodeURIComponent(criteria)}`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
     return r.data?.data?.[0];
-  } catch (e) { if (e.response?.status !== 204) logError("Zoho Find Deal", e); return null; }
+  } catch (e) {
+    if (e.response?.status !== 204) logError("Zoho Find Deal (Fallback)", e);
+    return null;
+  }
 }
 
 async function zohoCreate(module, data) {
@@ -775,7 +796,7 @@ async function zohoUpsertFull(session, phone) {
   const d = session.data;
   const phoneE164 = normalizeCLPhone(phone);
   
-  // 🔴 CORRECCIÓN: Etapa dinámica, no hardcodeada
+  // 🔴 CORRECCIÓN: Etapa dinámica
   const stageName = STAGE_MAP[session.data.stageKey] || STAGE_MAP.diagnostico;
 
   try {
@@ -791,7 +812,7 @@ async function zohoUpsertFull(session, phone) {
     let deal = await zohoFindDeal(phoneE164);
     const dealData = {
         Deal_Name: `${d.product || "Ventanas"} [WA ${phone.slice(-4)}]`,
-        Stage: stageName, // <-- AHORA SÍ USA LA ETAPA CORRECTA
+        Stage: stageName, // Etapa correcta
         Closing_Date: formatDateZoho(addDays(new Date(), 30)),
         Description: `Producto: ${d.product}\nMedidas: ${d.measures}\nPrecio: ${d.internal_price}`
     };
@@ -936,4 +957,4 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`🚀 Ferrari 6.3 ACTIVO`));
+app.listen(PORT, () => console.log(`🚀 Ferrari 6.3.1 ACTIVO (Hotfix Búsqueda)`));
