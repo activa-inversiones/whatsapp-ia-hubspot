@@ -1,5 +1,5 @@
 // index.js — WhatsApp IA + Zoho CRM
-// Ferrari 6.2.1 — EDICIÓN CONSULTOR SENIOR (Prompt Final + Tags Corregidos + Anti-Log Spam)
+// Ferrari 6.3 — Sincronización Real + Etapas Dinámicas (Fix Lead/Deal Update)
 // Node 18+ | Railway | ESM
 
 import express from "express";
@@ -30,7 +30,7 @@ app.use(
 );
 
 // ============================================================
-// HELPER LOGS (CRÍTICO: Anti-Spam de Railway)
+// HELPER LOGS (Anti-Spam)
 // ============================================================
 function logError(context, e) {
   if (e.response) {
@@ -60,6 +60,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const AI_MODEL = process.env.AI_MODEL_OPENAI || "gpt-4o-mini";
 const STT_MODEL = process.env.AI_MODEL_STT || "whisper-1";
 
+// Freno de mano PDF
 const AUTO_SEND_PDF_WHEN_READY = false;
 
 // ----- Zoho -----
@@ -87,7 +88,7 @@ const COMPANY = {
   RUT: process.env.COMPANY_RUT || "76.XXX.XXX-X",
 };
 
-// ---------- Etapas ----------
+// ---------- Etapas del Pipeline ----------
 const STAGE_MAP = {
   diagnostico: process.env.ZOHO_STAGE_DIAGNOSTICO || "Diagnóstico y Perfilado",
   siembra: process.env.ZOHO_STAGE_SIEMBRA || "Siembra de Confianza + Marco Normativo (OGUC/RT)",
@@ -98,6 +99,19 @@ const STAGE_MAP = {
   ganado: process.env.ZOHO_STAGE_GANADO || "Cerrado ganado",
   perdido: process.env.ZOHO_STAGE_PERDIDO || "Cerrado perdido",
   competencia: process.env.ZOHO_STAGE_COMPETENCIA || "Perdido y cerrado para la competencia",
+};
+
+// Ranking para saber si subimos o bajamos de etapa
+const STAGE_RANK = {
+  diagnostico: 10,
+  siembra: 20,
+  propuesta: 40,
+  objeciones: 60,
+  validacion: 75,
+  cierre: 90,
+  ganado: 100,
+  perdido: 0,
+  competencia: 0,
 };
 
 // ============================================================
@@ -231,7 +245,7 @@ async function waMarkReadAndTyping(waId, messageId) {
   try {
     if (messageId) await axios.post(url, { messaging_product: "whatsapp", status: "read", message_id: messageId }, { headers: { Authorization: `Bearer ${META.TOKEN}` } });
     if (waId) await axios.post(url, { messaging_product: "whatsapp", to: waId, typing_indicator: { type: "text" } }, { headers: { Authorization: `Bearer ${META.TOKEN}` } });
-  } catch (e) { /* Ignorar errores de typing */ }
+  } catch (e) { }
 }
 
 async function waUploadPdf(buffer, filename = "Cotizacion.pdf") {
@@ -406,7 +420,7 @@ function extractIncoming(reqBody) {
 }
 
 // ============================================================
-// LÓGICA DE NEGOCIO
+// LÓGICA DE NEGOCIO Y ETAPAS
 // ============================================================
 function nextMissingKey(d) {
   if (!d.product) return "producto";
@@ -418,6 +432,33 @@ function nextMissingKey(d) {
 
 function isComplete(d) {
   return !!(d.product && d.measures && (d.address || d.comuna) && d.glass);
+}
+
+function bumpStage(session, nextKey) {
+  // Solo subimos de etapa, nunca bajamos (excepto reinicio)
+  const currentRank = STAGE_RANK[session.data.stageKey] || 10;
+  const nextRank = STAGE_RANK[nextKey] || 10;
+  
+  if (nextRank > currentRank || nextKey === "perdido" || nextKey === "ganado") {
+    session.data.stageKey = nextKey;
+  }
+}
+
+function determineStage(session) {
+  // Lógica simple para mover la aguja
+  const d = session.data;
+  
+  // 1. Si ya tenemos datos básicos -> Siembra
+  if ((d.product || d.measures) && session.data.stageKey === "diagnostico") {
+    bumpStage(session, "siembra");
+  }
+  
+  // 2. Si enviamos PDF -> Propuesta (esto se hace manual en el envío)
+  if (session.pdfSent) {
+    bumpStage(session, "propuesta");
+  }
+  
+  return session.data.stageKey;
 }
 
 // ============================================================
@@ -447,7 +488,7 @@ const tools = [
   },
 ];
 
-// 🟢 EL CEREBRO CONSULTIVO (Tu versión definitiva)
+// EL CEREBRO CONSULTIVO
 const SYSTEM_PROMPT = `
 Eres un ASESOR ESPECIALISTA EN SOLUCIONES DE VENTANAS Y CERRAMIENTOS
 de ${COMPANY.NAME}.
@@ -550,7 +591,6 @@ async function runAI(session, userText) {
   const missingKey = nextMissingKey(d);
   const complete = isComplete(d);
   
-  // Mensaje de estado oculto para orientar al modelo
   const statusMsg = complete
     ? "DATOS COMPLETOS. Confirma si quiere PDF formal."
     : `FALTA: "${missingKey}". Conversa o pídelo amablemente.`;
@@ -573,7 +613,6 @@ async function runAI(session, userText) {
       max_tokens: 400,
     });
     
-    // 🔴 FIX: Captura del nuevo formato de etiqueta <PROFILE:TIPO>
     const aiMsg = resp.choices?.[0]?.message;
     if (aiMsg?.content) {
       const match = aiMsg.content.match(/<PROFILE:(\w+)>/i);
@@ -735,6 +774,10 @@ async function zohoUpsertFull(session, phone) {
   if (!REQUIRE_ZOHO) return;
   const d = session.data;
   const phoneE164 = normalizeCLPhone(phone);
+  
+  // 🔴 CORRECCIÓN: Etapa dinámica, no hardcodeada
+  const stageName = STAGE_MAP[session.data.stageKey] || STAGE_MAP.diagnostico;
+
   try {
     // Lead
     let lead = await zohoFindLead(phoneE164);
@@ -745,12 +788,10 @@ async function zohoUpsertFull(session, phone) {
     else await zohoCreate("Leads", leadData);
 
     // Deal
-    if (!session.pdfSent && !session.zohoDealId) return; 
-
     let deal = await zohoFindDeal(phoneE164);
     const dealData = {
         Deal_Name: `${d.product || "Ventanas"} [WA ${phone.slice(-4)}]`,
-        Stage: STAGE_MAP.propuesta,
+        Stage: stageName, // <-- AHORA SÍ USA LA ETAPA CORRECTA
         Closing_Date: formatDateZoho(addDays(new Date(), 30)),
         Description: `Producto: ${d.product}\nMedidas: ${d.measures}\nPrecio: ${d.internal_price}`
     };
@@ -824,6 +865,9 @@ app.post("/webhook", async (req, res) => {
     }
 
     session.history.push({ role: "user", content: userText });
+    
+    // Calcular etapa antes de la IA
+    determineStage(session);
 
     const aiMsg = await runAI(session, userText);
     
@@ -834,6 +878,10 @@ app.post("/webhook", async (req, res) => {
             const args = JSON.parse(tc.function.arguments);
             session.data = { ...session.data, ...args };
             
+            // Recalcular etapa con datos nuevos
+            determineStage(session);
+            
+            // Precio maduro
             if (isComplete(session.data) || args.wants_pdf) {
                 const m = normalizeMeasures(session.data.measures);
                 if (m) session.data.internal_price = calculateInternalPrice({ ...m, glass: session.data.glass });
@@ -851,8 +899,12 @@ app.post("/webhook", async (req, res) => {
                 await waSendText(waId, "📄 *Cotización Lista*\n\nEl *Equipo Alfa* ya tiene copia de esto para apoyarte en el cierre.");
                 
                 session.pdfSent = true;
+                bumpStage(session, "propuesta"); // Forzar etapa propuesta
                 await zohoUpsertFull(session, waId);
             } else {
+                // 🔴 CORRECCIÓN: Sincronizar Zoho aunque no haya PDF (para ver el lead)
+                zohoUpsertFull(session, waId).catch(e => console.error(e));
+
                 const follow = await openai.chat.completions.create({
                     model: AI_MODEL,
                     messages: [
@@ -865,14 +917,12 @@ app.post("/webhook", async (req, res) => {
                     temperature: 0.4
                 });
                 
-                // 🔴 FIX: Limpieza del tag <PROFILE:...>
                 const reply = follow.choices[0].message.content.replace(/<PROFILE:.*?>/gi, "").trim();
                 await waSendText(waId, reply);
                 session.history.push({ role: "assistant", content: reply });
             }
         }
     } else {
-        // 🔴 FIX: Limpieza del tag <PROFILE:...>
         const reply = aiMsg?.content?.replace(/<PROFILE:.*?>/gi, "").trim() || "No te entendí bien, ¿puedes repetir?";
         await waSendText(waId, reply);
         session.history.push({ role: "assistant", content: reply });
@@ -886,4 +936,4 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`🚀 Ferrari 6.2.1 ACTIVO (Consultor Senior)`));
+app.listen(PORT, () => console.log(`🚀 Ferrari 6.3 ACTIVO`));
