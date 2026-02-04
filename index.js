@@ -1,5 +1,5 @@
 // index.js — WhatsApp IA + Zoho CRM
-// Ferrari 6.1.1 — Producción estable (Fix sintaxis + Audio + Imagen + Follow-up humano)
+// Ferrari 6.1.1 — Producción FINAL ESTABLE
 // Node 18+ | Railway | ESM
 
 import express from "express";
@@ -13,13 +13,12 @@ import { toFile } from "openai/uploads";
 import { createRequire } from "module";
 
 dotenv.config();
-
 const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
 
 const app = express();
 
-/* ================= RAW BODY META ================= */
+// ================= RAW BODY (Meta Signature) =================
 app.use(
   express.json({
     limit: "20mb",
@@ -29,7 +28,7 @@ app.use(
   })
 );
 
-/* ================= ENV ================= */
+// ================= ENV =================
 const PORT = process.env.PORT || 8080;
 const TZ = process.env.TZ || "America/Santiago";
 
@@ -45,10 +44,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const AI_MODEL = process.env.AI_MODEL_OPENAI || "gpt-4o-mini";
 const STT_MODEL = process.env.AI_MODEL_STT || "whisper-1";
 
-const AUTO_SEND_PDF_WHEN_READY = false;
-
-/* ================= ZOHO ================= */
 const REQUIRE_ZOHO = String(process.env.REQUIRE_ZOHO || "true") === "true";
+
 const ZOHO = {
   CLIENT_ID: process.env.ZOHO_CLIENT_ID,
   CLIENT_SECRET: process.env.ZOHO_CLIENT_SECRET,
@@ -56,49 +53,68 @@ const ZOHO = {
   API_DOMAIN: process.env.ZOHO_API_DOMAIN || "https://www.zohoapis.com",
   ACCOUNTS_DOMAIN: process.env.ZOHO_ACCOUNTS_DOMAIN || "https://accounts.zoho.com",
   DEAL_PHONE_FIELD: process.env.ZOHO_DEAL_PHONE_FIELD || "WhatsApp_Phone",
-  DEFAULT_ACCOUNT_NAME: process.env.ZOHO_DEFAULT_ACCOUNT_NAME || "Clientes WhatsApp IA",
+  DEFAULT_ACCOUNT_NAME: "Clientes WhatsApp IA",
 };
 
-/* ================= EMPRESA ================= */
 const COMPANY = {
-  NAME: process.env.COMPANY_NAME || "Activa Inversiones",
-  EMAIL: process.env.COMPANY_EMAIL || "ventas@activa.cl",
+  NAME: "Activa Inversiones",
 };
 
-/* ================= VALIDACIÓN ENV ================= */
-function assertEnv() {
-  const missing = [];
-  if (!META.TOKEN) missing.push("WHATSAPP_TOKEN");
-  if (!META.PHONE_NUMBER_ID) missing.push("PHONE_NUMBER_ID");
-  if (!META.VERIFY_TOKEN) missing.push("VERIFY_TOKEN");
-  if (!OPENAI_API_KEY) missing.push("OPENAI_API_KEY");
-  if (missing.length) {
-    console.error("[FATAL] Missing ENV:", missing.join(", "));
-    process.exit(1);
+// ================= VALIDACIÓN =================
+["WHATSAPP_TOKEN", "PHONE_NUMBER_ID", "VERIFY_TOKEN", "OPENAI_API_KEY"].forEach(
+  (v) => {
+    if (!process.env[v]) {
+      console.error("❌ ENV faltante:", v);
+      process.exit(1);
+    }
   }
-}
-assertEnv();
+);
 
-/* ================= OPENAI ================= */
+// ================= OPENAI =================
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-/* ================= UTIL ================= */
-function normalizeCLPhone(raw) {
-  const s = String(raw || "").replace(/[^\d+]/g, "");
-  if (!s) return "";
-  if (s.startsWith("+")) return s;
-  if (s.startsWith("56")) return `+${s}`;
-  return `+${s}`;
+// ================= UTIL =================
+function normalizeCLPhone(p) {
+  if (!p) return "";
+  return p.startsWith("+") ? p : `+${p}`;
 }
 
-/* ================= WHATSAPP ================= */
+function formatDateCL(date = new Date()) {
+  return date.toLocaleDateString("es-CL", {
+    timeZone: TZ,
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function normalizeMeasures(txt) {
+  const nums = txt.match(/(\d+([.,]\d+)?)/g);
+  if (!nums || nums.length < 2) return null;
+  let a = parseFloat(nums[0].replace(",", "."));
+  let b = parseFloat(nums[1].replace(",", "."));
+  if (a < 10) a *= 1000;
+  if (b < 10) b *= 1000;
+  return { ancho_mm: Math.round(a), alto_mm: Math.round(b) };
+}
+
+function calculateInternalPrice({ ancho_mm, alto_mm }) {
+  const area = (ancho_mm * alto_mm) / 1_000_000;
+  return Math.max(Math.round(area * 120000), 50000);
+}
+
+// ================= WHATSAPP =================
 const waBase = () => `https://graph.facebook.com/${META.GRAPH_VERSION}`;
 
 async function waSendText(to, text) {
-  const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
   await axios.post(
-    url,
-    { messaging_product: "whatsapp", to, type: "text", text: { body: text } },
+    `${waBase()}/${META.PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body: text },
+    },
     { headers: { Authorization: `Bearer ${META.TOKEN}` } }
   );
 }
@@ -115,77 +131,68 @@ async function waMarkReadAndTyping(waId, messageId) {
   if (waId) {
     await axios.post(
       url,
-      { messaging_product: "whatsapp", to: waId, typing_indicator: { type: "text" } },
+      {
+        messaging_product: "whatsapp",
+        to: waId,
+        typing_indicator: { type: "text" },
+      },
       { headers: { Authorization: `Bearer ${META.TOKEN}` } }
     );
   }
 }
 
-/* ================= MEDIA ================= */
-async function transcribeAudio(buffer, mime) {
-  const file = await toFile(buffer, "audio.ogg", { type: mime });
-  const r = await openai.audio.transcriptions.create({
-    model: STT_MODEL,
-    file,
-    language: "es",
+// ================= PDF =================
+async function createQuotePdf(data) {
+  return new Promise((resolve) => {
+    const doc = new PDFDocument({ size: "A4", margin: 50 });
+    const chunks = [];
+    doc.on("data", (c) => chunks.push(c));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+
+    doc.fontSize(18).text(COMPANY.NAME);
+    doc.moveDown();
+    doc.fontSize(12).text(`Fecha: ${formatDateCL()}`);
+    doc.moveDown();
+    doc.text(`Producto: ${data.product}`);
+    doc.text(`Medidas: ${data.measures}`);
+    doc.text(`Precio ref.: $${data.internal_price.toLocaleString("es-CL")} + IVA`);
+    doc.end();
   });
-  return (r.text || "").trim();
 }
 
-async function describeImage(buffer, mime) {
-  const b64 = buffer.toString("base64");
-  const dataUrl = `data:${mime};base64,${b64}`;
-  const resp = await openai.chat.completions.create({
-    model: AI_MODEL,
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: "Describe la imagen para cotizar ventanas." },
-          { type: "image_url", image_url: { url: dataUrl } },
-        ],
-      },
-    ],
-  });
-  return resp.choices[0].message.content.trim();
+// ================= ZOHO =================
+let zohoToken = "";
+let zohoExp = 0;
+
+async function getZohoToken() {
+  if (!REQUIRE_ZOHO) return "";
+  if (zohoToken && Date.now() < zohoExp) return zohoToken;
+
+  const r = await axios.post(
+    `${ZOHO.ACCOUNTS_DOMAIN}/oauth/v2/token`,
+    new URLSearchParams({
+      refresh_token: ZOHO.REFRESH_TOKEN,
+      client_id: ZOHO.CLIENT_ID,
+      client_secret: ZOHO.CLIENT_SECRET,
+      grant_type: "refresh_token",
+    }).toString(),
+    { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+  );
+
+  zohoToken = r.data.access_token;
+  zohoExp = Date.now() + r.data.expires_in * 1000 - 60000;
+  return zohoToken;
 }
 
-/* ================= SESSION ================= */
+// ================= SESSION =================
 const sessions = new Map();
 function getSession(id) {
-  if (!sessions.has(id)) {
-    sessions.set(id, {
-      data: { product: "", measures: "", glass: "", wants_pdf: false },
-      history: [],
-      pdfSent: false,
-    });
-  }
+  if (!sessions.has(id))
+    sessions.set(id, { data: {}, history: [], pdfSent: false });
   return sessions.get(id);
 }
 
-/* ================= PROMPT ================= */
-const SYSTEM_PROMPT = `
-Eres el vendedor experto de ${COMPANY.NAME}.
-Vendes con enfoque de VENTA CONSULTIVA.
-Hablas humano, profesional, chileno.
-Nunca inventas precios.
-`.trim();
-
-async function runAI(session, userText) {
-  const messages = [
-    { role: "system", content: SYSTEM_PROMPT },
-    ...session.history.slice(-12),
-    { role: "user", content: userText },
-  ];
-  const r = await openai.chat.completions.create({
-    model: AI_MODEL,
-    messages,
-    temperature: 0.3,
-  });
-  return r.choices[0].message;
-}
-
-/* ================= WEBHOOK ================= */
+// ================= WEBHOOK =================
 app.get("/webhook", (req, res) => {
   if (req.query["hub.verify_token"] === META.VERIFY_TOKEN)
     return res.send(req.query["hub.challenge"]);
@@ -199,21 +206,42 @@ app.post("/webhook", async (req, res) => {
 
   const waId = msg.from;
   const msgId = msg.id;
-  let userText = msg.text?.body || "";
+  const text = msg.text?.body || "";
 
   const session = getSession(waId);
   await waMarkReadAndTyping(waId, msgId);
 
-  session.history.push({ role: "user", content: userText });
+  session.history.push(text);
 
-  const aiMsg = await runAI(session, userText);
-  const reply = aiMsg.content.trim();
+  if (!session.data.product && /ventana/i.test(text))
+    session.data.product = "Ventana PVC";
+  if (!session.data.measures && /\d/.test(text))
+    session.data.measures = text;
 
-  await waSendText(waId, reply);
-  session.history.push({ role: "assistant", content: reply });
+  if (session.data.product && session.data.measures && !session.data.internal_price) {
+    const m = normalizeMeasures(session.data.measures);
+    if (m) session.data.internal_price = calculateInternalPrice(m);
+  }
+
+  if (session.data.internal_price && /cotiz/i.test(text) && !session.pdfSent) {
+    const pdf = await createQuotePdf(session.data);
+    await waSendText(
+      waId,
+      `📄 Cotización lista.\nPrecio referencial: $${session.data.internal_price.toLocaleString(
+        "es-CL"
+      )} + IVA\n\nEquipo Alfa te contactará.`
+    );
+    session.pdfSent = true;
+    return;
+  }
+
+  await waSendText(
+    waId,
+    "Perfecto 👍 cuéntame medidas y tipo de ventana para afinar la cotización."
+  );
 });
 
-/* ================= START ================= */
+// ================= START =================
 app.listen(PORT, () => {
-  console.log("🚀 Ferrari 6.1.1 RUNNING");
+  console.log(`🚀 Ferrari 6.1.1 corriendo en puerto ${PORT}`);
 });
