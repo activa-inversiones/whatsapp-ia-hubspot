@@ -1,5 +1,5 @@
 // index.js — WhatsApp IA + Zoho CRM
-// Ferrari 6.3.1 — HOTFIX: Búsqueda Híbrida (Soluciona duplicados por error de indexación)
+// Ferrari 6.3.2 — AJUSTE FINO: Etapas Lentas + Anti-Duplicados (Diagnóstico Real)
 // Node 18+ | Railway | ESM
 
 import express from "express";
@@ -34,9 +34,9 @@ app.use(
 // ============================================================
 function logError(context, e) {
   if (e.response) {
-    // Si es error 400 de búsqueda, lo mostramos limpio para no saturar
+    // Si es error 400 de búsqueda, aviso limpio
     if (e.response.status === 400 && context.includes("Find")) {
-        console.warn(`⚠️ ${context}: Zoho no permite buscar por este campo todavía. Usando Plan B.`);
+        console.warn(`⚠️ ${context}: Búsqueda por campo falló (Zoho no indexó aún). Usando Plan B.`);
     } else {
         console.error(`❌ ${context} [API]: ${e.response.status} - ${JSON.stringify(e.response.data).slice(0, 200)}...`);
     }
@@ -94,6 +94,7 @@ const COMPANY = {
 };
 
 // ---------- Etapas del Pipeline ----------
+// Asegúrate de que estos nombres coincidan con tu Zoho
 const STAGE_MAP = {
   diagnostico: process.env.ZOHO_STAGE_DIAGNOSTICO || "Diagnóstico y Perfilado",
   siembra: process.env.ZOHO_STAGE_SIEMBRA || "Siembra de Confianza + Marco Normativo (OGUC/RT)",
@@ -320,7 +321,7 @@ async function parsePdfToText(buffer) {
 }
 
 // ============================================================
-// SESSIONS
+// SESSIONS & RATE LIMITING
 // ============================================================
 const sessions = new Map();
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000; 
@@ -350,17 +351,6 @@ function saveSession(waId, session) {
   sessions.set(waId, session);
 }
 
-function cleanupSessions() {
-  const cutoff = Date.now() - SESSION_TTL_MS;
-  for (const [waId, s] of sessions.entries()) {
-    if ((s.lastUserAt || 0) < cutoff) sessions.delete(waId);
-  }
-}
-setInterval(cleanupSessions, 3600000);
-
-// ============================================================
-// RATE LIMITING & LOCKS
-// ============================================================
 const processedMsgIds = new Map();
 function isDuplicateMsg(msgId) {
   if (!msgId) return false;
@@ -399,32 +389,14 @@ function extractIncoming(reqBody) {
   const entry = reqBody?.entry?.[0];
   const changes = entry?.changes?.[0];
   const value = changes?.value;
-
   if (value?.statuses?.length) return { ok: false, reason: "status_update" };
-
   const msg = value?.messages?.[0];
   if (!msg) return { ok: false, reason: "no_message" };
-  
-  const waId = msg.from;
-  const msgId = msg.id;
-  const type = msg.type;
-
-  const audioId = type === "audio" ? msg.audio?.id : null;
-  const imageId = type === "image" ? msg.image?.id : null;
-  const docId = type === "document" ? msg.document?.id : null;
-  const docMime = type === "document" ? msg.document?.mime_type : null;
-  
-  let text = "";
-  if (type === "text") text = msg.text?.body || "";
-  else if (type === "button") text = msg.button?.text || "";
-  else if (type === "interactive") text = JSON.stringify(msg.interactive || {});
-  else text = `[${type}]`;
-
-  return { ok: true, waId, msgId, type, text, audioId, imageId, docId, docMime };
+  return { ok: true, waId: msg.from, msgId: msg.id, type: msg.type, text: msg.text?.body || "" };
 }
 
 // ============================================================
-// LÓGICA DE NEGOCIO Y ETAPAS
+// LÓGICA DE NEGOCIO Y ETAPAS (CORREGIDA)
 // ============================================================
 function nextMissingKey(d) {
   if (!d.product) return "producto";
@@ -438,30 +410,24 @@ function isComplete(d) {
   return !!(d.product && d.measures && (d.address || d.comuna) && d.glass);
 }
 
-function bumpStage(session, nextKey) {
-  // Solo subimos de etapa, nunca bajamos (excepto reinicio)
-  const currentRank = STAGE_RANK[session.data.stageKey] || 10;
-  const nextRank = STAGE_RANK[nextKey] || 10;
-  
-  if (nextRank > currentRank || nextKey === "perdido" || nextKey === "ganado") {
-    session.data.stageKey = nextKey;
-  }
-}
-
 function determineStage(session) {
   const d = session.data;
   
-  // 1. Si ya tenemos datos básicos -> Siembra
-  if ((d.product || d.measures) && session.data.stageKey === "diagnostico") {
-    bumpStage(session, "siembra");
-  }
-  
-  // 2. Si enviamos PDF -> Propuesta
+  // 1. Si enviamos PDF -> Propuesta (Estado FINAL)
   if (session.pdfSent) {
-    bumpStage(session, "propuesta");
+    session.data.stageKey = "propuesta";
+    return;
   }
   
-  return session.data.stageKey;
+  // 2. Si NO tenemos todos los datos, forzamos Diagnóstico
+  // Esto evita que salte a Siembra solo por decir "ventana"
+  if (!d.product || !d.measures || !d.glass) {
+     session.data.stageKey = "diagnostico";
+     return;
+  }
+
+  // 3. Solo si tenemos TODO (Producto + Medidas + Vidrio) pasamos a Siembra
+  session.data.stageKey = "siembra";
 }
 
 // ============================================================
@@ -491,23 +457,16 @@ const tools = [
   },
 ];
 
-// EL CEREBRO CONSULTIVO
 const SYSTEM_PROMPT = `
-Eres un ASESOR ESPECIALISTA EN SOLUCIONES DE VENTANAS Y CERRAMIENTOS
-de ${COMPANY.NAME}.
+Eres un ASESOR ESPECIALISTA EN SOLUCIONES DE VENTANAS Y CERRAMIENTOS de ${COMPANY.NAME}.
+NO eres un vendedor agresivo. NO empujas ventas. NO presionas decisiones.
 
-NO eres un vendedor agresivo.
-NO empujas ventas.
-NO presionas decisiones.
-
-Tu rol es acompañar, orientar y ayudar al cliente
-a tomar una BUENA decisión técnica y económica.
+Tu rol es acompañar, orientar y ayudar al cliente a tomar una BUENA decisión técnica y económica.
 
 ────────────────────────
 ENFOQUE PRINCIPAL: VENTA POR VALOR
 ────────────────────────
-Las personas compran por confianza, durabilidad,
-confort térmico/acústico y respaldo.
+Las personas compran por confianza, durabilidad, confort y respaldo.
 Tu misión es transmitir ese valor SIN imponerlo.
 
 ────────────────────────
@@ -515,78 +474,29 @@ CÓMO TE COMPORTAS
 ────────────────────────
 - Conversas como un asesor experimentado, humano y chileno.
 - Escuchas primero, hablas después.
-- Si el cliente escribe poco o desordenado (fotos, audios), NO lo apuras.
-  Agradeces y ordenas tú.
+- Si el cliente escribe poco o desordenado, NO lo apuras.
 - Si el cliente solo está explorando, lo acompañas sin exigir datos.
-
-Ejemplo de tono correcto:
-“Perfecto 👍 con lo que me comentas ya se puede ir entendiendo el proyecto.”
 
 ────────────────────────
 RELACIÓN CON EL PRECIO
 ────────────────────────
 - El precio NO es el centro de la conversación.
-- Si preguntan, explicas rangos orientativos y QUÉ influye
-  (vidrio, perfil, instalación, uso del espacio).
-- Dejas claro que el valor exacto requiere entender bien el proyecto
-  para evitar errores posteriores.
+- Explicas rangos y QUÉ influye (vidrio, perfil, instalación).
 - NUNCA uses urgencia artificial ni presión comercial.
 
 ────────────────────────
 PROCESO NATURAL (NO FORZADO)
 ────────────────────────
-1. Entender el proyecto.
-2. Aclarar dudas y proponer soluciones (explicando el “por qué”).
-3. Solo cuando esté claro o el cliente lo pida:
-   ofrecer cotización formal (PDF).
-
-Si el cliente no está listo para cotizar, NO lo empujes.
+1. Entender el proyecto (Diagnóstico).
+2. Aclarar dudas y proponer soluciones.
+3. Solo cuando esté claro o el cliente lo pida: ofrecer cotización formal (PDF).
 
 ────────────────────────
-TRASPASO A HUMANOS (SUAVE)
+INSTRUCCIONES TÉCNICAS (OBLIGATORIAS)
 ────────────────────────
-Cuando corresponda, presenta al Equipo Alfa como apoyo:
-
-“Si quieres, un consultor del Equipo Alfa
-puede revisar contigo los detalles finos del proyecto.”
-
-Nunca como presión. Siempre como respaldo.
-
-────────────────────────
-INSTRUCCIONES TÉCNICAS (OBLIGATORIAS PARA TI)
-────────────────────────
-1. USO DE HERRAMIENTAS:
-   Si el cliente entrega datos nuevos (producto, medidas, comuna,
-   vidrio, instalación, correo, etc.),
-   DEBES llamar inmediatamente a la función:
-   update_customer_data
-
-2. DATOS FALTANTES:
-   Si necesitas información para cotizar,
-   pídela de a uno y con lenguaje humano,
-   nunca como interrogatorio.
-
-3. PERFILADO INTERNO (SILENCIOSO):
-   Analiza el comportamiento y clasifica al cliente como UNO solo:
-   - PRECIO → busca economía. Enfócate en durabilidad.
-   - CALIDAD → busca estándar alto. Habla de terminaciones y garantía.
-   - TECNICO → sabe del tema. Usa mm, DVH, normativa.
-   - AFINIDAD → compra por confianza. Sé cercano.
-
-────────────────────────
-ETIQUETA INTERNA (OBLIGATORIA)
-────────────────────────
-Al FINAL de cada respuesta tuya,
-incluye SOLO UNO de estos tags,
-en una línea aparte y SIN explicarlo,
-para uso interno del sistema:
-
-<PROFILE:PRECIO>
-<PROFILE:CALIDAD>
-<PROFILE:TECNICO>
-<PROFILE:AFINIDAD>
-
-El cliente NUNCA debe notar estos tags.
+1. HERRAMIENTAS: Si el cliente entrega datos (producto, medidas, comuna, vidrio), DEBES llamar a 'update_customer_data'.
+2. DATOS FALTANTES: Pídelos de a uno y con lenguaje humano.
+3. PERFILADO: Analiza y etiqueta al final con <PROFILE:TIPO> (PRECIO, CALIDAD, TECNICO, AFINIDAD).
 `.trim();
 
 async function runAI(session, userText) {
@@ -608,12 +518,7 @@ async function runAI(session, userText) {
 
   try {
     const resp = await openai.chat.completions.create({
-      model: AI_MODEL,
-      messages,
-      tools,
-      tool_choice: "auto",
-      temperature: 0.3,
-      max_tokens: 400,
+      model: AI_MODEL, messages, tools, tool_choice: "auto", temperature: 0.3, max_tokens: 400,
     });
     
     const aiMsg = resp.choices?.[0]?.message;
@@ -621,12 +526,9 @@ async function runAI(session, userText) {
       const match = aiMsg.content.match(/<PROFILE:(\w+)>/i);
       if (match) {
         const detected = match[1].toUpperCase();
-        if (["PRECIO", "CALIDAD", "TECNICO", "AFINIDAD"].includes(detected)) {
-          session.data.profile = detected;
-        }
+        if (["PRECIO", "CALIDAD", "TECNICO", "AFINIDAD"].includes(detected)) session.data.profile = detected;
       }
     }
-    
     return aiMsg;
   } catch (e) {
     logError("OpenAI Run", e);
@@ -635,7 +537,7 @@ async function runAI(session, userText) {
 }
 
 // ============================================================
-// PDF
+// PDF Y ZOHO (HOTFIX 6.3.1 INTEGRADO)
 // ============================================================
 async function createQuotePdf(data, quoteNumber) {
   return new Promise((resolve, reject) => {
@@ -694,9 +596,6 @@ async function createQuotePdf(data, quoteNumber) {
   });
 }
 
-// ============================================================
-// ZOHO CRM
-// ============================================================
 let zohoCache = { token: "", expiresAt: 0 };
 let tokenRefreshPromise = null;
 
@@ -731,23 +630,22 @@ async function zohoFindLead(phone) {
   } catch (e) { if (e.response?.status !== 204) logError("Zoho Find Lead", e); return null; }
 }
 
-// 🔴 FIX CRÍTICO: Búsqueda híbrida (Custom Field -> Fallback a Nombre)
+// 🔴 BÚSQUEDA HÍBRIDA ANTI-DUPLICADOS
 async function zohoFindDeal(phone) {
   const t = await getZohoToken();
-  const digits = String(phone).replace(/\D/g, "").slice(-8); // Últimos 8 dígitos para búsqueda laxa
+  const digits = String(phone).replace(/\D/g, "").slice(-8);
 
-  // 1. INTENTO OFICIAL (Por campo WhatsApp_Phone)
+  // 1. Intento por Campo Único
   if (ZOHO.DEAL_PHONE_FIELD) {
     try {
       const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=(${ZOHO.DEAL_PHONE_FIELD}:equals:${encodeURIComponent(phone)})`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
       if (r.data?.data?.[0]) return r.data.data[0];
     } catch (e) {
-      // Si falla por "campo no disponible" (error 400), continuamos al fallback
       if (e.response?.status !== 204 && e.response?.status !== 400) logError("Zoho Find Deal (Field)", e);
     }
   }
 
-  // 2. INTENTO FALLBACK (Por nombre de trato que contiene el teléfono)
+  // 2. Intento por Nombre (Fallback)
   try {
     const criteria = `(Deal_Name:contains:${digits})`;
     const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=${encodeURIComponent(criteria)}`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
@@ -796,7 +694,7 @@ async function zohoUpsertFull(session, phone) {
   const d = session.data;
   const phoneE164 = normalizeCLPhone(phone);
   
-  // 🔴 CORRECCIÓN: Etapa dinámica
+  // 🔴 CORRECCIÓN: Etapa correcta
   const stageName = STAGE_MAP[session.data.stageKey] || STAGE_MAP.diagnostico;
 
   try {
@@ -812,7 +710,7 @@ async function zohoUpsertFull(session, phone) {
     let deal = await zohoFindDeal(phoneE164);
     const dealData = {
         Deal_Name: `${d.product || "Ventanas"} [WA ${phone.slice(-4)}]`,
-        Stage: stageName, // Etapa correcta
+        Stage: stageName, 
         Closing_Date: formatDateZoho(addDays(new Date(), 30)),
         Description: `Producto: ${d.product}\nMedidas: ${d.measures}\nPrecio: ${d.internal_price}`
     };
@@ -831,7 +729,7 @@ async function zohoUpsertFull(session, phone) {
 }
 
 // ============================================================
-// WEBHOOK (Lógica Final)
+// WEBHOOK (MAIN)
 // ============================================================
 app.get("/webhook", (req, res) => {
   if (req.query["hub.verify_token"] === META.VERIFY_TOKEN) return res.send(req.query["hub.challenge"]);
@@ -862,99 +760,4 @@ app.post("/webhook", async (req, res) => {
     // AUDIO / IMAGEN
     if (type === "audio" && incoming.audioId) {
       const meta = await waGetMediaMeta(incoming.audioId);
-      const { buffer, mime } = await waDownloadMedia(meta.url);
-      userText = `[Audio]: ${await transcribeAudio(buffer, mime)}`;
-    }
-    if (type === "image" && incoming.imageId) {
-      const meta = await waGetMediaMeta(incoming.imageId);
-      const { buffer, mime } = await waDownloadMedia(meta.url);
-      userText = `[Imagen]: ${await describeImage(buffer, mime)}`;
-    }
-
-    // RESET
-    if (/^reset|nueva cotizaci[oó]n|empezar de nuevo/i.test(userText)) {
-        if (session.zohoDealId) await zohoCloseDeal(session.zohoDealId);
-        
-        session.data = createEmptySession().data;
-        session.data.name = "Cliente";
-        session.zohoDealId = null;
-        session.pdfSent = false;
-        
-        await waSendText(waId, "🔄 *Carpeta Nueva Abierta*\n\nHe guardado el historial anterior. Empecemos de cero.");
-        saveSession(waId, session);
-        release(); return;
-    }
-
-    session.history.push({ role: "user", content: userText });
-    
-    // Calcular etapa antes de la IA
-    determineStage(session);
-
-    const aiMsg = await runAI(session, userText);
-    
-    // TOOLS
-    if (aiMsg?.tool_calls) {
-        const tc = aiMsg.tool_calls[0];
-        if (tc.function.name === "update_customer_data") {
-            const args = JSON.parse(tc.function.arguments);
-            session.data = { ...session.data, ...args };
-            
-            // Recalcular etapa con datos nuevos
-            determineStage(session);
-            
-            // Precio maduro
-            if (isComplete(session.data) || args.wants_pdf) {
-                const m = normalizeMeasures(session.data.measures);
-                if (m) session.data.internal_price = calculateInternalPrice({ ...m, glass: session.data.glass });
-            }
-
-            const shouldSendPDF = (isComplete(session.data) && (args.wants_pdf || /pdf|cotiza/i.test(userText)));
-
-            if (shouldSendPDF && !session.pdfSent) {
-                await waSendText(waId, "Perfecto, genero tu cotización formal... 📄");
-                const qNum = generateQuoteNumber();
-                const pdfBuf = await createQuotePdf(session.data, qNum);
-                const mediaId = await waUploadPdf(pdfBuf);
-                await waSendPdfById(waId, mediaId, "Cotización Formal");
-                
-                await waSendText(waId, "📄 *Cotización Lista*\n\nEl *Equipo Alfa* ya tiene copia de esto para apoyarte en el cierre.");
-                
-                session.pdfSent = true;
-                bumpStage(session, "propuesta"); // Forzar etapa propuesta
-                await zohoUpsertFull(session, waId);
-            } else {
-                // 🔴 CORRECCIÓN: Sincronizar Zoho aunque no haya PDF (para ver el lead)
-                zohoUpsertFull(session, waId).catch(e => console.error(e));
-
-                const follow = await openai.chat.completions.create({
-                    model: AI_MODEL,
-                    messages: [
-                        { role: "system", content: SYSTEM_PROMPT },
-                        ...session.history.slice(-12),
-                        { role: "user", content: userText },
-                        aiMsg,
-                        { role: "tool", tool_call_id: tc.id, content: "Datos guardados." }
-                    ],
-                    temperature: 0.4
-                });
-                
-                const reply = follow.choices[0].message.content.replace(/<PROFILE:.*?>/gi, "").trim();
-                await waSendText(waId, reply);
-                session.history.push({ role: "assistant", content: reply });
-            }
-        }
-    } else {
-        const reply = aiMsg?.content?.replace(/<PROFILE:.*?>/gi, "").trim() || "No te entendí bien, ¿puedes repetir?";
-        await waSendText(waId, reply);
-        session.history.push({ role: "assistant", content: reply });
-    }
-
-    saveSession(waId, session);
-  } catch (e) {
-    logError("Critical Webhook", e);
-  } finally {
-    release();
-  }
-});
-
-app.listen(PORT, () => console.log(`🚀 Ferrari 6.3.1 ACTIVO (Hotfix Búsqueda)`));
+      const { buffer, mime } = await waDownloadMedia(meta.
