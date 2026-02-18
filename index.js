@@ -1,666 +1,649 @@
 // index.js — WhatsApp IA + Zoho CRM
-// Ferrari 7.2 — TYPING LOOP + QTY MULTIPLIER + TOOL_CALLS SAFE + ZOHO SEARCH FALLBACK + COEFFS EXTERNAL
+// Ferrari 8.1 — PRODUCTION READY
 // Node 18+ | Railway | ESM
 
-import express from "express";
-import axios from "axios";
-import dotenv from "dotenv";
-import crypto from "crypto";
-import FormData from "form-data";
-import PDFDocument from "pdfkit";
-import OpenAI from "openai";
-import { toFile } from "openai/uploads";
+import express      from "express";
+import axios        from "axios";
+import dotenv       from "dotenv";
+import crypto       from "crypto";
+import FormData     from "form-data";
+import PDFDocument  from "pdfkit";
+import OpenAI       from "openai";
+import { toFile }   from "openai/uploads";
 import { createRequire } from "module";
-import fs from "fs";
+import fs           from "fs";
 
 dotenv.config();
-
-const require = createRequire(import.meta.url);
+const require  = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
 
 const app = express();
+app.use(express.json({
+  limit: "20mb",
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+}));
 
-// ---------- Raw body para firma Meta ----------
-app.use(
-  express.json({
-    limit: "20mb",
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
-    },
-  })
-);
-
-// ============================================================
-// HELPER LOGS (Anti-Spam Railway)
-// ============================================================
-function logError(context, e) {
-  if (e.response) {
-    console.error(
-      `❌ ${context} [API]: ${e.response.status} - ${JSON.stringify(e.response.data).slice(0, 200)}...`
-    );
-  } else if (e.request) {
-    console.error(`❌ ${context} [Network]: Sin respuesta.`);
-  } else {
-    console.error(`❌ ${context} [Code]: ${e.message}`);
-  }
+/* ================================================================
+   1.  LOGGING
+   ================================================================ */
+function logErr(ctx, e) {
+  if (e.response)
+    console.error(`❌ ${ctx} [${e.response.status}]: ${JSON.stringify(e.response.data).slice(0, 300)}`);
+  else if (e.request)
+    console.error(`❌ ${ctx} [NET]: Sin respuesta`);
+  else
+    console.error(`❌ ${ctx}: ${e.message}`);
 }
 
-// ============================================================
-// ENV CONFIGURATION
-// ============================================================
+/* ================================================================
+   2.  ENV
+   ================================================================ */
 const PORT = process.env.PORT || 8080;
-const TZ = process.env.TZ || "America/Santiago";
+const TZ   = process.env.TZ   || "America/Santiago";
 
 const META = {
-  GRAPH_VERSION: process.env.META_GRAPH_VERSION || "v22.0",
-  TOKEN: process.env.WHATSAPP_TOKEN,
-  PHONE_NUMBER_ID: process.env.PHONE_NUMBER_ID,
-  VERIFY_TOKEN: process.env.VERIFY_TOKEN,
-  APP_SECRET: process.env.APP_SECRET || "",
+  VER:      process.env.META_GRAPH_VERSION   || "v22.0",
+  TOKEN:    process.env.WHATSAPP_TOKEN,
+  PHONE_ID: process.env.PHONE_NUMBER_ID,
+  VERIFY:   process.env.VERIFY_TOKEN,
+  SECRET:   process.env.APP_SECRET || "",
 };
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const AI_MODEL = process.env.AI_MODEL_OPENAI || "gpt-4o-mini";
-const STT_MODEL = process.env.AI_MODEL_STT || "whisper-1";
+const OPENAI_KEY = process.env.OPENAI_API_KEY  || "";
+const AI_MODEL   = process.env.AI_MODEL_OPENAI || "gpt-4o-mini";
+const STT_MODEL  = process.env.AI_MODEL_STT    || "whisper-1";
 
 const REQUIRE_ZOHO = String(process.env.REQUIRE_ZOHO || "true") === "true";
 const ZOHO = {
-  CLIENT_ID: process.env.ZOHO_CLIENT_ID,
+  CLIENT_ID:     process.env.ZOHO_CLIENT_ID,
   CLIENT_SECRET: process.env.ZOHO_CLIENT_SECRET,
   REFRESH_TOKEN: process.env.ZOHO_REFRESH_TOKEN,
-  REDIRECT_URI: process.env.ZOHO_REDIRECT_URI,
-  API_DOMAIN: process.env.ZOHO_API_DOMAIN || "https://www.zohoapis.com",
-  ACCOUNTS_DOMAIN: process.env.ZOHO_ACCOUNTS_DOMAIN || "https://accounts.zoho.com",
-  LEAD_PROFILE_FIELD: process.env.ZOHO_LEAD_PROFILE_FIELD || "",
-  DEAL_PROFILE_FIELD: process.env.ZOHO_DEAL_PROFILE_FIELD || "",
-  DEAL_PHONE_FIELD: process.env.ZOHO_DEAL_PHONE_FIELD || "WhatsApp_Phone",
-  DEFAULT_ACCOUNT_NAME: process.env.ZOHO_DEFAULT_ACCOUNT_NAME || "Clientes WhatsApp IA",
+  API:           process.env.ZOHO_API_DOMAIN      || "https://www.zohoapis.com",
+  ACCOUNTS:      process.env.ZOHO_ACCOUNTS_DOMAIN || "https://accounts.zoho.com",
+  DEAL_PHONE:    process.env.ZOHO_DEAL_PHONE_FIELD     || "WhatsApp_Phone",
+  DEAL_PROFILE:  process.env.ZOHO_DEAL_PROFILE_FIELD   || "",
+  DEFAULT_ACCT:  process.env.ZOHO_DEFAULT_ACCOUNT_NAME || "Clientes WhatsApp IA",
 };
 
 const COMPANY = {
-  NAME: process.env.COMPANY_NAME || "Activa Inversiones",
-  PHONE: process.env.COMPANY_PHONE || "+56 9 1234 5678",
-  EMAIL: process.env.COMPANY_EMAIL || "ventas@activa.cl",
+  NAME:    process.env.COMPANY_NAME    || "Activa Inversiones",
+  PHONE:   process.env.COMPANY_PHONE   || "+56 9 1234 5678",
+  EMAIL:   process.env.COMPANY_EMAIL   || "ventas@activa.cl",
   ADDRESS: process.env.COMPANY_ADDRESS || "Temuco, La Araucanía, Chile",
   WEBSITE: process.env.COMPANY_WEBSITE || "www.activa.cl",
-  RUT: process.env.COMPANY_RUT || "76.XXX.XXX-X",
+  RUT:     process.env.COMPANY_RUT     || "76.XXX.XXX-X",
 };
 
-const STAGE_MAP = {
-  diagnostico: process.env.ZOHO_STAGE_DIAGNOSTICO || "Diagnóstico y Perfilado",
-  siembra: process.env.ZOHO_STAGE_SIEMBRA || "Siembra de Confianza + Marco Normativo (OGUC/RT)",
-  propuesta: process.env.ZOHO_STAGE_PROPUESTA || "Presentación de Propuesta",
-  objeciones: process.env.ZOHO_STAGE_OBJECIONES || "Incubadora de Objeciones",
-  validacion: process.env.ZOHO_STAGE_VALIDACION || "Validación Técnica y Normativa",
-  cierre: process.env.ZOHO_STAGE_CIERRE || "Cierre y Negociación",
-  ganado: process.env.ZOHO_STAGE_GANADO || "Cerrado ganado",
-  perdido: process.env.ZOHO_STAGE_PERDIDO || "Cerrado perdido",
-  competencia: process.env.ZOHO_STAGE_COMPETENCIA || "Perdido y cerrado para la competencia",
+const STAGES = {
+  diagnostico:  process.env.ZOHO_STAGE_DIAGNOSTICO  || "Diagnóstico y Perfilado",
+  siembra:      process.env.ZOHO_STAGE_SIEMBRA      || "Siembra de Confianza + Marco Normativo",
+  propuesta:    process.env.ZOHO_STAGE_PROPUESTA     || "Presentación de Propuesta",
+  objeciones:   process.env.ZOHO_STAGE_OBJECIONES    || "Incubadora de Objeciones",
+  validacion:   process.env.ZOHO_STAGE_VALIDACION    || "Validación Técnica y Normativa",
+  cierre:       process.env.ZOHO_STAGE_CIERRE        || "Cierre y Negociación",
+  ganado:       process.env.ZOHO_STAGE_GANADO        || "Cerrado ganado",
+  perdido:      process.env.ZOHO_STAGE_PERDIDO       || "Cerrado perdido",
+  competencia:  process.env.ZOHO_STAGE_COMPETENCIA   || "Perdido para la competencia",
 };
 
-// ============================================================
-// VALIDACIÓN ENV
-// ============================================================
-function assertEnv() {
-  const missing = [];
-  if (!META.TOKEN) missing.push("WHATSAPP_TOKEN");
-  if (!META.PHONE_NUMBER_ID) missing.push("PHONE_NUMBER_ID");
-  if (!META.VERIFY_TOKEN) missing.push("VERIFY_TOKEN");
-  if (!OPENAI_API_KEY) missing.push("OPENAI_API_KEY");
-  if (missing.length) {
-    console.error("[FATAL] Missing ENV:", missing.join(", "));
-    process.exit(1);
-  }
-}
-assertEnv();
+/* ================================================================
+   3.  ENV VALIDATION
+   ================================================================ */
+(function assertEnv() {
+  const m = [];
+  if (!META.TOKEN)    m.push("WHATSAPP_TOKEN");
+  if (!META.PHONE_ID) m.push("PHONE_NUMBER_ID");
+  if (!META.VERIFY)   m.push("VERIFY_TOKEN");
+  if (!OPENAI_KEY)    m.push("OPENAI_API_KEY");
+  if (m.length) { console.error("[FATAL] Faltan:", m.join(", ")); process.exit(1); }
+})();
 
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+const openai = new OpenAI({ apiKey: OPENAI_KEY });
 
-// ============================================================
-// UTILIDADES
-// ============================================================
+/* ================================================================
+   4.  UTILIDADES
+   ================================================================ */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function normalizeCLPhone(raw) {
-  const s = String(raw || "").replace(/[^\d+]/g, "");
-  if (!s) return "";
-  if (s.startsWith("+")) return s;
-  if (s.startsWith("56")) return `+${s}`;
-  return `+${s}`;
-}
-
-function stripAccents(s) {
+function strip(s) {
   return String(s || "").normalize("NFD").replace(/\p{Diacritic}/gu, "");
 }
 
-// ============================================================
-// QTY (UNIDADES) — Ferrari 7.2
-// ============================================================
-function parseQty(text) {
-  const t = stripAccents(String(text || "")).toLowerCase();
+function normPhone(raw) {
+  const s = String(raw || "").replace(/[^\d+]/g, "");
+  if (!s) return "";
+  if (s.startsWith("+"))                      return s;
+  if (s.startsWith("569") && s.length === 11) return `+${s}`;
+  if (s.startsWith("56"))                     return `+${s}`;
+  if (s.startsWith("9")  && s.length === 9)   return `+56${s}`;
+  return `+${s}`;
+}
 
-  // patrones: "6 unidades", "8 ventanas", "x6", "por 6", "son 6", "6u"
-  const patterns = [
+function parseQty(text) {
+  const t = strip(text).toLowerCase();
+  const pats = [
     /(?:x|\*)\s*(\d{1,3})\b/,
-    /\b(\d{1,3})\s*(?:unidades|unidad|u|uds|ud|pzas|piezas|ventanas|ventana|puertas|puerta)\b/,
-    /\bson\s+(\d{1,3})\b/,
+    /\b(\d{1,3})\s*(?:unidades?|uds?|pzas?|piezas?|ventanas?|puertas?)\b/,
+    /\b(?:son|necesito|quiero|cotizar|tengo)\s+(\d{1,3})\b/,
     /\bpor\s+(\d{1,3})\b/,
   ];
-
-  for (const re of patterns) {
+  for (const re of pats) {
     const m = t.match(re);
-    if (m && m[1]) {
-      const n = parseInt(m[1], 10);
-      if (Number.isFinite(n) && n >= 1 && n <= 200) return n;
-    }
+    if (m?.[1]) { const n = parseInt(m[1], 10); if (n >= 1 && n <= 200) return n; }
   }
   return null;
 }
 
-// ============================================================
-// MOTOR DE PRECIOS — COEFFS EXTERNALIZADOS
-// ============================================================
-function normalizeMeasures(measures) {
-  const t = String(measures || "").toLowerCase();
-  const nums = t.match(/(\d+([.,]\d+)?)/g);
-  if (!nums || nums.length < 2) return null;
+/* ================================================================
+   5.  ZONAS TÉRMICAS  (OGUC Art. 4.1.10)
+   ================================================================ */
+const ZONA_COMUNAS = {
+  // — Zona 1: Litoral desértico norte —
+  arica:1,iquique:1,tocopilla:1,mejillones:1,
+  // — Zona 2: Litoral centro-norte —
+  antofagasta:2,"la serena":2,coquimbo:2,valparaiso:2,
+  "vina del mar":2,"con con":2,quintero:2,
+  "san antonio":2,"santo domingo":2,
+  // — Zona 3: Interior norte —
+  copiapo:3,calama:3,ovalle:3,illapel:3,
+  "san felipe":3,"los andes":3,
+  // — Zona 4: Central —
+  santiago:4,providencia:4,"las condes":4,vitacura:4,
+  "lo barnechea":4,nunoa:4,"la reina":4,penalolen:4,
+  macul:4,"la florida":4,"puente alto":4,"san bernardo":4,
+  maipu:4,quilicura:4,huechuraba:4,independencia:4,
+  recoleta:4,conchali:4,renca:4,"quinta normal":4,
+  "estacion central":4,cerrillos:4,
+  "pedro aguirre cerda":4,"san miguel":4,"la cisterna":4,
+  "el bosque":4,"la granja":4,"san ramon":4,"la pintana":4,
+  colina:4,lampa:4,buin:4,paine:4,talagante:4,
+  melipilla:4,penaflor:4,pirque:4,"lo prado":4,
+  "cerro navia":4,pudahuel:4,
+  rancagua:4,machali:4,"san fernando":4,
+  curico:4,talca:4,linares:4,chillan:4,
+  "los angeles":4,concepcion:4,talcahuano:4,
+  "san pedro de la paz":4,hualpen:4,coronel:4,
+  tome:4,penco:4,lota:4,
+  // — Zona 5: Sur (Araucanía, Los Ríos) —
+  temuco:5,"padre las casas":5,freire:5,vilcun:5,
+  lautaro:5,"nueva imperial":5,carahue:5,pitrufquen:5,
+  gorbea:5,perquenco:5,victoria:5,angol:5,collipulli:5,
+  traiguen:5,puren:5,lumaco:5,cunco:5,melipeuco:5,
+  villarrica:5,pucon:5,curacautin:5,lonquimay:5,
+  valdivia:5,"la union":5,panguipulli:5,"rio bueno":5,
+  mariquina:5,"los lagos":5,lanco:5,
+  // — Zona 6: Los Lagos, Chiloé —
+  osorno:6,"puerto montt":6,"puerto varas":6,frutillar:6,
+  llanquihue:6,calbuco:6,castro:6,ancud:6,dalcahue:6,
+  quellon:6,chonchi:6,
+  // — Zona 7: Austral —
+  coyhaique:7,"puerto aysen":7,"chile chico":7,cochrane:7,
+  "punta arenas":7,"puerto natales":7,porvenir:7,
+};
 
+function getZona(comunaRaw) {
+  if (!comunaRaw) return null;
+  const c = strip(comunaRaw).toLowerCase().trim();
+  if (ZONA_COMUNAS[c] !== undefined) return ZONA_COMUNAS[c];
+  for (const [name, z] of Object.entries(ZONA_COMUNAS)) {
+    if (c.includes(name) || name.includes(c)) return z;
+  }
+  return null;
+}
+
+function zonaInfo(z) {
+  if (!z) return { glass: "TP4+12+4", note: "" };
+  if (z <= 2) return { glass: "TP4+12+4", note: "Zona costera norte: DVH estándar cumple OGUC." };
+  if (z <= 4) return { glass: "TP4+12+4", note: "Zona central: DVH estándar cumple. 5+12+5 mejora confort y CES." };
+  if (z === 5) return { glass: "TP5+12+5", note: "Zona 5 (Sur): DVH 5+12+5 recomendado para cumplir RT y mejor confort." };
+  if (z === 6) return { glass: "TP5+12+5", note: "Zona 6: DVH 5+12+5 mínimo. Considerar Low-E para CES." };
+  return { glass: "TP5+12+5", note: "Zona austral: DVH 5+12+5 + Low-E + argón recomendado." };
+}
+
+/* ================================================================
+   6.  MOTOR DE PRECIOS
+   ================================================================ */
+
+// Placeholder correcciones — PENDIENTE CALIBRAR
+const CORRECTIONS = {
+  CORREDERA_80: 1.00,   // ~7% error detectado. Ajustar con datos reales
+  CORREDERA_98: 1.00,
+};
+
+function loadCoeffs() {
+  const p = process.env.PRICE_COEFFS_PATH || "./coefficients_v3.json";
+  try {
+    if (fs.existsSync(p)) {
+      const j = JSON.parse(fs.readFileSync(p, "utf-8"));
+      console.log(`✅ COEFFS: ${p} (${Object.keys(j).length} keys)`);
+      return j;
+    }
+    console.log(`⚠️ No existe ${p}`);
+  } catch (e) { logErr("loadCoeffs", e); }
+  return {};
+}
+const COEFFS = loadCoeffs();
+
+/** Verifica si existe coeficiente para esta combinación */
+function hasCoeffs(product, color, glass) {
+  return !!COEFFS[`${product}::${color}::${glass}`];
+}
+
+function normMeasures(raw) {
+  const nums = String(raw || "").match(/(\d+([.,]\d+)?)/g);
+  if (!nums || nums.length < 2) return null;
   let a = parseFloat(nums[0].replace(",", "."));
   let b = parseFloat(nums[1].replace(",", "."));
-
-  // m → mm
-  if (a < 10) a *= 1000;
-  if (b < 10) b *= 1000;
-  // cm → mm
-  if (a >= 10 && a < 100) a *= 10;
-  if (b >= 10 && b < 100) b *= 10;
-
+  if (a <= 6)                  a *= 1000;   // metros
+  if (b <= 6)                  b *= 1000;
+  if (a >= 7  && a <= 300)     a *= 10;     // centímetros
+  if (b >= 7  && b <= 300)     b *= 10;
   return { ancho_mm: Math.round(a), alto_mm: Math.round(b) };
 }
 
-function normalizeColorFromText(text = "") {
-  const s = stripAccents(text).toUpperCase();
-  if (s.includes("ANTRAC") || s.includes("GRAF") || s.includes("NEG")) return "NEGRO";
-  if (s.includes("ROBLE") || s.includes("NOG")) return "NOGAL";
+function normColor(text = "") {
+  const s = strip(text).toUpperCase();
+  if (/ANTRAC|GRAF|NEGR/.test(s)) return "NEGRO";
+  if (/ROBLE|NOGAL|MADER/.test(s)) return "NOGAL";
   return "BLANCO";
 }
 
-function normalizeProduct(productRaw = "") {
-  const s = stripAccents(productRaw).toUpperCase();
-  if (s.includes("PUERTA") && (s.includes("DOBLE") || s.includes("2 HOJ") || s.includes("DOS HOJ"))) return "PUERTA_DOBLE";
-  if (s.includes("PUERTA")) return "PUERTA_1H";
-  if (s.includes("PROYEC")) return "PROYECTANTE";
-  if (s.includes("MARCO") || s.includes("FIJO") || s.includes("PANO FIJO") || s.includes("PAÑO FIJO")) return "MARCO_FIJO";
-  if (s.includes("OSCILO")) return "OSCILOBATIENTE";
-  if (s.includes("ABAT")) return "ABATIBLE";
+function normProduct(raw = "") {
+  const s = strip(raw).toUpperCase();
+  if (s.includes("PUERTA") && /DOBLE|2\s*HOJ|DOS\s*HOJ/.test(s)) return "PUERTA_DOBLE";
+  if (s.includes("PUERTA"))      return "PUERTA_1H";
+  if (s.includes("PROYEC"))      return "PROYECTANTE";
+  if (/MARCO|FIJO|PA[NÑ]O/.test(s)) return "MARCO_FIJO";
+  if (s.includes("OSCILO"))      return "OSCILOBATIENTE";
+  if (s.includes("ABAT"))        return "ABATIBLE";
   if (s.includes("CORREDERA") && s.includes("98")) return "CORREDERA_98";
-  if (s.includes("CORREDERA") && s.includes("80")) return "CORREDERA_80";
-  if (s.includes("CORREDERA")) return "CORREDERA_80";
+  if (s.includes("CORREDERA"))   return "CORREDERA_80";
   return "";
 }
 
-function normalizeGlass(glassRaw = "", defaultGlass = "TP4+12+4") {
-  const s = stripAccents(glassRaw).toUpperCase();
-  if (s.includes("5") && s.includes("12") && s.includes("5")) return "TP5+12+5";
-  if (s.includes("4") && s.includes("12") && s.includes("4")) return "TP4+12+4";
-  return defaultGlass;
+function normGlass(raw = "", fallback = "TP4+12+4") {
+  const s = strip(raw).toUpperCase();
+  if (/5.*12.*5/.test(s)) return "TP5+12+5";
+  if (/4.*12.*4/.test(s)) return "TP4+12+4";
+  return fallback;
 }
 
-// a + bW + cH + dWH + eW² + fH²
-function priceFromCoeffs(coeffs, W, H) {
-  const { a, b, c, d, e, f } = coeffs;
-  const p = a + b * W + c * H + d * W * H + e * W * W + f * H * H;
-  return Math.max(0, Math.round(p));
+function calcPrice(c, W, H) {
+  return Math.max(0, Math.round(
+    c.a + c.b * W + c.c * H + c.d * W * H + c.e * W * W + c.f * H * H
+  ));
 }
 
-function loadCoeffs() {
-  const path = process.env.PRICE_COEFFS_PATH || "./coefficients_v3.json";
-  try {
-    if (fs.existsSync(path)) {
-      const raw = fs.readFileSync(path, "utf-8");
-      const json = JSON.parse(raw);
-      console.log(`✅ COEFFS cargados desde ${path} (${Object.keys(json).length} keys)`);
-      return json;
-    }
-    console.log(`⚠️ COEFFS: no existe ${path}`);
-  } catch (e) {
-    console.error("⚠️ No pude cargar COEFFS externos.");
-    logError("loadCoeffs", e);
-  }
-  return {};
-}
-
-const COEFFS = loadCoeffs();
-
-function resolvePricingKey({ product, colorText, glass, W, H }) {
+function resolveKey({ product, colorText, glass, W, H }) {
   let model = product;
-  const COLOR = normalizeColorFromText(colorText);
+  const COLOR = normColor(colorText);
   let GLASS = glass;
-  const rulesApplied = [];
+  const rules = [];
 
   if (!model) return { ok: false, reason: "Producto no reconocido" };
 
-  // PROYECTANTE máximo 1400×1400
-  if (model === "PROYECTANTE" && (W > 1400 || H > 1400)) {
-    return {
-      ok: false,
-      reason: "PROYECTANTE solo se fabrica hasta 1400×1400 mm.",
-    };
+  // ── Límites de fabricación ──
+  if (model === "PROYECTANTE" && (W > 1400 || H > 1400))
+    return { ok: false, reason: "Proyectante: máximo 1400 × 1400 mm." };
+
+  // Marco fijo grande → TP5+12+5 si hay coeficiente
+  if (model === "MARCO_FIJO" && W >= 1000 && H >= 2000) {
+    if (hasCoeffs("MARCO_FIJO", COLOR, "TP5+12+5")) {
+      GLASS = "TP5+12+5";
+      rules.push("Marco fijo ≥1000×2000 → TP5+12+5");
+    }
   }
 
-  // MARCO FIJO: auto TP5+12+5 desde 1000×2000
-  if (model === "MARCO_FIJO" && (W >= 1000 && H >= 2000)) {
-    GLASS = "TP5+12+5";
-    rulesApplied.push("MARCO_FIJO => TP5+12+5 (>=1000×2000)");
-  }
-
-  // PUERTAS: 1 hoja <=1200×2400, desde 1201 ancho => doble (hasta 2400×2400)
+  // Puertas
   if (model === "PUERTA_1H") {
     if (W <= 1200 && H <= 2400) {
-      rulesApplied.push("PUERTA 1 HOJA (<=1200×2400)");
-    } else if (W >= 1201 && W <= 2400 && H <= 2400) {
+      rules.push("Puerta 1 hoja (≤1200×2400)");
+    } else if (W <= 2400 && H <= 2400) {
       model = "PUERTA_DOBLE";
-      rulesApplied.push("PUERTA => DOBLE HOJA (ancho >=1201)");
+      rules.push("Ancho >1200 → doble hoja automática");
     } else {
-      return { ok: false, reason: "Puerta 1 hoja: máximo 1200×2400 mm. Doble hoja: hasta 2400×2400 mm." };
+      return { ok: false, reason: "Puerta 1H máx 1200×2400. Doble máx 2400×2400." };
     }
     GLASS = "TP5+12+5";
-    rulesApplied.push("PUERTA => TP5+12+5 (regla fija)");
+    rules.push("Puerta → TP5+12+5 obligatorio");
   }
-
   if (model === "PUERTA_DOBLE") {
-    if (W > 2400 || H > 2400) return { ok: false, reason: "Puerta doble: máximo 2400×2400 mm." };
+    if (W > 2400 || H > 2400) return { ok: false, reason: "Puerta doble máx 2400×2400 mm." };
     GLASS = "TP5+12+5";
-    rulesApplied.push("PUERTA DOBLE => TP5+12+5 (regla fija)");
+    rules.push("Puerta doble → TP5+12+5 obligatorio");
   }
 
-  // CORREDERA 80: 400×400 hasta 2000×2000; desde >=2001 en cualquier eje => 98
+  // Correderas
   if (model === "CORREDERA_80") {
-    if (W < 400 || H < 400) return { ok: false, reason: "CORREDERA 80 mínimo 400×400 mm" };
+    if (W < 400 || H < 400) return { ok: false, reason: "Corredera 80 mín 400×400 mm." };
     if (W >= 2001 || H >= 2001) {
       model = "CORREDERA_98";
-      rulesApplied.push("CORREDERA_80 => CORREDERA_98 (W>=2001 o H>=2001)");
+      rules.push("Medida ≥2001 → Corredera 98 automática");
     }
+  }
+  if (model === "CORREDERA_98") {
+    if (W > 4000 || H > 3000) return { ok: false, reason: "Corredera 98 máx 4000×3000 mm." };
   }
 
   const key = `${model}::${COLOR}::${GLASS}`;
-  return { ok: true, model, color: COLOR, glass: GLASS, key, rulesApplied };
+  return { ok: true, model, color: COLOR, glass: GLASS, key, rules };
 }
 
-function quotePriceEngine({ productText, glassText, measuresText, colorText, qty }) {
-  const m = normalizeMeasures(measuresText);
-  if (!m) return { ok: false, reason: "No pude leer medidas. Ej: 1200x1200 o 1.2x1.2" };
+function quoteEngine({ productText, glassText, measuresText, colorText, qty }) {
+  const m = normMeasures(measuresText);
+  if (!m) return { ok: false, reason: "No pude interpretar medidas. Ej: 1200×1200 mm" };
 
-  const W = m.ancho_mm;
-  const H = m.alto_mm;
+  const { ancho_mm: W, alto_mm: H } = m;
+  const product = normProduct(productText);
+  const glass   = normGlass(glassText || "", "TP4+12+4");
+  const r = resolveKey({ product, colorText: `${productText} ${colorText}`, glass, W, H });
+  if (!r.ok) return { ...r, measures: m };
 
-  const product = normalizeProduct(productText);
-  const glass = normalizeGlass(glassText || "", "TP4+12+4");
-  const colorCtx = `${productText} ${colorText || ""} ${glassText || ""}`;
+  const coeffs = COEFFS[r.key];
+  if (!coeffs)
+    return { ok: false, reason: `Sin datos de precio para ${r.key}`, resolved: r, measures: m };
 
-  const resolved = resolvePricingKey({ product, colorText: colorCtx, glass, W, H });
-  if (!resolved.ok) return resolved;
+  let unit = calcPrice(coeffs, W, H);
 
-  const coeffs = COEFFS[resolved.key];
-  if (!coeffs) {
-    return {
-      ok: false,
-      reason: `No tengo ecuación cargada para ${resolved.key}.`,
-      resolved,
-      measures: m,
-    };
+  // Corrección (placeholder)
+  const corr = CORRECTIONS[r.model] || 1;
+  if (corr !== 1) {
+    unit = Math.round(unit * corr);
+    r.rules.push(`Corrección ${r.model}: ×${corr}`);
   }
 
-  const unit = priceFromCoeffs(coeffs, W, H);
-  const q = Math.max(1, Number(qty || 1));
+  const q     = Math.max(1, Number(qty) || 1);
   const total = Math.round(unit * q);
 
-  return {
-    ok: true,
-    unit_price: unit,
-    total_price: total,
-    qty: q,
-    mode: "equation",
-    resolved,
-    measures: m,
-  };
+  return { ok: true, unit_price: unit, total_price: total, qty: q,
+           mode: "equation", resolved: r, measures: m };
 }
 
-// ============================================================
-// TYPING / HUMAN SEND — Ferrari 7.2 (DECLARADO)
-// ============================================================
-function humanDelayMs(text) {
-  const words = String(text || "").trim().split(/\s+/).filter(Boolean).length;
-  const base = 1200 + Math.min(6500, words * 170);
-  const jitter = base * (0.85 + Math.random() * 0.35);
-  return Math.round(jitter);
+/** Determina el mejor vidrio para un producto/color según zona
+ *  Retorna el glass que SÍ existe en coeficientes */
+function bestGlassForZona(product, colorText, zona) {
+  const pNorm = normProduct(product);
+  const cNorm = normColor(colorText);
+  if (!pNorm) return "TP4+12+4";
+
+  // Puertas siempre 5+12+5
+  if (pNorm === "PUERTA_1H" || pNorm === "PUERTA_DOBLE") return "TP5+12+5";
+
+  // Zona >= 5 recomienda 5+12+5, pero solo si hay coeficientes
+  if (zona && zona >= 5) {
+    if (hasCoeffs(pNorm, cNorm, "TP5+12+5")) return "TP5+12+5";
+    // No hay → queda en 4+12+4 (informar al cliente)
+  }
+
+  return "TP4+12+4";
 }
 
-const waBase = () => `https://graph.facebook.com/${META.GRAPH_VERSION}`;
+/* ================================================================
+   7.  WHATSAPP CLOUD API
+   ================================================================ */
+const waUrl = () => `https://graph.facebook.com/${META.VER}`;
 
-async function waSetTyping(to) {
-  const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
+async function waTyping(to) {
   try {
     await axios.post(
-      url,
-      { messaging_product: "whatsapp", to, typing_indicator: { type: "text" } },
-      { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 7000 }
+      `${waUrl()}/${META.PHONE_ID}/messages`,
+      { messaging_product: "whatsapp", recipient_type: "individual",
+        to, type: "text", typing_indicator: { type: "text" } },
+      { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 5000 }
     );
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ok */ }
 }
 
-// loop que mantiene typing vivo durante procesos largos
-function startTypingLoop(waId, everyMs = 3500) {
-  let stopped = false;
-
-  const tick = async () => {
-    if (stopped) return;
-    await waSetTyping(waId);
-  };
-
-  tick();
-  const timer = setInterval(tick, everyMs);
-
-  return () => {
-    stopped = true;
-    clearInterval(timer);
-  };
+function startTypingLoop(to, ms = 3500) {
+  let on = true;
+  const t = async () => { if (on) await waTyping(to); };
+  t();
+  const id = setInterval(t, ms);
+  return () => { on = false; clearInterval(id); };
 }
 
-async function waSendText(to, text) {
-  const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
+function humanMs(text) {
+  const w = String(text || "").trim().split(/\s+/).length;
+  return Math.round((1200 + Math.min(6500, w * 170)) * (0.85 + Math.random() * 0.35));
+}
+
+async function waSend(to, body) {
   try {
-    const payload = { messaging_product: "whatsapp", to, type: "text", text: { body: text } };
-    await axios.post(url, payload, { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 20000 });
-  } catch (e) {
-    logError("WA Send Text", e);
-  }
+    await axios.post(
+      `${waUrl()}/${META.PHONE_ID}/messages`,
+      { messaging_product: "whatsapp", to, type: "text", text: { body } },
+      { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 20000 }
+    );
+  } catch (e) { logErr("waSend", e); }
 }
 
-// envía con delay humano y typing vivo
-async function waSendTextHuman(to, text) {
-  const stop = startTypingLoop(to, 3500);
-  try {
-    await sleep(humanDelayMs(text));
-    await waSendText(to, text);
-  } finally {
-    stop();
-  }
+async function waSendH(to, text, skipTyp = false) {
+  const stop = skipTyp ? null : startTypingLoop(to);
+  try { await sleep(humanMs(text)); await waSend(to, text); }
+  finally { stop?.(); }
 }
 
-async function waSendMultipleHuman(to, messages) {
-  const stop = startTypingLoop(to, 3500);
+async function waSendMultiH(to, msgs, skipTyp = false) {
+  const stop = skipTyp ? null : startTypingLoop(to);
   try {
-    for (const msg of messages) {
-      if (!msg || !msg.trim()) continue;
-      await sleep(humanDelayMs(msg));
-      await waSendText(to, msg);
-      await sleep(350 + Math.random() * 450);
+    for (const m of msgs) {
+      if (!m?.trim()) continue;
+      await sleep(humanMs(m));
+      await waSend(to, m);
+      await sleep(300 + Math.random() * 400);
     }
-  } finally {
-    stop();
-  }
+  } finally { stop?.(); }
 }
 
-function verifyMetaSignature(req) {
-  if (!META.APP_SECRET) return true;
-  const sig = req.get("X-Hub-Signature-256") || req.get("x-hub-signature-256");
-  if (!sig) return false;
-  if (!req.rawBody || !Buffer.isBuffer(req.rawBody)) return false;
-  const expected = "sha256=" + crypto.createHmac("sha256", META.APP_SECRET).update(req.rawBody).digest("hex");
-  try {
-    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
-  } catch {
-    return false;
-  }
-}
-
-async function waMarkRead(messageId) {
-  const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
+async function waRead(msgId) {
   try {
     await axios.post(
-      url,
-      { messaging_product: "whatsapp", status: "read", message_id: messageId },
-      { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 10000 }
+      `${waUrl()}/${META.PHONE_ID}/messages`,
+      { messaging_product: "whatsapp", status: "read", message_id: msgId },
+      { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 8000 }
     );
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ok */ }
 }
 
-async function waUploadPdf(buffer, filename = "Cotizacion.pdf") {
-  const url = `${waBase()}/${META.PHONE_NUMBER_ID}/media`;
+async function waUploadPdf(buf, fname = "Cotizacion.pdf") {
   const form = new FormData();
   form.append("messaging_product", "whatsapp");
-  form.append("file", buffer, { filename, contentType: "application/pdf" });
-  try {
-    const r = await axios.post(url, form, {
-      headers: { Authorization: `Bearer ${META.TOKEN}`, ...form.getHeaders() },
-      maxBodyLength: Infinity,
-    });
-    return r.data.id;
-  } catch (e) {
-    logError("WA Upload PDF", e);
-    throw e;
-  }
+  form.append("file", buf, { filename: fname, contentType: "application/pdf" });
+  const { data } = await axios.post(
+    `${waUrl()}/${META.PHONE_ID}/media`, form,
+    { headers: { Authorization: `Bearer ${META.TOKEN}`, ...form.getHeaders() },
+      maxBodyLength: Infinity }
+  );
+  return data.id;
 }
 
-async function waSendPdfById(to, mediaId, caption, filename = "Cotizacion.pdf") {
-  const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
-  const payload = { messaging_product: "whatsapp", to, type: "document", document: { id: mediaId, filename, caption } };
+async function waSendPdf(to, mid, caption, fname) {
   try {
-    await axios.post(url, payload, { headers: { Authorization: `Bearer ${META.TOKEN}` } });
-  } catch (e) {
-    logError("WA Send PDF", e);
-  }
+    await axios.post(
+      `${waUrl()}/${META.PHONE_ID}/messages`,
+      { messaging_product: "whatsapp", to, type: "document",
+        document: { id: mid, filename: fname, caption } },
+      { headers: { Authorization: `Bearer ${META.TOKEN}` } }
+    );
+  } catch (e) { logErr("waSendPdf", e); }
 }
 
-async function waGetMediaMeta(mediaId) {
-  const url = `${waBase()}/${mediaId}`;
-  try {
-    const { data } = await axios.get(url, { headers: { Authorization: `Bearer ${META.TOKEN}` } });
-    return data;
-  } catch (e) {
-    logError("WA Get Media Meta", e);
-    throw e;
-  }
+async function waMediaUrl(id) {
+  const { data } = await axios.get(
+    `${waUrl()}/${id}`,
+    { headers: { Authorization: `Bearer ${META.TOKEN}` } }
+  );
+  return data;
 }
 
-async function waDownloadMedia(mediaUrl) {
-  try {
-    const { data, headers } = await axios.get(mediaUrl, {
-      responseType: "arraybuffer",
-      headers: { Authorization: `Bearer ${META.TOKEN}` },
-    });
-    return { buffer: Buffer.from(data), mime: headers["content-type"] || "application/octet-stream" };
-  } catch (e) {
-    logError("WA Download Media", e);
-    throw e;
-  }
+async function waDownload(url) {
+  const { data, headers } = await axios.get(url, {
+    responseType: "arraybuffer",
+    headers: { Authorization: `Bearer ${META.TOKEN}` },
+  });
+  return { buffer: Buffer.from(data), mime: headers["content-type"] || "application/octet-stream" };
 }
 
-// ============================================================
-// MEDIA PROCESSING
-// ============================================================
-async function transcribeAudio(buffer, mime) {
+function verifySig(req) {
+  if (!META.SECRET) return true;
+  const sig = req.get("X-Hub-Signature-256") || req.get("x-hub-signature-256");
+  if (!sig || !req.rawBody) return false;
+  const exp = "sha256=" + crypto.createHmac("sha256", META.SECRET).update(req.rawBody).digest("hex");
+  try { return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(exp)); }
+  catch { return false; }
+}
+
+/* ================================================================
+   8.  MEDIA PROCESSING
+   ================================================================ */
+async function stt(buf, mime) {
   try {
-    const file = await toFile(buffer, "audio.ogg", { type: mime });
+    const file = await toFile(buf, "audio.ogg", { type: mime });
     const r = await openai.audio.transcriptions.create({ model: STT_MODEL, file, language: "es" });
     return (r.text || "").trim();
-  } catch (e) {
-    logError("OpenAI Audio", e);
-    return "";
-  }
+  } catch (e) { logErr("STT", e); return ""; }
 }
 
-async function describeImage(buffer, mime) {
+async function vision(buf, mime) {
   try {
-    const b64 = buffer.toString("base64");
-    const dataUrl = `data:${mime};base64,${b64}`;
-    const prompt = `Describe brevemente la imagen y extrae datos útiles para cotizar: producto, color, unidades, medidas, comuna.`;
-    const resp = await openai.chat.completions.create({
+    const b64 = buf.toString("base64");
+    const r = await openai.chat.completions.create({
       model: AI_MODEL,
-      messages: [
-        { role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: dataUrl } }] },
-      ],
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text",
+            text: "Describe la imagen brevemente. Extrae: producto (ventana/puerta), tipo, color, medidas, cantidad, ubicación." },
+          { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } },
+        ],
+      }],
       max_tokens: 250,
     });
-    return (resp.choices?.[0]?.message?.content || "").trim();
-  } catch (e) {
-    logError("OpenAI Vision", e);
-    return "";
-  }
+    return (r.choices?.[0]?.message?.content || "").trim();
+  } catch (e) { logErr("Vision", e); return ""; }
 }
 
-async function parsePdfToText(buffer) {
+async function readPdf(buf) {
   try {
-    const r = await pdfParse(buffer);
-    const text = (r?.text || "").trim();
-    return text.length > 6000 ? text.slice(0, 6000) + "\n..." : text;
-  } catch {
-    return "";
-  }
+    const r = await pdfParse(buf);
+    const t = (r?.text || "").trim();
+    return t.length > 6000 ? t.slice(0, 6000) + "…" : t;
+  } catch { return ""; }
 }
 
-// ============================================================
-// SESSIONS
-// ============================================================
-const sessions = new Map();
-const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
+/* ================================================================
+   9.  SESIONES
+   ================================================================ */
+const sessions    = new Map();
+const SESSION_TTL = 6 * 3_600_000;
+const MAX_HIST    = 30;
 
-function createEmptySession() {
+function emptyData() {
   return {
-    lastUserAt: Date.now(),
-    data: {
-      name: "",
-      product: "",
-      color: "",
-      qty: 1,
-      measures: "",
-      address: "",
-      comuna: "",
-      glass: "", // se autodefine como Termopanel
-      install: "",
-      wants_pdf: false,
-      notes: "",
-      profile: "",
-      stageKey: "diagnostico",
-
-      // precios
-      unit_price: null,
-      total_price: null,
-      price_mode: "",
-      price_key: "",
-      price_rules: [],
-      price_warning: "",
-    },
-    history: [],
-    pdfSent: false,
-    quoteNumber: null,
-    zohoDealId: null,
+    name: "", product: "", color: "", qty: 1,
+    measures: "", address: "", comuna: "",
+    glass: "", install: "", wants_pdf: false,
+    notes: "", project_type: "",
+    profile: "", stageKey: "diagnostico",
+    zona_termica: null,
+    unit_price: null, total_price: null,
+    price_mode: "", price_key: "",
+    price_rules: [], price_warning: "",
   };
 }
 
 function getSession(waId) {
-  if (!sessions.has(waId)) sessions.set(waId, createEmptySession());
+  if (!sessions.has(waId))
+    sessions.set(waId, {
+      lastAt: Date.now(), data: emptyData(),
+      history: [], pdfSent: false,
+      quoteNum: null, zohoDealId: null,
+    });
   return sessions.get(waId);
 }
 
-function saveSession(waId, session) {
-  session.lastUserAt = Date.now();
-  sessions.set(waId, session);
+function saveSession(waId, s) {
+  s.lastAt = Date.now();
+  if (s.history.length > MAX_HIST) s.history = s.history.slice(-MAX_HIST);
+  sessions.set(waId, s);
 }
 
-function cleanupSessions() {
-  const cutoff = Date.now() - SESSION_TTL_MS;
-  for (const [waId, s] of sessions.entries()) {
-    if ((s.lastUserAt || 0) < cutoff) sessions.delete(waId);
-  }
-}
-setInterval(cleanupSessions, 3600000);
+setInterval(() => {
+  const cut = Date.now() - SESSION_TTL;
+  for (const [id, s] of sessions) if ((s.lastAt || 0) < cut) sessions.delete(id);
+}, 3_600_000);
 
-// ============================================================
-// RATE LIMITING & LOCKS
-// ============================================================
-const processedMsgIds = new Map();
-function isDuplicateMsg(msgId) {
-  if (!msgId) return false;
-  if (processedMsgIds.has(msgId)) return true;
-  processedMsgIds.set(msgId, Date.now());
+/* ================================================================
+   10.  DEDUP, RATE, LOCK
+   ================================================================ */
+const seen = new Map();
+function isDup(id) {
+  if (!id) return false;
+  if (seen.has(id)) return true;
+  seen.set(id, Date.now());
   return false;
 }
 setInterval(() => {
-  const cutoff = Date.now() - 7200000;
-  for (const [id, ts] of processedMsgIds.entries()) if (ts < cutoff) processedMsgIds.delete(id);
-}, 600000);
+  const cut = Date.now() - 7_200_000;
+  for (const [id, ts] of seen) if (ts < cut) seen.delete(id);
+}, 600_000);
 
+const rateM = new Map();
+function rateOk(waId) {
+  const now = Date.now();
+  if (!rateM.has(waId)) rateM.set(waId, { n: 0, r: now + 60_000 });
+  const r = rateM.get(waId);
+  if (now >= r.r) { r.n = 0; r.r = now + 60_000; }
+  r.n++;
+  return r.n > 15
+    ? { ok: false, msg: "Estás escribiendo muy rápido 😅 Dame unos segundos." }
+    : { ok: true };
+}
+
+// FIFO lock (fix race-condition)
 const locks = new Map();
 async function acquireLock(waId) {
-  if (locks.has(waId)) await locks.get(waId);
+  const prev = locks.get(waId) || Promise.resolve();
   let release;
-  const p = new Promise((r) => (release = r));
-  locks.set(waId, p);
-  return () => {
-    release();
-    locks.delete(waId);
-  };
+  const next = new Promise((r) => (release = r));
+  locks.set(waId, next);
+  await prev;
+  return () => { release(); if (locks.get(waId) === next) locks.delete(waId); };
 }
 
-const rate = new Map();
-function checkRate(waId) {
-  const now = Date.now();
-  if (!rate.has(waId)) rate.set(waId, { count: 1, resetAt: now + 60000 });
-  const r = rate.get(waId);
-  if (now >= r.resetAt) {
-    r.count = 1;
-    r.resetAt = now + 60000;
-    return { allowed: true };
-  }
-  r.count++;
-  return r.count > 15 ? { allowed: false, msg: "Estás escribiendo muy rápido. Dame unos segundos." } : { allowed: true };
-}
+/* ================================================================
+   11.  EXTRACT MESSAGE
+   ================================================================ */
+function extractMsg(body) {
+  const val = body?.entry?.[0]?.changes?.[0]?.value;
+  if (val?.statuses?.length) return { ok: false };
+  const msg = val?.messages?.[0];
+  if (!msg) return { ok: false };
 
-// ============================================================
-// WEBHOOK EXTRACTION
-// ============================================================
-function extractIncoming(reqBody) {
-  const entry = reqBody?.entry?.[0];
-  const changes = entry?.changes?.[0];
-  const value = changes?.value;
-
-  if (value?.statuses?.length) return { ok: false, reason: "status_update" };
-
-  const msg = value?.messages?.[0];
-  if (!msg) return { ok: false, reason: "no_message" };
-
-  const waId = msg.from;
-  const msgId = msg.id;
   const type = msg.type;
-
-  const audioId = type === "audio" ? msg.audio?.id : null;
-  const imageId = type === "image" ? msg.image?.id : null;
-  const docId = type === "document" ? msg.document?.id : null;
-  const docMime = type === "document" ? msg.document?.mime_type : null;
-
   let text = "";
-  if (type === "text") text = msg.text?.body || "";
-  else if (type === "button") text = msg.button?.text || "";
+  if (type === "text")             text = msg.text?.body || "";
+  else if (type === "button")      text = msg.button?.text || "";
   else if (type === "interactive") text = JSON.stringify(msg.interactive || {});
   else text = `[${type}]`;
 
-  return { ok: true, waId, msgId, type, text, audioId, imageId, docId, docMime };
+  return {
+    ok: true, waId: msg.from, msgId: msg.id, type, text,
+    audioId: msg.audio?.id    || null,
+    imageId: msg.image?.id    || null,
+    docId:   msg.document?.id || null,
+    docMime: msg.document?.mime_type || null,
+  };
 }
 
-// ============================================================
-// LÓGICA DE NEGOCIO
-// ============================================================
-function nextMissingKey(d) {
-  if (!d.product) return "producto";
-  if (!d.color) return "color";
-  if (!d.measures) return "medidas";
-  if (!d.address && !d.comuna) return "comuna";
+/* ================================================================
+   12.  BUSINESS HELPERS
+   ================================================================ */
+function nextMissing(d) {
+  if (!d.product)              return "producto";
+  if (!d.measures)             return "medidas";
+  if (!d.color)                return "color";
+  if (!d.comuna && !d.address) return "comuna";
   return "";
 }
 
@@ -668,513 +651,725 @@ function isComplete(d) {
   return !!(d.product && d.color && d.measures && (d.address || d.comuna));
 }
 
-// ============================================================
-// PROMPT & TOOLS
-// ============================================================
-const tools = [
-  {
-    type: "function",
-    function: {
-      name: "update_customer_data",
-      description: "Actualiza datos del cliente. Vidrio es Termopanel (no preguntar).",
-      parameters: {
-        type: "object",
-        properties: {
-          name: { type: "string" },
-          product: { type: "string" },
-          color: { type: "string" },
-          qty: { type: "number" },
-          measures: { type: "string" },
-          address: { type: "string" },
-          comuna: { type: "string" },
-          install: { type: "string" },
-          wants_pdf: { type: "boolean" },
-          notes: { type: "string" },
-        },
+/* ================================================================
+   13.  SYSTEM PROMPT & TOOLS
+   ================================================================ */
+const SYSTEM_PROMPT = `
+Eres un ASESOR ESPECIALISTA EN VENTANAS Y PUERTAS DE PVC CON TERMOPANEL de ${COMPANY.NAME}, ubicada en ${COMPANY.ADDRESS}.
+
+═══ TU PERSONALIDAD ═══
+• Hablas como profesional chileno: cercano, cálido, confiable.
+• NO eres formulario. Eres asesor que CONVERSA y ESCUCHA.
+• Preguntas de a uno. Jamás bombardees al cliente.
+• Si comenta algo personal, responde humanamente antes de seguir.
+• Si no sabes algo, dilo con honestidad y ofrece consultar.
+• Usas "tú" salvo que el cliente use "usted".
+
+═══ CONOCIMIENTO TÉCNICO CHILENO ═══
+
+NORMATIVA OGUC (Ordenanza General de Urbanismo y Construcciones):
+• Art. 4.1.10: Acondicionamiento térmico OBLIGATORIO en viviendas nuevas, ampliaciones y remodelaciones.
+• Chile tiene 7 zonas térmicas. Cada zona exige transmitancia térmica (valor U) máxima para ventanas, muros, techumbre y pisos.
+• Las ventanas son el elemento MÁS crítico de la envolvente: por ellas se pierde hasta el 40% del calor.
+
+REGLAMENTACIÓN TÉRMICA (RT):
+• Zona 1-2: U ventanas ≤ 6.0 W/m²K → DVH estándar cumple.
+• Zona 3-4: U ventanas ≤ 3.6 W/m²K → DVH estándar cumple. 5+12+5 mejora.
+• Zona 5:   U ventanas ≤ 3.0 W/m²K → DVH 5+12+5 recomendado.
+• Zona 6:   U ventanas ≤ 2.8 W/m²K → DVH 5+12+5 mínimo. Low-E ideal.
+• Zona 7:   U ventanas ≤ 2.4 W/m²K → DVH Low-E + argón necesario.
+
+NCh 2485: Aislación térmica en edificaciones.
+NCh 888: Vidrios de seguridad (templado/laminado según altura y uso).
+
+CERTIFICACIÓN CES (Certificación Edificio Sustentable):
+• Evalúa eficiencia energética, agua, ambiente interior, materiales.
+• Ventanas PVC + DVH aportan puntos significativos en la categoría "Envolvente".
+• PVC tiene mejor aislación térmica que aluminio (no conduce calor).
+• Si el cliente menciona CES o edificio sustentable, explica cómo nuestros productos contribuyen.
+
+VENTAJAS DEL PVC:
+• No conductor térmico (vs aluminio que es puente térmico).
+• Resistente a corrosión costera (ideal zonas 1-2).
+• No requiere mantenimiento, no se pinta, no se oxida.
+• Material reciclable. Vida útil +40 años.
+• Reduce condensación en vidrios.
+• Aislación acústica superior (~35 dB de reducción).
+
+═══ PRODUCTOS DISPONIBLES ═══
+• Corredera 80 mm — hasta 2000×2000. Medidas mayores → Corredera 98 automática.
+• Corredera 98 mm — para vanos grandes.
+• Proyectante — máx 1400×1400 mm. Ventilación superior.
+• Abatible — apertura lateral clásica.
+• Oscilobatiente — apertura dual: abatir + oscilar. Ideal dormitorios.
+• Marco Fijo / Paño Fijo — máxima luminosidad, sin apertura.
+• Puerta 1 hoja — máx 1200×2400. Ancho >1200 → doble hoja.
+• Puerta doble hoja — máx 2400×2400.
+
+═══ REGLAS OBLIGATORIAS ═══
+• Vidrio SIEMPRE es Termopanel (DVH). NO preguntes tipo de vidrio.
+• Puertas siempre DVH 5+12+5.
+• El sistema calcula precios automáticamente. TÚ NO inventas precios.
+• Si el cliente dice cantidad (ej: "necesito 6"), guárdala como qty.
+
+═══ FLUJO NATURAL DE CONVERSACIÓN ═══
+1. Saluda con calidez. Pregunta qué necesita.
+2. Identifica producto (tipo de ventana/puerta).
+3. Pregunta medidas (ancho × alto).
+4. Pregunta color (blanco, negro/antracita, nogal).
+5. Pregunta comuna → zona térmica → valida RT.
+6. Con datos completos, el SISTEMA calcula precio.
+7. Tú presentas el precio naturalmente y ofreces PDF.
+
+═══ CÓMO PRESENTAR PRECIOS ═══
+Cuando el sistema te pase el precio calculado:
+• Preséntalo naturalmente: "Tu ventana corredera de 1500×1500 en blanco te queda en $XXX.XXX + IVA"
+• Si hay varias unidades: "Cada una queda en $XXX.XXX, y las 6 unidades suman $XXX.XXX + IVA"
+• Menciona que incluye Termopanel.
+• Si la comuna está en zona 5+, destaca el cumplimiento normativo.
+• Ofrece generar cotización formal en PDF.
+
+═══ CUANDO NO HAY PRECIO ═══
+• Si el sistema dice que falta ecuación → "Déjame verificar ese modelo con el equipo técnico"
+• Si hay advertencia de precio → transmítela con naturalidad.
+• NUNCA inventes un número.
+
+═══ PERFIL DEL CLIENTE ═══
+Al final de CADA respuesta agrega exactamente 1 tag (el cliente NO lo ve):
+<PROFILE:PRECIO>    — enfocado en costo, compara, busca ofertas.
+<PROFILE:CALIDAD>   — valora durabilidad, garantía, materiales premium.
+<PROFILE:TECNICO>   — pregunta specs, normativa, certificaciones, U-value.
+<PROFILE:AFINIDAD>  — valora cercanía, confianza, relación humana.
+`.trim();
+
+const tools = [{
+  type: "function",
+  function: {
+    name: "update_customer_data",
+    description:
+      "Actualiza datos del cliente. Llamar SIEMPRE que el cliente dé información nueva.",
+    parameters: {
+      type: "object",
+      properties: {
+        name:         { type: "string",  description: "Nombre del cliente" },
+        product:      { type: "string",  description: "Tipo: corredera, proyectante, abatible, oscilobatiente, marco fijo, puerta" },
+        color:        { type: "string",  description: "Color: blanco, negro/antracita, nogal" },
+        qty:          { type: "number",  description: "Cantidad de unidades" },
+        measures:     { type: "string",  description: "Medidas ancho×alto" },
+        address:      { type: "string",  description: "Dirección de instalación" },
+        comuna:       { type: "string",  description: "Comuna" },
+        install:      { type: "string",  description: "¿Necesita instalación? sí/no/por ver" },
+        wants_pdf:    { type: "boolean", description: "true si quiere cotización formal PDF" },
+        notes:        { type: "string",  description: "Observaciones" },
+        project_type: { type: "string",  description: "obra nueva / remodelación / ampliación / reposición" },
       },
     },
   },
-];
+}];
 
-const SYSTEM_PROMPT = `
-Eres un ASESOR ESPECIALISTA EN VENTANAS Y PUERTAS de ${COMPANY.NAME}.
-- Hablas humano y chileno, sin presionar.
-- Pides datos de a uno.
-- Si el cliente dice cantidad (ej: 6 unidades), debes guardarla como qty.
-- El vidrio es SIEMPRE Termopanel (DVH). No preguntes vidrio.
-Al final agrega SOLO 1 tag:
-<PROFILE:PRECIO> <PROFILE:CALIDAD> <PROFILE:TECNICO> <PROFILE:AFINIDAD>
-`.trim();
-
+/* ================================================================
+   14.  RUN AI
+   ================================================================ */
 async function runAI(session, userText) {
-  const d = session.data;
-  const missingKey = nextMissingKey(d);
-  const complete = isComplete(d);
+  const d       = session.data;
+  const missing = nextMissing(d);
+  const done    = isComplete(d);
 
-  const statusMsg = complete
-    ? "DATOS COMPLETOS. Puedes confirmar si quiere PDF."
-    : `FALTA: "${missingKey}". Pídelo amablemente.`;
+  const status = [];
+  if (done) status.push("DATOS COMPLETOS. Calcula precio y/o ofrece PDF.");
+  else      status.push(`FALTA: "${missing}". Pídelo amablemente, de a uno.`);
 
-  const messages = [
+  if (d.zona_termica) status.push(`Zona térmica: ${d.zona_termica}. ${zonaInfo(d.zona_termica).note}`);
+
+  if (d.unit_price)
+    status.push(`PRECIO CALCULADO — Unitario: $${d.unit_price.toLocaleString("es-CL")} +IVA | Total (${d.qty}u): $${d.total_price.toLocaleString("es-CL")} +IVA. Preséntalo naturalmente.`);
+  if (d.price_warning)
+    status.push(`AVISO: ${d.price_warning}`);
+
+  const msgs = [
     { role: "system", content: SYSTEM_PROMPT },
-    { role: "system", content: statusMsg },
-    { role: "system", content: `Memoria actual:\n${JSON.stringify(d, null, 2)}` },
+    { role: "system", content: status.join("\n") },
+    { role: "system", content: `Memoria:\n${JSON.stringify(d, null, 2)}` },
     ...session.history.slice(-12),
     { role: "user", content: userText },
   ];
 
   try {
-    const resp = await openai.chat.completions.create({
+    const r = await openai.chat.completions.create({
       model: AI_MODEL,
-      messages,
+      messages: msgs,
       tools,
       tool_choice: "auto",
-      parallel_tool_calls: false, // ✅ evita error 400 de tool_calls múltiples
-      temperature: 0.3,
-      max_tokens: 400,
+      parallel_tool_calls: false,
+      temperature: 0.35,
+      max_tokens: 500,
     });
-
-    const aiMsg = resp.choices?.[0]?.message;
-
-    if (aiMsg?.content) {
-      const match = aiMsg.content.match(/<PROFILE:(\w+)>/i);
-      if (match) {
-        const detected = match[1].toUpperCase();
-        if (["PRECIO", "CALIDAD", "TECNICO", "AFINIDAD"].includes(detected)) session.data.profile = detected;
+    const ai = r.choices?.[0]?.message;
+    if (ai?.content) {
+      const pm = ai.content.match(/<PROFILE:(\w+)>/i);
+      if (pm) {
+        const p = pm[1].toUpperCase();
+        if (["PRECIO","CALIDAD","TECNICO","AFINIDAD"].includes(p)) d.profile = p;
       }
     }
-
-    return aiMsg;
+    return ai;
   } catch (e) {
-    logError("OpenAI Run", e);
-    return { role: "assistant", content: "Dame un segundo, reviso la info..." };
+    logErr("runAI", e);
+    return { role: "assistant", content: "Dame un segundo, estoy revisando… 🔍" };
   }
 }
 
-// ============================================================
-// PDF
-// ============================================================
-function formatDateCL(date = new Date()) {
-  return date.toLocaleDateString("es-CL", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric" });
+/* ================================================================
+   15.  PDF
+   ================================================================ */
+function dateCL(d = new Date()) {
+  return d.toLocaleDateString("es-CL", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric" });
+}
+function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
+function genQuoteNum() {
+  const n = new Date();
+  return `COT-${String(n.getFullYear()).slice(-2)}${String(n.getMonth()+1).padStart(2,"0")}${String(n.getDate()).padStart(2,"0")}-${Math.random().toString(36).substring(2,6).toUpperCase()}`;
 }
 
-function generateQuoteNumber() {
-  const now = new Date();
-  const y = now.getFullYear().toString().slice(-2);
-  const m = (now.getMonth() + 1).toString().padStart(2, "0");
-  const d = now.getDate().toString().padStart(2, "0");
-  const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
-  return `COT-${y}${m}${d}-${rand}`;
-}
-
-async function createQuotePdf(data, quoteNumber) {
+async function buildPdf(data, qn) {
   return new Promise((resolve, reject) => {
     try {
       const doc = new PDFDocument({ size: "A4", margin: 50 });
       const chunks = [];
-      doc.on("data", (c) => chunks.push(c));
+      doc.on("data", c => chunks.push(c));
       doc.on("end", () => resolve(Buffer.concat(chunks)));
 
-      const primaryColor = "#1a365d";
-      doc.rect(0, 0, 612, 100).fill(primaryColor);
-      doc.fillColor("#ffffff").fontSize(24).font("Helvetica-Bold").text(COMPANY.NAME.toUpperCase(), 50, 30);
-      doc.fontSize(10).font("Helvetica").text("Ventanas y Puertas Premium", 50, 58);
-      doc.fontSize(20).font("Helvetica-Bold").text("COTIZACIÓN", 400, 35, { align: "right", width: 150 });
-      doc.fontSize(10).font("Helvetica").text(quoteNumber, 400, 62, { align: "right", width: 150 });
+      const P = "#1a365d";
+      const S = "#4a5568";
+      const L = "#f7fafc";
 
-      doc.y = 120;
-      doc.fillColor("#4a5568").fontSize(9).text(`Fecha: ${formatDateCL()}`, 400, 110, { align: "right", width: 150 });
+      // ── Header ──
+      doc.rect(0, 0, 612, 108).fill(P);
+      doc.fillColor("#fff").fontSize(24).font("Helvetica-Bold")
+         .text(COMPANY.NAME.toUpperCase(), 50, 25);
+      doc.fontSize(10).font("Helvetica")
+         .text("Ventanas y Puertas de PVC con Termopanel", 50, 53);
+      doc.fontSize(9)
+         .text(`${COMPANY.PHONE}  •  ${COMPANY.EMAIL}`, 50, 69)
+         .text(`${COMPANY.ADDRESS}`, 50, 83);
 
-      doc.y = 160;
-      doc.fillColor(primaryColor).fontSize(12).font("Helvetica-Bold").text("DETALLE", 50);
-      doc.moveDown(0.5);
-      doc.fillColor("#4a5568").fontSize(10).font("Helvetica");
+      doc.fontSize(18).font("Helvetica-Bold")
+         .text("COTIZACIÓN", 380, 28, { align: "right", width: 180 });
+      doc.fontSize(10).font("Helvetica")
+         .text(qn, 380, 53, { align: "right", width: 180 })
+         .text(`Fecha: ${dateCL()}`, 380, 69, { align: "right", width: 180 })
+         .text(`Válida: 15 días`, 380, 83, { align: "right", width: 180 });
 
-      doc.text(`Producto: ${data.product || "Por confirmar"}`);
-      doc.text(`Color: ${data.color || "Por confirmar"}`);
-      doc.text(`Cantidad: ${data.qty || 1}`);
-      doc.text(`Medidas: ${data.measures || "Por confirmar"}`);
-      doc.text(`Vidrio: ${data.glass || "Termopanel (DVH)"}`);
-      if (data.install) doc.text(`Instalación: ${data.install}`);
-      if (data.comuna || data.address) doc.text(`Ubicación: ${data.address || data.comuna}`);
+      // ── Cliente ──
+      let y = 128;
+      doc.fillColor(P).fontSize(12).font("Helvetica-Bold").text("CLIENTE", 50, y);
+      y += 18;
+      doc.fillColor(S).fontSize(10).font("Helvetica");
+      if (data.name)    { doc.text(`Nombre: ${data.name}`, 50, y); y += 15; }
+      if (data.comuna || data.address) {
+        doc.text(`Ubicación: ${data.address || data.comuna}`, 50, y); y += 15;
+      }
+      if (data.zona_termica) {
+        doc.text(`Zona Térmica OGUC: ${data.zona_termica}`, 50, y); y += 15;
+      }
+      if (data.project_type) {
+        doc.text(`Tipo proyecto: ${data.project_type}`, 50, y); y += 15;
+      }
 
-      doc.moveDown(1);
-      doc.fillColor(primaryColor).fontSize(12).font("Helvetica-Bold").text("VALOR ESTIMADO");
+      // ── Detalle Producto ──
+      y += 8;
+      doc.fillColor(P).fontSize(12).font("Helvetica-Bold").text("DETALLE DEL PRODUCTO", 50, y);
+      y += 18;
+      const boxTop = y;
+      doc.rect(50, boxTop, 512, 110).fill(L);
+      doc.fillColor(S).fontSize(10).font("Helvetica");
+      doc.text(`Producto:     ${data.product || "Por confirmar"}`,  65, boxTop + 10);
+      doc.text(`Color:        ${data.color || "Por confirmar"}`,    65, boxTop + 28);
+      doc.text(`Cantidad:     ${data.qty || 1}`,                    65, boxTop + 46);
+      doc.text(`Medidas:      ${data.measures || "Por confirmar"}`, 65, boxTop + 64);
+      doc.text(`Vidrio:       ${data.glass || "Termopanel DVH"}`,   65, boxTop + 82);
+      if (data.install) doc.text(`Instalación:  ${data.install}`,  330, boxTop + 10);
+      y = boxTop + 125;
 
-      const unitTxt = data.unit_price ? `$ ${Number(data.unit_price).toLocaleString("es-CL")}` : "—";
-      const totalTxt = data.total_price ? `$ ${Number(data.total_price).toLocaleString("es-CL")}` : "Por confirmar";
+      // ── Precio ──
+      doc.fillColor(P).fontSize(12).font("Helvetica-Bold").text("VALOR ESTIMADO", 50, y);
+      y += 18;
+      const uTxt = data.unit_price ? `$ ${Number(data.unit_price).toLocaleString("es-CL")}` : "—";
+      const tTxt = data.total_price ? `$ ${Number(data.total_price).toLocaleString("es-CL")}` : "Por confirmar";
+      const priceY = y;
+      doc.rect(50, priceY, 512, 60).fill(L);
+      doc.fillColor(S).fontSize(11).font("Helvetica")
+         .text(`Precio unitario: ${uTxt} + IVA`, 65, priceY + 12);
+      doc.fillColor(P).fontSize(15).font("Helvetica-Bold")
+         .text(`TOTAL: ${tTxt} + IVA`, 65, priceY + 35);
+      y = priceY + 75;
 
-      doc.rect(50, doc.y + 5, 512, 70).fill("#f7fafc");
-      doc.fillColor(primaryColor).fontSize(12).font("Helvetica-Bold").text(`Unitario: ${unitTxt} + IVA`, 60, doc.y + 18);
-      doc.fillColor(primaryColor).fontSize(14).font("Helvetica-Bold").text(`TOTAL: ${totalTxt} + IVA`, 60, doc.y + 40);
+      // ── Normativa ──
+      y += 5;
+      doc.fillColor(P).fontSize(11).font("Helvetica-Bold").text("CUMPLIMIENTO NORMATIVO", 50, y);
+      y += 16;
+      doc.fillColor(S).fontSize(9).font("Helvetica");
+      const norms = [
+        "✓  OGUC Art. 4.1.10 — Acondicionamiento térmico obligatorio",
+        "✓  NCh 2485 — Aislación térmica en edificaciones",
+        "✓  NCh 888 — Vidrios de seguridad según aplicación",
+        "✓  Compatible con Certificación CES (Edificio Sustentable)",
+        "✓  Perfil PVC sin puente térmico — Superior a aluminio",
+        "✓  DVH reduce pérdida térmica hasta 50% vs vidrio simple",
+      ];
+      if (data.zona_termica) {
+        norms.push(`✓  ${zonaInfo(data.zona_termica).note}`);
+      }
+      for (const line of norms) {
+        doc.text(line, 55, y); y += 13;
+      }
+
+      // ── Footer ──
+      y += 10;
+      doc.moveTo(50, y).lineTo(562, y).strokeColor("#cbd5e0").lineWidth(0.5).stroke();
+      y += 8;
+      doc.fillColor(S).fontSize(8).font("Helvetica");
+      doc.text("Precios en CLP + IVA  |  Sujeto a visita técnica  |  Instalación no incluida salvo indicación", 50, y);
+      y += 12;
+      doc.text(`${COMPANY.NAME}  •  RUT ${COMPANY.RUT}  •  ${COMPANY.WEBSITE}`, 50, y);
 
       doc.end();
-    } catch (e) {
-      reject(e);
-    }
+    } catch (e) { reject(e); }
   });
 }
 
-// ============================================================
-// ZOHO CRM
-// ============================================================
-function formatDateZoho(date = new Date()) {
-  return date.toISOString().split("T")[0];
-}
-function addDays(date, days) {
-  const result = new Date(date);
-  result.setDate(result.getDate() + days);
-  return result;
-}
+/* ================================================================
+   16.  ZOHO CRM
+   ================================================================ */
+let zh = { token: "", exp: 0 };
+let zhP = null;
 
-let zohoCache = { token: "", expiresAt: 0 };
-let tokenRefreshPromise = null;
-
-async function refreshZohoToken() {
-  const url = `${ZOHO.ACCOUNTS_DOMAIN}/oauth/v2/token`;
-  const params = new URLSearchParams();
-  params.append("refresh_token", ZOHO.REFRESH_TOKEN);
-  params.append("client_id", ZOHO.CLIENT_ID);
-  params.append("client_secret", ZOHO.CLIENT_SECRET);
-  params.append("grant_type", "refresh_token");
-
-  try {
-    const { data } = await axios.post(url, params.toString(), {
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    });
-    zohoCache.token = data.access_token;
-    zohoCache.expiresAt = Date.now() + data.expires_in * 1000 - 60000;
-    return zohoCache.token;
-  } catch (e) {
-    logError("Zoho Refresh Token", e);
-    throw e;
-  }
+async function zhRefresh() {
+  const params = new URLSearchParams({
+    refresh_token: ZOHO.REFRESH_TOKEN,
+    client_id: ZOHO.CLIENT_ID,
+    client_secret: ZOHO.CLIENT_SECRET,
+    grant_type: "refresh_token",
+  });
+  const { data } = await axios.post(
+    `${ZOHO.ACCOUNTS}/oauth/v2/token`, params.toString(),
+    { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+  );
+  zh = { token: data.access_token, exp: Date.now() + data.expires_in * 1000 - 60_000 };
+  return zh.token;
 }
 
-async function getZohoToken() {
+async function zhToken() {
   if (!REQUIRE_ZOHO) return "";
-  if (zohoCache.token && Date.now() < zohoCache.expiresAt) return zohoCache.token;
-  if (tokenRefreshPromise) return tokenRefreshPromise;
-  tokenRefreshPromise = refreshZohoToken();
-  try {
-    return await tokenRefreshPromise;
-  } finally {
-    tokenRefreshPromise = null;
-  }
+  if (zh.token && Date.now() < zh.exp) return zh.token;
+  if (zhP) return zhP;
+  zhP = zhRefresh().finally(() => { zhP = null; });
+  return zhP;
 }
 
-async function zohoCreate(module, data) {
-  const t = await getZohoToken();
+const zhH = async () => ({ Authorization: `Zoho-oauthtoken ${await zhToken()}` });
+
+async function zhCreate(mod, rec) {
   try {
-    const r = await axios.post(
-      `${ZOHO.API_DOMAIN}/crm/v2/${module}`,
-      { data: [data], trigger: ["workflow"] },
-      { headers: { Authorization: `Zoho-oauthtoken ${t}` } }
+    const { data } = await axios.post(
+      `${ZOHO.API}/crm/v2/${mod}`,
+      { data: [rec], trigger: ["workflow"] },
+      { headers: await zhH() }
     );
-    return r.data?.data?.[0]?.details?.id;
-  } catch (e) {
-    logError(`Zoho Create ${module}`, e);
-    return null;
-  }
+    return data?.data?.[0]?.details?.id || null;
+  } catch (e) { logErr(`zhCreate ${mod}`, e); return null; }
 }
 
-async function zohoUpdate(module, id, data) {
-  const t = await getZohoToken();
+async function zhUpdate(mod, id, rec) {
   try {
     await axios.put(
-      `${ZOHO.API_DOMAIN}/crm/v2/${module}/${id}`,
-      { data: [data], trigger: ["workflow"] },
-      { headers: { Authorization: `Zoho-oauthtoken ${t}` } }
+      `${ZOHO.API}/crm/v2/${mod}/${id}`,
+      { data: [rec], trigger: ["workflow"] },
+      { headers: await zhH() }
     );
-  } catch (e) {
-    logError(`Zoho Update ${module}`, e);
-  }
+  } catch (e) { logErr(`zhUpdate ${mod}`, e); }
 }
 
-async function zohoEnsureDefaultAccountId() {
+async function zhNote(mod, id, title, body) {
   try {
-    const t = await getZohoToken();
-    const name = ZOHO.DEFAULT_ACCOUNT_NAME;
+    await axios.post(
+      `${ZOHO.API}/crm/v2/${mod}/${id}/Notes`,
+      { data: [{ Note_Title: title, Note_Content: body }] },
+      { headers: await zhH() }
+    );
+  } catch (e) { logErr("zhNote", e); }
+}
+
+async function zhDefaultAcct() {
+  try {
+    const h = await zhH();
+    const name = ZOHO.DEFAULT_ACCT;
     const r = await axios.get(
-      `${ZOHO.API_DOMAIN}/crm/v2/Accounts/search?criteria=(Account_Name:equals:${encodeURIComponent(name)})`,
-      { headers: { Authorization: `Zoho-oauthtoken ${t}` } }
+      `${ZOHO.API}/crm/v2/Accounts/search?criteria=(Account_Name:equals:${encodeURIComponent(name)})`,
+      { headers: h }
     );
     if (r.data?.data?.[0]) return r.data.data[0].id;
-
     const c = await axios.post(
-      `${ZOHO.API_DOMAIN}/crm/v2/Accounts`,
+      `${ZOHO.API}/crm/v2/Accounts`,
       { data: [{ Account_Name: name }] },
-      { headers: { Authorization: `Zoho-oauthtoken ${t}` } }
+      { headers: h }
     );
-    return c.data?.data?.[0]?.details?.id;
-  } catch (e) {
-    logError("Zoho Account", e);
-    return null;
-  }
+    return c.data?.data?.[0]?.details?.id || null;
+  } catch (e) { logErr("zhDefaultAcct", e); return null; }
 }
 
-// Fallback: si el campo no es searchable, intenta otros
-async function zohoFindDeal(phoneE164) {
+async function zhFindDeal(phone) {
   if (!REQUIRE_ZOHO) return null;
-  const t = await getZohoToken();
+  const h = await zhH();
 
-  const fieldsToTry = [ZOHO.DEAL_PHONE_FIELD, "Phone", "Mobile"].filter(Boolean);
-
-  for (const f of fieldsToTry) {
+  // Search API con campos candidatos
+  for (const f of [ZOHO.DEAL_PHONE, "Phone", "Mobile"].filter(Boolean)) {
     try {
-      const r = await axios.get(
-        `${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=(${f}:equals:${encodeURIComponent(phoneE164)})`,
-        { headers: { Authorization: `Zoho-oauthtoken ${t}` } }
+      const { data } = await axios.get(
+        `${ZOHO.API}/crm/v2/Deals/search?criteria=(${f}:equals:${encodeURIComponent(phone)})`,
+        { headers: h }
       );
-      return r.data?.data?.[0] || null;
+      if (data?.data?.[0]) return data.data[0];
     } catch (e) {
-      const code = e.response?.data?.code;
-      const apiName = e.response?.data?.details?.api_name;
-      if (code === "INVALID_QUERY" && apiName === f) continue;
-      if (e.response?.status !== 204) logError(`Zoho Find Deal (${f})`, e);
+      if (e.response?.status === 204) continue;
+      if (e.response?.data?.code === "INVALID_QUERY") continue;
+      logErr(`zhFind(${f})`, e);
       return null;
     }
   }
-  return null;
+
+  // Fallback COQL
+  try {
+    const q = `select id, Deal_Name, Stage from Deals where Description like '%${phone}%' limit 1`;
+    const { data } = await axios.post(
+      `${ZOHO.API}/crm/v2/coql`, { select_query: q }, { headers: h }
+    );
+    return data?.data?.[0] || null;
+  } catch { return null; }
 }
 
-function computeStageKey(d, session) {
-  if (session.pdfSent) return "propuesta";
-  if (d.product && d.color && d.measures && (d.comuna || d.address)) return "validacion";
+function computeStage(d, ses) {
+  if (ses.pdfSent)      return "propuesta";
+  if (isComplete(d))    return "validacion";
   if (d.product || d.measures) return "siembra";
   return "diagnostico";
 }
 
-function buildZohoDescription(d) {
-  const lines = [];
-  lines.push(`Producto: ${d.product || ""}`);
-  lines.push(`Color: ${d.color || ""}`);
-  lines.push(`Cantidad: ${d.qty || 1}`);
-  lines.push(`Medidas: ${d.measures || ""}`);
-  lines.push(`Vidrio: ${d.glass || "Termopanel (DVH)"}`);
-
-  if (d.unit_price != null) lines.push(`Unitario: $${Number(d.unit_price).toLocaleString("es-CL")} + IVA`);
-  if (d.total_price != null) lines.push(`TOTAL: $${Number(d.total_price).toLocaleString("es-CL")} + IVA`);
-  if (d.price_mode) lines.push(`Modo precio: ${d.price_mode}`);
-  if (d.price_key) lines.push(`Dataset: ${d.price_key}`);
-  if (d.price_rules?.length) lines.push(`Reglas: ${d.price_rules.join(" | ")}`);
-  if (d.price_warning) lines.push(`Aviso: ${d.price_warning}`);
-
-  return lines.filter(Boolean).join("\n");
+function buildDesc(d) {
+  const L = [];
+  L.push(`Producto: ${d.product || "—"}`);
+  L.push(`Color: ${d.color || "—"}`);
+  L.push(`Cantidad: ${d.qty || 1}`);
+  L.push(`Medidas: ${d.measures || "—"}`);
+  L.push(`Vidrio: ${d.glass || "Termopanel"}`);
+  L.push(`Proyecto: ${d.project_type || "—"}`);
+  if (d.zona_termica) L.push(`Zona Térmica: ${d.zona_termica}`);
+  if (d.unit_price)   L.push(`Unitario: $${d.unit_price.toLocaleString("es-CL")} +IVA`);
+  if (d.total_price)  L.push(`Total: $${d.total_price.toLocaleString("es-CL")} +IVA (${d.qty}u)`);
+  if (d.price_mode)   L.push(`Modo: ${d.price_mode}`);
+  if (d.price_key)    L.push(`Key: ${d.price_key}`);
+  if (d.price_rules?.length) L.push(`Reglas: ${d.price_rules.join(" | ")}`);
+  if (d.price_warning) L.push(`Aviso: ${d.price_warning}`);
+  if (d.profile)      L.push(`Perfil: ${d.profile}`);
+  return L.join("\n");
 }
 
-async function zohoUpsertDeal(session, waId) {
+async function zhUpsert(ses, waId) {
   if (!REQUIRE_ZOHO) return;
+  const d = ses.data;
+  const phone = normPhone(waId);
+  d.stageKey = computeStage(d, ses);
 
-  const d = session.data;
-  const phoneE164 = normalizeCLPhone(waId);
-
-  const stageKey = computeStageKey(d, session);
-  d.stageKey = stageKey;
-
-  const dealData = {
-    Deal_Name: `${d.product || "Ventanas"} ${d.color || ""} [WA ${String(waId).slice(-4)}]`.trim(),
-    Stage: STAGE_MAP[stageKey] || STAGE_MAP.diagnostico,
-    Closing_Date: formatDateZoho(addDays(new Date(), 30)),
-    Description: buildZohoDescription(d),
+  const deal = {
+    Deal_Name: `${d.product || "Ventanas"} ${d.color || ""} [WA …${String(waId).slice(-4)}]`.trim(),
+    Stage: STAGES[d.stageKey] || STAGES.diagnostico,
+    Closing_Date: addDays(new Date(), 30).toISOString().split("T")[0],
+    Description: buildDesc(d),
   };
+  if (ZOHO.DEAL_PHONE) deal[ZOHO.DEAL_PHONE] = phone;
+  if (d.profile && ZOHO.DEAL_PROFILE) deal[ZOHO.DEAL_PROFILE] = d.profile;
+  if (d.total_price) deal.Amount = d.total_price;
 
-  // solo si existe y es útil (si no, Zoho ignora)
-  if (ZOHO.DEAL_PHONE_FIELD) dealData[ZOHO.DEAL_PHONE_FIELD] = phoneE164;
-
-  const deal = await zohoFindDeal(phoneE164);
-  if (deal?.id) {
-    session.zohoDealId = deal.id;
-    await zohoUpdate("Deals", deal.id, dealData);
+  const existing = await zhFindDeal(phone);
+  if (existing?.id) {
+    ses.zohoDealId = existing.id;
+    await zhUpdate("Deals", existing.id, deal);
   } else {
-    const accId = await zohoEnsureDefaultAccountId();
-    if (accId) dealData.Account_Name = { id: accId };
-    const newId = await zohoCreate("Deals", dealData);
-    session.zohoDealId = newId;
+    const accId = await zhDefaultAcct();
+    if (accId) deal.Account_Name = { id: accId };
+    ses.zohoDealId = await zhCreate("Deals", deal);
   }
 }
 
-// ============================================================
-// WEBHOOK (Lógica Final)
-// ============================================================
-app.get("/health", (_req, res) =>
-  res.json({ ok: true, version: "Ferrari 7.2", coeffs: Object.keys(COEFFS).length })
-);
+/* ================================================================
+   17.  WEBHOOK
+   ================================================================ */
+app.get("/health", (_req, res) => res.json({
+  ok: true, v: "8.1",
+  coeffs: Object.keys(COEFFS).length,
+  comunas: Object.keys(ZONA_COMUNAS).length,
+  products: [...new Set(Object.keys(COEFFS).map(k => k.split("::")[0]))],
+}));
 
 app.get("/webhook", (req, res) => {
-  if (req.query["hub.verify_token"] === META.VERIFY_TOKEN) return res.send(req.query["hub.challenge"]);
+  if (req.query["hub.verify_token"] === META.VERIFY) return res.send(req.query["hub.challenge"]);
   res.sendStatus(403);
 });
 
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
-  if (!verifyMetaSignature(req)) return;
+  if (!verifySig(req)) return;
 
-  const incoming = extractIncoming(req.body);
-  if (!incoming.ok) return;
+  const inc = extractMsg(req.body);
+  if (!inc.ok) return;
 
-  const { waId, msgId, type } = incoming;
+  const { waId, msgId, type } = inc;
+  if (isDup(msgId)) return;
 
-  if (isDuplicateMsg(msgId)) return;
-  const rateC = checkRate(waId);
-  if (!rateC.allowed) return waSendText(waId, rateC.msg);
+  const rc = rateOk(waId);
+  if (!rc.ok) return waSend(waId, rc.msg);
 
-  const release = await acquireLock(waId);
-  let stopTyping = null;
+  const release  = await acquireLock(waId);
+  const stopType = startTypingLoop(waId, 3500);
 
   try {
-    const session = getSession(waId);
-    session.lastUserAt = Date.now();
+    const ses = getSession(waId);
+    ses.lastAt = Date.now();
+    await waRead(msgId);
 
-    await waMarkRead(msgId);
-    stopTyping = startTypingLoop(waId, 3500); // ✅ typing siempre vivo
+    let userText = inc.text;
 
-    let userText = incoming.text;
-
-    // AUDIO / IMAGEN
-    if (type === "audio" && incoming.audioId) {
-      const meta = await waGetMediaMeta(incoming.audioId);
-      const { buffer, mime } = await waDownloadMedia(meta.url);
-      const t = await transcribeAudio(buffer, mime);
+    // ── Media ──
+    if (type === "audio" && inc.audioId) {
+      const meta = await waMediaUrl(inc.audioId);
+      const { buffer, mime } = await waDownload(meta.url);
+      const t = await stt(buffer, mime);
       userText = t ? `[Audio]: ${t}` : "[Audio no reconocido]";
     }
-    if (type === "image" && incoming.imageId) {
-      const meta = await waGetMediaMeta(incoming.imageId);
-      const { buffer, mime } = await waDownloadMedia(meta.url);
-      userText = `[Imagen]: ${await describeImage(buffer, mime)}`;
+    if (type === "image" && inc.imageId) {
+      const meta = await waMediaUrl(inc.imageId);
+      const { buffer, mime } = await waDownload(meta.url);
+      userText = `[Imagen]: ${await vision(buffer, mime)}`;
+    }
+    if (type === "document" && inc.docId && inc.docMime === "application/pdf") {
+      const meta = await waMediaUrl(inc.docId);
+      const { buffer } = await waDownload(meta.url);
+      const t = await readPdf(buffer);
+      userText = t ? `[PDF]: ${t}` : "[PDF sin texto]";
     }
 
-    // Captura qty desde texto directo aunque IA no lo capture
-    const qtyFromText = parseQty(userText);
-    if (qtyFromText) session.data.qty = qtyFromText;
+    // ── Qty directo ──
+    const qd = parseQty(userText);
+    if (qd) ses.data.qty = qd;
 
-    // RESET
+    // ── Reset ──
     if (/^reset|nueva cotizaci[oó]n|empezar de nuevo/i.test(userText)) {
-      session.data = createEmptySession().data;
-      session.data.name = "Cliente";
-      session.pdfSent = false;
-
-      await waSendTextHuman(waId, "🔄 Listo. Partamos de cero.\n¿Qué tipo de ventana o puerta necesitas?");
-      saveSession(waId, session);
+      ses.data = emptyData();
+      ses.pdfSent = false;
+      await waSendH(waId, "🔄 Perfecto, empecemos de cero.\n¿Qué tipo de ventana o puerta necesitas?", true);
+      saveSession(waId, ses);
       return;
     }
 
-    session.history.push({ role: "user", content: userText });
+    ses.history.push({ role: "user", content: userText });
 
-    const aiMsg = await runAI(session, userText);
+    // ── AI ──
+    const ai = await runAI(ses, userText);
+    if (!ai) {
+      await waSendH(waId, "Perdona, tuve un problema técnico. ¿Me repites? 🙏", true);
+      saveSession(waId, ses);
+      return;
+    }
 
-    // TOOLS: soporta 1 o varios tool_calls
-    if (aiMsg?.tool_calls?.length) {
-      for (const tc of aiMsg.tool_calls) {
-        if (tc.function?.name === "update_customer_data") {
-          const args = JSON.parse(tc.function.arguments || "{}");
-          // merge seguro
-          for (const [k, v] of Object.entries(args)) {
-            if (v !== undefined && v !== null && v !== "") session.data[k] = v;
-          }
+    // ── TOOL CALLS ──
+    if (ai.tool_calls?.length) {
+      for (const tc of ai.tool_calls) {
+        if (tc.function?.name !== "update_customer_data") continue;
+        let args;
+        try { args = JSON.parse(tc.function.arguments || "{}"); }
+        catch (pe) {
+          console.error("⚠️ tool args parse error:", pe.message);
+          continue;
+        }
+        for (const [k, v] of Object.entries(args)) {
+          if (v != null && v !== "") ses.data[k] = v;
         }
       }
 
-      // Si IA no setea qty pero el texto sí lo trae, ya lo pusimos arriba.
+      const d = ses.data;
 
-      // Vidrio automático: Termopanel siempre. Puertas forzadas 5+12+5
-      const p = normalizeProduct(session.data.product);
-      if (p === "PUERTA_1H" || p === "PUERTA_DOBLE") session.data.glass = "TP5+12+5";
-      else if (!session.data.glass) session.data.glass = "TP4+12+4";
+      // ── Zona térmica ──
+      if (d.comuna && !d.zona_termica) {
+        const zt = getZona(d.comuna);
+        if (zt) d.zona_termica = zt;
+      }
 
-      // Precio cuando hay datos mínimos o quiere PDF
-      if (isComplete(session.data) || session.data.wants_pdf) {
-        const q = quotePriceEngine({
-          productText: session.data.product,
-          glassText: session.data.glass,
-          measuresText: session.data.measures,
-          colorText: session.data.color,
-          qty: session.data.qty || 1,
+      // ── Vidrio inteligente ──
+      const pNorm = normProduct(d.product);
+
+      // Puertas: siempre 5+12+5
+      if (pNorm === "PUERTA_1H" || pNorm === "PUERTA_DOBLE") {
+        d.glass = "TP5+12+5";
+      }
+      // Zona >= 5: upgrade SOLO si existen coeficientes
+      else if (d.zona_termica && d.zona_termica >= 5 && d.product && d.color) {
+        d.glass = bestGlassForZona(d.product, d.color, d.zona_termica);
+      }
+      // Default
+      else if (!d.glass) {
+        d.glass = "TP4+12+4";
+      }
+
+      // ── Precio ──
+      if (isComplete(d) || d.wants_pdf) {
+        const q = quoteEngine({
+          productText:  d.product,
+          glassText:    d.glass,
+          measuresText: d.measures,
+          colorText:    d.color,
+          qty:          d.qty || 1,
         });
 
         if (q.ok) {
-          session.data.unit_price = q.unit_price;
-          session.data.total_price = q.total_price;
-          session.data.qty = q.qty;
-          session.data.price_mode = q.mode;
-          session.data.price_key = q.resolved?.key || "";
-          session.data.price_rules = q.resolved?.rulesApplied || [];
-          session.data.price_warning = "";
+          d.unit_price    = q.unit_price;
+          d.total_price   = q.total_price;
+          d.qty           = q.qty;
+          d.price_mode    = q.mode;
+          d.price_key     = q.resolved?.key || "";
+          d.price_rules   = q.resolved?.rules || [];
+          d.price_warning = "";
         } else {
-          session.data.unit_price = null;
-          session.data.total_price = null;
-          session.data.price_mode = "";
-          session.data.price_key = q.resolved?.key || "";
-          session.data.price_rules = q.resolved?.rulesApplied || [];
-          session.data.price_warning = q.reason || "No se pudo cotizar";
+          d.unit_price    = null;
+          d.total_price   = null;
+          d.price_mode    = "";
+          d.price_key     = q.resolved?.key || "";
+          d.price_rules   = q.resolved?.rules || [];
+          d.price_warning = q.reason || "No se pudo cotizar";
         }
       }
 
-      const shouldSendPDF = isComplete(session.data) && (session.data.wants_pdf || /pdf|cotiza|cotizacion/i.test(userText));
+      // ── ¿PDF? ──
+      const wantsPdf = isComplete(d) &&
+        (d.wants_pdf || /pdf|cotiza|cotizaci[oó]n/i.test(userText));
 
-      if (shouldSendPDF && !session.pdfSent) {
-        await waSendTextHuman(waId, "Perfecto, genero tu cotización formal... 📄");
-
-        const qNum = generateQuoteNumber();
-        session.quoteNumber = qNum;
+      if (wantsPdf && !ses.pdfSent) {
+        await waSendH(waId, "Perfecto, te preparo la cotización formal… 📄", true);
+        const qn = genQuoteNum();
+        ses.quoteNum = qn;
 
         try {
-          const pdfBuf = await createQuotePdf(session.data, qNum);
-          const mediaId = await waUploadPdf(pdfBuf, `Cotizacion_${qNum}.pdf`);
-          await waSendPdfById(waId, mediaId, `Cotización ${qNum} - ${COMPANY.NAME}`, `Cotizacion_${qNum}.pdf`);
-          session.pdfSent = true;
+          const buf = await buildPdf(d, qn);
+          const mid = await waUploadPdf(buf, `Cotizacion_${qn}.pdf`);
+          await waSendPdf(waId, mid, `Cotización ${qn} — ${COMPANY.NAME}`, `Cotizacion_${qn}.pdf`);
+          ses.pdfSent = true;
+
+          // Zoho
+          zhUpsert(ses, waId)
+            .then(() => {
+              if (ses.zohoDealId)
+                zhNote("Deals", ses.zohoDealId, `Cotización ${qn}`, buildDesc(d));
+            })
+            .catch(() => {});
+
         } catch (e) {
-          logError("PDF Generation", e);
-          await waSendTextHuman(waId, "Tuve un inconveniente generando el PDF. Te lo enviamos manualmente en breve 🙏");
+          logErr("PDF", e);
+          await waSendH(waId, "Tuve un problema con el PDF. Te lo mando manualmente 🙏", true);
         }
 
-        zohoUpsertDeal(session, waId).catch(() => {});
       } else {
-        // Follow-up de respuesta (tool messages para cada tc)
-        const toolMsgs = (aiMsg.tool_calls || []).map((tc) => ({
+        // ── Follow-up con contexto ──
+        const toolRes = ai.tool_calls.map(tc => ({
           role: "tool",
           tool_call_id: tc.id,
-          content: "Datos guardados.",
+          content: JSON.stringify({
+            ok: true,
+            price_available: !!d.unit_price,
+            unit_price: d.unit_price,
+            total_price: d.total_price,
+            qty: d.qty,
+            zona: d.zona_termica,
+            zona_note: d.zona_termica ? zonaInfo(d.zona_termica).note : "",
+            glass_applied: d.glass,
+            missing: nextMissing(d),
+            warning: d.price_warning || "",
+          }),
         }));
 
         const follow = await openai.chat.completions.create({
           model: AI_MODEL,
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
-            ...session.history.slice(-12),
-            aiMsg,
-            ...toolMsgs,
+            ...ses.history.slice(-12),
+            ai,
+            ...toolRes,
           ],
           temperature: 0.4,
-          max_tokens: 300,
+          max_tokens: 450,
         });
 
         const reply = (follow.choices?.[0]?.message?.content || "")
-          .replace(/<PROFILE:.*?>/gi, "")
-          .trim();
+          .replace(/<PROFILE:\w+>/gi, "").trim();
 
         const parts = reply.split(/\n\n+/).filter(Boolean);
-        if (parts.length > 1) await waSendMultipleHuman(waId, parts);
-        else await waSendTextHuman(waId, reply || "Perfecto. ¿Me confirmas el color y las medidas?");
+        if (parts.length > 1) await waSendMultiH(waId, parts, true);
+        else await waSendH(waId, reply || "¿Me confirmas las medidas y el color?", true);
 
-        session.history.push({ role: "assistant", content: reply });
-        zohoUpsertDeal(session, waId).catch(() => {});
+        ses.history.push({ role: "assistant", content: reply });
+        zhUpsert(ses, waId).catch(() => {});
       }
+
     } else {
-      const reply = (aiMsg?.content || "").replace(/<PROFILE:.*?>/gi, "").trim() || "No te entendí bien, ¿me repites?";
+      // ── Sin tool calls ──
+      const reply = (ai.content || "").replace(/<PROFILE:\w+>/gi, "").trim()
+        || "No te entendí bien, ¿me repites? 🤔";
+
       const parts = reply.split(/\n\n+/).filter(Boolean);
-      if (parts.length > 1) await waSendMultipleHuman(waId, parts);
-      else await waSendTextHuman(waId, reply);
-      session.history.push({ role: "assistant", content: reply });
+      if (parts.length > 1) await waSendMultiH(waId, parts, true);
+      else await waSendH(waId, reply, true);
+
+      ses.history.push({ role: "assistant", content: reply });
     }
 
-    saveSession(waId, session);
+    saveSession(waId, ses);
+
   } catch (e) {
-    logError("Critical Webhook", e);
+    logErr("WEBHOOK", e);
   } finally {
-    if (stopTyping) stopTyping(); // ✅ siempre cerrar
+    stopType();
     release();
   }
 });
 
-app.listen(PORT, () => console.log(`🚀 Ferrari 7.2 ACTIVO — coeffs=${Object.keys(COEFFS).length}`));
+/* ================================================================
+   18.  STARTUP VALIDATION
+   ================================================================ */
+(function validateCoeffs() {
+  const products = new Set();
+  const colors   = new Set();
+  const glasses  = new Set();
+
+  for (const key of Object.keys(COEFFS)) {
+    const [p, c, g] = key.split("::");
+    products.add(p);
+    colors.add(c);
+    glasses.add(g);
+  }
+
+  console.log(`📦 Productos: ${[...products].join(", ")}`);
+  console.log(`🎨 Colores:   ${[...colors].join(", ")}`);
+  console.log(`🪟 Vidrios:   ${[...glasses].join(", ")}`);
+
+  // Verificar combinaciones faltantes conocidas
+  const expected5 = ["CORREDERA_80", "CORREDERA_98", "OSCILOBATIENTE", "ABATIBLE"];
+  for (const p of expected5) {
+    for (const c of colors) {
+      if (!COEFFS[`${p}::${c}::TP5+12+5`]) {
+        console.log(`ℹ️  ${p}::${c} — solo TP4+12+4 (zona ≥5 NO upgradea vidrio)`);
+      }
+    }
+  }
+})();
+
+app.listen(PORT, () =>
+  console.log(`🚀 Ferrari 8.1 ACTIVO — port=${PORT} coeffs=${Object.keys(COEFFS).length} comunas=${Object.keys(ZONA_COMUNAS).length}`)
+);
