@@ -1,18 +1,25 @@
 // index.js — WhatsApp IA + Zoho CRM
-// Ferrari 6.5.0 — MOTOR PRECIOS ECUACIONES + STAGES ZOHO AUTO + FALLBACK SEGURO
+// Ferrari 7.0 — MOTOR COMPLETO 30 ECUACIONES + TYPING HUMANO + ZOHO MEJORADO
 // Node 18+ | Railway | ESM
 //
 // ────────────────────────────────────────────────────────────
 // CHANGELOG
-// ─ Ferrari 6.5.0 (HOY)
-//   [1] Reemplaza calculateInternalPrice() por motor real con ecuaciones (coeficientes)
-//       + reglas: Puertas 1H/Doble, Corredera 80→98, Proyectante límite, Marco fijo auto 5+12+5.
-//   [2] Fallback: si no hay ecuación cargada, usa el cálculo anterior (por área + multiplicadores).
-//   [3] Zoho: Stage se calcula automáticamente por avance (diagnóstico/siembra/validación/propuesta/cierre).
-//   [4] Zoho: Description incluye trazabilidad (dataset, reglas, modo, medidas, vidrio).
+// ─ Ferrari 7.0 (HOY)
+//   [1] 30 ecuaciones reales (R²>0.99): Proyectante, Corredera 80/98,
+//       Oscilobatiente, Abatible, Marco Fijo, Puerta 1H, Puerta Doble.
+//       Colores: Blanco, Negro/Antracita/Grafito, Nogal/Roble Dorado.
+//       Vidrios: TP4+12+4 y TP5+12+5.
+//   [2] Typing humano: delay progresivo + indicador "escribiendo" visible.
+//   [3] Zoho: No actualiza Deals cerrados; crea nuevo si el anterior finalizó.
+//   [4] PDF con try/catch específico y mensaje al usuario si falla.
+//   [5] Reglas mejoradas: Marco Fijo auto 5+12+5 desde 1000×2000,
+//       Puerta flexible (no requiere exactamente 2400 alto para doble),
+//       Corredera 80→98 auto, Proyectante max 1400×1400.
+//   [6] Vidrio siempre Termopanel (no se pregunta, se informa).
+//   [7] Precio NO es fallback: si no hay ecuación, informa al humano.
 //
-// ─ Ferrari 6.4.1 (anterior)
-//   FIX ZOHO SEARCH (Eliminado fallback inválido para limpiar logs)
+// ─ Ferrari 6.5.0 (anterior)
+//   Motor ecuaciones inicial + Stages Zoho auto.
 // ────────────────────────────────────────────────────────────
 
 import express from "express";
@@ -32,7 +39,6 @@ const pdfParse = require("pdf-parse");
 
 const app = express();
 
-// ---------- Raw body para firma Meta ----------
 app.use(
   express.json({
     limit: "20mb",
@@ -43,13 +49,11 @@ app.use(
 );
 
 // ============================================================
-// HELPER LOGS (Anti-Spam Railway)
+// HELPER LOGS
 // ============================================================
 function logError(context, e) {
   if (e.response) {
-    console.error(
-      `❌ ${context} [API]: ${e.response.status} - ${JSON.stringify(e.response.data).slice(0, 150)}...`
-    );
+    console.error(`❌ ${context} [API]: ${e.response.status} - ${JSON.stringify(e.response.data).slice(0, 150)}...`);
   } else if (e.request) {
     console.error(`❌ ${context} [Network]: Sin respuesta.`);
   } else {
@@ -156,10 +160,10 @@ function normalizeYesNo(v) {
 }
 
 // ============================================================
-// MOTOR DE PRECIOS — Ferrari 6.5.0 (NUEVO)
+// MOTOR DE PRECIOS — Ferrari 7.0 (30 ECUACIONES)
 // ============================================================
 
-// 1) Normalizar medidas del texto (mantienes tu lógica)
+// 1) Normalizar medidas
 function normalizeMeasures(measures) {
   const t = String(measures || "").toLowerCase();
   let nums = t.match(/(\d+([.,]\d+)?)/g);
@@ -168,30 +172,17 @@ function normalizeMeasures(measures) {
   let a = parseFloat(nums[0].replace(",", "."));
   let b = parseFloat(nums[1].replace(",", "."));
 
+  // Convertir m → mm
   if (a < 10) a *= 1000;
   if (b < 10) b *= 1000;
+  // Convertir cm → mm
   if (a >= 10 && a < 100) a *= 10;
   if (b >= 10 && b < 100) b *= 10;
 
   return { ancho_mm: Math.round(a), alto_mm: Math.round(b) };
 }
 
-// 2) Tu cálculo anterior (queda como Fallback seguro)
-function calculateInternalPriceFallback({ ancho_mm, alto_mm, color, glass }) {
-  if (!ancho_mm || !alto_mm) return 0;
-  const area = (ancho_mm * alto_mm) / 1_000_000;
-  let base = area * 120000;
-
-  const colorUpper = String(color || "").toUpperCase();
-  const glassUpper = String(glass || "").toUpperCase();
-
-  if (["NEGRO", "ANTRACITA", "GRAFITO", "NOGAL"].some((c) => colorUpper.includes(c))) base *= 1.15;
-  if (/TERMOPANEL|DVH|6-12-6|LOW/.test(glassUpper)) base *= 1.25;
-
-  return Math.max(Math.round(base), 50000);
-}
-
-// 3) Normalización producto/color/vidrio (NUEVO)
+// 2) Normalización color
 function normalizeColorFromText(text = "") {
   const s = stripAccents(text).toUpperCase();
   if (s.includes("ANTRAC") || s.includes("GRAF") || s.includes("NEG")) return "NEGRO";
@@ -199,35 +190,87 @@ function normalizeColorFromText(text = "") {
   return "BLANCO";
 }
 
+// 3) Normalización producto
 function normalizeProduct(productRaw = "") {
   const s = stripAccents(productRaw).toUpperCase();
-  if (s.includes("PUERTA")) return "PUERTA";
+  if (s.includes("PUERTA") && s.includes("DOBLE")) return "PUERTA_DOBLE";
+  if (s.includes("PUERTA")) return "PUERTA_1H";
   if (s.includes("PROYEC")) return "PROYECTANTE";
-  if (s.includes("MARCO") || s.includes("FIJO")) return "MARCO_FIJO";
+  if (s.includes("MARCO") || s.includes("FIJO") || s.includes("PAÑO FIJO")) return "MARCO_FIJO";
   if (s.includes("OSCILO")) return "OSCILOBATIENTE";
-  if (s.includes("ABAT")) return "VENTANA_ABATIBLE";
+  if (s.includes("ABAT")) return "ABATIBLE";
   if (s.includes("CORREDERA") && s.includes("98")) return "CORREDERA_98";
   if (s.includes("CORREDERA") && s.includes("80")) return "CORREDERA_80";
   if (s.includes("CORREDERA")) return "CORREDERA_80";
   return "";
 }
 
+// 4) Normalización vidrio — SIEMPRE Termopanel
 function normalizeGlass(glassRaw = "", defaultGlass = "TP4+12+4") {
   const s = stripAccents(glassRaw).toUpperCase();
   if (s.includes("5") && s.includes("12") && s.includes("5")) return "TP5+12+5";
   if (s.includes("4") && s.includes("12") && s.includes("4")) return "TP4+12+4";
-  if (s.includes("TERMOPANEL") || s.includes("DVH")) return defaultGlass;
   return defaultGlass;
 }
 
-// 4) Ecuación por coeficientes (NUEVO)
+// 5) Ecuación polinomial cuadrática
 function priceFromCoeffs(coeffs, W, H) {
   const { a, b, c, d, e, f } = coeffs;
   const p = a + b * W + c * H + d * W * H + e * W * W + f * H * H;
   return Math.max(0, Math.round(p));
 }
 
-// 5) Reglas de selección dataset (NUEVO)
+// 6) 30 COEFICIENTES REALES (generados por regresión R²>0.99)
+const COEFFS = {
+
+  // ── PUERTA 1 HOJA ──
+  "PUERTA_1H::BLANCO::TP5+12+5": { a: 140774.582793, b: 18.161109, c: 36.598, d: 0.087093, e: 0.003442, f: -0.000988 },
+  "PUERTA_1H::NEGRO::TP5+12+5": { a: 136832.585686, b: 47.770892, c: 66.207826, d: 0.087094, e: 0.003442, f: -0.000988 },
+  "PUERTA_1H::NOGAL::TP5+12+5": { a: 137833.638438, b: 36.344893, c: 54.781762, d: 0.087094, e: 0.003442, f: -0.000988 },
+
+  // ── PUERTA DOBLE ──
+  "PUERTA_DOBLE::BLANCO::TP5+12+5": { a: 223084.863334, b: 18.232115, c: 55.494761, d: 0.087159, e: 0.001817, f: 0.000216 },
+  "PUERTA_DOBLE::NEGRO::TP5+12+5": { a: 218725.942486, b: 43.117996, c: 110.017003, d: 0.087159, e: 0.001817, f: 0.000216 },
+  "PUERTA_DOBLE::NOGAL::TP5+12+5": { a: 218922.885265, b: 34.146149, c: 90.007215, d: 0.087159, e: 0.001817, f: 0.000216 },
+
+  // ── PROYECTANTE ──
+  "PROYECTANTE::BLANCO::TP4+12+4": { a: 93548.645326, b: -30.823707, c: 68.482926, d: 0.079552, e: 0.019776, f: -0.026583 },
+  "PROYECTANTE::BLANCO::TP5+12+5": { a: 108444.380887, b: -44.190236, c: 55.116397, d: 0.09396, e: 0.022492, f: -0.023867 },
+  "PROYECTANTE::NEGRO::TP4+12+4": { a: 92245.006628, b: -8.897146, c: 90.409487, d: 0.080084, e: 0.020179, f: -0.02618 },
+  "PROYECTANTE::NEGRO::TP5+12+5": { a: 105845.459974, b: -20.96214, c: 78.344493, d: 0.09396, e: 0.022492, f: -0.023867 },
+  "PROYECTANTE::NOGAL::TP4+12+4": { a: 81120.764272, b: -0.587106, c: 98.719527, d: 0.063244, e: 0.016374, f: -0.029985 },
+  "PROYECTANTE::NOGAL::TP5+12+5": { a: 106430.380887, b: -29.800236, c: 69.506397, d: 0.09396, e: 0.022492, f: -0.023867 },
+
+  // ── CORREDERA 80 ──
+  "CORREDERA_80::BLANCO::TP4+12+4": { a: 288644.431252, b: -52.732017, c: -10.077752, d: 0.068299, e: 0.023932, f: 0.01804 },
+  "CORREDERA_80::NEGRO::TP4+12+4": { a: 285900.945907, b: -33.286621, c: 21.766293, d: 0.068299, e: 0.023932, f: 0.01804 },
+  "CORREDERA_80::NOGAL::TP4+12+4": { a: 285355.906296, b: -34.58202, c: 23.594244, d: 0.068299, e: 0.023931, f: 0.01804 },
+
+  // ── CORREDERA 98 ──
+  "CORREDERA_98::BLANCO::TP4+12+4": { a: 200794.930979, b: 25.492856, c: 58.515348, d: 0.085762, e: 0.00143, f: 0.001321 },
+  "CORREDERA_98::NEGRO::TP4+12+4": { a: 196881.373936, b: 48.390907, c: 97.360714, d: 0.085762, e: 0.00143, f: 0.001322 },
+  "CORREDERA_98::NOGAL::TP4+12+4": { a: 196744.481728, b: 45.642901, c: 95.359865, d: 0.085762, e: 0.00143, f: 0.001322 },
+
+  // ── OSCILOBATIENTE ──
+  "OSCILOBATIENTE::BLANCO::TP4+12+4": { a: 185445.942542, b: -11.949828, c: -35.952898, d: 0.079576, e: 0.003727, f: 0.021043 },
+  "OSCILOBATIENTE::NEGRO::TP4+12+4": { a: 182993.641254, b: 11.032265, c: -12.970805, d: 0.079576, e: 0.003727, f: 0.021043 },
+  "OSCILOBATIENTE::NOGAL::TP4+12+4": { a: 183550.507284, b: 1.346391, c: -22.65668, d: 0.079576, e: 0.003727, f: 0.021043 },
+
+  // ── VENTANA ABATIBLE ──
+  "ABATIBLE::BLANCO::TP4+12+4": { a: 185140.969136, b: -27.253272, c: -30.388035, d: 0.079552, e: 0.011874, f: 0.020013 },
+  "ABATIBLE::NEGRO::TP4+12+4": { a: 182492.838095, b: -3.899302, c: -7.034065, d: 0.079552, e: 0.011874, f: 0.020013 },
+  "ABATIBLE::NOGAL::TP4+12+4": { a: 183076.105732, b: -12.733179, c: -15.867942, d: 0.079552, e: 0.011874, f: 0.020012 },
+
+  // ── MARCO FIJO ──
+  "MARCO_FIJO::BLANCO::TP4+12+4": { a: 89814.059277, b: -26.167455, c: -26.108744, d: 0.08151, e: 0.009919, f: 0.009872 },
+  "MARCO_FIJO::NEGRO::TP4+12+4": { a: 89372.572681, b: -13.927503, c: -13.868792, d: 0.08151, e: 0.009919, f: 0.009872 },
+  "MARCO_FIJO::NOGAL::TP4+12+4": { a: 89361.683792, b: -19.035466, c: -18.976755, d: 0.08151, e: 0.009919, f: 0.009872 },
+  "MARCO_FIJO::BLANCO::TP5+12+5": { a: 37445.721826, b: 12.423452, c: 12.412658, d: 0.085223, e: 0.001145, f: 0.001128 },
+  "MARCO_FIJO::NEGRO::TP5+12+5": { a: 37028.291129, b: 24.537476, c: 24.526681, d: 0.085223, e: 0.001145, f: 0.001128 },
+  "MARCO_FIJO::NOGAL::TP5+12+5": { a: 58741.971131, b: 27.118663, c: 27.107868, d: 0.070598, e: 0.000064, f: 0.000047 },
+};
+
+// 7) Reglas de selección dataset
 function resolvePricingKey({ product, colorText, glass, W, H }) {
   let model = product;
   let COLOR = normalizeColorFromText(colorText);
@@ -236,44 +279,47 @@ function resolvePricingKey({ product, colorText, glass, W, H }) {
 
   if (!model) return { ok: false, reason: "Producto no reconocido" };
 
-  // PROYECTANTE límite 1400x1400
+  // PROYECTANTE: máximo 1400×1400
   if (model === "PROYECTANTE" && (W > 1400 || H > 1400)) {
-    return { ok: false, reason: "PROYECTANTE solo se fabrica hasta 1400x1400 mm" };
+    return { ok: false, reason: "PROYECTANTE solo se fabrica hasta 1400×1400 mm. Para medidas mayores, te sugiero Corredera u Oscilobatiente." };
   }
 
-  // MARCO FIJO: auto TP5+12+5 desde 1000x2000
-  if (model === "MARCO_FIJO" && W >= 1000 && H >= 2000) {
+  // MARCO FIJO: auto TP5+12+5 desde 1000×2000
+  if (model === "MARCO_FIJO" && (W >= 1000 && H >= 2000)) {
     GLASS = "TP5+12+5";
-    rulesApplied.push("MARCO_FIJO auto vidrio TP5+12+5 (>=1000x2000)");
+    rulesApplied.push("MARCO_FIJO auto vidrio TP5+12+5 (>=1000×2000 por seguridad)");
   }
 
-  // PUERTAS: 1 hoja / doble hoja
-  if (model === "PUERTA") {
+  // PUERTAS: 1 hoja o doble hoja (MEJORADO: más flexible)
+  if (model === "PUERTA_1H") {
     if (W <= 1200 && H <= 2400) {
-      model = "PUERTA_1H";
-      rulesApplied.push("PUERTA => 1 HOJA (<=1200x2400)");
-    } else if (W >= 1201 && W <= 2400 && H === 2400) {
+      rulesApplied.push("PUERTA 1 HOJA (ancho ≤1200, alto ≤2400)");
+    } else if (W > 1200) {
       model = "PUERTA_DOBLE";
-      rulesApplied.push("PUERTA => DOBLE HOJA (1201..2400 x 2400)");
+      rulesApplied.push("PUERTA => DOBLE HOJA (ancho >1200mm)");
     } else {
-      return {
-        ok: false,
-        reason:
-          "Puerta fuera de regla: 1 hoja hasta 1200x2400; desde 1201 a 2400 requiere alto 2400 y es doble hoja.",
-      };
+      return { ok: false, reason: "Puerta 1 hoja: máximo 1200mm ancho × 2400mm alto." };
     }
     GLASS = "TP5+12+5";
     rulesApplied.push("PUERTA fuerza vidrio TP5+12+5");
   }
 
-  // CORREDERA 80: 400..2000; si >=2001x2001 => 98
+  if (model === "PUERTA_DOBLE") {
+    if (W < 600 || W > 2400) return { ok: false, reason: "Puerta doble: ancho entre 600mm y 2400mm." };
+    if (H > 2400) return { ok: false, reason: "Puerta doble: alto máximo 2400mm." };
+    GLASS = "TP5+12+5";
+    rulesApplied.push("PUERTA DOBLE fuerza vidrio TP5+12+5");
+  }
+
+  // CORREDERA 80: si supera 2000mm en ambos ejes → 98
   if (model === "CORREDERA_80") {
-    if (W < 400 || H < 400) return { ok: false, reason: "CORREDERA 80 mínimo 400x400 mm" };
-    if (W >= 2001 && H >= 2001) {
+    if (W < 400 || H < 400) return { ok: false, reason: "CORREDERA 80 mínimo 400×400 mm" };
+    if (W > 2000 && H > 2000) {
       model = "CORREDERA_98";
-      rulesApplied.push("CORREDERA_80 => CORREDERA_98 (>=2001x2001)");
+      rulesApplied.push("CORREDERA_80 => CORREDERA_98 (>2000×2000)");
     } else if (W > 2000 || H > 2000) {
-      return { ok: false, reason: "Si supera 2000x2000, se cotiza como CORREDERA 98 (o ajustar medida)." };
+      model = "CORREDERA_98";
+      rulesApplied.push("CORREDERA_80 => CORREDERA_98 (supera 2000mm)");
     }
   }
 
@@ -281,37 +327,20 @@ function resolvePricingKey({ product, colorText, glass, W, H }) {
   return { ok: true, model, color: COLOR, glass: GLASS, key, rulesApplied };
 }
 
-// 6) COEFICIENTES (pegables) — hoy dejo puertas listas + estructura
-// IMPORTANTE: agrega aquí los coeficientes restantes (proyectantes/correderas/oscilobatiente/abatible/marco fijo).
-const COEFFS = {
-  // Puertas (ya implementadas):
-  "PUERTA_1H::BLANCO::TP5+12+5": { a: 140100.22733, b: 18.892589, c: 37.209872, d: 0.086863576, e: 0.003233095, f: -0.00113546 },
-  "PUERTA_1H::NEGRO::TP5+12+5": { a: 136158.016292, b: 48.502605, c: 66.819891, d: 0.086863595, e: 0.003233068, f: -0.00113547 },
-  "PUERTA_1H::NOGAL::TP5+12+5": { a: 137159.159293, b: 37.076508, c: 55.393745, d: 0.086863633, e: 0.003233092, f: -0.001135438 },
-
-  "PUERTA_DOBLE::BLANCO::TP5+12+5": { a: 219814.229091, b: 20.214712, c: 59.663669, d: 0.086334711, e: 0.001420833, f: -0.001095857 },
-  "PUERTA_DOBLE::NEGRO::TP5+12+5": { a: 215455.111736, b: 45.100687, c: 114.186203, d: 0.086334766, e: 0.001420816, f: -0.001096061 },
-  "PUERTA_DOBLE::NOGAL::TP5+12+5": { a: 215652.196033, b: 36.128734, c: 94.176285, d: 0.086334711, e: 0.001420833, f: -0.001096061 },
-
-  // 🔻 Aquí pegas el resto cuando lo quieras activar:
-  // "PROYECTANTE::BLANCO::TP4+12+4": {...}
-  // "CORREDERA_80::NEGRO::TP4+12+4": {...}
-  // "MARCO_FIJO::BLANCO::TP5+12+5": {...}
-};
-
-// 7) Cotización por ecuación con fallback (NUEVO)
-function quotePriceEngine({ productText, glassText, measuresText }) {
+// 8) Motor de cotización principal
+function quotePriceEngine({ productText, glassText, measuresText, colorText }) {
   const m = normalizeMeasures(measuresText);
-  if (!m) return { ok: false, reason: "No pude leer medidas. Ej: 1200x1200 o 1.2x1.2" };
+  if (!m) return { ok: false, reason: "No pude leer las medidas. Ej: 1200×1200 o 1.2×1.2" };
 
   const W = m.ancho_mm;
   const H = m.alto_mm;
 
   const product = normalizeProduct(productText);
-  const glass = normalizeGlass(glassText, process.env.DEFAULT_GLASS || "TP4+12+4");
-  const colorText = `${productText} ${glassText}`;
+  // Vidrio por defecto: siempre Termopanel
+  const glass = normalizeGlass(glassText || "", "TP4+12+4");
+  const fullColorText = `${productText} ${colorText || ""} ${glassText || ""}`;
 
-  const resolved = resolvePricingKey({ product, colorText, glass, W, H });
+  const resolved = resolvePricingKey({ product, colorText: fullColorText, glass, W, H });
   if (!resolved.ok) return resolved;
 
   const coeffs = COEFFS[resolved.key];
@@ -320,37 +349,25 @@ function quotePriceEngine({ productText, glassText, measuresText }) {
     return { ok: true, price, mode: "equation", resolved, measures: m };
   }
 
-  // Fallback seguro
-  const priceFallback = calculateInternalPriceFallback({
-    ancho_mm: W,
-    alto_mm: H,
-    color: colorText,
-    glass: resolved.glass,
-  });
-
+  // SIN ecuación → escalar a humano (NO fallback impreciso)
   return {
-    ok: true,
-    price: priceFallback,
-    mode: "fallback",
+    ok: false,
+    reason: `No tengo la ecuación exacta para ${resolved.key}. Escalaré a Equipo Alfa para cotización manual.`,
     resolved,
     measures: m,
-    warning: `No hay ecuación cargada para ${resolved.key}. Se usó fallback referencial.`,
   };
 }
 
 // ============================================================
-// ZOHO: Stage automático (NUEVO)
+// ZOHO: Stage automático
 // ============================================================
 function computeStageKey(d, session) {
-  // Prioridad: si el cliente explícitamente confirma compra/avance
   if (d.stageKey === "cierre") return "cierre";
   if (session.pdfSent) return "propuesta";
-
   const hasProduct = !!d.product;
   const hasMeasures = !!d.measures;
   const hasComuna = !!(d.comuna || d.address);
   const hasGlass = !!d.glass;
-
   if (hasProduct && hasMeasures && hasComuna && hasGlass) return "validacion";
   if (hasProduct || hasMeasures) return "siembra";
   return "diagnostico";
@@ -359,9 +376,10 @@ function computeStageKey(d, session) {
 function buildZohoDescription(d) {
   const lines = [];
   lines.push(`Producto: ${d.product || ""}`.trim());
+  lines.push(`Color: ${d.color || ""}`.trim());
   lines.push(`Medidas: ${d.measures || ""}`.trim());
   lines.push(`Vidrio: ${d.glass || ""}`.trim());
-  if (d.internal_price) lines.push(`Precio: ${d.internal_price}`);
+  if (d.internal_price) lines.push(`Precio: $${Number(d.internal_price).toLocaleString("es-CL")}`);
   if (d.price_mode) lines.push(`Modo precio: ${d.price_mode}`);
   if (d.price_key) lines.push(`Dataset: ${d.price_key}`);
   if (d.price_rules && d.price_rules.length) lines.push(`Reglas: ${d.price_rules.join(" | ")}`);
@@ -370,7 +388,7 @@ function buildZohoDescription(d) {
 }
 
 // ============================================================
-// FECHAS / ETC (igual que tenías)
+// FECHAS / UTILS
 // ============================================================
 function formatDateZoho(date = new Date()) {
   return date.toISOString().split("T")[0];
@@ -395,9 +413,39 @@ function generateQuoteNumber() {
   return `COT-${y}${m}${d}-${rand}`;
 }
 
+// ============================================================
+// TYPING HUMANO — Ferrari 7.0 (NUEVO)
+// ============================================================
+// Calcula delay basado en longitud del texto (simula escritura real)
 function humanDelayMs(text) {
   const words = String(text || "").trim().split(/\s+/).filter(Boolean).length;
-  return 700 + Math.min(5300, words * 110);
+  // Mínimo 1.5s, máximo 8s, ~180ms por palabra
+  const base = 1500 + Math.min(6500, words * 180);
+  // Variación aleatoria ±20% para que no sea predecible
+  const jitter = base * (0.8 + Math.random() * 0.4);
+  return Math.round(jitter);
+}
+
+// Envía typing, espera, envía texto (se siente humano)
+async function waSendTextHuman(to, text) {
+  // 1) Activar "escribiendo..."
+  await waSetTyping(to);
+  // 2) Esperar tiempo proporcional al mensaje
+  await sleep(humanDelayMs(text));
+  // 3) Enviar texto
+  await waSendText(to, text);
+}
+
+// Envía múltiples mensajes con pausa entre ellos (para respuestas largas)
+async function waSendMultipleHuman(to, messages) {
+  for (const msg of messages) {
+    if (!msg || !msg.trim()) continue;
+    await waSetTyping(to);
+    await sleep(humanDelayMs(msg));
+    await waSendText(to, msg);
+    // Pausa entre mensajes consecutivos
+    await sleep(400 + Math.random() * 600);
+  }
 }
 
 // ============================================================
@@ -421,30 +469,37 @@ function verifyMetaSignature(req) {
 async function waSendText(to, text) {
   const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
   try {
-    const payload = { messaging_product: "whatsapp", to, type: "text", text: { body: text } };
-    await axios.post(url, payload, { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 20000 });
+    await axios.post(url, {
+      messaging_product: "whatsapp", to, type: "text", text: { body: text },
+    }, { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 20000 });
   } catch (e) {
     logError("WA Send Text", e);
   }
 }
 
-async function waMarkReadAndTyping(waId, messageId) {
+// Typing indicator dedicado (NUEVO)
+async function waSetTyping(to) {
   const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
   try {
-    if (messageId)
-      await axios.post(
-        url,
-        { messaging_product: "whatsapp", status: "read", message_id: messageId },
-        { headers: { Authorization: `Bearer ${META.TOKEN}` } }
-      );
-    if (waId)
-      await axios.post(
-        url,
-        { messaging_product: "whatsapp", to: waId, typing_indicator: { type: "text" } },
-        { headers: { Authorization: `Bearer ${META.TOKEN}` } }
-      );
-  } catch (e) {
-    /* Ignorar errores de typing */
+    await axios.post(url, {
+      messaging_product: "whatsapp",
+      to,
+      typing_indicator: { type: "text" },
+    }, { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 5000 });
+  } catch {
+    // Ignorar silenciosamente
+  }
+}
+
+async function waMarkRead(messageId) {
+  if (!messageId) return;
+  const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
+  try {
+    await axios.post(url, {
+      messaging_product: "whatsapp", status: "read", message_id: messageId,
+    }, { headers: { Authorization: `Bearer ${META.TOKEN}` } });
+  } catch {
+    // Ignorar
   }
 }
 
@@ -467,9 +522,11 @@ async function waUploadPdf(buffer, filename = "Cotizacion.pdf") {
 
 async function waSendPdfById(to, mediaId, caption, filename = "Cotizacion.pdf") {
   const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
-  const payload = { messaging_product: "whatsapp", to, type: "document", document: { id: mediaId, filename, caption } };
   try {
-    await axios.post(url, payload, { headers: { Authorization: `Bearer ${META.TOKEN}` } });
+    await axios.post(url, {
+      messaging_product: "whatsapp", to, type: "document",
+      document: { id: mediaId, filename, caption },
+    }, { headers: { Authorization: `Bearer ${META.TOKEN}` } });
   } catch (e) {
     logError("WA Send PDF", e);
   }
@@ -517,16 +574,10 @@ async function describeImage(buffer, mime) {
   try {
     const b64 = buffer.toString("base64");
     const dataUrl = `data:${mime};base64,${b64}`;
-    const prompt =
-      "Describe brevemente la imagen y extrae datos útiles para cotizar ventanas/puertas: producto, medidas, comuna, vidrio. Responde en español.";
+    const prompt = "Describe brevemente la imagen y extrae datos útiles para cotizar ventanas/puertas: producto, medidas, color, comuna. Responde en español.";
     const resp = await openai.chat.completions.create({
       model: AI_MODEL,
-      messages: [
-        {
-          role: "user",
-          content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: dataUrl } }],
-        },
-      ],
+      messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: dataUrl } }] }],
       max_tokens: 250,
     });
     return (resp.choices?.[0]?.message?.content || "").trim();
@@ -541,7 +592,7 @@ async function parsePdfToText(buffer) {
     const r = await pdfParse(buffer);
     const text = (r?.text || "").trim();
     return text.length > 6000 ? text.slice(0, 6000) + "\n..." : text;
-  } catch (e) {
+  } catch {
     return "";
   }
 }
@@ -558,6 +609,7 @@ function createEmptySession() {
     data: {
       name: "",
       product: "",
+      color: "",
       measures: "",
       address: "",
       comuna: "",
@@ -568,8 +620,6 @@ function createEmptySession() {
       profile: "",
       stageKey: "diagnostico",
       internal_price: null,
-
-      // NUEVO: trazabilidad precios
       price_mode: "",
       price_key: "",
       price_rules: [],
@@ -622,10 +672,7 @@ async function acquireLock(waId) {
   let release;
   const p = new Promise((r) => (release = r));
   locks.set(waId, p);
-  return () => {
-    release();
-    locks.delete(waId);
-  };
+  return () => { release(); locks.delete(waId); };
 }
 
 const rate = new Map();
@@ -633,11 +680,7 @@ function checkRate(waId) {
   const now = Date.now();
   if (!rate.has(waId)) rate.set(waId, { count: 1, resetAt: now + 60000 });
   const r = rate.get(waId);
-  if (now >= r.resetAt) {
-    r.count = 1;
-    r.resetAt = now + 60000;
-    return { allowed: true };
-  }
+  if (now >= r.resetAt) { r.count = 1; r.resetAt = now + 60000; return { allowed: true }; }
   r.count++;
   return r.count > 15 ? { allowed: false, msg: "Estás escribiendo muy rápido. Dame unos segundos." } : { allowed: true };
 }
@@ -678,14 +721,14 @@ function extractIncoming(reqBody) {
 // ============================================================
 function nextMissingKey(d) {
   if (!d.product) return "producto";
+  if (!d.color) return "color";
   if (!d.measures) return "medidas";
   if (!d.address && !d.comuna) return "comuna";
-  if (!d.glass) return "vidrio";
   return "";
 }
 
 function isComplete(d) {
-  return !!(d.product && d.measures && (d.address || d.comuna) && d.glass);
+  return !!(d.product && d.color && d.measures && (d.address || d.comuna));
 }
 
 // ============================================================
@@ -696,19 +739,19 @@ const tools = [
     type: "function",
     function: {
       name: "update_customer_data",
-      description: "Actualiza datos del cliente. Llama SOLO cuando el cliente proporcione información nueva.",
+      description: "Actualiza datos del cliente. Llama SOLO cuando el cliente proporcione información nueva. El vidrio SIEMPRE es Termopanel (no preguntar).",
       parameters: {
         type: "object",
         properties: {
-          name: { type: "string" },
-          product: { type: "string" },
-          measures: { type: "string" },
-          address: { type: "string" },
-          comuna: { type: "string" },
-          glass: { type: "string" },
-          install: { type: "string" },
-          wants_pdf: { type: "boolean" },
-          notes: { type: "string" },
+          name: { type: "string", description: "Nombre del cliente" },
+          product: { type: "string", description: "Tipo: ventana proyectante, corredera, oscilobatiente, abatible, marco fijo, puerta" },
+          color: { type: "string", description: "Color: blanco, negro, antracita, grafito, nogal, roble dorado" },
+          measures: { type: "string", description: "Medidas ancho x alto en mm" },
+          address: { type: "string", description: "Dirección o comuna" },
+          comuna: { type: "string", description: "Comuna" },
+          install: { type: "string", description: "Necesita instalación?" },
+          wants_pdf: { type: "boolean", description: "Quiere cotización PDF?" },
+          notes: { type: "string", description: "Notas adicionales" },
         },
       },
     },
@@ -719,97 +762,74 @@ const SYSTEM_PROMPT = `
 Eres un ASESOR ESPECIALISTA EN SOLUCIONES DE VENTANAS Y CERRAMIENTOS
 de ${COMPANY.NAME}.
 
-NO eres un vendedor agresivo.
-NO empujas ventas.
-NO presionas decisiones.
-
+NO eres un vendedor agresivo. NO empujas ventas. NO presionas decisiones.
 Tu rol es acompañar, orientar y ayudar al cliente
 a tomar una BUENA decisión técnica y económica.
 
 ────────────────────────
-ENFOQUE PRINCIPAL: VENTA POR VALOR
+ENFOQUE: VENTA POR VALOR
 ────────────────────────
 Las personas compran por confianza, durabilidad,
 confort térmico/acústico y respaldo.
-Tu misión es transmitir ese valor SIN imponerlo.
 
 ────────────────────────
 CÓMO TE COMPORTAS
 ────────────────────────
 - Conversas como un asesor experimentado, humano y chileno.
 - Escuchas primero, hablas después.
-- Si el cliente escribe poco o desordenado (fotos, audios), NO lo apuras.
-  Agradeces y ordenas tú.
-- Si el cliente solo está explorando, lo acompañas sin exigir datos.
-
-Ejemplo de tono correcto:
-“Perfecto 👍 con lo que me comentas ya se puede ir entendiendo el proyecto.”
+- NUNCA envíes mensajes muy largos. Máximo 3-4 líneas.
+- Si necesitas decir más, divide en mensajes cortos.
 
 ────────────────────────
-RELACIÓN CON EL PRECIO
+VIDRIO TERMOPANEL (REGLA FIJA)
 ────────────────────────
-- El precio NO es el centro de la conversación.
-- Si preguntan, explicas rangos orientativos y QUÉ influye
-  (vidrio, perfil, instalación, uso del espacio).
-- Dejas claro que el valor exacto requiere entender bien el proyecto
-  para evitar errores posteriores.
-- NUNCA uses urgencia artificial ni presión comercial.
+- SIEMPRE cotizamos con vidrio Termopanel (DVH).
+  No preguntes al cliente qué vidrio quiere.
+- Si el cliente pregunta, explica: "Trabajamos con Termopanel
+  (doble vidrio hermético) que es el estándar para
+  aislación térmica y acústica."
+- Si pide vidrio monolítico u otra cosa, escala a Equipo Alfa.
 
 ────────────────────────
-PROCESO NATURAL (NO FORZADO)
+DATOS QUE NECESITAS (pedir de a uno, sin interrogatorio)
+────────────────────────
+1. Producto (qué tipo de ventana/puerta)
+2. Color (blanco, negro/antracita/grafito, nogal/roble dorado)
+3. Medidas (ancho × alto en mm o metros)
+4. Comuna o dirección
+
+NO preguntes por vidrio (siempre es Termopanel).
+
+────────────────────────
+PROCESO NATURAL
 ────────────────────────
 1. Entender el proyecto.
-2. Aclarar dudas y proponer soluciones (explicando el “por qué”).
-3. Solo cuando esté claro o el cliente lo pida:
-   ofrecer cotización formal (PDF).
-
+2. Aclarar dudas y proponer soluciones.
+3. Solo cuando esté claro o el cliente lo pida: ofrecer cotización formal (PDF).
 Si el cliente no está listo para cotizar, NO lo empujes.
 
 ────────────────────────
-TRASPASO A HUMANOS (SUAVE)
+TRASPASO A HUMANOS
 ────────────────────────
-Cuando corresponda, presenta al Equipo Alfa como apoyo:
-
-“Si quieres, un consultor del Equipo Alfa
-puede revisar contigo los detalles finos del proyecto.”
-
-Nunca como presión. Siempre como respaldo.
+"Si quieres, un consultor del Equipo Alfa puede revisar
+contigo los detalles finos del proyecto."
 
 ────────────────────────
-INSTRUCCIONES TÉCNICAS (OBLIGATORIAS PARA TI)
+INSTRUCCIONES TÉCNICAS
 ────────────────────────
-1. USO DE HERRAMIENTAS:
-   Si el cliente entrega datos nuevos (producto, medidas, comuna,
-   vidrio, instalación, correo, etc.),
-   DEBES llamar inmediatamente a la función:
-   update_customer_data
+1. Si el cliente entrega datos nuevos, DEBES llamar a update_customer_data.
+2. Pide datos faltantes de a uno con lenguaje humano.
+3. PERFILADO SILENCIOSO:
+   - PRECIO → busca economía
+   - CALIDAD → busca estándar alto
+   - TECNICO → sabe del tema
+   - AFINIDAD → compra por confianza
 
-2. DATOS FALTANTES:
-   Si necesitas información para cotizar,
-   pídela de a uno y con lenguaje humano,
-   nunca como interrogatorio.
-
-3. PERFILADO INTERNO (SILENCIOSO):
-   Analiza el comportamiento y clasifica al cliente como UNO solo:
-   - PRECIO → busca economía. Enfócate en durabilidad.
-   - CALIDAD → busca estándar alto. Habla de terminaciones y garantía.
-   - TECNICO → sabe del tema. Usa mm, DVH, normativa.
-   - AFINIDAD → compra por confianza. Sé cercano.
-
-────────────────────────
-ETIQUETA INTERNA (OBLIGATORIA)
-────────────────────────
-Al FINAL de cada respuesta tuya,
-incluye SOLO UNO de estos tags,
-en una línea aparte y SIN explicarlo,
-para uso interno del sistema:
-
+Al FINAL de cada respuesta, incluye SOLO UNO de estos tags:
 <PROFILE:PRECIO>
 <PROFILE:CALIDAD>
 <PROFILE:TECNICO>
 <PROFILE:AFINIDAD>
-
-El cliente NUNCA debe notar estos tags.
 `.trim();
 
 async function runAI(session, userText) {
@@ -818,8 +838,8 @@ async function runAI(session, userText) {
   const complete = isComplete(d);
 
   const statusMsg = complete
-    ? "DATOS COMPLETOS. Confirma si quiere PDF formal."
-    : `FALTA: "${missingKey}". Conversa o pídelo amablemente.`;
+    ? "DATOS COMPLETOS. Puedes confirmar si quiere PDF o continuar conversando."
+    : `FALTA: "${missingKey}". Pídelo amablemente en la conversación.`;
 
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
@@ -892,8 +912,9 @@ async function createQuotePdf(data, quoteNumber) {
 
       const items = [
         ["Producto", data.product],
+        ["Color", data.color],
         ["Medidas", data.measures],
-        ["Vidrio", data.glass],
+        ["Vidrio", data.glass || "Termopanel DVH"],
         ["Instalación", data.install],
         ["Notas", data.notes],
       ];
@@ -923,7 +944,7 @@ async function createQuotePdf(data, quoteNumber) {
 }
 
 // ============================================================
-// ZOHO CRM
+// ZOHO CRM — MEJORADO (no toca Deals cerrados)
 // ============================================================
 let zohoCache = { token: "", expiresAt: 0 };
 let tokenRefreshPromise = null;
@@ -974,8 +995,8 @@ async function zohoFindLead(phone) {
   }
 }
 
-// FIX: Solo buscar por teléfono
-async function zohoFindDeal(phone) {
+// MEJORADO: Busca Deal activo (no cerrado)
+async function zohoFindActiveDeal(phone) {
   if (!ZOHO.DEAL_PHONE_FIELD) return null;
   const t = await getZohoToken();
   try {
@@ -983,7 +1004,14 @@ async function zohoFindDeal(phone) {
       `${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=(${ZOHO.DEAL_PHONE_FIELD}:equals:${encodeURIComponent(phone)})`,
       { headers: { Authorization: `Zoho-oauthtoken ${t}` } }
     );
-    return r.data?.data?.[0];
+    const deals = r.data?.data || [];
+    // Filtrar: solo Deals que NO estén cerrados
+    const closedStages = [
+      STAGE_MAP.ganado, STAGE_MAP.perdido, STAGE_MAP.competencia,
+      "Cerrado ganado", "Cerrado perdido",
+    ];
+    const active = deals.find((d) => !closedStages.includes(d.Stage));
+    return active || null;
   } catch (e) {
     if (e.response?.status !== 204) logError("Zoho Find Deal", e);
     return null;
@@ -1021,7 +1049,10 @@ async function zohoUpdate(module, id, data) {
 async function zohoCloseDeal(dealId) {
   if (!REQUIRE_ZOHO || !dealId) return;
   try {
-    await zohoUpdate("Deals", dealId, { Stage: "Cerrado perdido", Description: "Cliente reinició cotización via WhatsApp" });
+    await zohoUpdate("Deals", dealId, {
+      Stage: "Cerrado perdido",
+      Description: "Cliente reinició cotización via WhatsApp",
+    });
   } catch (e) {
     logError("Zoho Close Deal", e);
   }
@@ -1036,7 +1067,6 @@ async function zohoEnsureDefaultAccountId() {
       { headers: { Authorization: `Zoho-oauthtoken ${t}` } }
     );
     if (r.data?.data?.[0]) return r.data.data[0].id;
-
     const c = await axios.post(
       `${ZOHO.API_DOMAIN}/crm/v2/Accounts`,
       { data: [{ Account_Name: name }] },
@@ -1068,15 +1098,14 @@ async function zohoUpsertFull(session, phone) {
     if (lead) await zohoUpdate("Leads", lead.id, leadData);
     else await zohoCreate("Leads", leadData);
 
-    // Deal
-    let deal = await zohoFindDeal(phoneE164);
+    // Deal — MEJORADO: solo busca Deals activos
+    let deal = await zohoFindActiveDeal(phoneE164);
 
-    // Stage automático
     const stageKey = computeStageKey(d, session);
     d.stageKey = stageKey;
 
     const dealData = {
-      Deal_Name: `${d.product || "Ventanas"} [WA ${phone.slice(-4)}]`,
+      Deal_Name: `${d.product || "Ventanas"} ${d.color || ""} [WA ${phone.slice(-4)}]`.trim(),
       Stage: STAGE_MAP[stageKey] || STAGE_MAP.diagnostico,
       Closing_Date: formatDateZoho(addDays(new Date(), 30)),
       Description: buildZohoDescription(d),
@@ -1099,7 +1128,7 @@ async function zohoUpsertFull(session, phone) {
 }
 
 // ============================================================
-// WEBHOOK (Lógica Final)
+// WEBHOOK — LÓGICA PRINCIPAL
 // ============================================================
 app.get("/webhook", (req, res) => {
   if (req.query["hub.verify_token"] === META.VERIFY_TOKEN) return res.send(req.query["hub.challenge"]);
@@ -1123,16 +1152,23 @@ app.post("/webhook", async (req, res) => {
   try {
     const session = getSession(waId);
     session.lastUserAt = Date.now();
-    await waMarkReadAndTyping(waId, msgId);
+
+    // Marcar leído inmediatamente
+    await waMarkRead(msgId);
+    // Mostrar "escribiendo..." inmediatamente
+    await waSetTyping(waId);
 
     let userText = incoming.text;
 
-    // AUDIO / IMAGEN
+    // AUDIO
     if (type === "audio" && incoming.audioId) {
       const meta = await waGetMediaMeta(incoming.audioId);
       const { buffer, mime } = await waDownloadMedia(meta.url);
-      userText = `[Audio]: ${await transcribeAudio(buffer, mime)}`;
+      const transcribed = await transcribeAudio(buffer, mime);
+      userText = transcribed ? `[Audio transcrito]: ${transcribed}` : "[Audio no reconocido]";
     }
+
+    // IMAGEN
     if (type === "image" && incoming.imageId) {
       const meta = await waGetMediaMeta(incoming.imageId);
       const { buffer, mime } = await waDownloadMedia(meta.url);
@@ -1142,42 +1178,61 @@ app.post("/webhook", async (req, res) => {
     // RESET
     if (/^reset|nueva cotizaci[oó]n|empezar de nuevo/i.test(userText)) {
       if (session.zohoDealId) await zohoCloseDeal(session.zohoDealId);
-
       session.data = createEmptySession().data;
       session.data.name = "Cliente";
       session.zohoDealId = null;
       session.pdfSent = false;
 
-      await waSendText(waId, "🔄 *Carpeta Nueva Abierta*\n\nHe guardado el historial anterior. Empecemos de cero.");
+      await waSendTextHuman(waId, "🔄 *Carpeta Nueva Abierta*\n\nHe guardado el historial anterior. Empecemos de cero, cuéntame en qué te puedo ayudar.");
       saveSession(waId, session);
       release();
       return;
     }
 
-    // Señal de “cierre” (opcional pero útil)
+    // Señal de "cierre"
     if (/(acepto|confirmo|avancemos|hagamos el pedido|quiero comprar|ok coticemos)/i.test(userText)) {
       session.data.stageKey = "cierre";
     }
 
     session.history.push({ role: "user", content: userText });
 
+    // Refrescar typing mientras la IA piensa
+    const typingInterval = setInterval(() => waSetTyping(waId), 4000);
+
     const aiMsg = await runAI(session, userText);
+
+    clearInterval(typingInterval);
 
     // TOOLS
     if (aiMsg?.tool_calls) {
       const tc = aiMsg.tool_calls[0];
       if (tc.function.name === "update_customer_data") {
         const args = JSON.parse(tc.function.arguments);
-        session.data = { ...session.data, ...args };
 
-        // ─────────────────────────────────────────
-        // PRECIO (NUEVO Ferrari 6.5.0)
-        // ─────────────────────────────────────────
+        // Merge datos
+        for (const [k, v] of Object.entries(args)) {
+          if (v !== undefined && v !== null && v !== "") {
+            session.data[k] = v;
+          }
+        }
+
+        // Auto-asignar vidrio Termopanel si no hay
+        if (!session.data.glass && session.data.product) {
+          const prod = normalizeProduct(session.data.product);
+          if (["PUERTA_1H", "PUERTA_DOBLE"].includes(prod)) {
+            session.data.glass = "Termopanel 5+12+5";
+          } else {
+            session.data.glass = "Termopanel 4+12+4";
+          }
+        }
+
+        // ─── PRECIO ───
         if (isComplete(session.data) || args.wants_pdf) {
           const q = quotePriceEngine({
             productText: session.data.product,
             glassText: session.data.glass,
             measuresText: session.data.measures,
+            colorText: session.data.color,
           });
 
           if (q.ok) {
@@ -1185,7 +1240,7 @@ app.post("/webhook", async (req, res) => {
             session.data.price_mode = q.mode;
             session.data.price_key = q.resolved?.key || "";
             session.data.price_rules = q.resolved?.rulesApplied || [];
-            session.data.price_warning = q.warning || "";
+            session.data.price_warning = "";
           } else {
             session.data.internal_price = null;
             session.data.price_mode = "";
@@ -1198,41 +1253,72 @@ app.post("/webhook", async (req, res) => {
         const shouldSendPDF = isComplete(session.data) && (args.wants_pdf || /pdf|cotiza/i.test(userText));
 
         if (shouldSendPDF && !session.pdfSent) {
-          await waSendText(waId, "Perfecto, genero tu cotización formal... 📄");
-          const qNum = generateQuoteNumber();
-          const pdfBuf = await createQuotePdf(session.data, qNum);
-          const mediaId = await waUploadPdf(pdfBuf);
-          await waSendPdfById(waId, mediaId, "Cotización Formal");
+          await waSetTyping(waId);
+          await sleep(1200);
+          await waSendText(waId, "Perfecto, te preparo la cotización formal... 📄");
+          await waSetTyping(waId);
 
-          await waSendText(waId, "📄 *Cotización Lista*\n\nEl *Equipo Alfa* ya tiene copia de esto para apoyarte en el cierre.");
+          // PDF con try/catch específico
+          try {
+            const qNum = generateQuoteNumber();
+            session.quoteNumber = qNum;
+            const pdfBuf = await createQuotePdf(session.data, qNum);
+            const mediaId = await waUploadPdf(pdfBuf);
+            await sleep(1000);
+            await waSendPdfById(waId, mediaId, `Cotización ${qNum} - ${COMPANY.NAME}`, `Cotizacion_${qNum}.pdf`);
 
-          session.pdfSent = true;
+            await sleep(1500);
+            await waSetTyping(waId);
+            await sleep(2000);
+            await waSendText(waId, "📄 *Cotización Lista*\n\nEl *Equipo Alfa* ya tiene copia para apoyarte si necesitas revisar detalles o ajustar algo.");
+            session.pdfSent = true;
+          } catch (pdfErr) {
+            logError("PDF Generation", pdfErr);
+            await waSendTextHuman(waId, "Tuve un inconveniente generando el archivo PDF, pero no te preocupes. Un ejecutivo del *Equipo Alfa* te enviará la cotización manualmente en breve. 🙏");
+          }
 
-          // Zoho: con Stage automático
           await zohoUpsertFull(session, waId);
         } else {
+          // Follow-up de la IA después de guardar datos
+          await waSetTyping(waId);
+
           const follow = await openai.chat.completions.create({
             model: AI_MODEL,
             messages: [
               { role: "system", content: SYSTEM_PROMPT },
               ...session.history.slice(-12),
               aiMsg,
-              { role: "tool", tool_call_id: tc.id, content: "Datos guardados." },
+              { role: "tool", tool_call_id: tc.id, content: "Datos guardados correctamente." },
             ],
             temperature: 0.4,
+            max_tokens: 300,
           });
 
           const reply = follow.choices[0].message.content.replace(/<PROFILE:.*?>/gi, "").trim();
-          await waSendText(waId, reply);
+
+          // Dividir respuestas largas en mensajes separados
+          const parts = reply.split(/\n\n+/).filter(Boolean);
+          if (parts.length > 1) {
+            await waSendMultipleHuman(waId, parts);
+          } else {
+            await waSendTextHuman(waId, reply);
+          }
           session.history.push({ role: "assistant", content: reply });
 
-          // Zoho siempre (para tener Lead/Deal al día con stage automático)
+          // Sync Zoho en background
           zohoUpsertFull(session, waId).catch(() => {});
         }
       }
     } else {
+      // Respuesta directa sin tool call
       const reply = aiMsg?.content?.replace(/<PROFILE:.*?>/gi, "").trim() || "No te entendí bien, ¿puedes repetir?";
-      await waSendText(waId, reply);
+
+      const parts = reply.split(/\n\n+/).filter(Boolean);
+      if (parts.length > 1) {
+        await waSendMultipleHuman(waId, parts);
+      } else {
+        await waSendTextHuman(waId, reply);
+      }
       session.history.push({ role: "assistant", content: reply });
     }
 
@@ -1244,4 +1330,4 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`🚀 Ferrari 6.5.0 ACTIVO`));
+app.listen(PORT, () => console.log(`🚀 Ferrari 7.0 ACTIVO — 30 ecuaciones | ${new Date().toLocaleString("es-CL", { timeZone: TZ })}`));
