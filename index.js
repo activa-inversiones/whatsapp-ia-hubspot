@@ -1,6 +1,19 @@
 // index.js — WhatsApp IA + Zoho CRM
-// Ferrari 6.4.1 — FIX ZOHO SEARCH (Eliminado Fallback inválido para limpiar logs)
+// Ferrari 6.5.0 — MOTOR PRECIOS ECUACIONES + STAGES ZOHO AUTO + FALLBACK SEGURO
 // Node 18+ | Railway | ESM
+//
+// ────────────────────────────────────────────────────────────
+// CHANGELOG
+// ─ Ferrari 6.5.0 (HOY)
+//   [1] Reemplaza calculateInternalPrice() por motor real con ecuaciones (coeficientes)
+//       + reglas: Puertas 1H/Doble, Corredera 80→98, Proyectante límite, Marco fijo auto 5+12+5.
+//   [2] Fallback: si no hay ecuación cargada, usa el cálculo anterior (por área + multiplicadores).
+//   [3] Zoho: Stage se calcula automáticamente por avance (diagnóstico/siembra/validación/propuesta/cierre).
+//   [4] Zoho: Description incluye trazabilidad (dataset, reglas, modo, medidas, vidrio).
+//
+// ─ Ferrari 6.4.1 (anterior)
+//   FIX ZOHO SEARCH (Eliminado fallback inválido para limpiar logs)
+// ────────────────────────────────────────────────────────────
 
 import express from "express";
 import axios from "axios";
@@ -34,8 +47,9 @@ app.use(
 // ============================================================
 function logError(context, e) {
   if (e.response) {
-    // Errores de API resumidos
-    console.error(`❌ ${context} [API]: ${e.response.status} - ${JSON.stringify(e.response.data).slice(0, 150)}...`);
+    console.error(
+      `❌ ${context} [API]: ${e.response.status} - ${JSON.stringify(e.response.data).slice(0, 150)}...`
+    );
   } else if (e.request) {
     console.error(`❌ ${context} [Network]: Sin respuesta.`);
   } else {
@@ -142,38 +156,222 @@ function normalizeYesNo(v) {
 }
 
 // ============================================================
-// MOTOR DE PRECIOS
+// MOTOR DE PRECIOS — Ferrari 6.5.0 (NUEVO)
 // ============================================================
+
+// 1) Normalizar medidas del texto (mantienes tu lógica)
 function normalizeMeasures(measures) {
   const t = String(measures || "").toLowerCase();
   let nums = t.match(/(\d+([.,]\d+)?)/g);
   if (!nums || nums.length < 2) return null;
-  
-  let a = parseFloat(nums[0].replace(',', '.'));
-  let b = parseFloat(nums[1].replace(',', '.'));
-  
-  if (a < 10) a *= 1000; 
+
+  let a = parseFloat(nums[0].replace(",", "."));
+  let b = parseFloat(nums[1].replace(",", "."));
+
+  if (a < 10) a *= 1000;
   if (b < 10) b *= 1000;
   if (a >= 10 && a < 100) a *= 10;
   if (b >= 10 && b < 100) b *= 10;
-  
+
   return { ancho_mm: Math.round(a), alto_mm: Math.round(b) };
 }
 
-function calculateInternalPrice({ ancho_mm, alto_mm, color, glass }) {
+// 2) Tu cálculo anterior (queda como Fallback seguro)
+function calculateInternalPriceFallback({ ancho_mm, alto_mm, color, glass }) {
   if (!ancho_mm || !alto_mm) return 0;
-  const area = (ancho_mm * alto_mm) / 1_000_000; 
-  let base = area * 120000; 
+  const area = (ancho_mm * alto_mm) / 1_000_000;
+  let base = area * 120000;
 
   const colorUpper = String(color || "").toUpperCase();
   const glassUpper = String(glass || "").toUpperCase();
 
-  if (["NEGRO", "ANTRACITA", "GRAFITO", "NOGAL"].some(c => colorUpper.includes(c))) base *= 1.15;
+  if (["NEGRO", "ANTRACITA", "GRAFITO", "NOGAL"].some((c) => colorUpper.includes(c))) base *= 1.15;
   if (/TERMOPANEL|DVH|6-12-6|LOW/.test(glassUpper)) base *= 1.25;
-  
+
   return Math.max(Math.round(base), 50000);
 }
 
+// 3) Normalización producto/color/vidrio (NUEVO)
+function normalizeColorFromText(text = "") {
+  const s = stripAccents(text).toUpperCase();
+  if (s.includes("ANTRAC") || s.includes("GRAF") || s.includes("NEG")) return "NEGRO";
+  if (s.includes("ROBLE") || s.includes("NOG")) return "NOGAL";
+  return "BLANCO";
+}
+
+function normalizeProduct(productRaw = "") {
+  const s = stripAccents(productRaw).toUpperCase();
+  if (s.includes("PUERTA")) return "PUERTA";
+  if (s.includes("PROYEC")) return "PROYECTANTE";
+  if (s.includes("MARCO") || s.includes("FIJO")) return "MARCO_FIJO";
+  if (s.includes("OSCILO")) return "OSCILOBATIENTE";
+  if (s.includes("ABAT")) return "VENTANA_ABATIBLE";
+  if (s.includes("CORREDERA") && s.includes("98")) return "CORREDERA_98";
+  if (s.includes("CORREDERA") && s.includes("80")) return "CORREDERA_80";
+  if (s.includes("CORREDERA")) return "CORREDERA_80";
+  return "";
+}
+
+function normalizeGlass(glassRaw = "", defaultGlass = "TP4+12+4") {
+  const s = stripAccents(glassRaw).toUpperCase();
+  if (s.includes("5") && s.includes("12") && s.includes("5")) return "TP5+12+5";
+  if (s.includes("4") && s.includes("12") && s.includes("4")) return "TP4+12+4";
+  if (s.includes("TERMOPANEL") || s.includes("DVH")) return defaultGlass;
+  return defaultGlass;
+}
+
+// 4) Ecuación por coeficientes (NUEVO)
+function priceFromCoeffs(coeffs, W, H) {
+  const { a, b, c, d, e, f } = coeffs;
+  const p = a + b * W + c * H + d * W * H + e * W * W + f * H * H;
+  return Math.max(0, Math.round(p));
+}
+
+// 5) Reglas de selección dataset (NUEVO)
+function resolvePricingKey({ product, colorText, glass, W, H }) {
+  let model = product;
+  let COLOR = normalizeColorFromText(colorText);
+  let GLASS = glass;
+  const rulesApplied = [];
+
+  if (!model) return { ok: false, reason: "Producto no reconocido" };
+
+  // PROYECTANTE límite 1400x1400
+  if (model === "PROYECTANTE" && (W > 1400 || H > 1400)) {
+    return { ok: false, reason: "PROYECTANTE solo se fabrica hasta 1400x1400 mm" };
+  }
+
+  // MARCO FIJO: auto TP5+12+5 desde 1000x2000
+  if (model === "MARCO_FIJO" && W >= 1000 && H >= 2000) {
+    GLASS = "TP5+12+5";
+    rulesApplied.push("MARCO_FIJO auto vidrio TP5+12+5 (>=1000x2000)");
+  }
+
+  // PUERTAS: 1 hoja / doble hoja
+  if (model === "PUERTA") {
+    if (W <= 1200 && H <= 2400) {
+      model = "PUERTA_1H";
+      rulesApplied.push("PUERTA => 1 HOJA (<=1200x2400)");
+    } else if (W >= 1201 && W <= 2400 && H === 2400) {
+      model = "PUERTA_DOBLE";
+      rulesApplied.push("PUERTA => DOBLE HOJA (1201..2400 x 2400)");
+    } else {
+      return {
+        ok: false,
+        reason:
+          "Puerta fuera de regla: 1 hoja hasta 1200x2400; desde 1201 a 2400 requiere alto 2400 y es doble hoja.",
+      };
+    }
+    GLASS = "TP5+12+5";
+    rulesApplied.push("PUERTA fuerza vidrio TP5+12+5");
+  }
+
+  // CORREDERA 80: 400..2000; si >=2001x2001 => 98
+  if (model === "CORREDERA_80") {
+    if (W < 400 || H < 400) return { ok: false, reason: "CORREDERA 80 mínimo 400x400 mm" };
+    if (W >= 2001 && H >= 2001) {
+      model = "CORREDERA_98";
+      rulesApplied.push("CORREDERA_80 => CORREDERA_98 (>=2001x2001)");
+    } else if (W > 2000 || H > 2000) {
+      return { ok: false, reason: "Si supera 2000x2000, se cotiza como CORREDERA 98 (o ajustar medida)." };
+    }
+  }
+
+  const key = `${model}::${COLOR}::${GLASS}`;
+  return { ok: true, model, color: COLOR, glass: GLASS, key, rulesApplied };
+}
+
+// 6) COEFICIENTES (pegables) — hoy dejo puertas listas + estructura
+// IMPORTANTE: agrega aquí los coeficientes restantes (proyectantes/correderas/oscilobatiente/abatible/marco fijo).
+const COEFFS = {
+  // Puertas (ya implementadas):
+  "PUERTA_1H::BLANCO::TP5+12+5": { a: 140100.22733, b: 18.892589, c: 37.209872, d: 0.086863576, e: 0.003233095, f: -0.00113546 },
+  "PUERTA_1H::NEGRO::TP5+12+5": { a: 136158.016292, b: 48.502605, c: 66.819891, d: 0.086863595, e: 0.003233068, f: -0.00113547 },
+  "PUERTA_1H::NOGAL::TP5+12+5": { a: 137159.159293, b: 37.076508, c: 55.393745, d: 0.086863633, e: 0.003233092, f: -0.001135438 },
+
+  "PUERTA_DOBLE::BLANCO::TP5+12+5": { a: 219814.229091, b: 20.214712, c: 59.663669, d: 0.086334711, e: 0.001420833, f: -0.001095857 },
+  "PUERTA_DOBLE::NEGRO::TP5+12+5": { a: 215455.111736, b: 45.100687, c: 114.186203, d: 0.086334766, e: 0.001420816, f: -0.001096061 },
+  "PUERTA_DOBLE::NOGAL::TP5+12+5": { a: 215652.196033, b: 36.128734, c: 94.176285, d: 0.086334711, e: 0.001420833, f: -0.001096061 },
+
+  // 🔻 Aquí pegas el resto cuando lo quieras activar:
+  // "PROYECTANTE::BLANCO::TP4+12+4": {...}
+  // "CORREDERA_80::NEGRO::TP4+12+4": {...}
+  // "MARCO_FIJO::BLANCO::TP5+12+5": {...}
+};
+
+// 7) Cotización por ecuación con fallback (NUEVO)
+function quotePriceEngine({ productText, glassText, measuresText }) {
+  const m = normalizeMeasures(measuresText);
+  if (!m) return { ok: false, reason: "No pude leer medidas. Ej: 1200x1200 o 1.2x1.2" };
+
+  const W = m.ancho_mm;
+  const H = m.alto_mm;
+
+  const product = normalizeProduct(productText);
+  const glass = normalizeGlass(glassText, process.env.DEFAULT_GLASS || "TP4+12+4");
+  const colorText = `${productText} ${glassText}`;
+
+  const resolved = resolvePricingKey({ product, colorText, glass, W, H });
+  if (!resolved.ok) return resolved;
+
+  const coeffs = COEFFS[resolved.key];
+  if (coeffs) {
+    const price = priceFromCoeffs(coeffs, W, H);
+    return { ok: true, price, mode: "equation", resolved, measures: m };
+  }
+
+  // Fallback seguro
+  const priceFallback = calculateInternalPriceFallback({
+    ancho_mm: W,
+    alto_mm: H,
+    color: colorText,
+    glass: resolved.glass,
+  });
+
+  return {
+    ok: true,
+    price: priceFallback,
+    mode: "fallback",
+    resolved,
+    measures: m,
+    warning: `No hay ecuación cargada para ${resolved.key}. Se usó fallback referencial.`,
+  };
+}
+
+// ============================================================
+// ZOHO: Stage automático (NUEVO)
+// ============================================================
+function computeStageKey(d, session) {
+  // Prioridad: si el cliente explícitamente confirma compra/avance
+  if (d.stageKey === "cierre") return "cierre";
+  if (session.pdfSent) return "propuesta";
+
+  const hasProduct = !!d.product;
+  const hasMeasures = !!d.measures;
+  const hasComuna = !!(d.comuna || d.address);
+  const hasGlass = !!d.glass;
+
+  if (hasProduct && hasMeasures && hasComuna && hasGlass) return "validacion";
+  if (hasProduct || hasMeasures) return "siembra";
+  return "diagnostico";
+}
+
+function buildZohoDescription(d) {
+  const lines = [];
+  lines.push(`Producto: ${d.product || ""}`.trim());
+  lines.push(`Medidas: ${d.measures || ""}`.trim());
+  lines.push(`Vidrio: ${d.glass || ""}`.trim());
+  if (d.internal_price) lines.push(`Precio: ${d.internal_price}`);
+  if (d.price_mode) lines.push(`Modo precio: ${d.price_mode}`);
+  if (d.price_key) lines.push(`Dataset: ${d.price_key}`);
+  if (d.price_rules && d.price_rules.length) lines.push(`Reglas: ${d.price_rules.join(" | ")}`);
+  if (d.price_warning) lines.push(`Aviso: ${d.price_warning}`);
+  return lines.filter(Boolean).join("\n");
+}
+
+// ============================================================
+// FECHAS / ETC (igual que tenías)
+// ============================================================
 function formatDateZoho(date = new Date()) {
   return date.toISOString().split("T")[0];
 }
@@ -213,7 +411,11 @@ function verifyMetaSignature(req) {
   if (!sig) return false;
   if (!req.rawBody || !Buffer.isBuffer(req.rawBody)) return false;
   const expected = "sha256=" + crypto.createHmac("sha256", META.APP_SECRET).update(req.rawBody).digest("hex");
-  try { return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)); } catch { return false; }
+  try {
+    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+  } catch {
+    return false;
+  }
 }
 
 async function waSendText(to, text) {
@@ -221,15 +423,29 @@ async function waSendText(to, text) {
   try {
     const payload = { messaging_product: "whatsapp", to, type: "text", text: { body: text } };
     await axios.post(url, payload, { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 20000 });
-  } catch(e) { logError("WA Send Text", e); }
+  } catch (e) {
+    logError("WA Send Text", e);
+  }
 }
 
 async function waMarkReadAndTyping(waId, messageId) {
   const url = `${waBase()}/${META.PHONE_NUMBER_ID}/messages`;
   try {
-    if (messageId) await axios.post(url, { messaging_product: "whatsapp", status: "read", message_id: messageId }, { headers: { Authorization: `Bearer ${META.TOKEN}` } });
-    if (waId) await axios.post(url, { messaging_product: "whatsapp", to: waId, typing_indicator: { type: "text" } }, { headers: { Authorization: `Bearer ${META.TOKEN}` } });
-  } catch (e) { /* Ignorar errores de typing */ }
+    if (messageId)
+      await axios.post(
+        url,
+        { messaging_product: "whatsapp", status: "read", message_id: messageId },
+        { headers: { Authorization: `Bearer ${META.TOKEN}` } }
+      );
+    if (waId)
+      await axios.post(
+        url,
+        { messaging_product: "whatsapp", to: waId, typing_indicator: { type: "text" } },
+        { headers: { Authorization: `Bearer ${META.TOKEN}` } }
+      );
+  } catch (e) {
+    /* Ignorar errores de typing */
+  }
 }
 
 async function waUploadPdf(buffer, filename = "Cotizacion.pdf") {
@@ -238,9 +454,15 @@ async function waUploadPdf(buffer, filename = "Cotizacion.pdf") {
   form.append("messaging_product", "whatsapp");
   form.append("file", buffer, { filename, contentType: "application/pdf" });
   try {
-    const r = await axios.post(url, form, { headers: { Authorization: `Bearer ${META.TOKEN}`, ...form.getHeaders() }, maxBodyLength: Infinity });
+    const r = await axios.post(url, form, {
+      headers: { Authorization: `Bearer ${META.TOKEN}`, ...form.getHeaders() },
+      maxBodyLength: Infinity,
+    });
     return r.data.id;
-  } catch(e) { logError("WA Upload PDF", e); throw e; }
+  } catch (e) {
+    logError("WA Upload PDF", e);
+    throw e;
+  }
 }
 
 async function waSendPdfById(to, mediaId, caption, filename = "Cotizacion.pdf") {
@@ -248,7 +470,9 @@ async function waSendPdfById(to, mediaId, caption, filename = "Cotizacion.pdf") 
   const payload = { messaging_product: "whatsapp", to, type: "document", document: { id: mediaId, filename, caption } };
   try {
     await axios.post(url, payload, { headers: { Authorization: `Bearer ${META.TOKEN}` } });
-  } catch(e) { logError("WA Send PDF", e); }
+  } catch (e) {
+    logError("WA Send PDF", e);
+  }
 }
 
 async function waGetMediaMeta(mediaId) {
@@ -256,14 +480,23 @@ async function waGetMediaMeta(mediaId) {
   try {
     const { data } = await axios.get(url, { headers: { Authorization: `Bearer ${META.TOKEN}` } });
     return data;
-  } catch(e) { logError("WA Get Media", e); throw e; }
+  } catch (e) {
+    logError("WA Get Media", e);
+    throw e;
+  }
 }
 
 async function waDownloadMedia(mediaUrl) {
   try {
-    const { data, headers } = await axios.get(mediaUrl, { responseType: "arraybuffer", headers: { Authorization: `Bearer ${META.TOKEN}` } });
+    const { data, headers } = await axios.get(mediaUrl, {
+      responseType: "arraybuffer",
+      headers: { Authorization: `Bearer ${META.TOKEN}` },
+    });
     return { buffer: Buffer.from(data), mime: headers["content-type"] || "application/octet-stream" };
-  } catch(e) { logError("WA Download Media", e); throw e; }
+  } catch (e) {
+    logError("WA Download Media", e);
+    throw e;
+  }
 }
 
 // ============================================================
@@ -274,21 +507,33 @@ async function transcribeAudio(buffer, mime) {
     const file = await toFile(buffer, "audio.ogg", { type: mime });
     const r = await openai.audio.transcriptions.create({ model: STT_MODEL, file, language: "es" });
     return (r.text || "").trim();
-  } catch(e) { logError("OpenAI Audio", e); return ""; }
+  } catch (e) {
+    logError("OpenAI Audio", e);
+    return "";
+  }
 }
 
 async function describeImage(buffer, mime) {
   try {
     const b64 = buffer.toString("base64");
     const dataUrl = `data:${mime};base64,${b64}`;
-    const prompt = `Describe brevemente la imagen y extrae datos útiles para cotizar ventanas/puertas: producto, medidas, comuna, vidrio. Responde en español.`;
+    const prompt =
+      "Describe brevemente la imagen y extrae datos útiles para cotizar ventanas/puertas: producto, medidas, comuna, vidrio. Responde en español.";
     const resp = await openai.chat.completions.create({
       model: AI_MODEL,
-      messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: dataUrl } }] }],
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: dataUrl } }],
+        },
+      ],
       max_tokens: 250,
     });
     return (resp.choices?.[0]?.message?.content || "").trim();
-  } catch(e) { logError("OpenAI Vision", e); return ""; }
+  } catch (e) {
+    logError("OpenAI Vision", e);
+    return "";
+  }
 }
 
 async function parsePdfToText(buffer) {
@@ -296,21 +541,39 @@ async function parsePdfToText(buffer) {
     const r = await pdfParse(buffer);
     const text = (r?.text || "").trim();
     return text.length > 6000 ? text.slice(0, 6000) + "\n..." : text;
-  } catch(e) { return ""; }
+  } catch (e) {
+    return "";
+  }
 }
 
 // ============================================================
 // SESSIONS
 // ============================================================
 const sessions = new Map();
-const SESSION_TTL_MS = 6 * 60 * 60 * 1000; 
+const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 
 function createEmptySession() {
   return {
     lastUserAt: Date.now(),
     data: {
-      name: "", product: "", measures: "", address: "", comuna: "", glass: "", install: "",
-      wants_pdf: false, notes: "", profile: "", stageKey: "diagnostico", internal_price: null
+      name: "",
+      product: "",
+      measures: "",
+      address: "",
+      comuna: "",
+      glass: "",
+      install: "",
+      wants_pdf: false,
+      notes: "",
+      profile: "",
+      stageKey: "diagnostico",
+      internal_price: null,
+
+      // NUEVO: trazabilidad precios
+      price_mode: "",
+      price_key: "",
+      price_rules: [],
+      price_warning: "",
     },
     history: [],
     pdfSent: false,
@@ -357,9 +620,12 @@ const locks = new Map();
 async function acquireLock(waId) {
   if (locks.has(waId)) await locks.get(waId);
   let release;
-  const p = new Promise(r => release = r);
+  const p = new Promise((r) => (release = r));
   locks.set(waId, p);
-  return () => { release(); locks.delete(waId); };
+  return () => {
+    release();
+    locks.delete(waId);
+  };
 }
 
 const rate = new Map();
@@ -367,7 +633,11 @@ function checkRate(waId) {
   const now = Date.now();
   if (!rate.has(waId)) rate.set(waId, { count: 1, resetAt: now + 60000 });
   const r = rate.get(waId);
-  if (now >= r.resetAt) { r.count = 1; r.resetAt = now + 60000; return { allowed: true }; }
+  if (now >= r.resetAt) {
+    r.count = 1;
+    r.resetAt = now + 60000;
+    return { allowed: true };
+  }
   r.count++;
   return r.count > 15 ? { allowed: false, msg: "Estás escribiendo muy rápido. Dame unos segundos." } : { allowed: true };
 }
@@ -384,7 +654,7 @@ function extractIncoming(reqBody) {
 
   const msg = value?.messages?.[0];
   if (!msg) return { ok: false, reason: "no_message" };
-  
+
   const waId = msg.from;
   const msgId = msg.id;
   const type = msg.type;
@@ -393,7 +663,7 @@ function extractIncoming(reqBody) {
   const imageId = type === "image" ? msg.image?.id : null;
   const docId = type === "document" ? msg.document?.id : null;
   const docMime = type === "document" ? msg.document?.mime_type : null;
-  
+
   let text = "";
   if (type === "text") text = msg.text?.body || "";
   else if (type === "button") text = msg.button?.text || "";
@@ -546,7 +816,7 @@ async function runAI(session, userText) {
   const d = session.data;
   const missingKey = nextMissingKey(d);
   const complete = isComplete(d);
-  
+
   const statusMsg = complete
     ? "DATOS COMPLETOS. Confirma si quiere PDF formal."
     : `FALTA: "${missingKey}". Conversa o pídelo amablemente.`;
@@ -568,7 +838,7 @@ async function runAI(session, userText) {
       temperature: 0.3,
       max_tokens: 400,
     });
-    
+
     const aiMsg = resp.choices?.[0]?.message;
     if (aiMsg?.content) {
       const match = aiMsg.content.match(/<PROFILE:(\w+)>/i);
@@ -579,7 +849,7 @@ async function runAI(session, userText) {
         }
       }
     }
-    
+
     return aiMsg;
   } catch (e) {
     logError("OpenAI Run", e);
@@ -595,7 +865,7 @@ async function createQuotePdf(data, quoteNumber) {
     try {
       const doc = new PDFDocument({ size: "A4", margin: 50 });
       const chunks = [];
-      doc.on("data", c => chunks.push(c));
+      doc.on("data", (c) => chunks.push(c));
       doc.on("end", () => resolve(Buffer.concat(chunks)));
 
       const primaryColor = "#1a365d";
@@ -619,12 +889,15 @@ async function createQuotePdf(data, quoteNumber) {
       doc.moveDown(1);
       doc.fillColor(primaryColor).fontSize(12).font("Helvetica-Bold").text("DETALLE", 50);
       doc.moveDown(0.5);
-      
+
       const items = [
-        ["Producto", data.product], ["Medidas", data.measures],
-        ["Vidrio", data.glass], ["Instalación", data.install], ["Notas", data.notes]
+        ["Producto", data.product],
+        ["Medidas", data.measures],
+        ["Vidrio", data.glass],
+        ["Instalación", data.install],
+        ["Notas", data.notes],
       ];
-      
+
       let rowY = doc.y;
       doc.font("Helvetica");
       for (const [l, v] of items) {
@@ -637,13 +910,15 @@ async function createQuotePdf(data, quoteNumber) {
       doc.y = rowY + 20;
       doc.fillColor(primaryColor).fontSize(12).font("Helvetica-Bold").text("VALOR ESTIMADO");
       let precioTexto = "Por confirmar tras visita técnica.";
-      if (data.internal_price) precioTexto = `$ ${data.internal_price.toLocaleString('es-CL')} + IVA (Referencial)`;
-      
+      if (data.internal_price) precioTexto = `$ ${Number(data.internal_price).toLocaleString("es-CL")} + IVA (Referencial)`;
+
       doc.rect(50, doc.y + 5, 512, 40).fill("#f7fafc");
       doc.fillColor(primaryColor).fontSize(14).text(precioTexto, 60, doc.y + 18, { align: "center", width: 490 });
 
       doc.end();
-    } catch (e) { reject(e); }
+    } catch (e) {
+      reject(e);
+    }
   });
 }
 
@@ -661,11 +936,16 @@ async function refreshZohoToken() {
   params.append("client_secret", ZOHO.CLIENT_SECRET);
   params.append("grant_type", "refresh_token");
   try {
-    const { data } = await axios.post(url, params.toString(), { headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+    const { data } = await axios.post(url, params.toString(), {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
     zohoCache.token = data.access_token;
-    zohoCache.expiresAt = Date.now() + (data.expires_in * 1000) - 60000;
+    zohoCache.expiresAt = Date.now() + data.expires_in * 1000 - 60000;
     return zohoCache.token;
-  } catch(e) { logError("Zoho Refresh Token", e); throw e; }
+  } catch (e) {
+    logError("Zoho Refresh Token", e);
+    throw e;
+  }
 }
 
 async function getZohoToken() {
@@ -673,23 +953,36 @@ async function getZohoToken() {
   if (zohoCache.token && Date.now() < zohoCache.expiresAt) return zohoCache.token;
   if (tokenRefreshPromise) return tokenRefreshPromise;
   tokenRefreshPromise = refreshZohoToken();
-  try { return await tokenRefreshPromise; } finally { tokenRefreshPromise = null; }
+  try {
+    return await tokenRefreshPromise;
+  } finally {
+    tokenRefreshPromise = null;
+  }
 }
 
 async function zohoFindLead(phone) {
   const t = await getZohoToken();
   try {
-    const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Leads/search?criteria=(Mobile:equals:${encodeURIComponent(phone)})`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
+    const r = await axios.get(
+      `${ZOHO.API_DOMAIN}/crm/v2/Leads/search?criteria=(Mobile:equals:${encodeURIComponent(phone)})`,
+      { headers: { Authorization: `Zoho-oauthtoken ${t}` } }
+    );
     return r.data?.data?.[0];
-  } catch (e) { if (e.response?.status !== 204) logError("Zoho Find Lead", e); return null; }
+  } catch (e) {
+    if (e.response?.status !== 204) logError("Zoho Find Lead", e);
+    return null;
+  }
 }
 
-// 🔴 FIX: Solo buscar por teléfono para evitar error 400
+// FIX: Solo buscar por teléfono
 async function zohoFindDeal(phone) {
   if (!ZOHO.DEAL_PHONE_FIELD) return null;
   const t = await getZohoToken();
   try {
-    const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=(${ZOHO.DEAL_PHONE_FIELD}:equals:${encodeURIComponent(phone)})`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
+    const r = await axios.get(
+      `${ZOHO.API_DOMAIN}/crm/v2/Deals/search?criteria=(${ZOHO.DEAL_PHONE_FIELD}:equals:${encodeURIComponent(phone)})`,
+      { headers: { Authorization: `Zoho-oauthtoken ${t}` } }
+    );
     return r.data?.data?.[0];
   } catch (e) {
     if (e.response?.status !== 204) logError("Zoho Find Deal", e);
@@ -700,73 +993,109 @@ async function zohoFindDeal(phone) {
 async function zohoCreate(module, data) {
   const t = await getZohoToken();
   try {
-    const r = await axios.post(`${ZOHO.API_DOMAIN}/crm/v2/${module}`, { data: [data], trigger: ["workflow"] }, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
+    const r = await axios.post(
+      `${ZOHO.API_DOMAIN}/crm/v2/${module}`,
+      { data: [data], trigger: ["workflow"] },
+      { headers: { Authorization: `Zoho-oauthtoken ${t}` } }
+    );
     return r.data?.data?.[0]?.details?.id;
-  } catch(e) { logError(`Zoho Create ${module}`, e); return null; }
+  } catch (e) {
+    logError(`Zoho Create ${module}`, e);
+    return null;
+  }
 }
 
 async function zohoUpdate(module, id, data) {
   const t = await getZohoToken();
   try {
-    await axios.put(`${ZOHO.API_DOMAIN}/crm/v2/${module}/${id}`, { data: [data], trigger: ["workflow"] }, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
-  } catch(e) { logError(`Zoho Update ${module}`, e); }
+    await axios.put(
+      `${ZOHO.API_DOMAIN}/crm/v2/${module}/${id}`,
+      { data: [data], trigger: ["workflow"] },
+      { headers: { Authorization: `Zoho-oauthtoken ${t}` } }
+    );
+  } catch (e) {
+    logError(`Zoho Update ${module}`, e);
+  }
 }
 
 async function zohoCloseDeal(dealId) {
-    if (!REQUIRE_ZOHO || !dealId) return;
-    try {
-        await zohoUpdate("Deals", dealId, { Stage: "Cerrado perdido", Description: "Cliente reinició cotización via WhatsApp" });
-    } catch (e) { logError("Zoho Close Deal", e); }
+  if (!REQUIRE_ZOHO || !dealId) return;
+  try {
+    await zohoUpdate("Deals", dealId, { Stage: "Cerrado perdido", Description: "Cliente reinició cotización via WhatsApp" });
+  } catch (e) {
+    logError("Zoho Close Deal", e);
+  }
 }
 
 async function zohoEnsureDefaultAccountId() {
-    try {
-        const t = await getZohoToken();
-        const name = ZOHO.DEFAULT_ACCOUNT_NAME;
-        const r = await axios.get(`${ZOHO.API_DOMAIN}/crm/v2/Accounts/search?criteria=(Account_Name:equals:${encodeURIComponent(name)})`, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
-        if (r.data?.data?.[0]) return r.data.data[0].id;
-        const c = await axios.post(`${ZOHO.API_DOMAIN}/crm/v2/Accounts`, { data: [{ Account_Name: name }] }, { headers: { Authorization: `Zoho-oauthtoken ${t}` } });
-        return c.data?.data?.[0]?.details?.id;
-    } catch (e) { logError("Zoho Account", e); return null; }
+  try {
+    const t = await getZohoToken();
+    const name = ZOHO.DEFAULT_ACCOUNT_NAME;
+    const r = await axios.get(
+      `${ZOHO.API_DOMAIN}/crm/v2/Accounts/search?criteria=(Account_Name:equals:${encodeURIComponent(name)})`,
+      { headers: { Authorization: `Zoho-oauthtoken ${t}` } }
+    );
+    if (r.data?.data?.[0]) return r.data.data[0].id;
+
+    const c = await axios.post(
+      `${ZOHO.API_DOMAIN}/crm/v2/Accounts`,
+      { data: [{ Account_Name: name }] },
+      { headers: { Authorization: `Zoho-oauthtoken ${t}` } }
+    );
+    return c.data?.data?.[0]?.details?.id;
+  } catch (e) {
+    logError("Zoho Account", e);
+    return null;
+  }
 }
 
 async function zohoUpsertFull(session, phone) {
   if (!REQUIRE_ZOHO) return;
   const d = session.data;
   const phoneE164 = normalizeCLPhone(phone);
+
   try {
     // Lead
     let lead = await zohoFindLead(phoneE164);
-    const leadData = { Last_Name: d.name || `Lead WA`, Mobile: phoneE164, Lead_Source: "WhatsApp IA", Description: `Perfil: ${d.profile}` };
+    const leadData = {
+      Last_Name: d.name || `Lead WA`,
+      Mobile: phoneE164,
+      Lead_Source: "WhatsApp IA",
+      Description: `Perfil: ${d.profile || ""}`.trim(),
+    };
     if (ZOHO.LEAD_PROFILE_FIELD && d.profile) leadData[ZOHO.LEAD_PROFILE_FIELD] = d.profile;
-    
+
     if (lead) await zohoUpdate("Leads", lead.id, leadData);
     else await zohoCreate("Leads", leadData);
 
     // Deal
     let deal = await zohoFindDeal(phoneE164);
+
+    // Stage automático
+    const stageKey = computeStageKey(d, session);
+    d.stageKey = stageKey;
+
     const dealData = {
-        Deal_Name: `${d.product || "Ventanas"} [WA ${phone.slice(-4)}]`,
-        Stage: STAGE_MAP.diagnostico, // Default
-        Closing_Date: formatDateZoho(addDays(new Date(), 30)),
-        Description: `Producto: ${d.product}\nMedidas: ${d.measures}\nPrecio: ${d.internal_price}`
+      Deal_Name: `${d.product || "Ventanas"} [WA ${phone.slice(-4)}]`,
+      Stage: STAGE_MAP[stageKey] || STAGE_MAP.diagnostico,
+      Closing_Date: formatDateZoho(addDays(new Date(), 30)),
+      Description: buildZohoDescription(d),
     };
-    // 🔴 FIX: Solo cambiar etapa si ya enviamos PDF
-    if (session.pdfSent) dealData.Stage = STAGE_MAP.propuesta;
-    else if (d.product || d.measures) dealData.Stage = STAGE_MAP.siembra;
 
     if (ZOHO.DEAL_PHONE_FIELD) dealData[ZOHO.DEAL_PHONE_FIELD] = phoneE164;
-    
+
     if (deal) {
-        session.zohoDealId = deal.id;
-        await zohoUpdate("Deals", deal.id, dealData);
+      session.zohoDealId = deal.id;
+      await zohoUpdate("Deals", deal.id, dealData);
     } else {
-        const accId = await zohoEnsureDefaultAccountId(); 
-        if (accId) dealData.Account_Name = { id: accId };
-        const newId = await zohoCreate("Deals", dealData);
-        session.zohoDealId = newId;
+      const accId = await zohoEnsureDefaultAccountId();
+      if (accId) dealData.Account_Name = { id: accId };
+      const newId = await zohoCreate("Deals", dealData);
+      session.zohoDealId = newId;
     }
-  } catch (e) { logError("Zoho Sync", e); }
+  } catch (e) {
+    logError("Zoho Sync", e);
+  }
 }
 
 // ============================================================
@@ -785,7 +1114,7 @@ app.post("/webhook", async (req, res) => {
   if (!incoming.ok) return;
 
   const { waId, msgId, type } = incoming;
-  
+
   if (isDuplicateMsg(msgId)) return;
   const rateC = checkRate(waId);
   if (!rateC.allowed) return waSendText(waId, rateC.msg);
@@ -812,71 +1141,99 @@ app.post("/webhook", async (req, res) => {
 
     // RESET
     if (/^reset|nueva cotizaci[oó]n|empezar de nuevo/i.test(userText)) {
-        if (session.zohoDealId) await zohoCloseDeal(session.zohoDealId);
-        
-        session.data = createEmptySession().data;
-        session.data.name = "Cliente";
-        session.zohoDealId = null;
-        session.pdfSent = false;
-        
-        await waSendText(waId, "🔄 *Carpeta Nueva Abierta*\n\nHe guardado el historial anterior. Empecemos de cero.");
-        saveSession(waId, session);
-        release(); return;
+      if (session.zohoDealId) await zohoCloseDeal(session.zohoDealId);
+
+      session.data = createEmptySession().data;
+      session.data.name = "Cliente";
+      session.zohoDealId = null;
+      session.pdfSent = false;
+
+      await waSendText(waId, "🔄 *Carpeta Nueva Abierta*\n\nHe guardado el historial anterior. Empecemos de cero.");
+      saveSession(waId, session);
+      release();
+      return;
+    }
+
+    // Señal de “cierre” (opcional pero útil)
+    if (/(acepto|confirmo|avancemos|hagamos el pedido|quiero comprar|ok coticemos)/i.test(userText)) {
+      session.data.stageKey = "cierre";
     }
 
     session.history.push({ role: "user", content: userText });
 
     const aiMsg = await runAI(session, userText);
-    
+
     // TOOLS
     if (aiMsg?.tool_calls) {
-        const tc = aiMsg.tool_calls[0];
-        if (tc.function.name === "update_customer_data") {
-            const args = JSON.parse(tc.function.arguments);
-            session.data = { ...session.data, ...args };
-            
-            if (isComplete(session.data) || args.wants_pdf) {
-                const m = normalizeMeasures(session.data.measures);
-                if (m) session.data.internal_price = calculateInternalPrice({ ...m, glass: session.data.glass });
-            }
+      const tc = aiMsg.tool_calls[0];
+      if (tc.function.name === "update_customer_data") {
+        const args = JSON.parse(tc.function.arguments);
+        session.data = { ...session.data, ...args };
 
-            const shouldSendPDF = (isComplete(session.data) && (args.wants_pdf || /pdf|cotiza/i.test(userText)));
+        // ─────────────────────────────────────────
+        // PRECIO (NUEVO Ferrari 6.5.0)
+        // ─────────────────────────────────────────
+        if (isComplete(session.data) || args.wants_pdf) {
+          const q = quotePriceEngine({
+            productText: session.data.product,
+            glassText: session.data.glass,
+            measuresText: session.data.measures,
+          });
 
-            if (shouldSendPDF && !session.pdfSent) {
-                await waSendText(waId, "Perfecto, genero tu cotización formal... 📄");
-                const qNum = generateQuoteNumber();
-                const pdfBuf = await createQuotePdf(session.data, qNum);
-                const mediaId = await waUploadPdf(pdfBuf);
-                await waSendPdfById(waId, mediaId, "Cotización Formal");
-                
-                await waSendText(waId, "📄 *Cotización Lista*\n\nEl *Equipo Alfa* ya tiene copia de esto para apoyarte en el cierre.");
-                
-                session.pdfSent = true;
-                await zohoUpsertFull(session, waId);
-            } else {
-                const follow = await openai.chat.completions.create({
-                    model: AI_MODEL,
-                    messages: [
-                        { role: "system", content: SYSTEM_PROMPT },
-                        ...session.history.slice(-12),
-                        aiMsg,
-                        { role: "tool", tool_call_id: tc.id, content: "Datos guardados." }
-                    ],
-                    temperature: 0.4
-                });
-                
-                const reply = follow.choices[0].message.content.replace(/<PROFILE:.*?>/gi, "").trim();
-                await waSendText(waId, reply);
-                session.history.push({ role: "assistant", content: reply });
-                
-                // 🔴 FIX: Sincronizar Zoho aunque no haya PDF (para crear Lead)
-                zohoUpsertFull(session, waId).catch(() => {});
-            }
+          if (q.ok) {
+            session.data.internal_price = q.price;
+            session.data.price_mode = q.mode;
+            session.data.price_key = q.resolved?.key || "";
+            session.data.price_rules = q.resolved?.rulesApplied || [];
+            session.data.price_warning = q.warning || "";
+          } else {
+            session.data.internal_price = null;
+            session.data.price_mode = "";
+            session.data.price_key = "";
+            session.data.price_rules = [];
+            session.data.price_warning = q.reason || "No se pudo cotizar";
+          }
         }
+
+        const shouldSendPDF = isComplete(session.data) && (args.wants_pdf || /pdf|cotiza/i.test(userText));
+
+        if (shouldSendPDF && !session.pdfSent) {
+          await waSendText(waId, "Perfecto, genero tu cotización formal... 📄");
+          const qNum = generateQuoteNumber();
+          const pdfBuf = await createQuotePdf(session.data, qNum);
+          const mediaId = await waUploadPdf(pdfBuf);
+          await waSendPdfById(waId, mediaId, "Cotización Formal");
+
+          await waSendText(waId, "📄 *Cotización Lista*\n\nEl *Equipo Alfa* ya tiene copia de esto para apoyarte en el cierre.");
+
+          session.pdfSent = true;
+
+          // Zoho: con Stage automático
+          await zohoUpsertFull(session, waId);
+        } else {
+          const follow = await openai.chat.completions.create({
+            model: AI_MODEL,
+            messages: [
+              { role: "system", content: SYSTEM_PROMPT },
+              ...session.history.slice(-12),
+              aiMsg,
+              { role: "tool", tool_call_id: tc.id, content: "Datos guardados." },
+            ],
+            temperature: 0.4,
+          });
+
+          const reply = follow.choices[0].message.content.replace(/<PROFILE:.*?>/gi, "").trim();
+          await waSendText(waId, reply);
+          session.history.push({ role: "assistant", content: reply });
+
+          // Zoho siempre (para tener Lead/Deal al día con stage automático)
+          zohoUpsertFull(session, waId).catch(() => {});
+        }
+      }
     } else {
-        const reply = aiMsg?.content?.replace(/<PROFILE:.*?>/gi, "").trim() || "No te entendí bien, ¿puedes repetir?";
-        await waSendText(waId, reply);
-        session.history.push({ role: "assistant", content: reply });
+      const reply = aiMsg?.content?.replace(/<PROFILE:.*?>/gi, "").trim() || "No te entendí bien, ¿puedes repetir?";
+      await waSendText(waId, reply);
+      session.history.push({ role: "assistant", content: reply });
     }
 
     saveSession(waId, session);
@@ -887,4 +1244,4 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`🚀 Ferrari 6.4.1 ACTIVO`));
+app.listen(PORT, () => console.log(`🚀 Ferrari 6.5.0 ACTIVO`));
