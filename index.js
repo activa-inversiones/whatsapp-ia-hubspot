@@ -1,9 +1,11 @@
 // index.js — WhatsApp IA + Zoho CRM
-// Ferrari 9.0 — MULTI-ITEM ARCHITECTURE
+// Ferrari 9.1 — MULTI-ITEM + KEEP-ALIVE + TYPING FIX
 // Node 18+ | Railway | ESM
 
 import express      from "express";
 import axios        from "axios";
+import http         from "http";
+import https        from "https";
 import dotenv       from "dotenv";
 import crypto       from "crypto";
 import FormData     from "form-data";
@@ -24,7 +26,7 @@ app.use(express.json({
 }));
 
 /* ================================================================
-   1.  LOGGING
+   1. LOGGING
    ================================================================ */
 function logErr(ctx, e) {
   if (e.response)
@@ -36,7 +38,7 @@ function logErr(ctx, e) {
 }
 
 /* ================================================================
-   2.  ENV
+   2. ENV
    ================================================================ */
 const PORT = process.env.PORT || 8080;
 const TZ   = process.env.TZ   || "America/Santiago";
@@ -87,7 +89,7 @@ const STAGES = {
 };
 
 /* ================================================================
-   3.  VALIDATION
+   3. VALIDATION
    ================================================================ */
 (function assertEnv() {
   const m = [];
@@ -101,7 +103,20 @@ const STAGES = {
 const openai = new OpenAI({ apiKey: OPENAI_KEY });
 
 /* ================================================================
-   4.  UTILIDADES
+   4. HTTP KEEP-ALIVE (FIX NO_SOCKET)
+   ================================================================ */
+const httpAgent  = new http.Agent({ keepAlive: true, maxSockets: 10 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 20 });
+
+const axiosWA = axios.create({
+  baseURL: `https://graph.facebook.com/${META.VER}`,
+  headers: { Authorization: `Bearer ${META.TOKEN}` },
+  httpsAgent,
+  timeout: 20000,
+});
+
+/* ================================================================
+   5. UTILIDADES
    ================================================================ */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -120,7 +135,7 @@ function normPhone(raw) {
 }
 
 /* ================================================================
-   5.  ZONAS TÉRMICAS (OGUC Art. 4.1.10)
+   6. ZONAS TÉRMICAS (OGUC Art. 4.1.10)
    ================================================================ */
 const ZONA_COMUNAS = {
   arica:1,iquique:1,tocopilla:1,mejillones:1,
@@ -170,7 +185,7 @@ function zonaInfo(z) {
 }
 
 /* ================================================================
-   6.  MOTOR DE PRECIOS
+   7. MOTOR DE PRECIOS
    ================================================================ */
 const CORRECTIONS = { CORREDERA_80: 1.00, CORREDERA_98: 1.00 };
 
@@ -270,12 +285,12 @@ function resolveKey({ product, colorText, glass, W, H }) {
   }
   if (model === "PUERTA_DOBLE") {
     if (W > 2400 || H > 2400) return { ok: false, reason: "Puerta doble máx 2400×2400" };
-    GLASS = "TP5+12+5"; rules.push("Puerta doble→TP5+12+5");
+    GLASS = "TP5+12+5"; rules.push("PuertaDoble→TP5+12+5");
   }
 
   if (model === "CORREDERA_80") {
     if (W < 400 || H < 400) return { ok: false, reason: "Corredera 80 mín 400×400" };
-    if (W >= 2001 || H >= 2001) { model = "CORREDERA_98"; rules.push("→Corredera 98"); }
+    if (W >= 2001 || H >= 2001) { model = "CORREDERA_98"; rules.push("→Corredera98"); }
   }
 
   const key = `${model}::${COLOR}::${GLASS}`;
@@ -294,20 +309,17 @@ function quoteEngine({ productText, glassText, measuresText, colorText, qty }) {
 
   const coeffs = COEFFS[r.key];
   if (!coeffs)
-    return { ok: false, reason: `Sin ecuación para ${r.key}`, resolved: r, measures: m };
+    return { ok: false, reason: `Sin ecuación: ${r.key}`, resolved: r, measures: m };
 
   let unit = calcPrice(coeffs, W, H);
   const corr = CORRECTIONS[r.model] || 1;
-  if (corr !== 1) { unit = Math.round(unit * corr); r.rules.push(`Corrección ×${corr}`); }
+  if (corr !== 1) { unit = Math.round(unit * corr); r.rules.push(`Corr×${corr}`); }
 
   const q = Math.max(1, Number(qty) || 1);
   return { ok: true, unit_price: unit, total_price: Math.round(unit * q),
            qty: q, resolved: r, measures: m };
 }
 
-/* ================================================================
-   6B. CÁLCULO MULTI-ITEM
-   ================================================================ */
 function calculateItemPrice(item, defaultColor, zona) {
   const color = item.color || defaultColor;
   if (!item.product || !item.measures || !color) {
@@ -324,18 +336,17 @@ function calculateItemPrice(item, defaultColor, zona) {
   });
 
   if (result.ok) {
-    item.glass         = result.resolved.glass;
-    item.unit_price    = result.unit_price;
-    item.total_price   = result.total_price;
-    item.qty           = result.qty;
-    item.price_key     = result.resolved.key;
-    item.price_rules   = result.resolved.rules;
+    item.glass = result.resolved.glass;
+    item.unit_price = result.unit_price;
+    item.total_price = result.total_price;
+    item.qty = result.qty;
+    item.price_key = result.resolved.key;
+    item.price_rules = result.resolved.rules;
     item.price_warning = "";
     return true;
   } else {
-    item.glass         = glass;
-    item.unit_price    = null;
-    item.total_price   = null;
+    item.glass = glass;
+    item.unit_price = null; item.total_price = null;
     item.price_warning = result.reason || "Error";
     return false;
   }
@@ -345,35 +356,32 @@ function calculateAllPrices(d) {
   if (!d.items.length) return false;
   let total = 0;
   let allOk = true;
-
   for (const item of d.items) {
     const ok = calculateItemPrice(item, d.default_color, d.zona_termica);
     if (ok) total += item.total_price;
     else allOk = false;
   }
-
   d.grand_total = total > 0 ? total : null;
   return allOk;
 }
 
 /* ================================================================
-   7.  WHATSAPP CLOUD API
+   8. WHATSAPP API (KEEP-ALIVE)
    ================================================================ */
-const waUrl = () => `https://graph.facebook.com/${META.VER}`;
-
 async function waTyping(to) {
   try {
-    await axios.post(`${waUrl()}/${META.PHONE_ID}/messages`,
-      { messaging_product: "whatsapp", recipient_type: "individual",
-        to, type: "text", typing_indicator: { type: "text" } },
-      { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 5000 });
-  } catch { /* ok */ }
+    await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+      messaging_product: "whatsapp", recipient_type: "individual",
+      to, type: "text", typing_indicator: { type: "text" },
+    });
+  } catch { /* fire-and-forget */ }
 }
 
-function startTypingLoop(to, ms = 3500) {
+function startTypingLoop(to, ms = 8000) {
   let on = true;
   const t = async () => { if (on) await waTyping(to); };
-  t(); const id = setInterval(t, ms);
+  t();
+  const id = setInterval(t, ms);
   return () => { on = false; clearInterval(id); };
 }
 
@@ -384,9 +392,9 @@ function humanMs(text) {
 
 async function waSend(to, body) {
   try {
-    await axios.post(`${waUrl()}/${META.PHONE_ID}/messages`,
-      { messaging_product: "whatsapp", to, type: "text", text: { body } },
-      { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 20000 });
+    await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+      messaging_product: "whatsapp", to, type: "text", text: { body },
+    });
   } catch (e) { logErr("waSend", e); }
 }
 
@@ -409,33 +417,30 @@ async function waSendMultiH(to, msgs, skip = false) {
 }
 
 async function waRead(id) {
-  try { await axios.post(`${waUrl()}/${META.PHONE_ID}/messages`,
-    { messaging_product: "whatsapp", status: "read", message_id: id },
-    { headers: { Authorization: `Bearer ${META.TOKEN}` }, timeout: 8000 });
-  } catch { /* ok */ }
+  try { await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+    messaging_product: "whatsapp", status: "read", message_id: id,
+  }); } catch { /* ok */ }
 }
 
 async function waUploadPdf(buf, fn = "Cotizacion.pdf") {
   const form = new FormData();
   form.append("messaging_product", "whatsapp");
   form.append("file", buf, { filename: fn, contentType: "application/pdf" });
-  const { data } = await axios.post(`${waUrl()}/${META.PHONE_ID}/media`, form,
-    { headers: { Authorization: `Bearer ${META.TOKEN}`, ...form.getHeaders() },
-      maxBodyLength: Infinity });
+  const { data } = await axiosWA.post(`/${META.PHONE_ID}/media`, form, {
+    headers: form.getHeaders(), maxBodyLength: Infinity,
+  });
   return data.id;
 }
 
 async function waSendPdf(to, mid, caption, fn) {
-  try { await axios.post(`${waUrl()}/${META.PHONE_ID}/messages`,
-    { messaging_product: "whatsapp", to, type: "document",
-      document: { id: mid, filename: fn, caption } },
-    { headers: { Authorization: `Bearer ${META.TOKEN}` } });
-  } catch (e) { logErr("waSendPdf", e); }
+  try { await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+    messaging_product: "whatsapp", to, type: "document",
+    document: { id: mid, filename: fn, caption },
+  }); } catch (e) { logErr("waSendPdf", e); }
 }
 
 async function waMediaUrl(id) {
-  const { data } = await axios.get(`${waUrl()}/${id}`,
-    { headers: { Authorization: `Bearer ${META.TOKEN}` } });
+  const { data } = await axiosWA.get(`/${id}`);
   return data;
 }
 
@@ -443,6 +448,7 @@ async function waDownload(url) {
   const { data, headers } = await axios.get(url, {
     responseType: "arraybuffer",
     headers: { Authorization: `Bearer ${META.TOKEN}` },
+    httpsAgent,
   });
   return { buffer: Buffer.from(data), mime: headers["content-type"] || "application/octet-stream" };
 }
@@ -457,7 +463,7 @@ function verifySig(req) {
 }
 
 /* ================================================================
-   8.  MEDIA — VISION ESPECIALIZADO
+   9. MEDIA — VISION ESPECIALIZADO
    ================================================================ */
 async function stt(buf, mime) {
   try {
@@ -475,25 +481,25 @@ async function vision(buf, mime) {
       messages: [{
         role: "user",
         content: [
-          { type: "text", text: `Analiza esta imagen (plano, croquis, planilla, cotización, o foto de ventanas/puertas).
+          { type: "text", text: `Analiza esta imagen de un proyecto de ventanas/puertas.
 
-EXTRAE ABSOLUTAMENTE TODOS los productos que identifiques. Para CADA uno indica:
-1. Tipo: puerta corredera, ventana corredera, proyectante, fijo/marco fijo/paño fijo, abatible, oscilobatiente, puerta 1 hoja, puerta doble
-2. Medidas: ancho × alto (en la unidad que aparezca: mm, cm o metros)
+EXTRAE ABSOLUTAMENTE TODOS los productos. Para CADA uno:
+1. Tipo: puerta corredera / ventana corredera / proyectante / fijo / marco fijo / paño fijo / abatible / oscilobatiente / puerta 1 hoja / puerta doble
+2. Medidas: ancho × alto (mm, cm o metros)
 3. Cantidad
-4. Color si se indica
-5. Ubicación en plano o notas
+4. Color si aparece
+5. Ubicación o notas
 
-IMPORTANTE:
-- Si hay medidas DIFERENTES del mismo tipo → son items SEPARADOS
-- Si hay una tabla, extrae CADA fila
+REGLAS:
+- Medidas DIFERENTES del mismo tipo → items SEPARADOS
+- Si hay tabla, extrae CADA fila
 - NO omitas ningún item
-- Sé preciso con números y medidas
-- Si no puedes leer algo, indícalo claramente` },
+- Sé preciso con números
+- Si algo no se lee, indícalo` },
           { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } },
         ],
       }],
-      max_tokens: 900,
+      max_tokens: 1000,
     });
     return (r.choices?.[0]?.message?.content || "").trim();
   } catch (e) { logErr("Vision", e); return ""; }
@@ -508,7 +514,7 @@ async function readPdf(buf) {
 }
 
 /* ================================================================
-   9.  SESIONES — MULTI-ITEM
+   10. SESIONES
    ================================================================ */
 const sessions    = new Map();
 const SESSION_TTL = 6 * 3_600_000;
@@ -516,19 +522,12 @@ const MAX_HIST    = 30;
 
 function emptyData() {
   return {
-    name: "",
-    comuna: "",
-    address: "",
-    project_type: "",
-    install: "",
-    default_color: "",
-    zona_termica: null,
-    profile: "",
-    stageKey: "diagnostico",
-    wants_pdf: false,
-    notes: "",
-    items: [],          // ★ ARRAY de productos
-    grand_total: null,  // ★ suma de todos los items
+    name: "", comuna: "", address: "", project_type: "",
+    install: "", default_color: "", zona_termica: null,
+    profile: "", stageKey: "diagnostico",
+    wants_pdf: false, notes: "",
+    items: [],
+    grand_total: null,
   };
 }
 
@@ -554,7 +553,7 @@ setInterval(() => {
 }, 3_600_000);
 
 /* ================================================================
-   10.  DEDUP, RATE, LOCK
+   11. DEDUP, RATE, LOCK
    ================================================================ */
 const seen = new Map();
 function isDup(id) { if (!id) return false; if (seen.has(id)) return true; seen.set(id, Date.now()); return false; }
@@ -567,7 +566,7 @@ function rateOk(waId) {
   const r = rateM.get(waId);
   if (now >= r.r) { r.n = 0; r.r = now + 60_000; }
   r.n++;
-  return r.n > 15 ? { ok: false, msg: "Escribes muy rápido 😅 Dame unos segundos." } : { ok: true };
+  return r.n > 15 ? { ok: false, msg: "Escribes muy rápido 😅" } : { ok: true };
 }
 
 const locks = new Map();
@@ -581,7 +580,7 @@ async function acquireLock(waId) {
 }
 
 /* ================================================================
-   11.  EXTRACT MSG
+   12. EXTRACT MSG
    ================================================================ */
 function extractMsg(body) {
   const val = body?.entry?.[0]?.changes?.[0]?.value;
@@ -602,13 +601,13 @@ function extractMsg(body) {
 }
 
 /* ================================================================
-   12.  BUSINESS HELPERS — MULTI-ITEM
+   13. BUSINESS HELPERS
    ================================================================ */
 function nextMissing(d) {
-  if (!d.items.length) return "productos (tipo de ventana/puerta, medidas y cantidad)";
-  const noProduct  = d.items.some(i => !i.product);
-  const noMeasures = d.items.some(i => !i.measures);
-  if (noProduct || noMeasures) return "completar datos de algunos productos";
+  if (!d.items.length) return "productos (tipo, medidas y cantidad)";
+  const noP = d.items.some(i => !i.product);
+  const noM = d.items.some(i => !i.measures);
+  if (noP || noM) return "completar datos de algunos items";
   if (!d.default_color && d.items.some(i => !i.color)) return "color";
   if (!d.comuna && !d.address) return "comuna";
   return "";
@@ -617,9 +616,9 @@ function nextMissing(d) {
 function isComplete(d) {
   if (!d.items.length) return false;
   const hasColor = d.default_color || d.items.every(i => i.color);
-  const hasLocation = d.comuna || d.address;
+  const hasLoc   = d.comuna || d.address;
   const allItems = d.items.every(i => i.product && i.measures);
-  return !!(hasColor && hasLocation && allItems);
+  return !!(hasColor && hasLoc && allItems);
 }
 
 function canCalcPrices(d) {
@@ -629,97 +628,90 @@ function canCalcPrices(d) {
 }
 
 /* ================================================================
-   13.  SYSTEM PROMPT & TOOLS — MULTI-ITEM
+   14. PROMPT & TOOLS
    ================================================================ */
 const SYSTEM_PROMPT = `
 Eres un ASESOR ESPECIALISTA EN VENTANAS Y PUERTAS DE PVC CON TERMOPANEL de ${COMPANY.NAME}, en ${COMPANY.ADDRESS}.
 
 ═══ PERSONALIDAD ═══
 • Profesional chileno: cercano, cálido, confiable.
-• NO eres formulario. CONVERSAS y ESCUCHAS.
+• CONVERSAS, no eres formulario.
 • Preguntas de a uno cuando faltan datos sueltos.
-• Si el cliente comenta algo personal, responde humanamente.
 
-═══ CAPACIDAD MULTI-PRODUCTO ═══
-★ IMPORTANTE: Los clientes frecuentemente envían imágenes o listas con MÚLTIPLES ventanas/puertas de diferentes tipos y medidas.
-★ Cuando recibas una imagen o lista, DEBES extraer TODOS los productos y enviarlos como items en UNA sola llamada a update_quote.
-★ NUNCA proceses los productos de a uno. Siempre envíalos TODOS juntos.
+═══ MULTI-PRODUCTO ═══
+★ Los clientes envían imágenes/listas con MÚLTIPLES ventanas distintas.
+★ DEBES extraer TODOS los productos y enviarlos como items en UNA sola llamada a update_quote.
+★ NUNCA proceses de a uno. Todos juntos, siempre.
+★ Si la imagen tiene una tabla o plano, extrae CADA línea/ventana como item separado.
 
 ═══ NORMATIVA CHILENA ═══
 • OGUC Art. 4.1.10: Acondicionamiento térmico obligatorio.
-• Chile: 7 zonas térmicas con transmitancia (U) máxima por zona.
+• 7 zonas térmicas, cada una con transmitancia U máxima.
 • NCh 2485: Aislación térmica. NCh 888: Vidrios de seguridad.
 • CES: Ventanas PVC+DVH aportan puntos en envolvente.
-• PVC: no conductor térmico, reciclable, +40 años vida útil, sin mantenimiento.
+• PVC: no conductor, reciclable, +40 años, sin mantenimiento.
 
-═══ ZONAS TÉRMICAS ═══
-• Z1-3: DVH 4+12+4 cumple.
-• Z4: DVH 4+12+4 cumple. 5+12+5 mejora.
-• Z5: DVH 5+12+5 recomendado.
-• Z6: DVH 5+12+5 mínimo.
-• Z7: DVH Low-E + argón.
+═══ ZONAS ═══
+Z1-3: DVH 4+12+4 | Z4: 4+12+4 (5+12+5 mejora) | Z5: 5+12+5 | Z6: 5+12+5 mín | Z7: Low-E+argón
 
 ═══ PRODUCTOS ═══
-Corredera 80 (hasta 2000×2000) | Corredera 98 (vanos grandes) | Proyectante (máx 1400×1400) | Abatible | Oscilobatiente | Marco Fijo | Puerta 1H (máx 1200×2400) | Puerta doble (máx 2400×2400).
+Corredera 80 (≤2000×2000) | Corredera 98 (grande) | Proyectante (≤1400×1400) | Abatible | Oscilobatiente | Marco Fijo | Puerta 1H (≤1200×2400) | Puerta doble (≤2400×2400)
 
 ═══ REGLAS ═══
-• Vidrio SIEMPRE Termopanel (DVH). NO preguntes tipo de vidrio.
-• Puertas siempre DVH 5+12+5.
-• TÚ NO CALCULAS PRECIOS. El sistema lo hace automáticamente.
-• NUNCA digas "$XXX.XXX" ni "voy a calcular". Si el precio está calculado, úsalo. Si no, di qué falta.
+• Vidrio SIEMPRE Termopanel. NO preguntes vidrio.
+• Puertas → DVH 5+12+5.
+• TÚ NO CALCULAS PRECIOS. El sistema lo hace.
+• NUNCA digas "$XXX.XXX". Si el precio está, úsalo. Si no, di qué falta.
+• NUNCA digas "voy a calcular". El cálculo es instantáneo.
 
 ═══ FLUJO ═══
-1. Saluda y pregunta qué necesita.
-2. Si manda imagen/lista → extrae TODOS los items de una vez con update_quote.
-3. Pregunta color (si no lo dijo).
-4. Pregunta comuna (para zona térmica).
-5. Con datos completos el sistema calcula TODOS los precios.
-6. Presenta la cotización completa con TODOS los precios.
+1. Saluda. ¿Qué necesita?
+2. Imagen/lista → extrae TODOS los items con update_quote.
+3. Pregunta color si falta.
+4. Pregunta comuna.
+5. Sistema calcula TODOS los precios automáticamente.
+6. Presenta cotización completa.
 7. Ofrece PDF.
 
-═══ PRESENTAR COTIZACIÓN MULTI-PRODUCTO ═══
-Cuando el sistema te pase precios calculados, preséntalo así:
+═══ PRESENTAR MULTI-PRODUCTO ═══
+Con precios calculados, presenta así:
 "Tu cotización:
 1. 2× Corredera 2000×2000 negro → $XXX.XXX c/u → $XXX.XXX
 2. 4× Fijo 2000×700 negro → $XXX.XXX c/u → $XXX.XXX
-3. ...
+...
 *TOTAL: $X.XXX.XXX + IVA*
 ¿Te genero el PDF formal?"
 
 ═══ PERFIL ═══
-Al final de CADA respuesta agrega 1 tag (invisible al cliente):
-<PROFILE:PRECIO> <PROFILE:CALIDAD> <PROFILE:TECNICO> <PROFILE:AFINIDAD>
+Al final agrega 1 tag: <PROFILE:PRECIO> <PROFILE:CALIDAD> <PROFILE:TECNICO> <PROFILE:AFINIDAD>
 `.trim();
 
 const tools = [{
   type: "function",
   function: {
     name: "update_quote",
-    description: `Actualiza la cotización. Incluir SOLO campos que cambian.
-Si se incluye 'items', enviar la lista COMPLETA de productos (reemplaza anteriores).
-Si NO se incluye 'items', los productos existentes se mantienen.
-IMPORTANTE: Cuando el cliente envía imagen/lista con múltiples productos, extraer TODOS como items en UNA sola llamada.`,
+    description: `Actualiza cotización completa. Si incluye 'items', enviar la lista COMPLETA (reemplaza anteriores). Extraer TODOS los productos de una imagen/lista en UNA llamada.`,
     parameters: {
       type: "object",
       properties: {
-        name:          { type: "string",  description: "Nombre del cliente" },
-        default_color: { type: "string",  description: "Color preferido global: blanco, negro/antracita, nogal" },
-        comuna:        { type: "string",  description: "Comuna de instalación" },
-        address:       { type: "string",  description: "Dirección" },
-        project_type:  { type: "string",  description: "obra nueva/remodelación/ampliación/reposición" },
-        install:       { type: "string",  description: "¿Necesita instalación?" },
-        wants_pdf:     { type: "boolean", description: "true si quiere PDF formal" },
-        notes:         { type: "string",  description: "Observaciones" },
+        name:          { type: "string" },
+        default_color: { type: "string", description: "Color global: blanco, negro, nogal" },
+        comuna:        { type: "string" },
+        address:       { type: "string" },
+        project_type:  { type: "string" },
+        install:       { type: "string" },
+        wants_pdf:     { type: "boolean" },
+        notes:         { type: "string" },
         items: {
           type: "array",
-          description: "Lista COMPLETA de productos a cotizar. Cada cambio debe incluir TODOS los items.",
+          description: "Lista COMPLETA de productos. Cada item: product, measures, qty, color (opcional)",
           items: {
             type: "object",
             properties: {
-              product:  { type: "string", description: "Tipo: corredera, proyectante, abatible, oscilobatiente, marco fijo/fijo, puerta, puerta doble" },
-              measures: { type: "string", description: "Medidas ancho×alto ej: 2000x2000, 1.5x1.2, 150x70" },
+              product:  { type: "string", description: "corredera, proyectante, abatible, oscilobatiente, fijo/marco fijo, puerta, puerta doble" },
+              measures: { type: "string", description: "ancho×alto. Ej: 2000x2000, 1.5x1.2, 150x70" },
               qty:      { type: "number", description: "Cantidad" },
-              color:    { type: "string", description: "Color específico de este item (opcional)" },
+              color:    { type: "string", description: "Color específico (opcional, usa default_color si vacío)" },
             },
             required: ["product", "measures", "qty"],
           },
@@ -730,30 +722,29 @@ IMPORTANTE: Cuando el cliente envía imagen/lista con múltiples productos, extr
 }];
 
 /* ================================================================
-   14.  RUN AI
+   15. RUN AI
    ================================================================ */
 async function runAI(session, userText) {
-  const d       = session.data;
+  const d = session.data;
   const missing = nextMissing(d);
-  const done    = isComplete(d);
+  const done = isComplete(d);
 
   const status = [];
 
-  // Items resumen
   if (d.items.length) {
-    status.push(`ITEMS EN MEMORIA (${d.items.length}):`);
+    status.push(`═══ ${d.items.length} ITEMS EN MEMORIA ═══`);
     for (const [i, it] of d.items.entries()) {
       const c = it.color || d.default_color || "SIN COLOR";
       const price = it.unit_price
         ? `$${it.unit_price.toLocaleString("es-CL")} c/u → $${it.total_price.toLocaleString("es-CL")}`
         : (it.price_warning || "pendiente");
-      status.push(`  ${i+1}. ${it.qty}× ${it.product} ${it.measures} [${c}] → ${price}`);
+      status.push(`${i+1}. ${it.qty}× ${it.product} ${it.measures} [${c}] → ${price}`);
     }
-    if (d.grand_total) status.push(`GRAN TOTAL: $${d.grand_total.toLocaleString("es-CL")} + IVA`);
+    if (d.grand_total) status.push(`★ GRAN TOTAL: $${d.grand_total.toLocaleString("es-CL")} + IVA`);
   }
 
-  if (done) status.push("DATOS COMPLETOS → presenta precios y ofrece PDF.");
-  else      status.push(`FALTA: "${missing}". Pídelo amablemente.`);
+  if (done) status.push("\nDATOS COMPLETOS → Presenta TODOS los precios y ofrece PDF.");
+  else      status.push(`\nFALTA: "${missing}". Pide amablemente.`);
 
   if (d.zona_termica) status.push(`Zona térmica: ${d.zona_termica}. ${zonaInfo(d.zona_termica).note}`);
 
@@ -768,25 +759,23 @@ async function runAI(session, userText) {
     const r = await openai.chat.completions.create({
       model: AI_MODEL, messages: msgs, tools,
       tool_choice: "auto", parallel_tool_calls: false,
-      temperature: 0.35, max_tokens: 600,
+      temperature: 0.35, max_tokens: 700,
     });
     const ai = r.choices?.[0]?.message;
     if (ai?.content) {
       const pm = ai.content.match(/<PROFILE:(\w+)>/i);
-      if (pm) {
-        const p = pm[1].toUpperCase();
-        if (["PRECIO","CALIDAD","TECNICO","AFINIDAD"].includes(p)) d.profile = p;
-      }
+      if (pm && ["PRECIO","CALIDAD","TECNICO","AFINIDAD"].includes(pm[1].toUpperCase()))
+        d.profile = pm[1].toUpperCase();
     }
     return ai;
   } catch (e) {
     logErr("runAI", e);
-    return { role: "assistant", content: "Dame un segundo, estoy revisando… 🔍" };
+    return { role: "assistant", content: "Dame un segundo… 🔍" };
   }
 }
 
 /* ================================================================
-   15.  PDF — MULTI-LINE QUOTE
+   16. PDF MULTI-ITEM
    ================================================================ */
 function dateCL(d = new Date()) {
   return d.toLocaleDateString("es-CL", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric" });
@@ -796,10 +785,7 @@ function genQN() {
   const n = new Date();
   return `COT-${String(n.getFullYear()).slice(-2)}${String(n.getMonth()+1).padStart(2,"0")}${String(n.getDate()).padStart(2,"0")}-${Math.random().toString(36).substring(2,6).toUpperCase()}`;
 }
-
-function fmtPrice(n) {
-  return n != null ? `$${Number(n).toLocaleString("es-CL")}` : "—";
-}
+function fmtP(n) { return n != null ? `$${Number(n).toLocaleString("es-CL")}` : "—"; }
 
 async function buildPdf(data, qn) {
   return new Promise((resolve, reject) => {
@@ -811,7 +797,7 @@ async function buildPdf(data, qn) {
 
       const P = "#1a365d", S = "#4a5568", L = "#f7fafc";
 
-      // ── Header ──
+      // Header
       doc.rect(0, 0, 612, 108).fill(P);
       doc.fillColor("#fff").fontSize(22).font("Helvetica-Bold")
          .text(COMPANY.NAME.toUpperCase(), 50, 25);
@@ -820,7 +806,6 @@ async function buildPdf(data, qn) {
       doc.fontSize(9)
          .text(`${COMPANY.PHONE}  •  ${COMPANY.EMAIL}`, 50, 68)
          .text(COMPANY.ADDRESS, 50, 82);
-
       doc.fontSize(16).font("Helvetica-Bold")
          .text("COTIZACIÓN", 380, 28, { align: "right", width: 180 });
       doc.fontSize(10).font("Helvetica")
@@ -828,92 +813,81 @@ async function buildPdf(data, qn) {
          .text(`Fecha: ${dateCL()}`, 380, 66, { align: "right", width: 180 })
          .text("Válida: 15 días", 380, 80, { align: "right", width: 180 });
 
-      // ── Cliente ──
+      // Cliente
       let y = 125;
       doc.fillColor(P).fontSize(11).font("Helvetica-Bold").text("CLIENTE", 50, y); y += 16;
       doc.fillColor(S).fontSize(9).font("Helvetica");
-      if (data.name) { doc.text(`Nombre: ${data.name}`, 50, y); y += 14; }
+      if (data.name)    { doc.text(`Nombre: ${data.name}`, 50, y); y += 14; }
       if (data.comuna || data.address) {
         doc.text(`Ubicación: ${data.address || data.comuna}`, 50, y); y += 14;
       }
       if (data.zona_termica) {
         doc.text(`Zona Térmica OGUC: ${data.zona_termica}`, 50, y); y += 14;
       }
-      if (data.project_type) {
-        doc.text(`Proyecto: ${data.project_type}`, 50, y); y += 14;
-      }
 
-      // ── Tabla de Productos ──
+      // Tabla
       y += 8;
       doc.fillColor(P).fontSize(11).font("Helvetica-Bold").text("DETALLE DE PRODUCTOS", 50, y);
       y += 18;
 
-      // Header de tabla
       const cols = [
-        { x: 52,  w: 25,  label: "#" },
-        { x: 77,  w: 135, label: "Producto" },
-        { x: 212, w: 85,  label: "Medida (mm)" },
-        { x: 297, w: 50,  label: "Vidrio" },
-        { x: 347, w: 30,  label: "Qty" },
-        { x: 377, w: 85,  label: "Unitario" },
-        { x: 462, w: 95,  label: "Subtotal" },
+        { x: 52,  w: 22,  label: "#" },
+        { x: 74,  w: 130, label: "Producto" },
+        { x: 204, w: 80,  label: "Medida mm" },
+        { x: 284, w: 55,  label: "Vidrio" },
+        { x: 339, w: 28,  label: "Qty" },
+        { x: 367, w: 90,  label: "Unitario" },
+        { x: 457, w: 100, label: "Subtotal" },
       ];
 
-      doc.rect(50, y, 512, 20).fill(P);
-      doc.fillColor("#fff").fontSize(8).font("Helvetica-Bold");
-      for (const col of cols) doc.text(col.label, col.x, y + 6, { width: col.w });
-      y += 20;
+      doc.rect(50, y, 512, 18).fill(P);
+      doc.fillColor("#fff").fontSize(7).font("Helvetica-Bold");
+      for (const c of cols) doc.text(c.label, c.x, y + 5, { width: c.w });
+      y += 18;
 
-      // Filas
       for (const [i, item] of data.items.entries()) {
         const bg = i % 2 === 0 ? L : "#ffffff";
-        const rowH = 18;
-        doc.rect(50, y, 512, rowH).fill(bg);
-        doc.fillColor(S).fontSize(8).font("Helvetica");
-
+        doc.rect(50, y, 512, 16).fill(bg);
+        doc.fillColor(S).fontSize(7).font("Helvetica");
         const color = item.color || data.default_color || "";
-        const mNorm = normMeasures(item.measures);
-        const mTxt  = mNorm ? `${mNorm.ancho_mm}×${mNorm.alto_mm}` : item.measures;
-
-        doc.text(String(i + 1),                        cols[0].x, y + 5, { width: cols[0].w });
-        doc.text(`${item.product || ""} ${color}`.trim(), cols[1].x, y + 5, { width: cols[1].w });
-        doc.text(mTxt,                                 cols[2].x, y + 5, { width: cols[2].w });
-        doc.text(item.glass || "DVH",                  cols[3].x, y + 5, { width: cols[3].w });
-        doc.text(String(item.qty || 1),                cols[4].x, y + 5, { width: cols[4].w });
-        doc.text(fmtPrice(item.unit_price),            cols[5].x, y + 5, { width: cols[5].w });
-        doc.text(fmtPrice(item.total_price),           cols[6].x, y + 5, { width: cols[6].w });
-        y += rowH;
+        const mN = normMeasures(item.measures);
+        const mT = mN ? `${mN.ancho_mm}×${mN.alto_mm}` : item.measures;
+        doc.text(String(i+1),                          cols[0].x, y+4, {width:cols[0].w});
+        doc.text(`${item.product||""} ${color}`.trim(),cols[1].x, y+4, {width:cols[1].w});
+        doc.text(mT,                                   cols[2].x, y+4, {width:cols[2].w});
+        doc.text(item.glass||"DVH",                    cols[3].x, y+4, {width:cols[3].w});
+        doc.text(String(item.qty||1),                  cols[4].x, y+4, {width:cols[4].w});
+        doc.text(fmtP(item.unit_price),                cols[5].x, y+4, {width:cols[5].w});
+        doc.text(fmtP(item.total_price),               cols[6].x, y+4, {width:cols[6].w});
+        y += 16;
       }
 
-      // Gran Total
       y += 4;
-      doc.rect(50, y, 512, 28).fill(L);
+      doc.rect(50, y, 512, 26).fill(L);
       doc.fillColor(P).fontSize(13).font("Helvetica-Bold")
-         .text(`TOTAL: ${fmtPrice(data.grand_total)} + IVA`, 65, y + 7);
-      y += 40;
+         .text(`TOTAL: ${fmtP(data.grand_total)} + IVA`, 65, y + 6);
+      y += 38;
 
-      // ── Normativa ──
+      // Normativa
       doc.fillColor(P).fontSize(10).font("Helvetica-Bold").text("CUMPLIMIENTO NORMATIVO", 50, y);
-      y += 15;
+      y += 14;
       doc.fillColor(S).fontSize(8).font("Helvetica");
       const norms = [
         "✓  OGUC Art. 4.1.10 — Acondicionamiento térmico obligatorio",
-        "✓  NCh 2485 — Aislación térmica en edificaciones",
-        "✓  NCh 888 — Vidrios de seguridad según aplicación",
-        "✓  Compatible con Certificación CES (Edificio Sustentable)",
-        "✓  Perfil PVC sin puente térmico — superior a aluminio",
+        "✓  NCh 2485 — Aislación térmica  |  NCh 888 — Vidrios de seguridad",
+        "✓  Compatible Certificación CES  |  PVC sin puente térmico",
       ];
       if (data.zona_termica) norms.push(`✓  ${zonaInfo(data.zona_termica).note}`);
-      for (const l of norms) { doc.text(l, 55, y); y += 12; }
+      for (const l of norms) { doc.text(l, 55, y); y += 11; }
 
-      // ── Footer ──
+      // Footer
       y += 8;
       doc.moveTo(50, y).lineTo(562, y).strokeColor("#cbd5e0").lineWidth(0.5).stroke();
       y += 6;
       doc.fillColor(S).fontSize(7).font("Helvetica");
-      doc.text("Precios en CLP + IVA  |  Sujeto a visita técnica  |  Instalación no incluida salvo indicación", 50, y);
+      doc.text("CLP + IVA  |  Sujeto a visita técnica  |  Instalación no incluida salvo indicación", 50, y);
       y += 10;
-      doc.text(`${COMPANY.NAME}  •  RUT ${COMPANY.RUT}  •  ${COMPANY.WEBSITE}`, 50, y);
+      doc.text(`${COMPANY.NAME} • RUT ${COMPANY.RUT} • ${COMPANY.WEBSITE}`, 50, y);
 
       doc.end();
     } catch (e) { reject(e); }
@@ -921,28 +895,28 @@ async function buildPdf(data, qn) {
 }
 
 /* ================================================================
-   16.  ZOHO CRM
+   17. ZOHO CRM
    ================================================================ */
-let zh = { token: "", exp: 0 };
-let zhP = null;
+let _zh = { token: "", exp: 0 };
+let _zhP = null;
 
 async function zhRefresh() {
-  const params = new URLSearchParams({
+  const p = new URLSearchParams({
     refresh_token: ZOHO.REFRESH_TOKEN, client_id: ZOHO.CLIENT_ID,
     client_secret: ZOHO.CLIENT_SECRET, grant_type: "refresh_token",
   });
-  const { data } = await axios.post(`${ZOHO.ACCOUNTS}/oauth/v2/token`, params.toString(),
-    { headers: { "Content-Type": "application/x-www-form-urlencoded" } });
-  zh = { token: data.access_token, exp: Date.now() + data.expires_in * 1000 - 60_000 };
-  return zh.token;
+  const { data } = await axios.post(`${ZOHO.ACCOUNTS}/oauth/v2/token`, p.toString(),
+    { headers: { "Content-Type": "application/x-www-form-urlencoded" }, httpsAgent });
+  _zh = { token: data.access_token, exp: Date.now() + data.expires_in * 1000 - 60_000 };
+  return _zh.token;
 }
 
 async function zhToken() {
   if (!REQUIRE_ZOHO) return "";
-  if (zh.token && Date.now() < zh.exp) return zh.token;
-  if (zhP) return zhP;
-  zhP = zhRefresh().finally(() => { zhP = null; });
-  return zhP;
+  if (_zh.token && Date.now() < _zh.exp) return _zh.token;
+  if (_zhP) return _zhP;
+  _zhP = zhRefresh().finally(() => { _zhP = null; });
+  return _zhP;
 }
 
 const zhH = async () => ({ Authorization: `Zoho-oauthtoken ${await zhToken()}` });
@@ -950,33 +924,33 @@ const zhH = async () => ({ Authorization: `Zoho-oauthtoken ${await zhToken()}` }
 async function zhCreate(mod, rec) {
   try {
     const { data } = await axios.post(`${ZOHO.API}/crm/v2/${mod}`,
-      { data: [rec], trigger: ["workflow"] }, { headers: await zhH() });
+      { data: [rec], trigger: ["workflow"] }, { headers: await zhH(), httpsAgent });
     return data?.data?.[0]?.details?.id || null;
   } catch (e) { logErr(`zhCreate ${mod}`, e); return null; }
 }
 
 async function zhUpdate(mod, id, rec) {
   try { await axios.put(`${ZOHO.API}/crm/v2/${mod}/${id}`,
-    { data: [rec], trigger: ["workflow"] }, { headers: await zhH() });
+    { data: [rec], trigger: ["workflow"] }, { headers: await zhH(), httpsAgent });
   } catch (e) { logErr(`zhUpdate ${mod}`, e); }
 }
 
 async function zhNote(mod, id, title, body) {
   try { await axios.post(`${ZOHO.API}/crm/v2/${mod}/${id}/Notes`,
-    { data: [{ Note_Title: title, Note_Content: body }] }, { headers: await zhH() });
+    { data: [{ Note_Title: title, Note_Content: body }] }, { headers: await zhH(), httpsAgent });
   } catch (e) { logErr("zhNote", e); }
 }
 
 async function zhDefaultAcct() {
   try {
     const h = await zhH();
-    const name = ZOHO.DEFAULT_ACCT;
+    const n = ZOHO.DEFAULT_ACCT;
     const r = await axios.get(
-      `${ZOHO.API}/crm/v2/Accounts/search?criteria=(Account_Name:equals:${encodeURIComponent(name)})`,
-      { headers: h });
+      `${ZOHO.API}/crm/v2/Accounts/search?criteria=(Account_Name:equals:${encodeURIComponent(n)})`,
+      { headers: h, httpsAgent });
     if (r.data?.data?.[0]) return r.data.data[0].id;
     const c = await axios.post(`${ZOHO.API}/crm/v2/Accounts`,
-      { data: [{ Account_Name: name }] }, { headers: h });
+      { data: [{ Account_Name: n }] }, { headers: h, httpsAgent });
     return c.data?.data?.[0]?.details?.id || null;
   } catch (e) { logErr("zhDefaultAcct", e); return null; }
 }
@@ -988,7 +962,7 @@ async function zhFindDeal(phone) {
     try {
       const { data } = await axios.get(
         `${ZOHO.API}/crm/v2/Deals/search?criteria=(${f}:equals:${encodeURIComponent(phone)})`,
-        { headers: h });
+        { headers: h, httpsAgent });
       if (data?.data?.[0]) return data.data[0];
     } catch (e) {
       if (e.response?.status === 204 || e.response?.data?.code === "INVALID_QUERY") continue;
@@ -996,9 +970,9 @@ async function zhFindDeal(phone) {
     }
   }
   try {
-    const q = `select id, Deal_Name from Deals where Description like '%${phone}%' limit 1`;
     const { data } = await axios.post(`${ZOHO.API}/crm/v2/coql`,
-      { select_query: q }, { headers: h });
+      { select_query: `select id,Deal_Name from Deals where Description like '%${phone}%' limit 1` },
+      { headers: h, httpsAgent });
     return data?.data?.[0] || null;
   } catch { return null; }
 }
@@ -1011,20 +985,15 @@ function computeStage(d, s) {
 }
 
 function buildDesc(d) {
-  const L = [];
-  L.push(`Color: ${d.default_color || "—"}`);
-  L.push(`Comuna: ${d.comuna || "—"}`);
+  const L = [`Color: ${d.default_color||"—"}`, `Comuna: ${d.comuna||"—"}`];
   if (d.zona_termica) L.push(`Zona: ${d.zona_termica}`);
-  L.push(`Proyecto: ${d.project_type || "—"}`);
-  L.push("");
-  L.push("ITEMS:");
+  L.push("", "ITEMS:");
   for (const [i, it] of d.items.entries()) {
     const c = it.color || d.default_color || "—";
-    const p = it.total_price ? `$${it.total_price.toLocaleString("es-CL")}` : "pendiente";
+    const p = it.total_price ? `$${it.total_price.toLocaleString("es-CL")}` : "pend";
     L.push(`${i+1}. ${it.qty}× ${it.product} ${it.measures} [${c}] ${it.glass||""} → ${p}`);
   }
-  if (d.grand_total) L.push(`\nGRAN TOTAL: $${d.grand_total.toLocaleString("es-CL")} +IVA`);
-  if (d.profile) L.push(`Perfil: ${d.profile}`);
+  if (d.grand_total) L.push(`\nTOTAL: $${d.grand_total.toLocaleString("es-CL")} +IVA`);
   return L.join("\n");
 }
 
@@ -1033,10 +1002,9 @@ async function zhUpsert(ses, waId) {
   const d = ses.data;
   const phone = normPhone(waId);
   d.stageKey = computeStage(d, ses);
-
-  const mainProduct = d.items[0]?.product || "Ventanas";
+  const mp = d.items[0]?.product || "Ventanas";
   const deal = {
-    Deal_Name: `${mainProduct} ${d.default_color||""} [WA …${String(waId).slice(-4)}]`.trim(),
+    Deal_Name: `${mp} ${d.default_color||""} [WA…${String(waId).slice(-4)}]`.trim(),
     Stage: STAGES[d.stageKey] || STAGES.diagnostico,
     Closing_Date: addDays(new Date(), 30).toISOString().split("T")[0],
     Description: buildDesc(d),
@@ -1045,17 +1013,16 @@ async function zhUpsert(ses, waId) {
   if (d.profile && ZOHO.DEAL_PROFILE) deal[ZOHO.DEAL_PROFILE] = d.profile;
   if (d.grand_total) deal.Amount = d.grand_total;
 
-  const existing = await zhFindDeal(phone);
-  if (existing?.id) { ses.zohoDealId = existing.id; await zhUpdate("Deals", existing.id, deal); }
-  else { const accId = await zhDefaultAcct(); if (accId) deal.Account_Name = { id: accId }; ses.zohoDealId = await zhCreate("Deals", deal); }
+  const ex = await zhFindDeal(phone);
+  if (ex?.id) { ses.zohoDealId = ex.id; await zhUpdate("Deals", ex.id, deal); }
+  else { const a = await zhDefaultAcct(); if (a) deal.Account_Name={id:a}; ses.zohoDealId = await zhCreate("Deals", deal); }
 }
 
 /* ================================================================
-   17.  WEBHOOK
+   18. WEBHOOK
    ================================================================ */
 app.get("/health", (_req, res) => res.json({
-  ok: true, v: "9.0",
-  coeffs: Object.keys(COEFFS).length,
+  ok: true, v: "9.1", coeffs: Object.keys(COEFFS).length,
   comunas: Object.keys(ZONA_COMUNAS).length,
 }));
 
@@ -1077,7 +1044,7 @@ app.post("/webhook", async (req, res) => {
   if (!rc.ok) return waSend(waId, rc.msg);
 
   const release  = await acquireLock(waId);
-  const stopType = startTypingLoop(waId, 3500);
+  const stopType = startTypingLoop(waId, 8000);
 
   try {
     const ses = getSession(waId);
@@ -1086,19 +1053,19 @@ app.post("/webhook", async (req, res) => {
 
     let userText = inc.text;
 
-    // ── Media ──
+    // Media
     if (type === "audio" && inc.audioId) {
       const meta = await waMediaUrl(inc.audioId);
       const { buffer, mime } = await waDownload(meta.url);
       const t = await stt(buffer, mime);
-      userText = t ? `[Audio transcrito]: ${t}` : "[Audio no reconocido]";
+      userText = t ? `[Audio]: ${t}` : "[Audio no reconocido]";
     }
     if (type === "image" && inc.imageId) {
       const meta = await waMediaUrl(inc.imageId);
       const { buffer, mime } = await waDownload(meta.url);
-      const extracted = await vision(buffer, mime);
-      userText = extracted
-        ? `[IMAGEN - Extracción de productos]:\n${extracted}\n\nIMPORTANTE: Extrae TODOS los items de la imagen y envíalos con update_quote en UNA sola llamada.`
+      const ext = await vision(buffer, mime);
+      userText = ext
+        ? `[IMAGEN ANALIZADA — Productos detectados]:\n${ext}\n\n→ INSTRUCCIÓN: Extrae TODOS los items y envíalos con update_quote en UNA sola llamada. NO proceses de a uno.`
         : "[Imagen no legible]";
     }
     if (type === "document" && inc.docId && inc.docMime === "application/pdf") {
@@ -1106,22 +1073,22 @@ app.post("/webhook", async (req, res) => {
       const { buffer } = await waDownload(meta.url);
       const t = await readPdf(buffer);
       userText = t
-        ? `[PDF - Contenido]:\n${t}\n\nIMPORTANTE: Extrae TODOS los productos del PDF y envíalos con update_quote.`
+        ? `[PDF ANALIZADO]:\n${t}\n\n→ INSTRUCCIÓN: Extrae TODOS los productos y envíalos con update_quote.`
         : "[PDF sin texto]";
     }
 
-    // ── Reset ──
+    // Reset
     if (/^reset|nueva cotizaci[oó]n|empezar de nuevo/i.test(userText)) {
       ses.data = emptyData();
       ses.pdfSent = false;
-      await waSendH(waId, "🔄 Perfecto, empecemos de cero.\n¿Qué ventanas o puertas necesitas?", true);
+      await waSendH(waId, "🔄 Listo, empecemos de cero.\n¿Qué ventanas o puertas necesitas?", true);
       saveSession(waId, ses);
       return;
     }
 
     ses.history.push({ role: "user", content: userText });
 
-    // ── AI ──
+    // AI
     const ai = await runAI(ses, userText);
     if (!ai) {
       await waSendH(waId, "Perdona, tuve un problema. ¿Me repites? 🙏", true);
@@ -1129,99 +1096,78 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // ── TOOL CALLS ──
+    // TOOL CALLS
     if (ai.tool_calls?.length) {
       for (const tc of ai.tool_calls) {
         if (tc.function?.name !== "update_quote") continue;
-
         let args;
         try { args = JSON.parse(tc.function.arguments || "{}"); }
-        catch (pe) { console.error("⚠️ tool parse:", pe.message); continue; }
+        catch { console.error("⚠️ tool parse error"); continue; }
 
         const d = ses.data;
-
-        // Merge campos simples
-        const simples = ["name","default_color","comuna","address","project_type","install","notes"];
-        for (const k of simples) {
+        for (const k of ["name","default_color","comuna","address","project_type","install","notes"]) {
           if (args[k] != null && args[k] !== "") d[k] = args[k];
         }
         if (args.wants_pdf === true) d.wants_pdf = true;
 
-        // Items: REEMPLAZAR si viene array
         if (Array.isArray(args.items) && args.items.length > 0) {
           d.items = args.items.map((it, i) => ({
-            id: i + 1,
-            product:       it.product  || "",
-            measures:      it.measures || "",
-            qty:           it.qty      || 1,
-            color:         it.color    || "",
-            glass:         "",
-            unit_price:    null,
-            total_price:   null,
-            price_key:     "",
-            price_rules:   [],
-            price_warning: "",
+            id: i+1, product: it.product||"", measures: it.measures||"",
+            qty: it.qty||1, color: it.color||"",
+            glass: "", unit_price: null, total_price: null,
+            price_key: "", price_rules: [], price_warning: "",
           }));
+          console.log(`📦 ${d.items.length} items recibidos de IA`);
         }
 
-        // Zona térmica
         if (d.comuna && !d.zona_termica) {
           const zt = getZona(d.comuna);
           if (zt) d.zona_termica = zt;
         }
 
-        // ── CALCULAR PRECIOS DE TODOS LOS ITEMS ──
         if (canCalcPrices(d)) {
-          calculateAllPrices(d);
+          const ok = calculateAllPrices(d);
+          console.log(`💰 Precios: ${ok?"todos OK":"algunos fallan"} | Total: ${d.grand_total}`);
         }
       }
 
       const d = ses.data;
 
-      // ── ¿PDF? ──
+      // PDF
       const wantsPdf = isComplete(d) && d.grand_total &&
         (d.wants_pdf || /pdf|cotiza|cotizaci[oó]n/i.test(userText));
 
       if (wantsPdf && !ses.pdfSent) {
-        await waSendH(waId, "Perfecto, te preparo la cotización formal con todos los productos… 📄", true);
+        await waSendH(waId, "Perfecto, preparo tu cotización formal con todos los productos… 📄", true);
         const qn = genQN();
         ses.quoteNum = qn;
-
         try {
           const buf = await buildPdf(d, qn);
           const mid = await waUploadPdf(buf, `Cotizacion_${qn}.pdf`);
           await waSendPdf(waId, mid, `Cotización ${qn} — ${COMPANY.NAME}`, `Cotizacion_${qn}.pdf`);
           ses.pdfSent = true;
-          zhUpsert(ses, waId)
-            .then(() => { if (ses.zohoDealId) zhNote("Deals", ses.zohoDealId, `Cotización ${qn}`, buildDesc(d)); })
-            .catch(() => {});
+          zhUpsert(ses, waId).then(() => {
+            if (ses.zohoDealId) zhNote("Deals", ses.zohoDealId, `Cotización ${qn}`, buildDesc(d));
+          }).catch(() => {});
         } catch (e) {
           logErr("PDF", e);
-          await waSendH(waId, "Tuve un problema con el PDF. Te lo mando manualmente 🙏", true);
+          await waSendH(waId, "Tuve un problema con el PDF. Lo mando manualmente 🙏", true);
         }
       } else {
-        // ── Follow-up con TODOS los precios calculados ──
-        const itemsSummary = d.items.map((it, i) => ({
-          num: i + 1,
-          product: it.product,
-          measures: it.measures,
-          qty: it.qty,
-          color: it.color || d.default_color || "sin color",
-          glass: it.glass,
-          unit_price: it.unit_price,
-          total_price: it.total_price,
-          warning: it.price_warning || "",
+        // Follow-up
+        const summary = d.items.map((it, i) => ({
+          n: i+1, product: it.product, measures: it.measures,
+          qty: it.qty, color: it.color||d.default_color||"sin color",
+          glass: it.glass, unit_price: it.unit_price,
+          total_price: it.total_price, warning: it.price_warning||"",
         }));
 
         const toolRes = ai.tool_calls.map(tc => ({
-          role: "tool",
-          tool_call_id: tc.id,
+          role: "tool", tool_call_id: tc.id,
           content: JSON.stringify({
-            ok: true,
-            items_count: d.items.length,
-            items: itemsSummary,
+            ok: true, items_count: d.items.length, items: summary,
             grand_total: d.grand_total,
-            all_prices_ok: d.items.length > 0 && d.items.every(i => i.unit_price != null),
+            all_ok: d.items.length>0 && d.items.every(i=>i.unit_price!=null),
             zona: d.zona_termica,
             zona_note: d.zona_termica ? zonaInfo(d.zona_termica).note : "",
             missing: nextMissing(d),
@@ -1233,11 +1179,9 @@ app.post("/webhook", async (req, res) => {
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
             ...ses.history.slice(-12),
-            ai,
-            ...toolRes,
+            ai, ...toolRes,
           ],
-          temperature: 0.4,
-          max_tokens: 700,
+          temperature: 0.4, max_tokens: 700,
         });
 
         const reply = (follow.choices?.[0]?.message?.content || "")
@@ -1250,9 +1194,7 @@ app.post("/webhook", async (req, res) => {
         ses.history.push({ role: "assistant", content: reply });
         zhUpsert(ses, waId).catch(() => {});
       }
-
     } else {
-      // Sin tool calls
       const reply = (ai.content || "").replace(/<PROFILE:\w+>/gi, "").trim()
         || "No te entendí, ¿me repites? 🤔";
       const parts = reply.split(/\n\n+/).filter(Boolean);
@@ -1271,21 +1213,18 @@ app.post("/webhook", async (req, res) => {
 });
 
 /* ================================================================
-   18.  STARTUP
+   19. STARTUP
    ================================================================ */
 (function validate() {
-  const products = new Set();
-  const colors = new Set();
-  const glasses = new Set();
-  for (const key of Object.keys(COEFFS)) {
-    const [p, c, g] = key.split("::");
-    products.add(p); colors.add(c); glasses.add(g);
+  const p = new Set(), c = new Set(), g = new Set();
+  for (const k of Object.keys(COEFFS)) {
+    const [a,b,d] = k.split("::"); p.add(a); c.add(b); g.add(d);
   }
-  console.log(`📦 Productos: ${[...products].join(", ")}`);
-  console.log(`🎨 Colores:   ${[...colors].join(", ")}`);
-  console.log(`🪟 Vidrios:   ${[...glasses].join(", ")}`);
+  console.log(`📦 Productos: ${[...p].join(", ")}`);
+  console.log(`🎨 Colores:   ${[...c].join(", ")}`);
+  console.log(`🪟 Vidrios:   ${[...g].join(", ")}`);
 })();
 
 app.listen(PORT, () =>
-  console.log(`🚀 Ferrari 9.0 MULTI-ITEM — port=${PORT} coeffs=${Object.keys(COEFFS).length} comunas=${Object.keys(ZONA_COMUNAS).length}`)
+  console.log(`🚀 Ferrari 9.1 — port=${PORT} coeffs=${Object.keys(COEFFS).length} comunas=${Object.keys(ZONA_COMUNAS).length}`)
 );
