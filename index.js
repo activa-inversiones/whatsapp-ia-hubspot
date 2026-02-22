@@ -227,11 +227,31 @@ function normMeasures(raw) {
   return { ancho_mm: Math.round(a), alto_mm: Math.round(b) };
 }
 
-function normColor(text = "") {
-  const s = strip(text).toUpperCase();
-  if (/ANTRAC|GRAF|NEGR/.test(s)) return "NEGRO";
-  if (/ROBLE|NOGAL|MADER/.test(s)) return "NOGAL";
-  return "BLANCO";
+if (PRICER_MODE === "winperfil") {
+    const payload = {
+      supplier: d.supplier,
+      message: "",
+      items: items.map(it => {
+        const m = normMeasures(it.measures);
+        return {
+          ancho_mm: m ? m.ancho_mm : 1500,
+          alto_mm: m ? m.alto_mm : 1200,
+          color: it.color || d.default_color || "BLANCO",
+          qty: it.qty || 1,
+          measures: it.measures
+        };
+      }),
+      customer_id: customer_id || "",
+      meta: { comuna: d.comuna || "", zona_termica: d.zona_termica || null },
+    };
+    const r = await quoteByWinperfil(payload);
+    if (r.ok && r.items) {
+      for (let i = 0; i < d.items.length && i < r.items.length; i++) {
+        d.items[i].unit_price = r.items[i].unit_price;
+        d.items[i].total_price = r.items[i].total_price;
+      }
+    }
+    return r;
 }
 
 /* =========================
