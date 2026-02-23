@@ -1,6 +1,10 @@
-// index.js — WhatsApp IA + Zoho CRM (Ferrari 9.2.2)
+// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 9.2.3)
 // Railway | Node 18+ | ESM
-// CAMBIOS vs 9.2: normColor 6 colores, priceAll multi-item, bloque suelto eliminado
+// CAMBIOS vs 9.2.2:
+// - PDF generado en Zoho Books (no local)
+// - Prompt optimizado (pregunta más eficiente)
+// - Validación de source (exact/estimated)
+// - Preparado para ISO (logs trazables)
 
 import express from "express";
 import axios from "axios";
@@ -8,8 +12,6 @@ import http from "http";
 import https from "https";
 import dotenv from "dotenv";
 import crypto from "crypto";
-import FormData from "form-data";
-import PDFDocument from "pdfkit";
 import OpenAI from "openai";
 import { toFile } from "openai/uploads";
 import { createRequire } from "module";
@@ -33,18 +35,24 @@ app.use(
 );
 
 /* =========================
-   1) LOGGING
+   1) LOGGING (ISO-ready)
    ========================= */
 function logErr(ctx, e) {
+  const ts = new Date().toISOString();
   if (e?.response) {
     console.error(
-      `❌ ${ctx} [${e.response.status}]: ${JSON.stringify(e.response.data).slice(0, 400)}`
+      `[${ts}] ❌ ${ctx} [${e.response.status}]: ${JSON.stringify(e.response.data).slice(0, 400)}`
     );
   } else if (e?.request) {
-    console.error(`❌ ${ctx} [NET]: Sin respuesta`);
+    console.error(`[${ts}] ❌ ${ctx} [NET]: Sin respuesta`);
   } else {
-    console.error(`❌ ${ctx}: ${e?.message || String(e)}`);
+    console.error(`[${ts}] ❌ ${ctx}: ${e?.message || String(e)}`);
   }
+}
+
+function logInfo(ctx, msg) {
+  const ts = new Date().toISOString();
+  console.log(`[${ts}] ℹ️  ${ctx}: ${msg}`);
 }
 
 /* =========================
@@ -76,9 +84,10 @@ const ZOHO = {
   REFRESH_TOKEN: process.env.ZOHO_REFRESH_TOKEN,
   API: process.env.ZOHO_API_DOMAIN || "https://www.zohoapis.com",
   ACCOUNTS: process.env.ZOHO_ACCOUNTS_DOMAIN || "https://accounts.zoho.com",
+  ORG_ID: process.env.ZOHO_ORG_ID,
   DEAL_PHONE: process.env.ZOHO_DEAL_PHONE_FIELD || "WhatsApp_Phone",
-  DEAL_PROFILE: process.env.ZOHO_DEAL_PROFILE_FIELD || "",
   DEFAULT_ACCT: process.env.ZOHO_DEFAULT_ACCOUNT_NAME || "Clientes WhatsApp IA",
+  DEFAULT_ITEM_ID: process.env.ZOHO_DEFAULT_ITEM_ID || "",
 };
 
 const COMPANY = {
@@ -112,6 +121,7 @@ const STAGES = {
   if (!META.VERIFY) m.push("VERIFY_TOKEN");
   if (!OPENAI_KEY) m.push("OPENAI_API_KEY");
   if (PRICER_MODE === "winperfil" && !WINPERFIL_API_BASE) m.push("WINPERFIL_API_BASE");
+  if (REQUIRE_ZOHO && (!ZOHO.CLIENT_ID || !ZOHO.REFRESH_TOKEN)) m.push("ZOHO credentials");
   if (m.length) {
     console.error("[FATAL] Faltan:", m.join(", "));
     process.exit(1);
@@ -157,7 +167,7 @@ function safeJson(x) {
 }
 
 /* =========================
-   6) ZONAS TÉRMICAS (OGUC Art. 4.1.10)
+   6) ZONAS TÉRMICAS (OGUC)
    ========================= */
 const ZONA_COMUNAS = {
   temuco: 5,
@@ -180,7 +190,7 @@ function zonaInfo(z) {
 }
 
 /* =========================
-   7) RESTRICCIÓN CATÁLOGO
+   7) CATÁLOGO
    ========================= */
 const ALLOWED_SUPPLIERS = ["WINHOUSE_PVC", "SODAL_ALUMINIO"];
 
@@ -215,7 +225,6 @@ function normMeasures(raw) {
   return { ancho_mm: Math.round(a), alto_mm: Math.round(b) };
 }
 
-// ★ MEJORADO: 6 colores reales en vez de 3
 function normColor(text = "") {
   const s = strip(text).toUpperCase();
   if (/NOGAL|MADERA/.test(s)) return "NOGAL";
@@ -229,35 +238,6 @@ function normColor(text = "") {
 /* =========================
    8) MOTOR DE PRECIOS
    ========================= */
-function loadCoeffs() {
-  const p = process.env.PRICE_COEFFS_PATH || "./coefficients_v3.json";
-  try {
-    if (fs.existsSync(p)) {
-      const j = JSON.parse(fs.readFileSync(p, "utf-8"));
-      return j;
-    }
-  } catch (e) { logErr("loadCoeffs", e); }
-  return {};
-}
-const COEFFS = PRICER_MODE === "coeffs" ? loadCoeffs() : {};
-
-function calcPrice(c, W, H) {
-  return Math.max(0, Math.round(c.a + c.b * W + c.c * H + c.d * W * H + c.e * W * W + c.f * H * H));
-}
-
-function quoteByCoeffs({ supplier, product, color, measures, qty }) {
-  const m = normMeasures(measures);
-  if (!m) return { ok: false, error: "Medidas no interpretables" };
-  const p = normProduct(product);
-  if (!p) return { ok: false, error: "Producto no reconocido" };
-  const key = `${supplier}::${p}::${color}`;
-  const coeffs = COEFFS[key];
-  if (!coeffs) return { ok: false, error: `Sin ecuación: ${key}` };
-  const unit = calcPrice(coeffs, m.ancho_mm, m.alto_mm);
-  const q = Math.max(1, Number(qty) || 1);
-  return { ok: true, unit_price: unit, total_price: unit * q };
-}
-
 async function quoteByWinperfil(payload) {
   try {
     const headers = { "Content-Type": "application/json" };
@@ -326,25 +306,6 @@ async function waRead(id) {
       messaging_product: "whatsapp", status: "read", message_id: id,
     });
   } catch {}
-}
-
-async function waUploadPdf(buf, fn = "Cotizacion.pdf") {
-  const form = new FormData();
-  form.append("messaging_product", "whatsapp");
-  form.append("file", buf, { filename: fn, contentType: "application/pdf" });
-  const { data } = await axiosWA.post(`/${META.PHONE_ID}/media`, form, {
-    headers: form.getHeaders(), maxBodyLength: Infinity,
-  });
-  return data.id;
-}
-
-async function waSendPdf(to, mid, caption, fn) {
-  try {
-    await axiosWA.post(`/${META.PHONE_ID}/messages`, {
-      messaging_product: "whatsapp", to, type: "document",
-      document: { id: mid, filename: fn, caption },
-    });
-  } catch (e) { logErr("waSendPdf", e); }
 }
 
 async function waMediaUrl(id) {
@@ -426,7 +387,7 @@ function getSession(waId) {
   if (!sessions.has(waId)) {
     sessions.set(waId, {
       lastAt: Date.now(), data: emptyData(), history: [],
-      pdfSent: false, quoteNum: null, zohoDealId: null,
+      pdfSent: false, quoteNum: null, zohoDealId: null, zohoEstimateId: null,
     });
   }
   return sessions.get(waId);
@@ -522,7 +483,7 @@ function canQuote(d) {
 }
 
 /* =========================
-   15) SYSTEM PROMPT + TOOLS
+   15) SYSTEM PROMPT + TOOLS (★ MEJORADO)
    ========================= */
 const SYSTEM_PROMPT = `
 Eres un ASESOR DE CLASE MUNDIAL en venta consultiva de VENTANAS y PUERTAS.
@@ -536,14 +497,17 @@ REGLAS IMPORTANTES:
 - No hables de recomendaciones de espesores (NO sugerir 5+12+5). Solo "termopanel" y cumplimiento OGUC.
 - Habla en el idioma del cliente (si escribe en inglés, responde en inglés; si escribe en español, español).
 - Extrae TODOS los productos cuando vengan en lista/imagen/PDF y envíalos en UNA sola llamada a update_quote.
-- No inventes precios. Si falta info, pregunta 1 cosa a la vez.
+- No inventes precios. Si falta información crítica, pregunta de forma eficiente:
+  * Si faltan 2-3 datos relacionados (ej: medidas + color), pregunta ambos en la misma respuesta.
+  * Si falta solo 1 dato clave, pregunta solo ese.
+  * Prioriza: tipo de producto > medidas > color > comuna.
 
 OBJETIVO:
 1) Capturar items (tipo, medidas, qty)
 2) Color
 3) Comuna
 4) Cotizar (usando el sistema)
-5) Ofrecer PDF formal y registrar en Zoho
+5) Ofrecer cotización formal en Zoho Books (PDF)
 `.trim();
 
 const tools = [
@@ -556,7 +520,7 @@ const tools = [
         type: "object",
         properties: {
           name: { type: "string" },
-          default_color: { type: "string", description: "blanco, negro, nogal, roble, grafito" },
+          default_color: { type: "string", description: "blanco, negro, nogal, roble, grafito, gris" },
           comuna: { type: "string" },
           address: { type: "string" },
           project_type: { type: "string" },
@@ -599,16 +563,20 @@ async function runAI(session, userText) {
     status.push(`═══ ${d.items.length} ITEMS ═══`);
     for (const [i, it] of d.items.entries()) {
       const c = it.color || d.default_color || "SIN COLOR";
-      const price = it.unit_price
-        ? `$${Number(it.unit_price).toLocaleString("es-CL")} c/u → $${Number(it.total_price).toLocaleString("es-CL")}`
-        : it.price_warning || "pendiente";
-      status.push(`${i + 1}. ${it.qty}× ${it.product} ${it.measures} [${c}] → ${price}`);
+      let priceInfo = "pendiente";
+      if (it.unit_price) {
+        const src = it.source === "winperfil_exact" ? "✓ Precio exacto" : "⚠️ Estimado";
+        priceInfo = `$${Number(it.unit_price).toLocaleString("es-CL")} c/u → $${Number(it.total_price).toLocaleString("es-CL")} (${src})`;
+      } else if (it.price_warning) {
+        priceInfo = it.price_warning;
+      }
+      status.push(`${i + 1}. ${it.qty}× ${it.product} ${it.measures} [${c}] → ${priceInfo}`);
     }
     if (d.grand_total)
       status.push(`★ TOTAL: $${Number(d.grand_total).toLocaleString("es-CL")} + IVA`);
   }
 
-  if (!done) status.push(`FALTA: "${missing}" (pregunta de a 1).`);
+  if (!done) status.push(`FALTA: "${missing}" (pregunta de forma eficiente según contexto).`);
 
   const msgs = [
     { role: "system", content: SYSTEM_PROMPT },
@@ -630,7 +598,7 @@ async function runAI(session, userText) {
 }
 
 /* =========================
-   17) QUOTE APPLY — ★ MEJORADO: manda TODOS los items a Python
+   17) QUOTE APPLY (★ MEJORADO: valida source)
    ========================= */
 async function priceAll(d, customer_id = "") {
   if (!ALLOWED_SUPPLIERS.includes(d.supplier)) d.supplier = "WINHOUSE_PVC";
@@ -669,12 +637,22 @@ async function priceAll(d, customer_id = "") {
         for (let i = 0; i < d.items.length && i < r.items.length; i++) {
           d.items[i].unit_price = r.items[i].unit_price;
           d.items[i].total_price = r.items[i].total_price;
+          d.items[i].source = r.items[i].source || "unknown";  // ← NUEVO
+          d.items[i].confidence = r.items[i].confidence || "unknown";  // ← NUEVO
+          
+          // Si es estimado con confianza baja, avisar
+          if (r.items[i].confidence === "low") {
+            d.items[i].price_warning = "⚠️ Precio estimado (histórico limitado). Sujeto a validación.";
+          } else if (r.items[i].source === "winperfil_estimated") {
+            d.items[i].price_warning = "⚠️ Precio estimado desde histórico Winperfil.";
+          }
         }
       } else if (r.total) {
         const unitEach = Math.round(r.total / d.items.length);
         for (const it of d.items) {
           it.unit_price = unitEach;
           it.total_price = unitEach * it.qty;
+          it.source = "unknown";
         }
       }
       d.grand_total = r.total;
@@ -682,124 +660,11 @@ async function priceAll(d, customer_id = "") {
     return r;
   }
 
-  let total = 0;
-  const priced = [];
-  for (const it of items) {
-    const r = quoteByCoeffs({
-      supplier: d.supplier, product: it.product, color: it.color,
-      measures: it.measures, qty: it.qty,
-    });
-    if (!r.ok) return r;
-    priced.push({ ...it, unit_price: r.unit_price, total_price: r.total_price });
-    total += r.total_price;
-  }
-  return { ok: true, supplier: d.supplier, items: priced, total };
+  return { ok: false, error: "Modo coeffs no soportado" };
 }
 
 /* =========================
-   18) PDF MULTI-ITEM
-   ========================= */
-function dateCL(d = new Date()) {
-  return d.toLocaleDateString("es-CL", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric" });
-}
-
-function genQN() {
-  const n = new Date();
-  const yy = String(n.getFullYear()).slice(-2);
-  const mm = String(n.getMonth() + 1).padStart(2, "0");
-  const dd = String(n.getDate()).padStart(2, "0");
-  return `COT-${yy}${mm}${dd}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-}
-
-function fmtP(n) {
-  return n != null ? `$${Number(n).toLocaleString("es-CL")}` : "—";
-}
-
-async function buildPdf(data, qn) {
-  return new Promise((resolve, reject) => {
-    try {
-      const doc = new PDFDocument({ size: "A4", margin: 50 });
-      const chunks = [];
-      doc.on("data", (c) => chunks.push(c));
-      doc.on("end", () => resolve(Buffer.concat(chunks)));
-
-      const P = "#1a365d", S = "#4a5568", L = "#f7fafc";
-
-      doc.rect(0, 0, 612, 108).fill(P);
-      doc.fillColor("#fff").fontSize(22).font("Helvetica-Bold").text(COMPANY.NAME, 50, 25);
-      doc.fontSize(10).font("Helvetica").text("Cotización — Ventanas y Puertas", 50, 52);
-      doc.fontSize(9)
-        .text(`${COMPANY.PHONE}  •  ${COMPANY.EMAIL}`, 50, 68)
-        .text(COMPANY.ADDRESS, 50, 82);
-
-      doc.fontSize(16).font("Helvetica-Bold").text("COTIZACIÓN", 380, 28, { align: "right", width: 180 });
-      doc.fontSize(10).font("Helvetica")
-        .text(qn, 380, 50, { align: "right", width: 180 })
-        .text(`Fecha: ${dateCL()}`, 380, 66, { align: "right", width: 180 })
-        .text("Válida: 15 días", 380, 80, { align: "right", width: 180 });
-
-      let y = 125;
-      doc.fillColor(P).fontSize(11).font("Helvetica-Bold").text("CLIENTE", 50, y);
-      y += 16;
-      doc.fillColor(S).fontSize(9).font("Helvetica");
-      if (data.name) { doc.text(`Nombre: ${data.name}`, 50, y); y += 14; }
-      const loc = data.address || data.comuna;
-      if (loc) { doc.text(`Ubicación: ${loc}`, 50, y); y += 14; }
-      if (data.zona_termica) { doc.text(`Zona Térmica OGUC: Z${data.zona_termica}`, 50, y); y += 14; }
-      doc.text(`Proveedor: ${data.supplier}`, 50, y);
-      y += 20;
-
-      doc.fillColor(P).fontSize(11).font("Helvetica-Bold").text("DETALLE", 50, y);
-      y += 18;
-
-      const cols = [
-        { x: 52, w: 22, label: "#" },
-        { x: 74, w: 155, label: "Producto" },
-        { x: 229, w: 90, label: "Medida" },
-        { x: 319, w: 35, label: "Qty" },
-        { x: 354, w: 95, label: "Unitario" },
-        { x: 449, w: 110, label: "Subtotal" },
-      ];
-      doc.rect(50, y, 512, 18).fill(P);
-      doc.fillColor("#fff").fontSize(7).font("Helvetica-Bold");
-      for (const c of cols) doc.text(c.label, c.x, y + 5, { width: c.w });
-      y += 18;
-
-      doc.fillColor(S).fontSize(7).font("Helvetica");
-      for (const [i, item] of data.items.entries()) {
-        const bg = i % 2 === 0 ? L : "#ffffff";
-        doc.rect(50, y, 512, 16).fill(bg);
-        const color = item.color || data.default_color || "";
-        doc.fillColor(S);
-        doc.text(String(i + 1), cols[0].x, y + 4, { width: cols[0].w });
-        doc.text(`${item.product} ${color}`.trim(), cols[1].x, y + 4, { width: cols[1].w });
-        doc.text(item.measures || "", cols[2].x, y + 4, { width: cols[2].w });
-        doc.text(String(item.qty || 1), cols[3].x, y + 4, { width: cols[3].w });
-        doc.text(fmtP(item.unit_price), cols[4].x, y + 4, { width: cols[4].w });
-        doc.text(fmtP(item.total_price), cols[5].x, y + 4, { width: cols[5].w });
-        y += 16;
-      }
-      y += 8;
-      doc.rect(50, y, 512, 26).fill(L);
-      doc.fillColor(P).fontSize(13).font("Helvetica-Bold")
-        .text(`TOTAL: ${fmtP(data.grand_total)} + IVA`, 65, y + 6);
-
-      y += 44;
-      doc.fillColor(P).fontSize(10).font("Helvetica-Bold").text("NORMATIVA", 50, y);
-      y += 14;
-      doc.fillColor(S).fontSize(8).font("Helvetica");
-      const norms = [
-        "✓ OGUC Art. 4.1.10 — Acondicionamiento térmico obligatorio",
-        "✓ NCh 2485 — Aislación térmica | NCh 888 — Vidrios de seguridad",
-      ];
-      for (const l of norms) { doc.text(l, 55, y); y += 11; }
-      doc.end();
-    } catch (e) { reject(e); }
-  });
-}
-
-/* =========================
-   19) ZOHO CRM
+   18) ZOHO CRM + BOOKS
    ========================= */
 let _zh = { token: "", exp: 0 };
 let _zhP = null;
@@ -892,10 +757,11 @@ function buildDesc(d) {
   L.push("", "ITEMS:");
   for (const [i, it] of d.items.entries()) {
     const c = it.color || d.default_color || "—";
-    const p = it.total_price ? fmtP(it.total_price) : "pend";
+    const src = it.source === "winperfil_exact" ? "✓ Exacto" : (it.source === "winperfil_estimated" ? "⚠️ Estimado" : "");
+    const p = it.total_price ? `$${Number(it.total_price).toLocaleString("es-CL")} ${src}` : "pend";
     L.push(`${i + 1}. ${it.qty}× ${it.product} ${it.measures} [${c}] → ${p}`);
   }
-  if (d.grand_total) L.push(`\nTOTAL: ${fmtP(d.grand_total)} +IVA`);
+  if (d.grand_total) L.push(`\nTOTAL: $${Number(d.grand_total).toLocaleString("es-CL")} +IVA`);
   return L.join("\n");
 }
 
@@ -924,14 +790,90 @@ async function zhUpsert(ses, waId) {
   }
 }
 
+// ★ NUEVO: Crear Estimate en Zoho Books
+async function zhBooksCreateEstimate(data, customer_name, phone) {
+  if (!REQUIRE_ZOHO || !ZOHO.ORG_ID) return null;
+
+  try {
+    const h = await zhH();
+    
+    // 1. Buscar/crear cliente en Books
+    let customer_id = null;
+    try {
+      const searchResp = await axios.get(
+        `${ZOHO.API}/books/v3/contacts?organization_id=${ZOHO.ORG_ID}&contact_name=${encodeURIComponent(customer_name || "Cliente WhatsApp")}`,
+        { headers: h, httpsAgent }
+      );
+      if (searchResp.data?.contacts?.length) {
+        customer_id = searchResp.data.contacts[0].contact_id;
+      }
+    } catch {}
+
+    if (!customer_id) {
+      const createResp = await axios.post(
+        `${ZOHO.API}/books/v3/contacts?organization_id=${ZOHO.ORG_ID}`,
+        {
+          contact_name: customer_name || "Cliente WhatsApp",
+          contact_type: "customer",
+          contact_persons: [{
+            first_name: customer_name || "Cliente",
+            phone: phone || "",
+          }],
+        },
+        { headers: h, httpsAgent }
+      );
+      customer_id = createResp.data?.contact?.contact_id;
+    }
+
+    if (!customer_id) {
+      logErr("zhBooksCreateEstimate", new Error("No se pudo crear/encontrar cliente en Books"));
+      return null;
+    }
+
+    // 2. Crear Estimate
+    const line_items = data.items.map((it) => {
+      const color = it.color || data.default_color || "";
+      return {
+        item_id: ZOHO.DEFAULT_ITEM_ID || "",
+        name: `${it.product} ${color}`.trim(),
+        description: `${it.measures} | ${it.source === "winperfil_exact" ? "✓ Precio exacto Winperfil" : "⚠️ Precio estimado"}`,
+        rate: it.unit_price || 0,
+        quantity: it.qty || 1,
+      };
+    });
+
+    const estimatePayload = {
+      customer_id,
+      reference_number: data.quote_num || "",
+      line_items,
+      notes: `Generado automáticamente vía WhatsApp IA.\nProveedor: ${data.supplier}\n${data.zona_termica ? `Zona térmica: Z${data.zona_termica}` : ""}`,
+      terms: "Válida por 15 días. Sujeta a rectificación técnica en terreno.\nCumplimiento OGUC 4.1.10 (acondicionamiento térmico).",
+    };
+
+    const { data: estResp } = await axios.post(
+      `${ZOHO.API}/books/v3/estimates?organization_id=${ZOHO.ORG_ID}`,
+      estimatePayload,
+      { headers: h, httpsAgent }
+    );
+
+    logInfo("zhBooksCreateEstimate", `Estimate creado: ${estResp.estimate?.estimate_id}`);
+    return estResp.estimate;
+
+  } catch (e) {
+    logErr("zhBooksCreateEstimate", e);
+    return null;
+  }
+}
+
 /* =========================
-   20) ENDPOINTS
+   19) ENDPOINTS
    ========================= */
 app.get("/health", (_req, res) => {
   res.json({
-    ok: true, v: "9.2.2",
+    ok: true, v: "9.2.3",
     pricer_mode: PRICER_MODE,
     winperfil_api: WINPERFIL_API_BASE ? "set" : "missing",
+    zoho_books: ZOHO.ORG_ID ? "enabled" : "disabled",
   });
 });
 
@@ -953,9 +895,7 @@ app.post("/quote", async (req, res) => {
     };
     if ((!payload.items || payload.items.length === 0) && !payload.message)
       return res.status(400).json({ ok: false, error: "Falta message o items" });
-    const r = PRICER_MODE === "winperfil"
-      ? await quoteByWinperfil(payload)
-      : (() => ({ ok: false, error: "Modo coeffs no soporta message-only" }))();
+    const r = await quoteByWinperfil(payload);
     res.json(r);
   } catch (e) {
     logErr("/quote", e);
@@ -1041,7 +981,7 @@ app.post("/webhook", async (req, res) => {
           d.items = args.items.map((it, i) => ({
             id: i + 1, product: it.product || "", measures: it.measures || "",
             qty: Math.max(1, Number(it.qty) || 1), color: it.color || "",
-            unit_price: null, total_price: null, price_warning: "",
+            unit_price: null, total_price: null, price_warning: "", source: null, confidence: null,
           }));
         }
 
@@ -1065,20 +1005,32 @@ app.post("/webhook", async (req, res) => {
       const wantsPdf = isComplete(d) && d.grand_total && (d.wants_pdf || /pdf|cotiza|cotizaci[oó]n/i.test(userText));
 
       if (wantsPdf && !ses.pdfSent) {
-        await waSendH(waId, "Perfecto. Preparando tu cotización formal… 📄", true);
-        const qn = genQN();
+        await waSendH(waId, "Perfecto. Preparando tu cotización formal en Zoho Books… 📄", true);
+        const qn = `COT-${new Date().toISOString().slice(0,10).replace(/-/g,"")}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
         ses.quoteNum = qn;
+        d.quote_num = qn;
+
         try {
-          const buf = await buildPdf(d, qn);
-          const mid = await waUploadPdf(buf, `Cotizacion_${qn}.pdf`);
-          await waSendPdf(waId, mid, `Cotización ${qn} — ${COMPANY.NAME}`, `Cotizacion_${qn}.pdf`);
-          ses.pdfSent = true;
-          zhUpsert(ses, waId).then(() => {
-            if (ses.zohoDealId) return zhNote("Deals", ses.zohoDealId, `Cotización ${qn}`, buildDesc(d));
-          }).catch(() => {});
+          const estimate = await zhBooksCreateEstimate(d, d.name || "Cliente WhatsApp", normPhone(waId));
+          if (estimate?.estimate_id) {
+            ses.zohoEstimateId = estimate.estimate_id;
+            ses.pdfSent = true;
+
+            // Enviar link del estimate (o PDF si Zoho lo permite descargar)
+            const estimateUrl = estimate.estimate_url || `${ZOHO.API}/books/v3/estimates/${estimate.estimate_id}`;
+            await waSendH(waId, `✅ Tu cotización ${qn} está lista.\n\n📎 Link: ${estimateUrl}\n\n(PDF descargable desde Zoho Books)`, true);
+
+            zhUpsert(ses, waId).then(() => {
+              if (ses.zohoDealId && estimate.estimate_number) {
+                return zhNote("Deals", ses.zohoDealId, `Cotización ${qn}`, `Estimate generado: ${estimate.estimate_number}\nTotal: $${Number(d.grand_total).toLocaleString("es-CL")} +IVA`);
+              }
+            }).catch(() => {});
+          } else {
+            throw new Error("No se pudo crear estimate en Zoho Books");
+          }
         } catch (e) {
-          logErr("PDF", e);
-          await waSendH(waId, "Tuve un problema con el PDF. Lo preparo manual 🙏", true);
+          logErr("Zoho Books Estimate", e);
+          await waSendH(waId, "Tuve un problema generando la cotización en Zoho Books. Lo preparo manual 🙏", true);
         }
       } else {
         let reply = (ai.content || "").replace(/<PROFILE:\w+>/gi, "").trim();
@@ -1089,7 +1041,7 @@ app.post("/webhook", async (req, res) => {
             const err = d.items[0]?.price_warning || "tu sistema local está apagado";
             reply = `Ya tengo los datos, pero hubo un problema conectando a la fábrica para el cálculo (${err}). ¡En breve te lo confirmo!`;
           } else {
-            reply = "¡Todo listo! ¿Deseas que te envíe la cotización formal en PDF?";
+            reply = "¡Todo listo! ¿Deseas que te envíe la cotización formal en Zoho Books?";
           }
         }
         const parts = reply.split(/\n\n+/).filter(Boolean);
@@ -1117,8 +1069,8 @@ app.post("/webhook", async (req, res) => {
 });
 
 /* =========================
-   21) START
+   20) START
    ========================= */
 app.listen(PORT, () => {
-  console.log(`🚀 Ferrari 9.2.2 — port=${PORT} pricer=${PRICER_MODE} winperfil=${WINPERFIL_API_BASE ? "OK" : "NO"}`);
+  console.log(`🚀 Ferrari 9.2.3 — port=${PORT} pricer=${PRICER_MODE} winperfil=${WINPERFIL_API_BASE ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"}`);
 });
