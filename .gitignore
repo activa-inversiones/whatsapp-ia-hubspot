@@ -160,3 +160,7 @@ backups/
 aplicar-mod2*.ps1
 cerrar-mod2*.ps1
 
+backups/
+aplicar-*.ps1
+cerrar-*.ps1
+
