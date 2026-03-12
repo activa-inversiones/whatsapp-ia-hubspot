@@ -1,4 +1,4 @@
-# Logs
+﻿# Logs
 logs
 *.log
 npm-debug.log*
@@ -150,4 +150,13 @@ node_modules/
 
 .env
 node_modules/
+backups/
+aplicar-mod2*.ps1
+cerrar-mod2*.ps1
+backups/
+aplicar-mod2*.ps1
+cerrar-mod2*.ps1
+backups/
+aplicar-mod2*.ps1
+cerrar-mod2*.ps1
 
