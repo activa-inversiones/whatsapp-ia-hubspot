@@ -1128,7 +1128,7 @@ async function zhUpsert(ses, waId) {
 }
 
 // ★ NUEVO: Crear Estimate en Zoho Books
-async function zhBooksCreateEstimate(data, customer_name, phone) {
+async function (data, customer_name, phone) {
   if (!REQUIRE_ZOHO || !ZOHO.ORG_ID) return null;
 
   try {
@@ -1163,7 +1163,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
     }
 
     if (!customer_id) {
-      logErr("zhBooksCreateEstimate", new Error("No se pudo crear/encontrar cliente en Books"));
+      logErr("", new Error("No se pudo crear/encontrar cliente en Books"));
       return null;
     }
 
@@ -1196,10 +1196,14 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
     logInfo("zhBooksCreateEstimate", `Estimate creado: ${estResp.estimate?.estimate_id}`);
     return estResp.estimate;
 
-  } catch (e) {
-    logErr("zhBooksCreateEstimate", e);
-    return null;
-  }
+ } catch (e) {
+  console.error("[ZohoBooks][Estimate][status]", e?.response?.status);
+  console.error("[ZohoBooks][Estimate][data]", JSON.stringify(e?.response?.data || {}, null, 2));
+  console.error("[ZohoBooks][Estimate][message]", e?.message || String(e));
+  logErr("zhBooksCreateEstimate", e);
+  return null;
+}
+
 }
 
 /* =========================
