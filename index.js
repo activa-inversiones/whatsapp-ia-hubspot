@@ -1169,12 +1169,11 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 
     // 2. Crear Estimate
     const line_items = data.items.map((it) => {
-
   const item = {
     name: `${it.product} ${(it.color || data.default_color || "")}`.trim(),
     description: `${it.measures}`,
-    rate: Number(it.unit_price || 0),
-    quantity: Number(it.qty || 1)
+    rate: Number(it.unit_price) || 1,
+    quantity: Number(it.qty || 1),
   };
 
   if (ZOHO.DEFAULT_ITEM_ID) {
@@ -1183,6 +1182,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 
   return item;
 });
+
 
     const estimatePayload = {
       customer_id,
