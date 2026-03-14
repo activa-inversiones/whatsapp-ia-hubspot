@@ -1206,20 +1206,11 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
    19) ENDPOINTS
    ========================= */
 app.get("/health", async (_req, res) => {
-  let cotizadorStatus = cotizadorWinhouseConfigured() ? "configured" : "disabled";
-
-  if (cotizadorWinhouseConfigured()) {
-    try {
-      const h = await cotizadorWinhouseHealth();
-      cotizadorStatus = h.ok ? "online" : "degraded";
-    } catch {
-      cotizadorStatus = "degraded";
-    }
-  }
+  const cotizadorStatus = cotizadorWinhouseConfigured() ? "configured" : "disabled";
 
   res.json({
     ok: true,
-    v: "9.2.3-m6c",
+    v: "9.2.3_m6c",
     pricer_mode: PRICER_MODE,
     winperfil_api: WINPERFIL_API_BASE ? "set" : "missing",
     cotizador_winhouse: cotizadorStatus,
@@ -1228,6 +1219,7 @@ app.get("/health", async (_req, res) => {
     internal_operator_bridge: INTERNAL_OPERATOR_TOKEN ? "enabled" : "missing",
   });
 });
+
 app.get("/webhook", (req, res) => {
   if (req.query["hub.verify_token"] === META.VERIFY) return res.send(req.query["hub.challenge"]);
   res.sendStatus(403);
