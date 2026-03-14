@@ -1169,15 +1169,14 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 
     // 2. Crear Estimate
     const line_items = data.items.map((it) => {
-      const color = it.color || data.default_color || "";
-      return {
-        item_id: ZOHO.DEFAULT_ITEM_ID || "",
-        name: `${it.product} ${color}`.trim(),
-        description: `${it.measures} | ${it.source === "winperfil_exact" ? "✓ Precio exacto Winperfil" : "⚠️ Precio estimado"}`,
-        rate: it.unit_price || 0,
-        quantity: it.qty || 1,
-      };
-    });
+  return {
+    item_id: ZOHO.DEFAULT_ITEM_ID,
+    description: `${it.product} ${it.measures} ${it.color || data.default_color || ""}`.trim(),
+    rate: Number(it.unit_price || 0),
+    quantity: Number(it.qty || 1)
+  };
+});
+
 
     const estimatePayload = {
       customer_id,
