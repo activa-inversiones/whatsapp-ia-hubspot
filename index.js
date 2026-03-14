@@ -25,6 +25,11 @@ import {
   salesOsConfigured,
 } from "./services/salesOsBridge.js";
 // @patch:sales-os:imports:end
+import {
+  cotizadorWinhouseConfigured,
+  cotizadorWinhouseHealth,
+  cotizarWinhouse,
+} from "./services/cotizadorWinhouseBridge.js";
 
 dotenv.config();
 const require = createRequire(import.meta.url);
@@ -255,6 +260,126 @@ function validInternalOperatorToken(req) {
   return !!(INTERNAL_OPERATOR_TOKEN && token && token === INTERNAL_OPERATOR_TOKEN);
 }
 // @patch:sales-os:helpers:end
+function sortItemsForCotizador(items = []) {
+  return [...items].sort((a, b) => {
+    const pa = String(a.product || "");
+    const pb = String(b.product || "");
+    const ma = normMeasures(a.measures || "");
+    const mb = normMeasures(b.measures || "");
+    const wa = ma?.ancho_mm || 0;
+    const wb = mb?.ancho_mm || 0;
+    const ha = ma?.alto_mm || 0;
+    const hb = mb?.alto_mm || 0;
+    return pa.localeCompare(pb) || ha - hb || wa - wb;
+  });
+}
+
+function mapQuoteItemToCotizador(item, fallbackColor = "") {
+  const m = normMeasures(item.measures || "");
+  if (!m) {
+    return { unsupported: true, reason: "No pude normalizar medidas para el cotizador.", raw: item };
+  }
+
+  const p = String(item.product || "").toUpperCase();
+  const color = String(normColor(item.color || fallbackColor || "BLANCO") || "BLANCO").toLowerCase();
+
+  let tipo = "ventana";
+  let serie = "S60";
+  let apertura = "proyectante";
+  let hoja = "98";
+
+  if (p.includes("PUERTA_DOBLE")) {
+    return { unsupported: true, reason: "Puerta doble requiere validación manual.", raw: item };
+  }
+
+  if (p.includes("PUERTA")) {
+    tipo = "puerta";
+    serie = "S60";
+    apertura = "abatir";
+  } else if (p.includes("MARCO_FIJO")) {
+    tipo = "ventana";
+    serie = "S60";
+    apertura = "fijo";
+  } else if (p.includes("OSCILO")) {
+    tipo = "ventana";
+    serie = "S60";
+    apertura = "abatir";
+  } else if (p.includes("ABAT")) {
+    tipo = "ventana";
+    serie = "S60";
+    apertura = "abatir";
+  } else if (p.includes("CORREDERA_98")) {
+    tipo = "ventana";
+    serie = "SLIDING";
+    apertura = "corredera";
+    hoja = "98";
+  } else if (p.includes("CORREDERA")) {
+    tipo = "ventana";
+    serie = "SLIDING";
+    apertura = "corredera";
+    hoja = "98";
+  } else if (p.includes("PROYECT")) {
+    tipo = "ventana";
+    serie = "S60";
+    apertura = "proyectante";
+  }
+
+  return {
+    unsupported: false,
+    payload: {
+      tipo,
+      serie,
+      apertura,
+      color,
+      ancho: m.ancho_mm,
+      alto: m.alto_mm,
+      cantidad: Math.max(1, Number(item.qty) || 1),
+      hoja,
+      vidrio: process.env.DEFAULT_GLASS || "DVH 4+12+4 CL",
+    },
+  };
+}
+
+function applyCotizadorResultToSessionItems(sessionItems, apiResult) {
+  const resultItems = apiResult?.items || [];
+  let total = 0;
+  let escaladas = 0;
+
+  for (let i = 0; i < sessionItems.length; i++) {
+    const src = resultItems[i];
+
+    if (!src) {
+      sessionItems[i].price_warning = "Sin respuesta del cotizador para este ítem.";
+      sessionItems[i].source = "cotizador_missing";
+      continue;
+    }
+
+    if (src.escalado) {
+      sessionItems[i].price_warning = src.razon_escalacion || "Requiere validación manual.";
+      sessionItems[i].source = "cotizador_manual";
+      sessionItems[i].confidence = "manual";
+      escaladas++;
+      continue;
+    }
+
+    const qty = Math.max(1, Number(sessionItems[i].qty) || 1);
+    const unit = Number(src.precio_unitario || 0);
+    const lineTotal = Number(src.total || 0);
+
+    sessionItems[i].unit_price = unit || (lineTotal > 0 ? Math.round(lineTotal / qty) : 0);
+    sessionItems[i].total_price = lineTotal || (sessionItems[i].unit_price * qty);
+    sessionItems[i].source = "cotizador_winhouse";
+    sessionItems[i].confidence = "high";
+
+    if (src.split) {
+      sessionItems[i].price_warning = "Ítem dividido automáticamente por regla de fabricación.";
+    }
+
+    total += sessionItems[i].total_price;
+  }
+
+  return { total, escaladas };
+}
 
 /* =========================
    6) ZONAS TÉRMICAS (OGUC)
@@ -738,6 +863,8 @@ async function runAI(session, userText) {
 async function priceAll(d, customer_id = "") {
   if (!ALLOWED_SUPPLIERS.includes(d.supplier)) d.supplier = "WINHOUSE_PVC";
 
+  d.items = sortItemsForCotizador(d.items);
+
   const items = d.items.map((it) => {
     const color = normColor(it.color || d.default_color || "");
     const product = normProduct(it.product || "");
@@ -758,7 +885,77 @@ async function priceAll(d, customer_id = "") {
   }
   if (!allOkInputs) return { ok: false, error: "Faltan datos en items (producto/medidas/color)" };
 
-  if (PRICER_MODE === "winperfil") {
+  if (PRICER_MODE === "cotizador_winhouse") {
+    if (d.supplier !== "WINHOUSE_PVC") {
+      return {
+        ok: false,
+        error: "La línea de aluminio requiere cotización manual. El cotizador online actual cubre Winhouse PVC.",
+      };
+    }
+
+    if (!cotizadorWinhouseConfigured()) {
+      return {
+        ok: false,
+        error: "Cotizador Winhouse no configurado en Railway.",
+      };
+    }
+
+    const mapped = d.items.map((it) => mapQuoteItemToCotizador(it, d.default_color || ""));
+    const unsupported = mapped.filter((x) => x.unsupported);
+
+    if (unsupported.length > 0) {
+      for (const u of unsupported) {
+        const target = d.items.find((it) => it === u.raw);
+        if (target) {
+          target.price_warning = u.reason;
+          target.source = "cotizador_manual";
+          target.confidence = "manual";
+        }
+      }
+
+      return {
+        ok: false,
+        error: "Uno o más ítems requieren validación manual antes de cotizar.",
+      };
+    }
+
+    const payload = {
+      items: mapped.map((x) => x.payload),
+      cliente: {
+        nombre: d.name || "Cliente WhatsApp",
+        telefono: customer_id || "",
+      },
+    };
+
+    const r = await cotizarWinhouse(payload);
+
+    if (!r.ok || !r.json) {
+      return {
+        ok: false,
+        error: r.json?.error || r.error || "Cotizador Winhouse no disponible.",
+      };
+    }
+
+    const applied = applyCotizadorResultToSessionItems(d.items, r.json);
+    d.grand_total = Number(r.json?.resumen?.subtotal_neto || applied.total || 0) || null;
+
+    if (applied.escaladas > 0) {
+      return {
+        ok: false,
+        error: "La cotización base quedó armada, pero uno o más ítems requieren validación manual.",
+        partial: true,
+        total: d.grand_total,
+      };
+    }
+
+    return {
+      ok: true,
+      total: d.grand_total,
+      source: "cotizador_winhouse",
+    };
+  }
+
+  if (PRICER_MODE === "winperfil" && WINPERFIL_API_BASE) {
     const payload = {
       supplier: d.supplier,
       message: "",
@@ -772,10 +969,9 @@ async function priceAll(d, customer_id = "") {
         for (let i = 0; i < d.items.length && i < r.items.length; i++) {
           d.items[i].unit_price = r.items[i].unit_price;
           d.items[i].total_price = r.items[i].total_price;
-          d.items[i].source = r.items[i].source || "unknown";  // ← NUEVO
-          d.items[i].confidence = r.items[i].confidence || "unknown";  // ← NUEVO
-          
-          // Si es estimado con confianza baja, avisar
+          d.items[i].source = r.items[i].source || "unknown";
+          d.items[i].confidence = r.items[i].confidence || "unknown";
+
           if (r.items[i].confidence === "low") {
             d.items[i].price_warning = "⚠️ Precio estimado (histórico limitado). Sujeto a validación.";
           } else if (r.items[i].source === "winperfil_estimated") {
@@ -795,7 +991,10 @@ async function priceAll(d, customer_id = "") {
     return r;
   }
 
-  return { ok: false, error: "Modo coeffs no soportado" };
+  return {
+    ok: false,
+    error: "Cotización automática no disponible por el momento. Sistema operativo en modo manual.",
+  };
 }
 
 /* =========================
@@ -1006,12 +1205,24 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 /* =========================
    19) ENDPOINTS
    ========================= */
-app.get("/health", (_req, res) => {
+app.get("/health", async (_req, res) => {
+  let cotizadorStatus = cotizadorWinhouseConfigured() ? "configured" : "disabled";
+
+  if (cotizadorWinhouseConfigured()) {
+    try {
+      const h = await cotizadorWinhouseHealth();
+      cotizadorStatus = h.ok ? "online" : "degraded";
+    } catch {
+      cotizadorStatus = "degraded";
+    }
+  }
+
   res.json({
     ok: true,
-    v: "9.2.3-mod2j",
+    v: "9.2.3-m6c",
     pricer_mode: PRICER_MODE,
     winperfil_api: WINPERFIL_API_BASE ? "set" : "missing",
+    cotizador_winhouse: cotizadorStatus,
     zoho_books: ZOHO.ORG_ID ? "enabled" : "disabled",
     sales_os_bridge: salesOsConfigured() ? "enabled" : "disabled",
     internal_operator_bridge: INTERNAL_OPERATOR_TOKEN ? "enabled" : "missing",
@@ -1294,4 +1505,5 @@ app.post("/webhook", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Ferrari 9.2.3 — port=${PORT} pricer=${PRICER_MODE} winperfil=${WINPERFIL_API_BASE ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"}`);
 });
+
 
