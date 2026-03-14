@@ -1196,10 +1196,10 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
     logInfo("zhBooksCreateEstimate", `Estimate creado: ${estResp.estimate?.estimate_id}`);
     return estResp.estimate;
 
- } catch (e) {
-  console.error("[ZohoBooks][Estimate][status]", e?.response?.status);
-  console.error("[ZohoBooks][Estimate][data]", JSON.stringify(e?.response?.data || {}, null, 2));
-  console.error("[ZohoBooks][Estimate][message]", e?.message || String(e));
+} catch (e) {
+  console.error("ZOHO STATUS:", e?.response?.status);
+  console.error("ZOHO DATA:", JSON.stringify(e?.response?.data, null, 2));
+  console.error("ZOHO MESSAGE:", e?.message);
   logErr("zhBooksCreateEstimate", e);
   return null;
 }
