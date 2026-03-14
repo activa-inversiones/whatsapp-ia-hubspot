@@ -1203,11 +1203,12 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 
 } catch (e) {
   console.error("ZOHO STATUS:", e?.response?.status);
-  console.error("ZOHO DATA:", JSON.stringify(e?.response?.data, null, 2));
-  console.error("ZOHO MESSAGE:", e?.message);
+  console.error("ZOHO DATA:", JSON.stringify(e?.response?.data || {}, null, 2));
+  console.error("ZOHO MESSAGE:", e?.message || String(e));
   logErr("zhBooksCreateEstimate", e);
   return null;
 }
+
 
 }
 
