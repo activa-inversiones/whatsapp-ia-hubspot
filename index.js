@@ -1192,7 +1192,6 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
       };
     });
 
-ZOHO_TAX_ID = (el tax_id que anotaste de Zoho Books)
     const estimatePayload = {
       customer_id,
       line_items,
