@@ -102,7 +102,8 @@ BOOKS_API: "https://www.zohoapis.com/books/v3",
   ORG_ID: process.env.ZOHO_ORG_ID,
   DEAL_PHONE: process.env.ZOHO_DEAL_PHONE_FIELD || "WhatsApp_Phone",
   DEFAULT_ACCT: process.env.ZOHO_DEFAULT_ACCOUNT_NAME || "Clientes WhatsApp IA",
-  DEFAULT_ITEM_ID: process.env.ZOHO_DEFAULT_ITEM_ID || ""
+  DEFAULT_ITEM_ID: process.env.ZOHO_DEFAULT_ITEM_ID || "",
+  TAX_ID: process.env.ZOHO_TAX_ID || ""
 };
 
 const COMPANY = {
@@ -1188,7 +1189,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
         description: `${tipo} PVC ${color} ${measures}\nVidrio: ${glass}\nLínea: Winhouse S60`,
         rate: Number(it.unit_price) || 1,
         quantity: Number(it.qty || 1),
-        tax_id: ""
+        tax_id: ZOHO.TAX_ID || ""
       };
     });
 
