@@ -1170,15 +1170,16 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
     // 3️⃣ Crear line items
     const line_items = data.items.map(it => ({
       item_id: ZOHO.DEFAULT_ITEM_ID,
+      description: `${it.product || "Ventana"} ${it.color || data.default_color || ""} ${it.measures || ""}`.trim(),
+      rate: Number(it.unit_price) || 1,
       quantity: Number(it.qty || 1)
     }));
-
     const estimatePayload = {
       customer_id,
       line_items,
-      reference_number: "COT-XXXX",
-      notes: "Prueba automática desde IA",
-      terms: "Válida por 15 días"
+      reference_number: data.quote_num || "",
+      notes: `Cotización generada por Activa Inversiones EIRL vía WhatsApp IA.\nProveedor: ${data.supplier || "WINHOUSE_PVC"}\nComuna: ${data.comuna || ""}\n${data.zona_termica ? `Zona térmica OGUC: Z${data.zona_termica}` : ""}`.trim(),
+      terms: "Válida por 15 días hábiles. Precios netos + IVA.\nSujeta a rectificación técnica en terreno.\nCumplimiento OGUC 4.1.10 (acondicionamiento térmico)."
     };
 
     // 4️⃣ POST estimate
