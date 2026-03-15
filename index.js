@@ -1168,12 +1168,36 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
     }
 
     // 3️⃣ Crear line items
-    const line_items = data.items.map(it => ({
-      item_id: ZOHO.DEFAULT_ITEM_ID,
-      description: `${it.product || "Ventana"} ${it.color || data.default_color || ""} ${it.measures || ""}`.trim(),
-      rate: Number(it.unit_price) || 1,
-      quantity: Number(it.qty || 1)
-    }));
+    const line_items = data.items.map(it => {
+      const prod = it.product || "Ventana";
+      const color = it.color || data.default_color || "Blanco";
+      const measures = it.measures || "";
+      const glass = process.env.DEFAULT_GLASS || "Termopanel DVH estándar";
+
+      let tipo = "Ventana";
+      const p = prod.toUpperCase();
+      if (p.includes("PUERTA")) tipo = "Puerta";
+      else if (p.includes("CORREDERA")) tipo = "Ventana Corredera";
+      else if (p.includes("PROYECT")) tipo = "Ventana Proyectante";
+      else if (p.includes("OSCILO")) tipo = "Ventana Oscilobatiente";
+      else if (p.includes("ABAT")) tipo = "Ventana Abatible";
+      else if (p.includes("MARCO") || p.includes("FIJO")) tipo = "Marco Fijo";
+
+      return {
+        item_id: ZOHO.DEFAULT_ITEM_ID,
+        description: `${tipo} PVC ${color} ${measures}\nVidrio: ${glass}\nLínea: Winhouse S60`,
+        rate: Number(it.unit_price) || 1,
+        quantity: Number(it.qty || 1),
+        tax_id: ""
+      };
+    });
+```
+
+Ahora para el IVA, en Zoho Books necesitas configurar un impuesto. Ve a Zoho Books → Configuración → Impuestos → crea uno llamado **IVA** con tasa **19%**. Anota el `tax_id` que Zoho le asigna.
+
+Después en Railway agrega una variable nueva:
+```
+ZOHO_TAX_ID = (el tax_id que anotaste de Zoho Books)
     const estimatePayload = {
       customer_id,
       line_items,
