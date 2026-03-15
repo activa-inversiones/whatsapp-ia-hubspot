@@ -1140,7 +1140,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
     // 1️⃣ Buscar cliente
     try {
       const searchResp = await axios.get(
-        `${ZOHO.API}/contacts?organization_id=${ZOHO.ORG_ID}&contact_name=${encodeURIComponent(customer_name || "Cliente WhatsApp")}`,
+       `${ZOHO.BOOKS_API}/contacts?organization_id=${ZOHO.ORG_ID}&contact_name=${encodeURIComponent(customer_name || "Cliente WhatsApp")}`,
         { headers: h, httpsAgent }
       );
       if (searchResp.data?.contacts?.length) {
@@ -1151,7 +1151,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
     // 2️⃣ Crear cliente si no existe
     if (!customer_id) {
       const createResp = await axios.post(
-        `${ZOHO.API}/contacts?organization_id=${ZOHO.ORG_ID}`,
+        `${ZOHO.BOOKS_API}/contacts?organization_id=${ZOHO.ORG_ID}`,
         {
           contact_name: customer_name || "Cliente WhatsApp",
           contact_type: "customer",
@@ -1183,7 +1183,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 
     // 4️⃣ POST estimate
     const { data: estResp } = await axios.post(
-      `${ZOHO.API}/estimates?organization_id=${ZOHO.ORG_ID}`,
+      `${ZOHO.BOOKS_API}/estimates?organization_id=${ZOHO.ORG_ID}`,
       estimatePayload,
       { headers: h, httpsAgent }
     );
@@ -1206,7 +1206,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 // Descargar PDF del estimate desde Zoho Books
 async function zhBooksDownloadEstimatePdf(estimateId) {
   const h = await zhH();
-  const url = `${ZOHO.API}/estimates/${estimateId}?organization_id=${ZOHO.ORG_ID}&accept=pdf`;
+  const url = `${ZOHO.BOOKS_API}/estimates/${estimateId}?organization_id=${ZOHO.ORG_ID}&accept=pdf`;
   const { data } = await axios.get(url, {
     headers: h,
     httpsAgent,
