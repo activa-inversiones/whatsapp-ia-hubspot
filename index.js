@@ -447,7 +447,7 @@ function normColor(text = "") {
   if (/NOGAL|MADERA/.test(s)) return "NOGAL";
   if (/ROBLE|DORADO/.test(s)) return "ROBLE";
   if (/GRAFITO|ANTRAC/.test(s)) return "GRAFITO";
-  if (/NEGR/.test(s)) return "NEGRO";
+  if (/NEGR/.test(s)) return "NEWBLACK";
   if (/GRIS|ANODIZ/.test(s)) return "GRIS";
   return "BLANCO";
 }
@@ -1184,9 +1184,12 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
       else if (p.includes("ABAT")) tipo = "Ventana Abatible";
       else if (p.includes("MARCO") || p.includes("FIJO")) tipo = "Marco Fijo";
 
+  const desc = it.descripcion
+        || `${tipo} PVC | ${color} | ${measures} | ${glass}`;
+
       return {
         item_id: ZOHO.DEFAULT_ITEM_ID,
-        description: `${tipo} PVC ${color} ${measures}\nVidrio: ${glass}\nLínea: Winhouse S60`,
+        description: desc,
         rate: Number(it.unit_price) || 1,
         quantity: Number(it.qty || 1),
         tax_id: ZOHO.TAX_ID || ""
@@ -1195,6 +1198,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 
     const estimatePayload = {
       customer_id,
+      subject: "Propuesta Comercial",
       line_items,
       reference_number: data.quote_num || "",
       notes: `Cotización generada por Activa Inversiones EIRL vía WhatsApp IA.\nProveedor: ${data.supplier || "WINHOUSE_PVC"}\nComuna: ${data.comuna || ""}\n${data.zona_termica ? `Zona térmica OGUC: Z${data.zona_termica}` : ""}`.trim(),
