@@ -1485,7 +1485,7 @@ app.post("/webhook", async (req, res) => {
                 buildQuotePayload(ses, waId, {
                   status: "formal_sent",
                   zoho_estimate_id: estimate.estimate_id,
-                  zoho_estimate_url: estimateUrl,
+                  zoho_estimate_url: estimate.estimate_url || "",
                   quote_number: qn,
                 })
               )
