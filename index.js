@@ -1132,9 +1132,9 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
   if (!REQUIRE_ZOHO || !ZOHO.ORG_ID) return null;
 
   try {
-    const h = await zhH();
-    
-    // 1. Buscar/crear cliente en Books
+    const h = await zhH(); // Headers con token válido
+
+    // 1️⃣ Buscar o crear cliente en Zoho Books
     let customer_id = null;
     try {
       const searchResp = await axios.get(
@@ -1152,10 +1152,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
         {
           contact_name: customer_name || "Cliente WhatsApp",
           contact_type: "customer",
-          contact_persons: [{
-            first_name: customer_name || "Cliente",
-            phone: phone || "",
-          }],
+          contact_persons: [{ first_name: customer_name || "Cliente", phone: phone || "" }],
         },
         { headers: h, httpsAgent }
       );
@@ -1163,27 +1160,17 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
     }
 
     if (!customer_id) {
-      logErr("", new Error("No se pudo crear/encontrar cliente en Books"));
+      logErr("zhBooksCreateEstimate", new Error("No se pudo crear/encontrar cliente en Books"));
       return null;
     }
 
-    // 2. Crear Estimate
-    const line_items = data.items.map((it) => {
-  const item = {
-    name: `${it.product} ${(it.color || data.default_color || "")}`.trim(),
-    description: `${it.measures}`,
-    rate: Number(it.unit_price) || 1,
-    quantity: Number(it.qty || 1),
-  };
+    // 2️⃣ Crear line_items usando solo item_id y quantity
+    const line_items = data.items.map((it) => ({
+      item_id: ZOHO.DEFAULT_ITEM_ID, // Solo item_id
+      quantity: Number(it.qty || 1),
+    }));
 
-  if (ZOHO.DEFAULT_ITEM_ID) {
-    item.item_id = ZOHO.DEFAULT_ITEM_ID;
-  }
-
-  return item;
-});
-
-
+    // 3️⃣ Payload del estimate
     const estimatePayload = {
       customer_id,
       reference_number: data.quote_num || "",
@@ -1192,6 +1179,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
       terms: "Válida por 15 días. Sujeta a rectificación técnica en terreno.\nCumplimiento OGUC 4.1.10 (acondicionamiento térmico).",
     };
 
+    // 4️⃣ Crear estimate en Zoho Books
     const { data: estResp } = await axios.post(
       `${ZOHO.API}/books/v3/estimates?organization_id=${ZOHO.ORG_ID}`,
       estimatePayload,
@@ -1201,16 +1189,15 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
     logInfo("zhBooksCreateEstimate", `Estimate creado: ${estResp.estimate?.estimate_id}`);
     return estResp.estimate;
 
-} catch (e) {
-  console.error("ZOHO STATUS:", e?.response?.status);
-  console.error("ZOHO DATA:", JSON.stringify(e?.response?.data || {}, null, 2));
-  console.error("ZOHO MESSAGE:", e?.message || String(e));
-  logErr("zhBooksCreateEstimate", e);
-  return null;
+  } catch (e) {
+    console.error("ZOHO STATUS:", e?.response?.status);
+    console.error("ZOHO DATA:", JSON.stringify(e?.response?.data || {}, null, 2));
+    console.error("ZOHO MESSAGE:", e?.message || String(e));
+    logErr("zhBooksCreateEstimate", e);
+    return null;
+  }
 }
 
-
-}
 
 /* =========================
    19) ENDPOINTS
