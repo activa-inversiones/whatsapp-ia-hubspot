@@ -1202,6 +1202,45 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 /* =========================
    19) ENDPOINTS
    ========================= */
+// Descargar PDF del estimate desde Zoho Books
+async function zhBooksDownloadEstimatePdf(estimateId) {
+  const h = await zhH();
+  const url = `${ZOHO.API}/estimates/${estimateId}?organization_id=${ZOHO.ORG_ID}&accept=pdf`;
+  const { data } = await axios.get(url, {
+    headers: h,
+    httpsAgent,
+    responseType: "arraybuffer",
+    timeout: 30000,
+  });
+  return Buffer.from(data);
+}
+
+// Subir media a WhatsApp y enviar como documento
+async function waSendPdf(to, pdfBuffer, filename, caption) {
+  const FormData = (await import("form-data")).default;
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", "document");
+  form.append("file", pdfBuffer, { filename, contentType: "application/pdf" });
+
+  const uploadResp = await axiosWA.post(`/${META.PHONE_ID}/media`, form, {
+    headers: form.getHeaders(),
+    timeout: 30000,
+  });
+  const mediaId = uploadResp.data?.id;
+  if (!mediaId) throw new Error("No se pudo subir PDF a WhatsApp");
+
+  await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+    messaging_product: "whatsapp",
+    to,
+    type: "document",
+    document: {
+      id: mediaId,
+      filename,
+      caption: caption || "",
+    },
+  });
+}
 app.get("/health", async (_req, res) => {
   const cotizadorStatus = cotizadorWinhouseConfigured() ? "configured" : "disabled";
 
@@ -1423,8 +1462,14 @@ app.post("/webhook", async (req, res) => {
             ses.pdfSent = true;
 
             // Enviar link del estimate (o PDF si Zoho lo permite descargar)
-            const estimateUrl = estimate.estimate_url || `${ZOHO.API}/books/v3/estimates/${estimate.estimate_id}`;
-            await waSendH(waId, `✅ Tu cotización ${qn} está lista.\n\n📎 Link: ${estimateUrl}\n\n(PDF descargable desde Zoho Books)`, true);
+           try {
+              const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
+              await waSendPdf(waId, pdfBuf, `${qn}.pdf`, `✅ Tu cotización ${qn} está lista.`);
+            } catch (pdfErr) {
+              logErr("waSendPdf", pdfErr);
+              const estimateUrl = estimate.estimate_url || "";
+              await waSendH(waId, `✅ Tu cotización ${qn} está lista.\n\n📎 Link: ${estimateUrl}`, true);
+            }
 
             zhUpsert(ses, waId).then(() => {
               if (ses.zohoDealId && estimate.estimate_number) {
