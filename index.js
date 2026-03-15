@@ -96,7 +96,7 @@ const ZOHO = {
   CLIENT_ID: process.env.ZOHO_CLIENT_ID,
   CLIENT_SECRET: process.env.ZOHO_CLIENT_SECRET,
   REFRESH_TOKEN: process.env.ZOHO_REFRESH_TOKEN,
-  API: process.env.ZOHO_API_DOMAIN || "https://www.zohoapis.com",
+  API: process.env.ZOHO_API_DOMAIN || "https://books.zoho.com/api/v3",
   ACCOUNTS: process.env.ZOHO_ACCOUNTS_DOMAIN || "https://accounts.zoho.com",
   ORG_ID: process.env.ZOHO_ORG_ID,
   DEAL_PHONE: process.env.ZOHO_DEAL_PHONE_FIELD || "WhatsApp_Phone",
