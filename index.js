@@ -96,12 +96,12 @@ const ZOHO = {
   CLIENT_ID: process.env.ZOHO_CLIENT_ID,
   CLIENT_SECRET: process.env.ZOHO_CLIENT_SECRET,
   REFRESH_TOKEN: process.env.ZOHO_REFRESH_TOKEN,
-  API: process.env.ZOHO_API_DOMAIN || "https://books.zoho.com/api/v3",
+  API: process.env.ZOHO_API_DOMAIN || "https://books.zoho.com/api/v3",  // correcto
   ACCOUNTS: process.env.ZOHO_ACCOUNTS_DOMAIN || "https://accounts.zoho.com",
   ORG_ID: process.env.ZOHO_ORG_ID,
   DEAL_PHONE: process.env.ZOHO_DEAL_PHONE_FIELD || "WhatsApp_Phone",
   DEFAULT_ACCT: process.env.ZOHO_DEFAULT_ACCOUNT_NAME || "Clientes WhatsApp IA",
-  DEFAULT_ITEM_ID: process.env.ZOHO_DEFAULT_ITEM_ID || "",
+  DEFAULT_ITEM_ID: process.env.ZOHO_DEFAULT_ITEM_ID || ""
 };
 
 const COMPANY = {
