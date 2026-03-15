@@ -1191,12 +1191,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
         tax_id: ""
       };
     });
-```
 
-Ahora para el IVA, en Zoho Books necesitas configurar un impuesto. Ve a Zoho Books → Configuración → Impuestos → crea uno llamado **IVA** con tasa **19%**. Anota el `tax_id` que Zoho le asigna.
-
-Después en Railway agrega una variable nueva:
-```
 ZOHO_TAX_ID = (el tax_id que anotaste de Zoho Books)
     const estimatePayload = {
       customer_id,
