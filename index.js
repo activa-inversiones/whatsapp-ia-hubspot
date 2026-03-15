@@ -1181,11 +1181,10 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 
     // 4️⃣ Crear estimate en Zoho Books
     const { data: estResp } = await axios.post(
-      `${ZOHO.API}/books/v3/estimates?organization_id=${ZOHO.ORG_ID}`,
-      estimatePayload,
-      { headers: h, httpsAgent }
-    );
-
+  `${ZOHO.API}/estimates?organization_id=${ZOHO.ORG_ID}`, // solo /estimates
+  estimatePayload,
+  { headers: h, httpsAgent }
+);
     logInfo("zhBooksCreateEstimate", `Estimate creado: ${estResp.estimate?.estimate_id}`);
     return estResp.estimate;
 
