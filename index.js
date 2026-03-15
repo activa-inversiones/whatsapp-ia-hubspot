@@ -370,6 +370,7 @@ function applyCotizadorResultToSessionItems(sessionItems, apiResult) {
 
     sessionItems[i].unit_price = unit || (lineTotal > 0 ? Math.round(lineTotal / qty) : 0);
     sessionItems[i].total_price = lineTotal || (sessionItems[i].unit_price * qty);
+    sessionItems[i].descripcion = src.descripcion || "";
     sessionItems[i].source = "cotizador_winhouse";
     sessionItems[i].confidence = "high";
 
@@ -1189,6 +1190,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 
       return {
         item_id: ZOHO.DEFAULT_ITEM_ID,
+        name: tipo,
         description: desc,
         rate: Number(it.unit_price) || 1,
         quantity: Number(it.qty || 1),
