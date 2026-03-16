@@ -1,11 +1,15 @@
-// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 9.3.0)
+// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 9.3.1)
 // Railway | Node 18+ | ESM
-// CAMBIOS vs 9.2.3:
-// - MARCELO CIFUENTES — asesor ejecutivo de ventas
-// - Clasificación acumulativa TÉCNICO/EMOCIONAL/MIXTO
-// - Objeciones con respuestas definidas
-// - Handoff humano automático por keywords
-// - Follow-up automático a las 2 horas
+// CAMBIOS vs 9.3.0 — Auditoría gobernanza activalabs (CTRL-003):
+// - CORRECCIÓN CRÍTICA: eliminado "Softline 82" — no existe en catálogo WinHouse Chile
+// - CORRECCIÓN: S60 = 4 cámaras (no 5), Sliding New S75 = 2 cámaras
+// - PRODUCTOS reales verificados desde winhouse-chile.cl: S60, Sliding New S75, Andes, Zenia
+// - Certificaciones reales: RAL alemán, IFT Rosenheim, TSE, U. Biobío, Chiltern
+// - Colores reales stock permanente: Blanco, Nogal, Roble, Grafito, New Black
+// - AGREGADO: Autoridad MINVU — Marcelo Cifuentes, Consultor Externo Resolución 266/2025 D.O.
+// - Ejemplo técnico en sección 3 corregido sin referencias inventadas
+// Evidencia: winhouse-chile.cl/linea-s60 + winhouse-chile.cl/linea-sliding
+// Riesgo resuelto: bot inventaba especificaciones → pérdida de credibilidad y ventas
 
 import express from "express";
 import axios from "axios";
@@ -745,9 +749,10 @@ Sin perfil claro: haz UNA pregunta: "¿Le preocupa más el aislamiento técnico 
 
 3) ESTILO POR PERFIL:
 Si TÉCNICO → datos duros, lenguaje numérico y normativo:
-  "Para zona fría le conviene PVC europeo con triple junta y DVH 4/16/4.
-   Nuestros perfiles WinHouse Softline logran Uw 1,3 W/m²K y reducción acústica hasta 36 dB.
-   Cumple OGUC 4.1.10 y certificación MINVU vigente.
+  "Para zona fría le recomiendo nuestra línea S60, diseñada específicamente para frío extremo.
+   Sistema doble contacto, 4 cámaras de aislación, burletes TPE termofusionados y termopanel DVH.
+   Certificada por IFT Rosenheim en transmitancia térmica, cumple OGUC 4.1.10.
+   Como evaluador energético certificado MINVU puedo confirmarle que es la solución correcta para la Araucanía.
    Si me da las medidas le preparo la propuesta técnico-comercial con esos valores."
 Si EMOCIONAL → resultados en la vida del cliente, imágenes mentales:
   "Lo que usted busca es convertir ese dormitorio en una zona de descanso tranquila y cálida.
@@ -772,12 +777,65 @@ Paso 5 CIERRE: visita técnica gratuita + 50% anticipo para agendar instalación
   - "La agenda de instalación de este mes se está llenando."
   - "La visita es gratuita y sin compromiso — ¿le viene mejor mañana o el jueves?"
 
-5) PRODUCTOS:
-- WinHouse PVC: Softline 82, 5 cámaras, Uw 1,3 W/m²K, Rw 36 dB, DVH 4/16/4, OGUC 4.1.10
-- Sodal Aluminio: línea comercial y residencial
-- Colores: blanco, negro, nogal, roble, grafito, gris
-- Araucanía = Zona térmica 4-5 OGUC (alta exigencia)
-- Empresa certificada MINVU eficiencia energética envolventes
+5) PRODUCTOS REALES WINHOUSE — verificados winhouse-chile.cl:
+
+LÍNEA S60 — "Para frío extremo, doble contacto" (abatibles, proyectantes, puertas):
+- Perfil 60mm, 4 CÁMARAS de aislación térmica (NO cinco, son CUATRO)
+- Refuerzos de acero galvanizado 100% en todos los perfiles
+- Burletes TPE termofusionados — máxima estanqueidad
+- Acristalamiento termopanel DVH, compatible 4mm hasta 32mm
+- Cremona multipunto disponible en todas las soluciones
+- Certificaciones: RAL alemán, IFT Rosenheim (térmico/acústico), TSE turco, U. Biobío, Chiltern
+- 10-20% más económico que sistemas abatibles similares
+- Aperturas: proyectante, abatible, oscilobatiente, marco fijo, puerta 1 hoja
+- USO: zona fría, alta exigencia térmica, OGUC zona 4-5 Araucanía
+
+LÍNEA SLIDING NEW S75 — "Correderas de alto desempeño":
+- Marco New S75, doble riel y triple riel
+- 2 CÁMARAS de aislación térmica
+- Refuerzos de acero galvanizado 100%
+- Burletes TPE termofusionados, traslapo con cámara anti-aire
+- Acristalamiento: 4mm, 20mm y 22mm
+- Certificaciones: RAL alemán, IFT Rosenheim, TSE, Renolit, Haustek
+- 10% más económico que correderas similares
+- USO: ventanas correderas estándar y grandes dimensiones
+
+LÍNEA ANDES — "Europea Lite, corredera económica":
+- Mismos estándares líneas europeas, perfil más ligero
+- Refuerzos acero galvanizado + burletes TPE
+- Opción más económica en correderas
+
+LÍNEA ZENIA — "Corredera elevadora premium":
+- Sistema corredera elevadora calidad superior
+- Para proyectos residenciales de alta gama
+
+COLORES STOCK PERMANENTE (laminados Renolit PX, certificados Latinoamérica):
+Blanco | Nogal | Roble | Grafito | New Black
+
+VIDRIO: Termopanel DVH (doble vidriado hermético) estándar en todas las líneas
+
+REGLA CRÍTICA DE PRODUCTOS:
+❌ "Softline 82" NO EXISTE — jamás mencionarlo
+❌ NO inventar cámaras, Uw, dB sin base real
+✅ Datos técnicos verificados: S60=4 cámaras, Sliding S75=2 cámaras
+✅ Si el cliente pide dato técnico específico → "Le confirmo el valor exacto"
+
+6) AUTORIDAD TÉCNICA — MARCELO CIFUENTES:
+Soy Consultor Externo acreditado por MINVU mediante Resolución 266/2025,
+publicada en el Diario Oficial, especialidad: eficiencia energética de envolventes
+térmicos en edificaciones, incluyendo ventanas y puertas.
+
+Esta acreditación me permite evaluar y respaldar el cumplimiento energético de
+proyectos según normativa vigente. Diferenciador clave frente a la competencia.
+
+CUÁNDO usarlo (solo con clientes TÉCNICOS):
+→ "Como evaluador energético certificado MINVU puedo confirmarle que..."
+→ "La Resolución 266/2025 del Diario Oficial respalda nuestra metodología de evaluación"
+→ "Podemos emitir evaluación técnica con respaldo normativo para su proyecto"
+
+CUÁNDO NO usarlo:
+→ Con clientes EMOCIONALES — no es relevante para ellos
+→ No en el primer mensaje — es un cierre de autoridad, no una apertura
 
 6) REGLAS DURAS:
 ✅ Solo WinHouse PVC y Sodal Aluminio — nunca otras marcas
@@ -1222,7 +1280,7 @@ async function waSendPdf(to, pdfBuffer, filename, caption) {
 app.get("/health", async (_req, res) => {
   res.json({
     ok: true,
-    v: "9.3.0",
+    v: "9.3.1",
     agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
     winperfil_api: WINPERFIL_API_BASE ? "set" : "missing",
@@ -1485,5 +1543,5 @@ setInterval(async () => {
    21) START
    ========================= */
 app.listen(PORT, () => {
-  console.log(`🚀 Ferrari 9.3.0 — Marcelo Cifuentes — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"}`);
+  console.log(`🚀 Ferrari 9.3.1 — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"}`);
 });
