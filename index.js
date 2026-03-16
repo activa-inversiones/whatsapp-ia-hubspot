@@ -1203,7 +1203,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
       subject: "Propuesta Comercial",
       line_items,
       reference_number: data.quote_num || "",
-      notes: `Cotización generada por Activa Inversiones EIRL vía WhatsApp IA.\nProveedor: ${data.supplier || "WINHOUSE_PVC"}\nComuna: ${data.comuna || ""}\n${data.zona_termica ? `Zona térmica OGUC: Z${data.zona_termica}` : ""}`.trim(),
+      notes: `Cotización generada por Activa Inversiones EIRL vía WhatsApp IA.\nProveedor: ${data.supplier || "PVC LINEA EUROPEA"}\nComuna: ${data.comuna || ""}\n${data.zona_termica ? `Zona térmica OGUC: Z${data.zona_termica}` : ""}`.trim(),
       terms: "Válida por 15 días hábiles. Precios netos + IVA.\nSujeta a rectificación técnica en terreno.\nCumplimiento OGUC 4.1.10 (acondicionamiento térmico)."
     };
 
