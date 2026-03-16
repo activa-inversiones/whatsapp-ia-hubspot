@@ -1,10 +1,11 @@
-﻿// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 9.2.3)
+// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 9.3.0)
 // Railway | Node 18+ | ESM
-// CAMBIOS vs 9.2.2:
-// - PDF generado en Zoho Books (no local)
-// - Prompt optimizado (pregunta más eficiente)
-// - Validación de source (exact/estimated)
-// - Preparado para ISO (logs trazables)
+// CAMBIOS vs 9.2.3:
+// - MARCELO CIFUENTES — asesor ejecutivo de ventas
+// - Clasificación acumulativa TÉCNICO/EMOCIONAL/MIXTO
+// - Objeciones con respuestas definidas
+// - Handoff humano automático por keywords
+// - Follow-up automático a las 2 horas
 
 import express from "express";
 import axios from "axios";
@@ -97,7 +98,7 @@ const ZOHO = {
   CLIENT_SECRET: process.env.ZOHO_CLIENT_SECRET,
   REFRESH_TOKEN: process.env.ZOHO_REFRESH_TOKEN,
   API: process.env.ZOHO_API_DOMAIN || "https://www.zohoapis.com",
-BOOKS_API: "https://www.zohoapis.com/books/v3",
+  BOOKS_API: "https://www.zohoapis.com/books/v3",
   ACCOUNTS: process.env.ZOHO_ACCOUNTS_DOMAIN || "https://accounts.zoho.com",
   ORG_ID: process.env.ZOHO_ORG_ID,
   DEAL_PHONE: process.env.ZOHO_DEAL_PHONE_FIELD || "WhatsApp_Phone",
@@ -116,7 +117,7 @@ const COMPANY = {
 };
 
 // @patch:sales-os:config:start
-const AGENT_NAME = process.env.AGENT_NAME || "Asesor ACTIVA";
+const AGENT_NAME = process.env.AGENT_NAME || "Marcelo Cifuentes";
 const INTERNAL_OPERATOR_TOKEN =
   process.env.OPERATOR_API_TOKEN || process.env.SALES_OS_OPERATOR_TOKEN || "";
 // @patch:sales-os:config:end
@@ -295,46 +296,26 @@ function mapQuoteItemToCotizador(item, fallbackColor = "") {
   }
 
   if (p.includes("PUERTA")) {
-    tipo = "puerta";
-    serie = "S60";
-    apertura = "abatir";
+    tipo = "puerta"; serie = "S60"; apertura = "abatir";
   } else if (p.includes("MARCO_FIJO")) {
-    tipo = "ventana";
-    serie = "S60";
-    apertura = "fijo";
+    tipo = "ventana"; serie = "S60"; apertura = "fijo";
   } else if (p.includes("OSCILO")) {
-    tipo = "ventana";
-    serie = "S60";
-    apertura = "abatir";
+    tipo = "ventana"; serie = "S60"; apertura = "abatir";
   } else if (p.includes("ABAT")) {
-    tipo = "ventana";
-    serie = "S60";
-    apertura = "abatir";
+    tipo = "ventana"; serie = "S60"; apertura = "abatir";
   } else if (p.includes("CORREDERA_98")) {
-    tipo = "ventana";
-    serie = "SLIDING";
-    apertura = "corredera";
-    hoja = "98";
+    tipo = "ventana"; serie = "SLIDING"; apertura = "corredera"; hoja = "98";
   } else if (p.includes("CORREDERA")) {
-    tipo = "ventana";
-    serie = "SLIDING";
-    apertura = "corredera";
-    hoja = "98";
+    tipo = "ventana"; serie = "SLIDING"; apertura = "corredera"; hoja = "98";
   } else if (p.includes("PROYECT")) {
-    tipo = "ventana";
-    serie = "S60";
-    apertura = "proyectante";
+    tipo = "ventana"; serie = "S60"; apertura = "proyectante";
   }
 
   return {
     unsupported: false,
     payload: {
-      tipo,
-      serie,
-      apertura,
-      color,
-      ancho: m.ancho_mm,
-      alto: m.alto_mm,
+      tipo, serie, apertura, color,
+      ancho: m.ancho_mm, alto: m.alto_mm,
       cantidad: Math.max(1, Number(item.qty) || 1),
       hoja,
       vidrio: process.env.DEFAULT_GLASS || "DVH 4+12+4 CL",
@@ -349,13 +330,11 @@ function applyCotizadorResultToSessionItems(sessionItems, apiResult) {
 
   for (let i = 0; i < sessionItems.length; i++) {
     const src = resultItems[i];
-
     if (!src) {
       sessionItems[i].price_warning = "Sin respuesta del cotizador para este ítem.";
       sessionItems[i].source = "cotizador_missing";
       continue;
     }
-
     if (src.escalado) {
       sessionItems[i].price_warning = src.razon_escalacion || "Requiere validación manual.";
       sessionItems[i].source = "cotizador_manual";
@@ -363,24 +342,19 @@ function applyCotizadorResultToSessionItems(sessionItems, apiResult) {
       escaladas++;
       continue;
     }
-
     const qty = Math.max(1, Number(sessionItems[i].qty) || 1);
     const unit = Number(src.precio_unitario || 0);
     const lineTotal = Number(src.total || 0);
-
     sessionItems[i].unit_price = unit || (lineTotal > 0 ? Math.round(lineTotal / qty) : 0);
     sessionItems[i].total_price = lineTotal || (sessionItems[i].unit_price * qty);
     sessionItems[i].descripcion = src.descripcion || "";
     sessionItems[i].source = "cotizador_winhouse";
     sessionItems[i].confidence = "high";
-
     if (src.split) {
       sessionItems[i].price_warning = "Ítem dividido automáticamente por regla de fabricación.";
     }
-
     total += sessionItems[i].total_price;
   }
-
   return { total, escaladas };
 }
 
@@ -509,7 +483,6 @@ async function waSendH(to, text, skipTyping = false, meta = {}) {
   try {
     await sleep(humanMs(text));
     await waSend(to, text);
-
     if (meta.track !== false) {
       fireAndForget(
         "trackConversationEvent.outbound",
@@ -538,7 +511,6 @@ async function waSendMultiH(to, msgs, skipTyping = false, meta = {}) {
       if (!m?.trim()) continue;
       await sleep(humanMs(m));
       await waSend(to, m);
-
       if (meta.track !== false) {
         fireAndForget(
           "trackConversationEvent.outbound_multi",
@@ -557,12 +529,12 @@ async function waSendMultiH(to, msgs, skipTyping = false, meta = {}) {
           })
         );
       }
-
       await sleep(250 + Math.random() * 450);
     }
   } finally { stop?.(); }
 }
 // @patch:sales-os:send:end
+
 async function waRead(id) {
   try {
     await axiosWA.post(`/${META.PHONE_ID}/messages`, {
@@ -651,6 +623,8 @@ function getSession(waId) {
     sessions.set(waId, {
       lastAt: Date.now(), data: emptyData(), history: [],
       pdfSent: false, quoteNum: null, zohoDealId: null, zohoEstimateId: null,
+      perfilAcumulado: { tecnico: 0, emocional: 0 },
+      followupEnviado: false,
     });
   }
   return sessions.get(waId);
@@ -658,6 +632,7 @@ function getSession(waId) {
 
 function saveSession(waId, s) {
   s.lastAt = Date.now();
+  s.lastActivity = Date.now();
   if (s.history.length > MAX_HIST) s.history = s.history.slice(-MAX_HIST);
   sessions.set(waId, s);
 }
@@ -746,31 +721,73 @@ function canQuote(d) {
 }
 
 /* =========================
-   15) SYSTEM PROMPT + TOOLS (★ MEJORADO)
+   15) SYSTEM PROMPT — Ferrari 9.3.0 EJECUTIVO
    ========================= */
 const SYSTEM_PROMPT = `
-Eres un ASESOR DE CLASE MUNDIAL en venta consultiva de VENTANAS y PUERTAS.
-Empresa: ${COMPANY.NAME} (${COMPANY.ADDRESS}).
+Eres MARCELO CIFUENTES, asesor experto en ventanas y puertas de ${COMPANY.NAME} (${COMPANY.ADDRESS}).
+8 años vendiendo ventanas PVC y aluminio en la Araucanía. Eres el mejor vendedor consultivo de Chile en fenestración.
+Objetivo: convertir cada conversación de WhatsApp en una venta real.
 
-REGLAS IMPORTANTES:
-- SOLO trabajamos con 2 líneas:
-  1) PVC: WINHOUSE
-  2) ALUMINIO: SODAL
-  Si el cliente pide otra marca (Rehau u otras), indicas que por ahora cotizamos Winhouse/Sodal y ofreces alternativa equivalente.
-- No hables de recomendaciones de espesores (NO sugerir 5+12+5). Solo "termopanel" y cumplimiento OGUC.
-- Habla en el idioma del cliente (si escribe en inglés, responde en inglés; si escribe en español, español).
-- Extrae TODOS los productos cuando vengan en lista/imagen/PDF y envíalos en UNA sola llamada a update_quote.
-- No inventes precios. Si falta información crítica, pregunta de forma eficiente:
-  * Si faltan 2-3 datos relacionados (ej: medidas + color), pregunta ambos en la misma respuesta.
-  * Si falta solo 1 dato clave, pregunta solo ese.
-  * Prioriza: tipo de producto > medidas > color > comuna.
+1) PERSONALIDAD:
+- Hablas como un amigo experto: cálido, directo, confiable. Nunca como robot.
+- Usas "usted" siempre. Formal pero cercano.
+- Máximo 4-5 líneas por mensaje. Conversacional, no monólogos.
+- Frases naturales, nunca listas con guiones.
+- Si el cliente manda audio → transcribes mentalmente y respondes el contenido.
+- Si manda foto o plano → analizas y extraes medidas si es posible.
 
-OBJETIVO:
-1) Capturar items (tipo, medidas, qty)
-2) Color
-3) Comuna
-4) Cotizar (usando el sistema)
-5) Ofrecer cotización formal en Zoho Books (PDF)
+2) CLASIFICACIÓN DE CLIENTE (acumula en toda la conversación — NUNCA lo digas al cliente):
+Analiza CADA mensaje y actualiza internamente el perfil:
+TÉCNICO si menciona: Uw, transmitancia, W/m²K, dB, OGUC, DVH, cámaras, perfil, norma, sellos, envolvente, certificación, MINVU, zona térmica, eficiencia energética
+EMOCIONAL si menciona: ruido, frío, calor, confort, descanso, elegante, bonito, tranquilo, familia, dormitorio, diseño, lindo, seguridad, ahorro energía, revalorizar
+MIXTO: mezcla ambos → 60% emoción primero, 40% técnico al final
+Sin perfil claro: haz UNA pregunta: "¿Le preocupa más el aislamiento técnico o el confort y diseño para su hogar?"
+
+3) ESTILO POR PERFIL:
+Si TÉCNICO → datos duros, lenguaje numérico y normativo:
+  "Para zona fría le conviene PVC europeo con triple junta y DVH 4/16/4.
+   Nuestros perfiles WinHouse Softline logran Uw 1,3 W/m²K y reducción acústica hasta 36 dB.
+   Cumple OGUC 4.1.10 y certificación MINVU vigente.
+   Si me da las medidas le preparo la propuesta técnico-comercial con esos valores."
+Si EMOCIONAL → resultados en la vida del cliente, imágenes mentales:
+  "Lo que usted busca es convertir ese dormitorio en una zona de descanso tranquila y cálida.
+   Con nuestras ventanas PVC línea europea eliminamos el ruido de la calle y las filtraciones de aire frío.
+   Además elige el color y diseño que combine con su habitación.
+   Si me manda foto y medidas aproximadas le armo una propuesta con opciones de diseño y precio."
+Si MIXTO → primero beneficio emocional, luego dato técnico que lo respalda.
+
+4) FLUJO DE VENTA — 5 PASOS EN ORDEN:
+Paso 1 DIAGNÓSTICO: ¿ruido, frío, estética, seguridad, OGUC, proyecto nuevo?
+Paso 2 SOLUCIÓN: recomendar máximo 1-2 productos WinHouse o Sodal.
+Paso 3 PROPUESTA PDF: cuando tenga producto + medidas + color + comuna → llamar update_quote.
+Paso 4 OBJECIONES:
+  "caro" → "El PVC convencional dura 8 años, WinHouse 15 con garantía. ¿Cuánto vale no cambiarlo dos veces?"
+  "lo pienso" → "¿Qué información le falta para decidir con confianza hoy?"
+  "vi algo más barato" → "¿Me comenta la marca? Le explico la diferencia en perfiles y vidrio."
+  "quiero ver primero" → "Hacemos visita técnica gratuita en su domicilio sin compromiso. ¿Le viene esta semana?"
+  "no tengo presupuesto" → "Podemos cotizar por etapas. ¿Qué habitación es más urgente?"
+Paso 5 CIERRE: visita técnica gratuita + 50% anticipo para agendar instalación.
+  Urgencia ética (solo verdades):
+  - "Los precios WinHouse se actualizan cada trimestre."
+  - "La agenda de instalación de este mes se está llenando."
+  - "La visita es gratuita y sin compromiso — ¿le viene mejor mañana o el jueves?"
+
+5) PRODUCTOS:
+- WinHouse PVC: Softline 82, 5 cámaras, Uw 1,3 W/m²K, Rw 36 dB, DVH 4/16/4, OGUC 4.1.10
+- Sodal Aluminio: línea comercial y residencial
+- Colores: blanco, negro, nogal, roble, grafito, gris
+- Araucanía = Zona térmica 4-5 OGUC (alta exigencia)
+- Empresa certificada MINVU eficiencia energética envolventes
+
+6) REGLAS DURAS:
+✅ Solo WinHouse PVC y Sodal Aluminio — nunca otras marcas
+✅ update_quote UNA sola vez con todos los items completos
+✅ Nunca precios sin medidas y color confirmados
+✅ Visita técnica SIEMPRE gratuita y sin compromiso
+✅ Siempre ofrece explicar en términos simples si detectas lenguaje muy técnico
+✅ Si no sabes algo → "Lo verifico con el técnico y le confirmo hoy"
+❌ No inventes especificaciones técnicas
+❌ No descuentes sin autorización
 `.trim();
 
 const tools = [
@@ -811,9 +828,46 @@ const tools = [
 ];
 
 /* =========================
+   15b) PERFIL ACUMULATIVO + HANDOFF
+   ========================= */
+function detectarPerfil(text, session) {
+  if (!session.perfilAcumulado) session.perfilAcumulado = { tecnico: 0, emocional: 0 };
+  const t = (text.toLowerCase().match(
+    /(uw|transmitancia|w\/m|db|oguc|perfil|c[aá]mara|camaras|sellos|norma|envolvente|dvh|minvu|certificad|zona.t[eé]rmic)/g
+  ) || []).length;
+  const e = (text.toLowerCase().match(
+    /(ruido|fr[ií]o|calor|confort|descanso|elegante|tranquil|familia|dise[ñn]o|lindo|bonito|dormitorio|seguridad|silencio|revalori)/g
+  ) || []).length;
+  session.perfilAcumulado.tecnico  += t;
+  session.perfilAcumulado.emocional += e;
+  const tot = session.perfilAcumulado;
+  if (tot.tecnico  > tot.emocional + 1) return "TECNICO";
+  if (tot.emocional > tot.tecnico  + 1) return "EMOCIONAL";
+  return "MIXTO";
+}
+
+const ESCALADA_KW = [
+  "hablar con persona", "hablar con alguien", "quiero hablar",
+  "llameme", "llámeme", "no entiendo", "muy confuso",
+  "enojado", "molesto", "pesimo", "pésimo", "mal servicio"
+];
+function necesitaHumano(text) {
+  return ESCALADA_KW.some(k => text.toLowerCase().includes(k));
+}
+
+/* =========================
    16) RUN AI
    ========================= */
 async function runAI(session, userText) {
+  // ── Handoff humano ──────────────────────────────────────────────────────
+  if (necesitaHumano(userText)) {
+    session.stage = "escalado_humano";
+    return {
+      role: "assistant",
+      content: `Entiendo, le conecto con nuestro equipo directamente.\n📱 ${COMPANY.PHONE}\n⏰ Lun-Vie 9:00-18:00 | Sáb 9:00-13:00`
+    };
+  }
+
   const d = session.data;
   const missing = nextMissing(d);
   const done = isComplete(d);
@@ -841,9 +895,12 @@ async function runAI(session, userText) {
 
   if (!done) status.push(`FALTA: "${missing}" (pregunta de forma eficiente según contexto).`);
 
+  // ── Perfil acumulativo ───────────────────────────────────────────────────
+  const perfil = detectarPerfil(userText, session);
+
   const msgs = [
     { role: "system", content: SYSTEM_PROMPT },
-    { role: "system", content: status.join("\n") },
+    { role: "system", content: status.join("\n") + `\n\nPERFIL CLIENTE: ${perfil} (tecnico=${session.perfilAcumulado?.tecnico||0} / emocional=${session.perfilAcumulado?.emocional||0})` },
     ...session.history.slice(-12),
     { role: "user", content: userText },
   ];
@@ -861,11 +918,10 @@ async function runAI(session, userText) {
 }
 
 /* =========================
-   17) QUOTE APPLY (★ MEJORADO: valida source)
+   17) QUOTE APPLY
    ========================= */
 async function priceAll(d, customer_id = "") {
   if (!ALLOWED_SUPPLIERS.includes(d.supplier)) d.supplier = "WINHOUSE_PVC";
-
   d.items = sortItemsForCotizador(d.items);
 
   const items = d.items.map((it) => {
@@ -890,82 +946,31 @@ async function priceAll(d, customer_id = "") {
 
   if (PRICER_MODE === "cotizador_winhouse") {
     if (d.supplier !== "WINHOUSE_PVC") {
-      return {
-        ok: false,
-        error: "La línea de aluminio requiere cotización manual. El cotizador online actual cubre Winhouse PVC.",
-      };
+      return { ok: false, error: "La línea de aluminio requiere cotización manual." };
     }
-
     if (!cotizadorWinhouseConfigured()) {
-      return {
-        ok: false,
-        error: "Cotizador Winhouse no configurado en Railway.",
-      };
+      return { ok: false, error: "Cotizador Winhouse no configurado en Railway." };
     }
-
     const mapped = d.items.map((it) => mapQuoteItemToCotizador(it, d.default_color || ""));
     const unsupported = mapped.filter((x) => x.unsupported);
-
     if (unsupported.length > 0) {
       for (const u of unsupported) {
         const target = d.items.find((it) => it === u.raw);
-        if (target) {
-          target.price_warning = u.reason;
-          target.source = "cotizador_manual";
-          target.confidence = "manual";
-        }
+        if (target) { target.price_warning = u.reason; target.source = "cotizador_manual"; target.confidence = "manual"; }
       }
-
-      return {
-        ok: false,
-        error: "Uno o más ítems requieren validación manual antes de cotizar.",
-      };
+      return { ok: false, error: "Uno o más ítems requieren validación manual." };
     }
-
-    const payload = {
-      items: mapped.map((x) => x.payload),
-      cliente: {
-        nombre: d.name || "Cliente WhatsApp",
-        telefono: customer_id || "",
-      },
-    };
-
+    const payload = { items: mapped.map((x) => x.payload), cliente: { nombre: d.name || "Cliente WhatsApp", telefono: customer_id || "" } };
     const r = await cotizarWinhouse(payload);
-
-    if (!r.ok || !r.json) {
-      return {
-        ok: false,
-        error: r.json?.error || r.error || "Cotizador Winhouse no disponible.",
-      };
-    }
-
+    if (!r.ok || !r.json) return { ok: false, error: r.json?.error || r.error || "Cotizador Winhouse no disponible." };
     const applied = applyCotizadorResultToSessionItems(d.items, r.json);
     d.grand_total = Number(r.json?.resumen?.subtotal_neto || applied.total || 0) || null;
-
-    if (applied.escaladas > 0) {
-      return {
-        ok: false,
-        error: "La cotización base quedó armada, pero uno o más ítems requieren validación manual.",
-        partial: true,
-        total: d.grand_total,
-      };
-    }
-
-    return {
-      ok: true,
-      total: d.grand_total,
-      source: "cotizador_winhouse",
-    };
+    if (applied.escaladas > 0) return { ok: false, error: "La cotización base quedó armada, pero uno o más ítems requieren validación manual.", partial: true, total: d.grand_total };
+    return { ok: true, total: d.grand_total, source: "cotizador_winhouse" };
   }
 
   if (PRICER_MODE === "winperfil" && WINPERFIL_API_BASE) {
-    const payload = {
-      supplier: d.supplier,
-      message: "",
-      items,
-      customer_id: customer_id || "",
-      meta: { comuna: d.comuna || "", zona_termica: d.zona_termica || null },
-    };
+    const payload = { supplier: d.supplier, message: "", items, customer_id: customer_id || "", meta: { comuna: d.comuna || "", zona_termica: d.zona_termica || null } };
     const r = await quoteByWinperfil(payload);
     if (r.ok) {
       if (r.items && r.items.length) {
@@ -974,30 +979,19 @@ async function priceAll(d, customer_id = "") {
           d.items[i].total_price = r.items[i].total_price;
           d.items[i].source = r.items[i].source || "unknown";
           d.items[i].confidence = r.items[i].confidence || "unknown";
-
-          if (r.items[i].confidence === "low") {
-            d.items[i].price_warning = "⚠️ Precio estimado (histórico limitado). Sujeto a validación.";
-          } else if (r.items[i].source === "winperfil_estimated") {
-            d.items[i].price_warning = "⚠️ Precio estimado desde histórico Winperfil.";
-          }
+          if (r.items[i].confidence === "low") d.items[i].price_warning = "⚠️ Precio estimado (histórico limitado). Sujeto a validación.";
+          else if (r.items[i].source === "winperfil_estimated") d.items[i].price_warning = "⚠️ Precio estimado desde histórico Winperfil.";
         }
       } else if (r.total) {
         const unitEach = Math.round(r.total / d.items.length);
-        for (const it of d.items) {
-          it.unit_price = unitEach;
-          it.total_price = unitEach * it.qty;
-          it.source = "unknown";
-        }
+        for (const it of d.items) { it.unit_price = unitEach; it.total_price = unitEach * it.qty; it.source = "unknown"; }
       }
       d.grand_total = r.total;
     }
     return r;
   }
 
-  return {
-    ok: false,
-    error: "Cotización automática no disponible por el momento. Sistema operativo en modo manual.",
-  };
+  return { ok: false, error: "Cotización automática no disponible. Sistema operativo en modo manual." };
 }
 
 /* =========================
@@ -1125,57 +1119,38 @@ async function zhUpsert(ses, waId) {
     if (a) deal.Account_Name = { id: a };
     ses.zohoDealId = await zhCreate("Deals", deal);
   }
-  // @patch:sales-os:lead-event:start
   fireAndForget("trackLeadEvent.zhUpsert", trackLeadEvent(buildLeadPayload(ses, waId)));
-  // @patch:sales-os:lead-event:end
 }
 
-// ★ NUEVO: Crear Estimate en Zoho Books
-// 🚀 Crear estimate en Zoho Books
 async function zhBooksCreateEstimate(data, customer_name, phone) {
   if (!REQUIRE_ZOHO || !ZOHO.ORG_ID) return null;
-
   try {
-    const h = await zhH(); // headers con token válido
+    const h = await zhH();
     let customer_id = null;
-
-    // 1️⃣ Buscar cliente
     try {
       const searchResp = await axios.get(
-       `${ZOHO.BOOKS_API}/contacts?organization_id=${ZOHO.ORG_ID}&contact_name=${encodeURIComponent(customer_name || "Cliente WhatsApp")}`,
+        `${ZOHO.BOOKS_API}/contacts?organization_id=${ZOHO.ORG_ID}&contact_name=${encodeURIComponent(customer_name || "Cliente WhatsApp")}`,
         { headers: h, httpsAgent }
       );
-      if (searchResp.data?.contacts?.length) {
-        customer_id = searchResp.data.contacts[0].contact_id;
-      }
+      if (searchResp.data?.contacts?.length) customer_id = searchResp.data.contacts[0].contact_id;
     } catch {}
 
-    // 2️⃣ Crear cliente si no existe
     if (!customer_id) {
       const createResp = await axios.post(
         `${ZOHO.BOOKS_API}/contacts?organization_id=${ZOHO.ORG_ID}`,
-        {
-          contact_name: customer_name || "Cliente WhatsApp",
-          contact_type: "customer",
-          contact_persons: [{ first_name: customer_name || "Cliente", phone: phone || "" }]
-        },
+        { contact_name: customer_name || "Cliente WhatsApp", contact_type: "customer", contact_persons: [{ first_name: customer_name || "Cliente", phone: phone || "" }] },
         { headers: h, httpsAgent }
       );
       customer_id = createResp.data?.contact?.contact_id;
     }
 
-    if (!customer_id) {
-      logErr("zhBooksCreateEstimate", new Error("No se pudo crear/encontrar cliente en Books"));
-      return null;
-    }
+    if (!customer_id) { logErr("zhBooksCreateEstimate", new Error("No se pudo crear/encontrar cliente en Books")); return null; }
 
-    // 3️⃣ Crear line items
     const line_items = data.items.map(it => {
       const prod = it.product || "Ventana";
       const color = it.color || data.default_color || "Blanco";
       const measures = it.measures || "";
       const glass = process.env.DEFAULT_GLASS || "Termopanel DVH estándar";
-
       let tipo = "Ventana";
       const p = prod.toUpperCase();
       if (p.includes("PUERTA")) tipo = "Puerta";
@@ -1184,10 +1159,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
       else if (p.includes("OSCILO")) tipo = "Ventana Oscilobatiente";
       else if (p.includes("ABAT")) tipo = "Ventana Abatible";
       else if (p.includes("MARCO") || p.includes("FIJO")) tipo = "Marco Fijo";
-
-  const desc = it.descripcion
-        || `${tipo} PVC | ${color} | ${measures} | ${glass}`;
-
+      const desc = it.descripcion || `${tipo} PVC | ${color} | ${measures} | ${glass}`;
       return {
         item_id: ZOHO.DEFAULT_ITEM_ID,
         name: tipo,
@@ -1200,27 +1172,23 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 
     const estimatePayload = {
       customer_id,
-      subject: "Propuesta Comercial",
+      subject: "Propuesta Técnico Comercial",
       line_items,
       reference_number: data.quote_num || "",
-      notes: `Cotización generada por Activa Inversiones EIRL vía WhatsApp IA.\nProveedor: ${data.supplier || "PVC LINEA EUROPEA"}\nComuna: ${data.comuna || ""}\n${data.zona_termica ? `Zona térmica OGUC: Z${data.zona_termica}` : ""}`.trim(),
+      notes: `Propuesta generada por ${COMPANY.NAME} vía WhatsApp IA.\nProveedor: ${data.supplier || "PVC LINEA EUROPEA"}\nComuna: ${data.comuna || ""}\n${data.zona_termica ? `Zona térmica OGUC: Z${data.zona_termica}` : ""}`.trim(),
       terms: "Válida por 15 días hábiles. Precios netos + IVA.\nSujeta a rectificación técnica en terreno.\nCumplimiento OGUC 4.1.10 (acondicionamiento térmico)."
     };
 
-    // 4️⃣ POST estimate
     const { data: estResp } = await axios.post(
       `${ZOHO.BOOKS_API}/estimates?organization_id=${ZOHO.ORG_ID}`,
       estimatePayload,
       { headers: h, httpsAgent }
     );
-
     logInfo("zhBooksCreateEstimate", `Estimate creado: ${estResp.estimate?.estimate_id}`);
     return estResp.estimate;
-
   } catch (e) {
     console.error("ZOHO STATUS:", e.response?.status);
     console.error("ZOHO DATA:", JSON.stringify(e.response?.data || {}, null, 2));
-    console.error("ZOHO MESSAGE:", e.message || String(e));
     logErr("zhBooksCreateEstimate", e);
     return null;
   }
@@ -1229,54 +1197,36 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 /* =========================
    19) ENDPOINTS
    ========================= */
-// Descargar PDF del estimate desde Zoho Books
 async function zhBooksDownloadEstimatePdf(estimateId) {
   const h = await zhH();
   const url = `${ZOHO.BOOKS_API}/estimates/${estimateId}?organization_id=${ZOHO.ORG_ID}&accept=pdf`;
-  const { data } = await axios.get(url, {
-    headers: h,
-    httpsAgent,
-    responseType: "arraybuffer",
-    timeout: 30000,
-  });
+  const { data } = await axios.get(url, { headers: h, httpsAgent, responseType: "arraybuffer", timeout: 30000 });
   return Buffer.from(data);
 }
 
-// Subir media a WhatsApp y enviar como documento
 async function waSendPdf(to, pdfBuffer, filename, caption) {
   const FormData = (await import("form-data")).default;
   const form = new FormData();
   form.append("messaging_product", "whatsapp");
   form.append("type", "document");
   form.append("file", pdfBuffer, { filename, contentType: "application/pdf" });
-
-  const uploadResp = await axiosWA.post(`/${META.PHONE_ID}/media`, form, {
-    headers: form.getHeaders(),
-    timeout: 30000,
-  });
+  const uploadResp = await axiosWA.post(`/${META.PHONE_ID}/media`, form, { headers: form.getHeaders(), timeout: 30000 });
   const mediaId = uploadResp.data?.id;
   if (!mediaId) throw new Error("No se pudo subir PDF a WhatsApp");
-
   await axiosWA.post(`/${META.PHONE_ID}/messages`, {
-    messaging_product: "whatsapp",
-    to,
-    type: "document",
-    document: {
-      id: mediaId,
-      filename,
-      caption: caption || "",
-    },
+    messaging_product: "whatsapp", to, type: "document",
+    document: { id: mediaId, filename, caption: caption || "" },
   });
 }
-app.get("/health", async (_req, res) => {
-  const cotizadorStatus = cotizadorWinhouseConfigured() ? "configured" : "disabled";
 
+app.get("/health", async (_req, res) => {
   res.json({
     ok: true,
-    v: "9.2.3_m6c",
+    v: "9.3.0",
+    agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
     winperfil_api: WINPERFIL_API_BASE ? "set" : "missing",
-    cotizador_winhouse: cotizadorStatus,
+    cotizador_winhouse: cotizadorWinhouseConfigured() ? "configured" : "disabled",
     zoho_books: ZOHO.ORG_ID ? "enabled" : "disabled",
     sales_os_bridge: salesOsConfigured() ? "enabled" : "disabled",
     internal_operator_bridge: INTERNAL_OPERATOR_TOKEN ? "enabled" : "missing",
@@ -1293,57 +1243,32 @@ app.post("/quote", async (req, res) => {
     const message = String(req.body?.message || "").trim();
     const supplier = req.body?.supplier || detectSupplier(message);
     const items = Array.isArray(req.body?.items) ? req.body.items : null;
-    if (!ALLOWED_SUPPLIERS.includes(supplier))
-      return res.status(400).json({ ok: false, error: "Proveedor no permitido" });
-    const payload = {
-      supplier, message, items: items || [],
-      customer_id: String(req.body?.customer_id || ""), meta: req.body?.meta || {},
-    };
-    if ((!payload.items || payload.items.length === 0) && !payload.message)
-      return res.status(400).json({ ok: false, error: "Falta message o items" });
+    if (!ALLOWED_SUPPLIERS.includes(supplier)) return res.status(400).json({ ok: false, error: "Proveedor no permitido" });
+    const payload = { supplier, message, items: items || [], customer_id: String(req.body?.customer_id || ""), meta: req.body?.meta || {} };
+    if ((!payload.items || payload.items.length === 0) && !payload.message) return res.status(400).json({ ok: false, error: "Falta message o items" });
     const r = await quoteByWinperfil(payload);
     res.json(r);
-  } catch (e) {
-    logErr("/quote", e);
-    res.status(500).json({ ok: false, error: "Error interno /quote" });
-  }
+  } catch (e) { logErr("/quote", e); res.status(500).json({ ok: false, error: "Error interno /quote" }); }
 });
 
 // @patch:sales-os:operator-route:start
 app.post("/internal/operator-send", async (req, res) => {
   try {
-    if (!validInternalOperatorToken(req)) {
-      return res.status(401).json({ ok: false, error: "unauthorized" });
-    }
-
+    if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
     const phone = normPhone(req.body?.phone || "");
     const text = String(req.body?.text || "").trim();
-    const operatorName =
-      String(req.body?.operator_name || "Operador").trim() || "Operador";
-
+    const operatorName = String(req.body?.operator_name || "Operador").trim() || "Operador";
     if (!phone) return res.status(400).json({ ok: false, error: "phone_required" });
     if (!text) return res.status(400).json({ ok: false, error: "text_required" });
-
     const ses = getSession(phone);
     ses.history.push({ role: "assistant", content: text });
     saveSession(phone, ses);
-
-    await waSendH(phone, text, true, {
-      actor_type: "operator",
-      actor_name: operatorName,
-      customer_name: ses.data?.name || "",
-      metadata: { source: "sales_os_operator" },
-      quote_status: ses.data?.stageKey || undefined,
-      track: false,
-    });
-
+    await waSendH(phone, text, true, { actor_type: "operator", actor_name: operatorName, customer_name: ses.data?.name || "", metadata: { source: "sales_os_operator" }, quote_status: ses.data?.stageKey || undefined, track: false });
     res.json({ ok: true, sent: true, phone });
-  } catch (e) {
-    logErr("/internal/operator-send", e);
-    res.status(500).json({ ok: false, error: "internal_operator_send_failed" });
-  }
+  } catch (e) { logErr("/internal/operator-send", e); res.status(500).json({ ok: false, error: "internal_operator_send_failed" }); }
 });
 // @patch:sales-os:operator-route:end
+
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
   if (!verifySig(req)) return;
@@ -1391,23 +1316,13 @@ app.post("/webhook", async (req, res) => {
         : "[PDF sin texto]";
     }
 
-    // @patch:sales-os:inbound-track:start
-    fireAndForget(
-      "trackConversationEvent.inbound",
-      trackConversationEvent({
-        channel: "whatsapp",
-        external_id: waId,
-        customer_name: ses.data?.name || "",
-        direction: "inbound",
-        actor_type: "customer",
-        actor_name: "Cliente",
-        message_type: type || "text",
-        body: userText,
-        metadata: { source: "whatsapp_webhook", msg_id: msgId, raw_type: type },
-        quote_status: ses.data?.stageKey || undefined,
-        unread_count: 1,
-      })
-    );
+    fireAndForget("trackConversationEvent.inbound", trackConversationEvent({
+      channel: "whatsapp", external_id: waId, customer_name: ses.data?.name || "",
+      direction: "inbound", actor_type: "customer", actor_name: "Cliente",
+      message_type: type || "text", body: userText,
+      metadata: { source: "whatsapp_webhook", msg_id: msgId, raw_type: type },
+      quote_status: ses.data?.stageKey || undefined, unread_count: 1,
+    }));
 
     const control = await getConversationControl(waId);
     if (control?.ai_paused || control?.operator_status === "human") {
@@ -1416,22 +1331,26 @@ app.post("/webhook", async (req, res) => {
       logInfo("takeover", `AI en pausa para ${waId}`);
       return;
     }
-    // @patch:sales-os:inbound-track:end
-    if (/^reset|nueva cotizaci[oÃ³]n|empezar de nuevo/i.test(userText)) {
+
+    if (/^reset|nueva cotizaci[oó]n|empezar de nuevo/i.test(userText)) {
       ses.data = emptyData();
       ses.pdfSent = false;
-      await waSendH(
-        waId,
-        "ðŸ”„ Listo, empecemos de cero.\nÂ¿QuÃ© ventanas o puertas necesitas?",
-        true,
-        { customer_name: "" }
-      );
+      ses.followupEnviado = false;
+      ses.perfilAcumulado = { tecnico: 0, emocional: 0 };
+      await waSendH(waId, "Listo, empecemos de cero.\n¿Qué ventanas o puertas necesita?", true, { customer_name: "" });
       saveSession(waId, ses);
       return;
     }
 
     ses.history.push({ role: "user", content: userText });
     const ai = await runAI(ses, userText);
+
+    // Handoff humano detectado en runAI
+    if (ses.stage === "escalado_humano" && ai?.content) {
+      await waSendH(waId, ai.content, true);
+      saveSession(waId, ses);
+      return;
+    }
 
     if (ai?.tool_calls?.length) {
       for (const tc of ai.tool_calls) {
@@ -1440,7 +1359,6 @@ app.post("/webhook", async (req, res) => {
         try { args = JSON.parse(tc.function.arguments || "{}"); } catch { continue; }
 
         const d = ses.data;
-
         if (args.supplier && ALLOWED_SUPPLIERS.includes(args.supplier)) d.supplier = args.supplier;
         else d.supplier = detectSupplier(userText + " " + safeJson(args));
 
@@ -1477,7 +1395,7 @@ app.post("/webhook", async (req, res) => {
       const wantsPdf = isComplete(d) && d.grand_total && (d.wants_pdf || /pdf|cotiza|cotizaci[oó]n/i.test(userText));
 
       if (wantsPdf && !ses.pdfSent) {
-        await waSendH(waId, "Perfecto. Preparando tu cotización formal en Zoho Books… 📄", true);
+        await waSendH(waId, "Perfecto. Preparando su propuesta técnico-comercial en Zoho Books… 📄", true);
         const qn = `COT-${new Date().toISOString().slice(0,10).replace(/-/g,"")}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
         ses.quoteNum = qn;
         d.quote_num = qn;
@@ -1487,54 +1405,37 @@ app.post("/webhook", async (req, res) => {
           if (estimate?.estimate_id) {
             ses.zohoEstimateId = estimate.estimate_id;
             ses.pdfSent = true;
-
-            // Enviar link del estimate (o PDF si Zoho lo permite descargar)
-           try {
+            ses.stage = "propuesta";
+            try {
               const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
-              await waSendPdf(waId, pdfBuf, `${qn}.pdf`, `✅ Tu cotización ${qn} está lista.`);
+              await waSendPdf(waId, pdfBuf, `${qn}.pdf`, `✅ Su propuesta ${qn} está lista.`);
             } catch (pdfErr) {
               logErr("waSendPdf", pdfErr);
               const estimateUrl = estimate.estimate_url || "";
-              await waSendH(waId, `✅ Tu cotización ${qn} está lista.\n\n📎 Link: ${estimateUrl}`, true);
+              await waSendH(waId, `✅ Su propuesta ${qn} está lista.\n\n📎 Link: ${estimateUrl}`, true);
             }
-
             zhUpsert(ses, waId).then(() => {
               if (ses.zohoDealId && estimate.estimate_number) {
                 return zhNote("Deals", ses.zohoDealId, `Cotización ${qn}`, `Estimate generado: ${estimate.estimate_number}\nTotal: $${Number(d.grand_total).toLocaleString("es-CL")} +IVA`);
               }
             }).catch(() => {});
-
-            // @patch:sales-os:quote-event:start
-            fireAndForget(
-              "trackQuoteEvent.formal",
-              trackQuoteEvent(
-                buildQuotePayload(ses, waId, {
-                  status: "formal_sent",
-                  zoho_estimate_id: estimate.estimate_id,
-                  zoho_estimate_url: estimate.estimate_url || "",
-                  quote_number: qn,
-                })
-              )
-            );
-            // @patch:sales-os:quote-event:end
+            fireAndForget("trackQuoteEvent.formal", trackQuoteEvent(buildQuotePayload(ses, waId, {
+              status: "formal_sent", zoho_estimate_id: estimate.estimate_id,
+              zoho_estimate_url: estimate.estimate_url || "", quote_number: qn,
+            })));
           } else {
             throw new Error("No se pudo crear estimate en Zoho Books");
           }
         } catch (e) {
           logErr("Zoho Books Estimate", e);
-          await waSendH(waId, "Tuve un problema generando la cotización en Zoho Books. Lo preparo manual 🙏", true);
+          await waSendH(waId, "Tuve un problema generando la propuesta en Zoho Books. Lo preparo manual 🙏", true);
         }
       } else {
         let reply = (ai.content || "").replace(/<PROFILE:\w+>/gi, "").trim();
         if (!reply) {
-          if (!isComplete(d)) {
-            reply = `Perfecto, para avanzar necesito: ${nextMissing(d)}.`;
-          } else if (!d.grand_total) {
-            const err = d.items[0]?.price_warning || "tu sistema local está apagado";
-            reply = `Ya tengo los datos, pero hubo un problema conectando a la fábrica para el cálculo (${err}). ¡En breve te lo confirmo!`;
-          } else {
-            reply = "¡Todo listo! ¿Deseas que te envíe la cotización formal en Zoho Books?";
-          }
+          if (!isComplete(d)) reply = `Perfecto, para avanzar necesito: ${nextMissing(d)}.`;
+          else if (!d.grand_total) reply = `Ya tengo los datos, pero hubo un problema conectando al cotizador. ¡En breve le confirmo!`;
+          else reply = "¡Todo listo! ¿Desea que le envíe la propuesta formal en Zoho Books?";
         }
         const parts = reply.split(/\n\n+/).filter(Boolean);
         if (parts.length > 1) await waSendMultiH(waId, parts, true);
@@ -1544,7 +1445,7 @@ app.post("/webhook", async (req, res) => {
       }
     } else {
       let reply = (ai?.content || "").replace(/<PROFILE:\w+>/gi, "").trim();
-      if (!reply) reply = "No te entendí, ¿me repites? 🤔";
+      if (!reply) reply = "No le entendí, ¿me repite? 🤔";
       const parts = reply.split(/\n\n+/).filter(Boolean);
       if (parts.length > 1) await waSendMultiH(waId, parts, true);
       else await waSendH(waId, parts[0], true);
@@ -1561,10 +1462,28 @@ app.post("/webhook", async (req, res) => {
 });
 
 /* =========================
-   20) START
+   20) FOLLOW-UP AUTOMÁTICO 2H
+   ========================= */
+setInterval(async () => {
+  for (const [waId, ses] of sessions.entries()) {
+    const inactMin = (Date.now() - (ses.lastActivity || ses.lastAt || Date.now())) / 60000;
+    if (inactMin > 120 && !ses.followupEnviado && ses.stage === "propuesta") {
+      try {
+        await waSendH(
+          waId,
+          `Hola${ses.data?.name ? " " + ses.data.name : ""}, ¿pudo revisar la propuesta que le preparé? Si tiene dudas de medidas o materiales con gusto le ayudo 🏠`,
+          true
+        );
+        ses.followupEnviado = true;
+        logInfo("followup", `Enviado a ${waId}`);
+      } catch (e) { logErr("followup", e); }
+    }
+  }
+}, 30 * 60 * 1000);
+
+/* =========================
+   21) START
    ========================= */
 app.listen(PORT, () => {
-  console.log(`🚀 Ferrari 9.2.3 — port=${PORT} pricer=${PRICER_MODE} winperfil=${WINPERFIL_API_BASE ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"}`);
+  console.log(`🚀 Ferrari 9.3.0 — Marcelo Cifuentes — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"}`);
 });
-
-
