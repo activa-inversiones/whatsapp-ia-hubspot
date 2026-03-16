@@ -134,8 +134,8 @@ const COMPANY = {
 
 // @patch:sales-os:config:start
 const AGENT_NAME = process.env.AGENT_NAME || "Marcelo Cifuentes";
-const INTERNAL_OPERATOR_TOKEN =
-  process.env.OPERATOR_API_TOKEN || process.env.SALES_OS_OPERATOR_TOKEN || "";
+// [F4] Token unificado — solo SALES_OS_OPERATOR_TOKEN, sin fallback cruzado
+const INTERNAL_OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || "";
 // @patch:sales-os:config:end
 
 const STAGES = {
