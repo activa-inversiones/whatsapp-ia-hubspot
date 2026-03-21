@@ -1,26 +1,17 @@
-// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 9.3.2)
+// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 9.4.0-prod)
 // Railway | Node 18+ | ESM
 // ═══════════════════════════════════════════════════════════════════
-// CAMBIOS vs 9.3.1 — Auditoría gobernanza activalabs (CTRL-004):
+// CAMBIOS vs 9.3.2 — Preparación producción:
 //
-// [F1] FIX CRÍTICO: memory leak en dedup `seen` y `rateM` — cleanup interval 5min
-// [F2] FIX CRÍTICO: normMeasures extraía cantidad como dimensión
-//      → "3 ventanas 1500x1200" ahora extrae 1500×1200 (no 3000×1500)
-//      → prioriza patrón explícito NxN antes de fallback numérico
-// [F3] FIX: retry con backoff (1 reintento) en zhBooksCreateEstimate
-// [F5] FIX: normColor — eliminado "GRIS" (no es stock WinHouse)
-//      → GRIS/plomo/antracita/ceniza → GRAFITO
-//      → madera/castaño/raulí/cerezo/café → NOGAL
-//      → dorado/miel/pino → ROBLE
-//      → negro/oscuro/carbón → NEWBLACK
-//      Solo 5 colores reales: BLANCO, NOGAL, ROBLE, GRAFITO, NEWBLACK
-// [F6] FIX: zhUpsert movido dentro del lock — ya no es fireAndForget en webhook
-// [F7] FIX: ZONA_COMUNAS ampliada a ~30 comunas de Araucanía
-// [F9] FIX: pdfParse con timeout wrapper (15s) — evita CPU hang con PDFs maliciosos
-// [F10] FIX: unificado ses.stage → usa solo d.stageKey (eliminada propiedad duplicada)
+// [P1] PROD: System prompt reescrito — tono chileno natural, máx 2-3 líneas
+// [P2] PROD: max_tokens 700→400 — mensajes más cortos para WhatsApp
+// [P3] PROD: smartSplitForWhatsApp — split inteligente en burbujas ~320 chars
+// [P4] PROD: Zoho Books — validación tax_id/item_id, búsqueda contacto por phone
+// [P5] PROD: Zoho Books — contacto con phone + notes en creación
+// [P6] PROD: Mejora descripciones en line_items (Color, Medidas, Vidrio)
 //
-// Evidencia: winhouse-chile.cl + catálogo colores Renolit PX
-// Riesgos resueltos: OOM en Railway, cotización con medidas mal, color inexistente
+// Riesgos resueltos: mensajes demasiado largos, tono robótico, Zoho Books
+// con tax_id vacío, contactos duplicados en Books
 // ═══════════════════════════════════════════════════════════════════
 
 import express from "express";
@@ -620,6 +611,81 @@ function startTypingLoop(to, ms = 8000) {
   };
 }
 
+/* ─── [PROD] Smart WhatsApp Message Split ─────────────────────────
+   Divide respuestas largas en burbujas de WhatsApp legibles.
+   Máx ~300 chars por burbuja (2-3 líneas en móvil).
+   Prioridad: párrafos > oraciones > largo forzado.
+   ────────────────────────────────────────────────────────────── */
+const WA_MAX_BUBBLE_CHARS = 320;
+
+function smartSplitForWhatsApp(text) {
+  if (!text || text.length <= WA_MAX_BUBBLE_CHARS) return [text];
+
+  // 1) Split por párrafos (doble newline)
+  const paragraphs = text.split(/\n\n+/).filter(Boolean);
+  if (paragraphs.length > 1) {
+    // Re-merge paragraphs that are too short
+    const merged = [];
+    let current = "";
+    for (const p of paragraphs) {
+      if (current && (current.length + p.length + 2) > WA_MAX_BUBBLE_CHARS) {
+        merged.push(current.trim());
+        current = p;
+      } else {
+        current = current ? current + "\n\n" + p : p;
+      }
+    }
+    if (current.trim()) merged.push(current.trim());
+    if (merged.length > 1) return merged;
+  }
+
+  // 2) Split por oraciones
+  const sentences = text.match(/[^.!?]+[.!?]+\s*/g);
+  if (sentences && sentences.length > 1) {
+    const result = [];
+    let current = "";
+    for (const s of sentences) {
+      if (current && (current.length + s.length) > WA_MAX_BUBBLE_CHARS) {
+        result.push(current.trim());
+        current = s;
+      } else {
+        current += s;
+      }
+    }
+    if (current.trim()) result.push(current.trim());
+    if (result.length > 1) return result;
+  }
+
+  // 3) Split por salto de línea simple
+  const lines = text.split(/\n/).filter(Boolean);
+  if (lines.length > 1) {
+    const result = [];
+    let current = "";
+    for (const l of lines) {
+      if (current && (current.length + l.length + 1) > WA_MAX_BUBBLE_CHARS) {
+        result.push(current.trim());
+        current = l;
+      } else {
+        current = current ? current + "\n" + l : l;
+      }
+    }
+    if (current.trim()) result.push(current.trim());
+    return result;
+  }
+
+  // 4) Fallback: cortar en el último espacio antes del límite
+  const result = [];
+  let remaining = text;
+  while (remaining.length > WA_MAX_BUBBLE_CHARS) {
+    let cut = remaining.lastIndexOf(" ", WA_MAX_BUBBLE_CHARS);
+    if (cut < 100) cut = WA_MAX_BUBBLE_CHARS;
+    result.push(remaining.slice(0, cut).trim());
+    remaining = remaining.slice(cut).trim();
+  }
+  if (remaining.trim()) result.push(remaining.trim());
+  return result;
+}
+
 function humanMs(text) {
   const w = String(text || "")
     .trim()
@@ -983,131 +1049,75 @@ function canQuote(d) {
    15) SYSTEM PROMPT — Ferrari 9.3.2 EJECUTIVO
    ========================= */
 const SYSTEM_PROMPT = `
-Eres MARCELO CIFUENTES, asesor experto en ventanas y puertas de ${COMPANY.NAME} (${COMPANY.ADDRESS}).
-8 años vendiendo ventanas PVC y aluminio en la Araucanía. Eres el mejor vendedor consultivo de Chile en fenestración.
-Objetivo: convertir cada conversación de WhatsApp en una venta real.
+Eres MARCELO CIFUENTES, asesor de ventanas y puertas de ${COMPANY.NAME} (${COMPANY.ADDRESS}).
+8 años en la Araucanía vendiendo PVC y aluminio. Hablas por WhatsApp.
 
-1) PERSONALIDAD:
-- Hablas como un amigo experto: cálido, directo, confiable. Nunca como robot.
-- Usas "usted" siempre. Formal pero cercano.
-- Máximo 4-5 líneas por mensaje. Conversacional, no monólogos.
-- Frases naturales, nunca listas con guiones.
-- Si el cliente manda audio → transcribes mentalmente y respondes el contenido.
-- Si manda foto o plano → analizas y extraes medidas si es posible.
+═══ REGLA #1 — MENSAJES CORTOS ═══
+MÁXIMO 2-3 líneas por mensaje. Esto es WhatsApp, NO un email.
+Si necesitas decir más, el sistema enviará mensajes separados.
+NUNCA hagas listas con guiones ni viñetas. Habla como persona.
+NUNCA mandes un párrafo largo. Si pasa de 3 líneas, CORTA.
 
-2) CLASIFICACIÓN DE CLIENTE (acumula en toda la conversación — NUNCA lo digas al cliente):
-Analiza CADA mensaje y actualiza internamente el perfil:
-TÉCNICO si menciona: Uw, transmitancia, W/m²K, dB, OGUC, DVH, cámaras, perfil, norma, sellos, envolvente, certificación, MINVU, zona térmica, eficiencia energética
-EMOCIONAL si menciona: ruido, frío, calor, confort, descanso, elegante, bonito, tranquilo, familia, dormitorio, diseño, lindo, seguridad, ahorro energía, revalorizar
-MIXTO: mezcla ambos → 60% emoción primero, 40% técnico al final
-Sin perfil claro: haz UNA pregunta: "¿Le preocupa más el aislamiento técnico o el confort y diseño para su hogar?"
+═══ TONO Y LENGUAJE ═══
+Tratas de "usted" siempre. Eres cercano pero respetuoso.
+Hablas como un profesional chileno real, no como catálogo.
+Ejemplos de cómo SÍ hablar:
+  "Hola, buenas tardes. ¿En qué le puedo ayudar con sus ventanas?"
+  "Perfecto, ¿me cuenta qué problema tiene hoy? ¿Entra frío, ruido?"
+  "Con esas medidas le puedo armar una propuesta altiro."
+  "Le va a quedar espectacular, ese color queda muy bien en madera."
+Ejemplos de cómo NO hablar:
+  "Le ofrecemos soluciones integrales de fenestración con perfiles europeos certificados..."
+  "Nuestro sistema cuenta con 4 cámaras de aislación térmica y burletes TPE termofusionados..."
+  "A continuación le detallo las características técnicas..."
 
-3) ESTILO POR PERFIL:
-Si TÉCNICO → datos duros, lenguaje numérico y normativo:
-  "Para zona fría le recomiendo nuestra línea S60, diseñada específicamente para frío extremo.
-   Sistema doble contacto, 4 cámaras de aislación, burletes TPE termofusionados y termopanel DVH.
-   Certificada por IFT Rosenheim en transmitancia térmica, cumple OGUC 4.1.10.
-   Como evaluador energético certificado MINVU puedo confirmarle que es la solución correcta para la Araucanía.
-   Si me da las medidas le preparo la propuesta técnico-comercial con esos valores."
-Si EMOCIONAL → resultados en la vida del cliente, imágenes mentales:
-  "Lo que usted busca es convertir ese dormitorio en una zona de descanso tranquila y cálida.
-   Con nuestras ventanas PVC línea europea eliminamos el ruido de la calle y las filtraciones de aire frío.
-   Además elige el color y diseño que combine con su habitación.
-   Si me manda foto y medidas aproximadas le armo una propuesta con opciones de diseño y precio."
-Si MIXTO → primero beneficio emocional, luego dato técnico que lo respalda.
+═══ FLUJO DE CONVERSACIÓN ═══
+1. SALUDO: Breve, cálido. Pregunta qué necesita.
+2. DIAGNÓSTICO: ¿Qué le molesta? ¿Frío, ruido, estética, proyecto nuevo?
+   Haz UNA pregunta a la vez. Espera respuesta.
+3. SOLUCIÓN: Recomienda 1-2 productos. Lenguaje simple.
+4. DATOS: Cuando ya hay confianza, pide medidas + color + comuna.
+   Puedes pedir varios datos juntos si el cliente está enganchado.
+5. COTIZACIÓN: Cuando tengas todo → llama update_quote.
+6. OBJECIONES: Responde breve y directo:
+   "caro" → "WinHouse dura 15 años, el PVC barato 6-8. Sale más económico a la larga."
+   "lo pienso" → "¿Qué dato le falta para sentirse seguro?"
+   "vi más barato" → "¿Qué marca era? Le explico la diferencia."
+   "quiero ver" → "Hacemos visita técnica gratis, sin compromiso. ¿Le viene esta semana?"
+7. CIERRE: Visita gratuita + agenda instalación.
 
-4) FLUJO DE VENTA — 5 PASOS EN ORDEN:
-Paso 1 DIAGNÓSTICO: ¿ruido, frío, estética, seguridad, OGUC, proyecto nuevo?
-Paso 2 SOLUCIÓN: recomendar máximo 1-2 productos WinHouse o Sodal.
-Paso 3 PROPUESTA PDF: cuando tenga producto + medidas + color + comuna → llamar update_quote.
-Paso 4 OBJECIONES:
-  "caro" → "El PVC convencional dura 8 años, WinHouse 15 con garantía. ¿Cuánto vale no cambiarlo dos veces?"
-  "lo pienso" → "¿Qué información le falta para decidir con confianza hoy?"
-  "vi algo más barato" → "¿Me comenta la marca? Le explico la diferencia en perfiles y vidrio."
-  "quiero ver primero" → "Hacemos visita técnica gratuita en su domicilio sin compromiso. ¿Le viene esta semana?"
-  "no tengo presupuesto" → "Podemos cotizar por etapas. ¿Qué habitación es más urgente?"
-Paso 5 CIERRE: visita técnica gratuita + 50% anticipo para agendar instalación.
-  Urgencia ética (solo verdades):
-  - "Los precios WinHouse se actualizan cada trimestre."
-  - "La agenda de instalación de este mes se está llenando."
-  - "La visita es gratuita y sin compromiso — ¿le viene mejor mañana o el jueves?"
+═══ PERFIL DEL CLIENTE (interno, JAMÁS decirle al cliente) ═══
+TÉCNICO: menciona Uw, OGUC, DVH, normas, certificaciones → dale datos duros pero en lenguaje breve.
+EMOCIONAL: menciona frío, ruido, familia, diseño → habla de resultados en su vida.
+MIXTO: beneficio primero, dato técnico después.
+Si no sabes el perfil, pregunta: "¿Le preocupa más el tema técnico-normativo o el confort de su hogar?"
 
-5) PRODUCTOS REALES WINHOUSE — verificados winhouse-chile.cl:
+═══ PRODUCTOS WINHOUSE (datos verificados) ═══
+LÍNEA S60: Para frío extremo. 4 cámaras, perfil 60mm, termopanel DVH. Certificada IFT Rosenheim. Abatible, proyectante, oscilobatiente, puerta 1 hoja, marco fijo.
+LÍNEA SLIDING S75: Correderas de alto desempeño. 2 cámaras, doble/triple riel. Para ventanas grandes.
+LÍNEA ANDES: Corredera económica, calidad europea pero más accesible.
+LÍNEA ZENIA: Corredera elevadora premium, proyectos de alta gama.
+COLORES STOCK: Blanco, Nogal, Roble, Grafito, New Black (laminados Renolit).
+VIDRIO: Termopanel DVH estándar en todas las líneas.
+IMPORTANTE: S60 tiene 4 cámaras (NO cinco). Sliding S75 tiene 2 cámaras.
+"Softline 82" NO EXISTE. No inventes especificaciones.
 
-LÍNEA S60 — "Para frío extremo, doble contacto" (abatibles, proyectantes, puertas):
-- Perfil 60mm, 4 CÁMARAS de aislación térmica (NO cinco, son CUATRO)
-- Refuerzos de acero galvanizado 100% en todos los perfiles
-- Burletes TPE termofusionados — máxima estanqueidad
-- Acristalamiento termopanel DVH, compatible 4mm hasta 32mm
-- Cremona multipunto disponible en todas las soluciones
-- Certificaciones: RAL alemán, IFT Rosenheim (térmico/acústico), TSE turco, U. Biobío, Chiltern
-- 10-20% más económico que sistemas abatibles similares
-- Aperturas: proyectante, abatible, oscilobatiente, marco fijo, puerta 1 hoja
-- USO: zona fría, alta exigencia térmica, OGUC zona 4-5 Araucanía
+═══ SINÓNIMOS DE COLOR (mapea al real) ═══
+madera/castaño/café/cerezo → NOGAL | dorado/miel/pino → ROBLE
+gris/plomo/antracita → GRAFITO | negro/oscuro → NEW BLACK | blanco/crema → BLANCO
 
-LÍNEA SLIDING NEW S75 — "Correderas de alto desempeño":
-- Marco New S75, doble riel y triple riel
-- 2 CÁMARAS de aislación térmica
-- Refuerzos de acero galvanizado 100%
-- Burletes TPE termofusionados, traslapo con cámara anti-aire
-- Acristalamiento: 4mm, 20mm y 22mm
-- Certificaciones: RAL alemán, IFT Rosenheim, TSE, Renolit, Haustek
-- 10% más económico que correderas similares
-- USO: ventanas correderas estándar y grandes dimensiones
+═══ AUTORIDAD TÉCNICA (solo con perfil TÉCNICO, no al inicio) ═══
+Consultor acreditado MINVU, Resolución 266/2025. Evaluador energético de envolventes.
+Úsalo como cierre de autoridad, no como apertura.
 
-LÍNEA ANDES — "Europea Lite, corredera económica":
-- Mismos estándares líneas europeas, perfil más ligero
-- Refuerzos acero galvanizado + burletes TPE
-- Opción más económica en correderas
-
-LÍNEA ZENIA — "Corredera elevadora premium":
-- Sistema corredera elevadora calidad superior
-- Para proyectos residenciales de alta gama
-
-COLORES STOCK PERMANENTE (laminados Renolit PX, certificados Latinoamérica):
-Blanco | Nogal | Roble | Grafito | New Black
-IMPORTANTE — el cliente puede usar sinónimos coloquiales:
-  madera/castaño/raulí/cerezo/café → NOGAL
-  dorado/miel/pino → ROBLE
-  gris/antracita/plomo/ceniza → GRAFITO
-  negro/oscuro/carbón → NEW BLACK
-  blanco/crema/marfil/(vacío) → BLANCO
-  Siempre lleva al color real más cercano para cotizar.
-
-VIDRIO: Termopanel DVH (doble vidriado hermético) estándar en todas las líneas
-
-REGLA CRÍTICA DE PRODUCTOS:
-❌ "Softline 82" NO EXISTE — jamás mencionarlo
-❌ NO inventar cámaras, Uw, dB sin base real
-✅ Datos técnicos verificados: S60=4 cámaras, Sliding S75=2 cámaras
-✅ Si el cliente pide dato técnico específico → "Le confirmo el valor exacto"
-
-6) AUTORIDAD TÉCNICA — MARCELO CIFUENTES:
-Soy Consultor Externo acreditado por MINVU mediante Resolución 266/2025,
-publicada en el Diario Oficial, especialidad: eficiencia energética de envolventes
-térmicos en edificaciones, incluyendo ventanas y puertas.
-
-Esta acreditación me permite evaluar y respaldar el cumplimiento energético de
-proyectos según normativa vigente. Diferenciador clave frente a la competencia.
-
-CUÁNDO usarlo (solo con clientes TÉCNICOS):
-→ "Como evaluador energético certificado MINVU puedo confirmarle que..."
-→ "La Resolución 266/2025 del Diario Oficial respalda nuestra metodología de evaluación"
-→ "Podemos emitir evaluación técnica con respaldo normativo para su proyecto"
-
-CUÁNDO NO usarlo:
-→ Con clientes EMOCIONALES — no es relevante para ellos
-→ No en el primer mensaje — es un cierre de autoridad, no una apertura
-
-7) REGLAS DURAS:
-✅ Solo WinHouse PVC y Sodal Aluminio — nunca otras marcas
-✅ update_quote UNA sola vez con todos los items completos
-✅ Nunca precios sin medidas y color confirmados
-✅ Visita técnica SIEMPRE gratuita y sin compromiso
-✅ Siempre ofrece explicar en términos simples si detectas lenguaje muy técnico
-✅ Si no sabes algo → "Lo verifico con el técnico y le confirmo hoy"
-❌ No inventes especificaciones técnicas
-❌ No descuentes sin autorización
+═══ REGLAS DURAS ═══
+Solo WinHouse PVC y Sodal Aluminio.
+update_quote UNA vez con todos los items completos.
+Nunca precios sin medidas y color confirmados.
+Visita técnica siempre gratuita y sin compromiso.
+Si no sabes → "Lo verifico y le confirmo hoy mismo."
+No descuentes sin autorización.
+No inventes datos técnicos.
 `.trim();
 
 const tools = [
@@ -1269,8 +1279,8 @@ async function runAI(session, userText) {
       tools,
       tool_choice: "auto",
       parallel_tool_calls: false,
-      temperature: 0.35,
-      max_tokens: 700,
+      temperature: 0.4,
+      max_tokens: 400,
     });
     return r.choices?.[0]?.message;
   } catch (e) {
@@ -1599,14 +1609,28 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
   return withRetry(async () => {
     const h = await zhH();
     let customer_id = null;
-    try {
-      const searchResp = await axios.get(
-        `${ZOHO.BOOKS_API}/contacts?organization_id=${ZOHO.ORG_ID}&contact_name=${encodeURIComponent(customer_name || "Cliente WhatsApp")}`,
-        { headers: h, httpsAgent, timeout: 20000 }
-      );
-      if (searchResp.data?.contacts?.length)
-        customer_id = searchResp.data.contacts[0].contact_id;
-    } catch {}
+    // [PROD] Buscar primero por teléfono (más confiable que nombre)
+    if (phone) {
+      try {
+        const phoneSearch = await axios.get(
+          `${ZOHO.BOOKS_API}/contacts?organization_id=${ZOHO.ORG_ID}&phone=${encodeURIComponent(phone)}`,
+          { headers: h, httpsAgent, timeout: 20000 }
+        );
+        if (phoneSearch.data?.contacts?.length)
+          customer_id = phoneSearch.data.contacts[0].contact_id;
+      } catch {}
+    }
+    // Fallback: buscar por nombre
+    if (!customer_id) {
+      try {
+        const searchResp = await axios.get(
+          `${ZOHO.BOOKS_API}/contacts?organization_id=${ZOHO.ORG_ID}&contact_name=${encodeURIComponent(customer_name || "Cliente WhatsApp")}`,
+          { headers: h, httpsAgent, timeout: 20000 }
+        );
+        if (searchResp.data?.contacts?.length)
+          customer_id = searchResp.data.contacts[0].contact_id;
+      } catch {}
+    }
 
     if (!customer_id) {
       const createResp = await axios.post(
@@ -1614,10 +1638,13 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
         {
           contact_name: customer_name || "Cliente WhatsApp",
           contact_type: "customer",
+          phone: phone || "",
+          notes: `Contacto creado automáticamente vía WhatsApp IA — ${COMPANY.NAME}`,
           contact_persons: [
             {
               first_name: customer_name || "Cliente",
               phone: phone || "",
+              is_primary_contact: true,
             },
           ],
         },
@@ -1637,22 +1664,25 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
       const glass = process.env.DEFAULT_GLASS || "Termopanel DVH estándar";
       let tipo = "Ventana";
       const p = prod.toUpperCase();
-      if (p.includes("PUERTA")) tipo = "Puerta";
-      else if (p.includes("CORREDERA")) tipo = "Ventana Corredera";
-      else if (p.includes("PROYECT")) tipo = "Ventana Proyectante";
-      else if (p.includes("OSCILO")) tipo = "Ventana Oscilobatiente";
-      else if (p.includes("ABAT")) tipo = "Ventana Abatible";
-      else if (p.includes("MARCO") || p.includes("FIJO")) tipo = "Marco Fijo";
+      if (p.includes("PUERTA")) tipo = "Puerta PVC";
+      else if (p.includes("CORREDERA")) tipo = "Ventana Corredera PVC";
+      else if (p.includes("PROYECT")) tipo = "Ventana Proyectante PVC";
+      else if (p.includes("OSCILO")) tipo = "Ventana Oscilobatiente PVC";
+      else if (p.includes("ABAT")) tipo = "Ventana Abatible PVC";
+      else if (p.includes("MARCO") || p.includes("FIJO")) tipo = "Marco Fijo PVC";
       const desc =
-        it.descripcion || `${tipo} PVC | ${color} | ${measures} | ${glass}`;
-      return {
-        item_id: ZOHO.DEFAULT_ITEM_ID,
+        it.descripcion || `${tipo} | Color: ${color} | Medidas: ${measures} | Vidrio: ${glass}`;
+      const lineItem = {
         name: tipo,
         description: desc,
         rate: Number(it.unit_price) || 1,
         quantity: Number(it.qty || 1),
-        tax_id: ZOHO.TAX_ID || "",
       };
+      // [PROD] Solo agregar item_id si está configurado (evita error Zoho "invalid item")
+      if (ZOHO.DEFAULT_ITEM_ID) lineItem.item_id = ZOHO.DEFAULT_ITEM_ID;
+      // [PROD] Solo agregar tax_id si está configurado y no vacío
+      if (ZOHO.TAX_ID && ZOHO.TAX_ID.length > 2) lineItem.tax_id = ZOHO.TAX_ID;
+      return lineItem;
     });
 
     const estimatePayload = {
@@ -1719,7 +1749,7 @@ async function waSendPdf(to, pdfBuffer, filename, caption) {
 app.get("/health", async (_req, res) => {
   res.json({
     ok: true,
-    v: "9.3.2",
+    v: "9.4.0-prod",
     agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
     winperfil_api: WINPERFIL_API_BASE ? "set" : "missing",
@@ -2038,7 +2068,8 @@ app.post("/webhook", async (req, res) => {
             reply =
               "¡Todo listo! ¿Desea que le envíe la propuesta formal en Zoho Books?";
         }
-        const parts = reply.split(/\n\n+/).filter(Boolean);
+        // [PROD] Smart split para burbujas WhatsApp cortas
+        const parts = smartSplitForWhatsApp(reply);
         if (parts.length > 1) await waSendMultiH(waId, parts, true);
         else await waSendH(waId, parts[0], true);
         ses.history.push({ role: "assistant", content: reply });
@@ -2048,7 +2079,8 @@ app.post("/webhook", async (req, res) => {
     } else {
       let reply = (ai?.content || "").replace(/<PROFILE:\w+>/gi, "").trim();
       if (!reply) reply = "No le entendí, ¿me repite? 🤔";
-      const parts = reply.split(/\n\n+/).filter(Boolean);
+      // [PROD] Smart split para burbujas WhatsApp cortas
+      const parts = smartSplitForWhatsApp(reply);
       if (parts.length > 1) await waSendMultiH(waId, parts, true);
       else await waSendH(waId, parts[0], true);
       ses.history.push({ role: "assistant", content: reply });
@@ -2095,6 +2127,6 @@ setInterval(async () => {
    ========================= */
 app.listen(PORT, () => {
   console.log(
-    `🚀 Ferrari 9.3.2 — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"}`
+    `🚀 Ferrari 9.4.0-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"}`
   );
 });
