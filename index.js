@@ -1,4 +1,4 @@
-// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 9.5.0-prod)
+// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 9.5.1-prod)
 // Railway | Node 18+ | ESM
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS vs 9.4.0 — Fixes producción real (captura WhatsApp):
@@ -1169,6 +1169,8 @@ Ejemplos de cómo NO hablar:
 4. DATOS: Cuando ya hay confianza, pide medidas + color + comuna.
    Puedes pedir varios datos juntos si el cliente está enganchado.
 5. COTIZACIÓN: Cuando tengas todo → llama update_quote.
+   NUNCA le digas el precio al cliente en el chat. El precio va SOLO en la propuesta PDF.
+   En vez de precio, destaca ventajas: durabilidad, aislación, garantía, diseño.
 6. OBJECIONES: Responde breve y directo:
    "caro" → "WinHouse dura 15 años, el PVC barato 6-8. Sale más económico a la larga."
    "lo pienso" → "¿Qué dato le falta para sentirse seguro?"
@@ -1176,20 +1178,40 @@ Ejemplos de cómo NO hablar:
    "quiero ver" → "Hacemos visita técnica gratis, sin compromiso. ¿Le viene esta semana?"
 7. CIERRE: Visita gratuita + agenda instalación.
 
+═══ REGLA CRÍTICA — TIPOS DE PRODUCTO EN update_quote ═══
+Cuando llames update_quote, usa EXACTAMENTE estos códigos en "product":
+  Si el cliente dice "corredera" o "sliding" → product: "CORREDERA"
+  Si dice "proyectante" → product: "PROYECTANTE"
+  Si dice "abatible" o "de abrir" → product: "ABATIBLE"
+  Si dice "fijo" o "paño fijo" → product: "MARCO_FIJO"
+  Si dice "puerta" → product: "PUERTA_1H"
+  Si dice "oscilobatiente" → product: "OSCILOBATIENTE"
+  Si NO especifica tipo → product: "CORREDERA" (es lo más común en Chile)
+NO MEZCLES: si el cliente pide "2 correderas", NO las pongas como PROYECTANTE.
+Si el cliente modifica items, envía la lista COMPLETA actualizada con TODOS los items.
+
+═══ REGLA CRÍTICA — LENGUAJE AL CLIENTE ═══
+NUNCA digas "S60", "Sliding", "S75", "Andes", "Zenia" al cliente.
+Siempre di "PVC línea europea" o "ventana de PVC".
+Ejemplo correcto: "Le cotizo 2 ventanas correderas de PVC línea europea en roble."
+Ejemplo INCORRECTO: "Le cotizo 2 ventanas Sliding S75 en roble."
+
+NUNCA menciones precios en el chat. NUNCA digas "$547.000" ni ningún número de precio.
+Los precios van SOLO en la propuesta formal PDF.
+En vez de precio, di las ventajas: "Son PVC línea europea, con termopanel DVH, aislación térmica y acústica, garantía de fábrica, y colores que no se descascaran."
+
 ═══ PERFIL DEL CLIENTE (interno, JAMÁS decirle al cliente) ═══
 TÉCNICO: menciona Uw, OGUC, DVH, normas, certificaciones → dale datos duros pero en lenguaje breve.
 EMOCIONAL: menciona frío, ruido, familia, diseño → habla de resultados en su vida.
 MIXTO: beneficio primero, dato técnico después.
 Si no sabes el perfil, pregunta: "¿Le preocupa más el tema técnico-normativo o el confort de su hogar?"
 
-═══ PRODUCTOS WINHOUSE (datos verificados) ═══
-LÍNEA S60: Para frío extremo. 4 cámaras, perfil 60mm, termopanel DVH. Certificada IFT Rosenheim. Abatible, proyectante, oscilobatiente, puerta 1 hoja, marco fijo.
-LÍNEA SLIDING S75: Correderas de alto desempeño. 2 cámaras, doble/triple riel. Para ventanas grandes.
-LÍNEA ANDES: Corredera económica, calidad europea pero más accesible.
-LÍNEA ZENIA: Corredera elevadora premium, proyectos de alta gama.
+═══ PRODUCTOS (info interna, NO usar nombres técnicos con el cliente) ═══
+Proyectantes/abatibles: Para frío extremo. 4 cámaras, perfil 60mm, termopanel DVH. Certificadas. Máx 1930×1930mm.
+Correderas: Alto desempeño. 2 cámaras, doble/triple riel. Para ventanas grandes hasta 2930×2150mm.
+Si el cliente pide medida > 1930mm en proyectante → sugerir corredera.
 COLORES STOCK: Blanco, Nogal, Roble, Grafito, New Black (laminados Renolit).
 VIDRIO: Termopanel DVH estándar en todas las líneas.
-IMPORTANTE: S60 tiene 4 cámaras (NO cinco). Sliding S75 tiene 2 cámaras.
 "Softline 82" NO EXISTE. No inventes especificaciones.
 
 ═══ SINÓNIMOS DE COLOR (mapea al real) ═══
@@ -1203,7 +1225,8 @@ Consultor acreditado MINVU, Resolución 266/2025. Evaluador energético de envol
 ═══ REGLAS DURAS ═══
 Solo WinHouse PVC y Sodal Aluminio.
 update_quote UNA vez con todos los items completos.
-Nunca precios sin medidas y color confirmados.
+NUNCA publicar precios en el chat — solo en la propuesta PDF.
+Siempre decir "PVC línea europea", nunca "S60" ni "Sliding" al cliente.
 Visita técnica siempre gratuita y sin compromiso.
 Si no sabes → "Lo verifico y le confirmo hoy mismo."
 No descuentes sin autorización.
@@ -1240,13 +1263,17 @@ const tools = [
             items: {
               type: "object",
               properties: {
-                product: { type: "string" },
+                product: {
+                  type: "string",
+                  enum: ["CORREDERA", "PROYECTANTE", "ABATIBLE", "OSCILOBATIENTE", "MARCO_FIJO", "PUERTA_1H", "PUERTA_DOBLE"],
+                  description: "Tipo de ventana/puerta. CORREDERA para correderas/sliding. PROYECTANTE para proyectantes. ABATIBLE para abatibles. IMPORTANTE: si el cliente dice 'corredera', usar CORREDERA, no PROYECTANTE.",
+                },
                 measures: {
                   type: "string",
-                  description: "ancho×alto. Ej: 2000x1500",
+                  description: "ancho×alto en mm. Ej: 2000x1500",
                 },
                 qty: { type: "number" },
-                color: { type: "string" },
+                color: { type: "string", description: "blanco, nogal, roble, grafito, newblack" },
               },
               required: ["product", "measures", "qty"],
             },
@@ -1752,16 +1779,16 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
       const color = it.color || data.default_color || "Blanco";
       const measures = it.measures || "";
       const glass = process.env.DEFAULT_GLASS || "Termopanel DVH estándar";
-      let tipo = "Ventana";
+      let tipo = "Ventana PVC Línea Europea";
       const p = prod.toUpperCase();
-      if (p.includes("PUERTA")) tipo = "Puerta PVC";
-      else if (p.includes("CORREDERA")) tipo = "Ventana Corredera PVC";
-      else if (p.includes("PROYECT")) tipo = "Ventana Proyectante PVC";
-      else if (p.includes("OSCILO")) tipo = "Ventana Oscilobatiente PVC";
-      else if (p.includes("ABAT")) tipo = "Ventana Abatible PVC";
-      else if (p.includes("MARCO") || p.includes("FIJO")) tipo = "Marco Fijo PVC";
+      if (p.includes("PUERTA")) tipo = "Puerta PVC Línea Europea";
+      else if (p.includes("CORREDERA")) tipo = "Ventana Corredera PVC Línea Europea";
+      else if (p.includes("PROYECT")) tipo = "Ventana Proyectante PVC Línea Europea";
+      else if (p.includes("OSCILO")) tipo = "Ventana Oscilobatiente PVC Línea Europea";
+      else if (p.includes("ABAT")) tipo = "Ventana Abatible PVC Línea Europea";
+      else if (p.includes("MARCO") || p.includes("FIJO")) tipo = "Marco Fijo PVC Línea Europea";
       const desc =
-        it.descripcion || `${tipo} | Color: ${color} | Medidas: ${measures} | Vidrio: ${glass}`;
+        it.descripcion || `${tipo} | Color: ${color} | Medidas: ${measures}mm | Vidrio: ${glass} | Perfiles certificados IFT Rosenheim | Laminado Renolit`;
       const lineItem = {
         name: tipo,
         description: desc,
@@ -1777,10 +1804,10 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
 
     const estimatePayload = {
       customer_id,
-      subject: "Propuesta Técnico Comercial",
+      subject: "Propuesta Técnico Comercial — Ventanas PVC Línea Europea",
       line_items,
       reference_number: data.quote_num || "",
-      notes: `Propuesta generada por ${COMPANY.NAME} vía WhatsApp IA.\nProveedor: ${data.supplier || "PVC LINEA EUROPEA"}\nComuna: ${data.comuna || ""}\n${data.zona_termica ? `Zona térmica OGUC: Z${data.zona_termica}` : ""}`.trim(),
+      notes: `Propuesta generada por ${COMPANY.NAME}.\nVentanas PVC Línea Europea con termopanel DVH, aislación térmica y acústica.\nComuna: ${data.comuna || ""}\n${data.zona_termica ? `Zona térmica OGUC: Z${data.zona_termica} — Cumplimiento normativo garantizado.` : ""}`.trim(),
       terms:
         "Válida por 15 días hábiles. Precios netos + IVA.\nSujeta a rectificación técnica en terreno.\nCumplimiento OGUC 4.1.10 (acondicionamiento térmico).",
     };
@@ -1839,7 +1866,7 @@ async function waSendPdf(to, pdfBuffer, filename, caption) {
 app.get("/health", async (_req, res) => {
   res.json({
     ok: true,
-    v: "9.5.0-prod",
+    v: "9.5.1-prod",
     agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
     winperfil_api: WINPERFIL_API_BASE ? "set" : "missing",
@@ -2131,20 +2158,22 @@ app.post("/webhook", async (req, res) => {
           (d.wants_pdf || /pdf|cotiza|cotizaci[oó]n|formal|env[ií]a|manda|propuesta/i.test(userText));
 
         if (wantsPdf && !ses.pdfSent) {
-          // [PROD-FIX] Resumen de cotización ANTES del PDF — sin mencionar Zoho Books
+          // [PROD-FIX] Resumen SIN precios — describe productos y ventajas
           const resumenLines = [];
-          resumenLines.push("📋 Le preparo su propuesta:");
+          resumenLines.push("📋 Le preparo su propuesta con lo siguiente:");
           for (const it of d.items) {
-            const c = it.color || d.default_color || "";
-            const precio = it.total_price ? `$${Number(it.total_price).toLocaleString("es-CL")}` : "precio pendiente";
+            const c = it.color || d.default_color || "blanco";
             const prod = normProduct(it.product || "");
-            const tipoNombre = prod.includes("CORREDERA") ? "Corredera" : prod.includes("PUERTA") ? "Puerta" : prod.includes("PROYECT") ? "Proyectante" : prod.includes("ABAT") ? "Abatible" : prod.includes("FIJO") ? "Marco fijo" : "Ventana";
-            resumenLines.push(`${it.qty}× ${tipoNombre} ${it.measures} ${c} → ${precio}`);
+            let tipoDesc = "Ventana PVC línea europea";
+            if (prod.includes("CORREDERA")) tipoDesc = "Ventana corredera PVC línea europea";
+            else if (prod.includes("PUERTA")) tipoDesc = "Puerta PVC línea europea";
+            else if (prod.includes("PROYECT")) tipoDesc = "Ventana proyectante PVC línea europea";
+            else if (prod.includes("ABAT")) tipoDesc = "Ventana abatible PVC línea europea";
+            else if (prod.includes("FIJO")) tipoDesc = "Marco fijo PVC línea europea";
+            else if (prod.includes("OSCILO")) tipoDesc = "Ventana oscilobatiente PVC línea europea";
+            resumenLines.push(`${it.qty}× ${tipoDesc} de ${it.measures} en ${c}`);
           }
-          if (d.grand_total) {
-            resumenLines.push(`\nTotal neto: $${Number(d.grand_total).toLocaleString("es-CL")} + IVA`);
-          }
-          resumenLines.push("\nTodas en PVC línea europea WinHouse, con termopanel DVH y garantía de fábrica.");
+          resumenLines.push("\nTodas con termopanel DVH, aislación térmica y acústica, perfiles certificados y garantía de fábrica. Los colores son laminados Renolit que no se descascaran.");
           await waSendH(waId, resumenLines.join("\n"), true);
           await sleep(800);
 
@@ -2232,9 +2261,8 @@ app.post("/webhook", async (req, res) => {
             } else if (!d.grand_total) {
               reply = `Ya tengo los datos. Hubo un tema conectando al cotizador, pero en breve le confirmo el precio.`;
             } else {
-              // [PROD-FIX] Resumen rápido en vez de "Zoho Books"
-              const total = `$${Number(d.grand_total).toLocaleString("es-CL")} + IVA`;
-              reply = `Tengo todo listo. Su cotización queda en ${total} (PVC línea europea WinHouse con termopanel). ¿Le envío la propuesta formal en PDF?`;
+              // [PROD-FIX] Sin precios en chat — solo beneficios
+              reply = `Tengo todo listo para armarle la propuesta. Son ventanas PVC línea europea con termopanel, aislación térmica y acústica, y garantía de fábrica. ¿Le envío la propuesta formal en PDF?`;
             }
           }
           const parts = smartSplitForWhatsApp(reply);
@@ -2295,6 +2323,6 @@ setInterval(async () => {
    ========================= */
 app.listen(PORT, () => {
   console.log(
-    `🚀 Ferrari 9.5.0-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"}`
+    `🚀 Ferrari 9.5.1-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"}`
   );
 });
