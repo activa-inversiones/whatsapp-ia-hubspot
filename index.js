@@ -1,17 +1,24 @@
-// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 9.4.0-prod)
+// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 9.5.0-prod)
 // Railway | Node 18+ | ESM
 // ═══════════════════════════════════════════════════════════════════
-// CAMBIOS vs 9.3.2 — Preparación producción:
+// CAMBIOS vs 9.4.0 — Fixes producción real (captura WhatsApp):
 //
-// [P1] PROD: System prompt reescrito — tono chileno natural, máx 2-3 líneas
-// [P2] PROD: max_tokens 700→400 — mensajes más cortos para WhatsApp
-// [P3] PROD: smartSplitForWhatsApp — split inteligente en burbujas ~320 chars
-// [P4] PROD: Zoho Books — validación tax_id/item_id, búsqueda contacto por phone
-// [P5] PROD: Zoho Books — contacto con phone + notes en creación
-// [P6] PROD: Mejora descripciones en line_items (Color, Medidas, Vidrio)
+// [P7] FIX CRÍTICO: Loop "¿Desea envíe propuesta Zoho Books?" 
+//      → pdfSent se resetea cuando items cambian → permite re-cotizar
+// [P8] FIX: Eliminado "Zoho Books" de todos los mensajes al cliente
+// [P9] FEAT: Resumen de cotización ANTES de enviar PDF (precios + beneficios)
+// [P10] FEAT: Validación de medidas vs límites fabricación WinHouse
+//       → S60 máx 1930×1930 | SLIDING máx 2930×2150 | Puerta máx 1970×2400
+//       → Si excede S60 pero cabe en SLIDING → sugiere corredera al cliente
+//       → Si excede todo → escala al equipo técnico
+// [P11] FEAT: Escalación automática vía WhatsApp al equipo técnico
+//       → ESCALATION_PHONE env var para recibir alertas
+// [P12] FEAT: Cierre post-PDF con oferta visita técnica gratuita
+// [P13] FIX: regex wantsPdf ampliado (formal, envía, manda, propuesta)
 //
-// Riesgos resueltos: mensajes demasiado largos, tono robótico, Zoho Books
-// con tax_id vacío, contactos duplicados en Books
+// Riesgos resueltos: loop infinito post-cotización, cotización de 
+// ventanas imposibles de fabricar, cliente sin resumen de precios,
+// equipo técnico sin visibilidad de escalaciones
 // ═══════════════════════════════════════════════════════════════════
 
 import express from "express";
@@ -453,6 +460,89 @@ function getZona(raw) {
 function zonaInfo(z) {
   if (!z) return { note: "" };
   return { note: `Zona térmica OGUC: Z${z}. Cumplimos OGUC 4.1.10 (acondicionamiento térmico).` };
+}
+
+/* ─── [PROD] Validación de medidas vs fabricación WinHouse ─────────
+   Límites reales verificados en cotizador-winhouse/src/rules.js
+   Si la medida excede el límite → sugiere producto alternativo o escala
+   ────────────────────────────────────────────────────────────── */
+const FABRICATION_LIMITS = {
+  S60: {
+    ventana: { minAncho: 400, maxAncho: 1930, minAlto: 400, maxAlto: 1930 },
+    puerta:  { minAncho: 800, maxAncho: 1970, minAlto: 1500, maxAlto: 2400 },
+  },
+  SLIDING: {
+    H98: { minAncho: 500, maxAncho: 2930, minAlto: 500, maxAlto: 2150 },
+    H80: { minAncho: 500, maxAncho: 3000, minAlto: 500, maxAlto: 2150 },
+  },
+};
+
+function validateDimensions(product, ancho_mm, alto_mm) {
+  const p = String(product || "").toUpperCase();
+
+  // Correderas → SLIDING limits
+  if (p.includes("CORREDERA")) {
+    const lim = FABRICATION_LIMITS.SLIDING.H98;
+    if (ancho_mm > lim.maxAncho || alto_mm > lim.maxAlto) {
+      return { message: `Corredera ${ancho_mm}×${alto_mm} excede límite fabricación (máx ${lim.maxAncho}×${lim.maxAlto}).`, escalate: true };
+    }
+    return null; // OK
+  }
+
+  // Puertas → S60 puerta limits
+  if (p.includes("PUERTA")) {
+    const lim = FABRICATION_LIMITS.S60.puerta;
+    if (ancho_mm > lim.maxAncho || alto_mm > lim.maxAlto) {
+      return { message: `Puerta ${ancho_mm}×${alto_mm} excede límite (máx ${lim.maxAncho}×${lim.maxAlto}).`, escalate: true };
+    }
+    return null;
+  }
+
+  // Todas las demás (proyectante, abatible, oscilobatiente, fijo) → S60 ventana limits
+  const lim = FABRICATION_LIMITS.S60.ventana;
+  if (ancho_mm > lim.maxAncho || alto_mm > lim.maxAlto) {
+    // Si cabe en SLIDING → sugerir corredera
+    const slidingLim = FABRICATION_LIMITS.SLIDING.H98;
+    if (ancho_mm <= slidingLim.maxAncho && alto_mm <= slidingLim.maxAlto) {
+      return {
+        message: `Medida ${ancho_mm}×${alto_mm} excede límite S60 (máx ${lim.maxAncho}×${lim.maxAlto}). Sugerencia: ventana corredera.`,
+        suggest: "CORREDERA",
+        escalate: false,
+      };
+    }
+    return { message: `Medida ${ancho_mm}×${alto_mm} excede todos los límites de fabricación.`, escalate: true };
+  }
+  return null; // OK
+}
+
+/* ─── [PROD] Escalación — notificar al equipo técnico ─────────────
+   Envía alerta por WhatsApp al número del equipo cuando:
+   - Medidas fuera de rango de fabricación
+   - Items requieren validación manual
+   - Cliente pide algo que el bot no puede resolver
+   ────────────────────────────────────────────────────────────── */
+const ESCALATION_PHONE = process.env.ESCALATION_PHONE || "";
+const ESCALATION_EMAIL = process.env.ESCALATION_EMAIL || "";
+
+async function sendEscalationAlert(reason, customerPhone, sessionData) {
+  const d = sessionData || {};
+  const itemsSummary = (d.items || []).map((it, i) =>
+    `${i + 1}. ${it.qty || 1}× ${it.product} ${it.measures} ${it.color || d.default_color || ""} ${it.dim_warning || ""}`
+  ).join("\n");
+
+  const alertMsg = `⚠️ ESCALACIÓN — ${reason}\n\nCliente: ${d.name || "Sin nombre"}\nTeléfono: ${customerPhone}\nComuna: ${d.comuna || "?"}\n\nItems:\n${itemsSummary}\n\nMotivo: ${reason}\n\nResponder desde Sales OS → ops.activalabs.ai`;
+
+  // Enviar al teléfono de escalación via WhatsApp
+  if (ESCALATION_PHONE) {
+    try {
+      await waSend(ESCALATION_PHONE, alertMsg);
+      logInfo("escalation", `Alerta enviada a ${ESCALATION_PHONE}: ${reason}`);
+    } catch (e) {
+      logErr("escalation.whatsapp", e);
+    }
+  }
+
+  logInfo("escalation", `ESCALACIÓN: ${reason} | cliente=${customerPhone}`);
 }
 
 /* =========================
@@ -1749,7 +1839,7 @@ async function waSendPdf(to, pdfBuffer, filename, caption) {
 app.get("/health", async (_req, res) => {
   res.json({
     ok: true,
-    v: "9.4.0-prod",
+    v: "9.5.0-prod",
     agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
     winperfil_api: WINPERFIL_API_BASE ? "set" : "missing",
@@ -1947,6 +2037,11 @@ app.post("/webhook", async (req, res) => {
         if (args.wants_pdf === true) d.wants_pdf = true;
 
         if (Array.isArray(args.items) && args.items.length > 0) {
+          // [PROD-FIX] Resetear pdfSent cuando los items cambian
+          // Esto permite re-cotizar cuantas veces quiera el cliente
+          ses.pdfSent = false;
+          d.wants_pdf = false;
+
           d.items = args.items.map((it, i) => ({
             id: i + 1,
             product: it.product || "",
@@ -1959,6 +2054,19 @@ app.post("/webhook", async (req, res) => {
             source: null,
             confidence: null,
           }));
+
+          // [PROD-FIX] Validar medidas vs límites reales de fabricación WinHouse
+          for (const it of d.items) {
+            const m = normMeasures(it.measures);
+            if (!m) continue;
+            const p = normProduct(it.product || "");
+            const warn = validateDimensions(p, m.ancho_mm, m.alto_mm);
+            if (warn) {
+              it.dim_warning = warn.message;
+              if (warn.suggest) it.suggested_product = warn.suggest;
+              if (warn.escalate) it.needs_escalation = true;
+            }
+          }
         }
 
         if (d.comuna && !d.zona_termica) {
@@ -1979,103 +2087,163 @@ app.post("/webhook", async (req, res) => {
       }
 
       const d = ses.data;
-      const wantsPdf =
-        isComplete(d) &&
-        d.grand_total &&
-        (d.wants_pdf || /pdf|cotiza|cotizaci[oó]n/i.test(userText));
 
-      if (wantsPdf && !ses.pdfSent) {
-        await waSendH(
-          waId,
-          "Perfecto. Preparando su propuesta técnico-comercial en Zoho Books… 📄",
-          true
-        );
-        const qn = `COT-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-        ses.quoteNum = qn;
-        d.quote_num = qn;
+      // [PROD-FIX] Flag para saltar el flujo PDF si se detectan problemas de fabricación
+      let earlyExit = false;
 
-        try {
-          const estimate = await zhBooksCreateEstimate(
-            d,
-            d.name || "Cliente WhatsApp",
-            normPhone(waId)
-          );
-          if (estimate?.estimate_id) {
-            ses.zohoEstimateId = estimate.estimate_id;
-            ses.pdfSent = true;
-            d.stageKey = "propuesta"; // [F10] unificado
-            try {
-              const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
-              await waSendPdf(
-                waId,
-                pdfBuf,
-                `${qn}.pdf`,
-                `✅ Su propuesta ${qn} está lista.`
-              );
-            } catch (pdfErr) {
-              logErr("waSendPdf", pdfErr);
-              const estimateUrl = estimate.estimate_url || "";
-              await waSendH(
-                waId,
-                `✅ Su propuesta ${qn} está lista.\n\n📎 Link: ${estimateUrl}`,
-                true
-              );
-            }
-            // [F6] zhUpsert dentro del lock (await, no fireAndForget)
-            try {
-              await zhUpsert(ses, waId);
-              if (ses.zohoDealId && estimate.estimate_number) {
-                await zhNote(
-                  "Deals",
-                  ses.zohoDealId,
-                  `Cotización ${qn}`,
-                  `Estimate generado: ${estimate.estimate_number}\nTotal: $${Number(d.grand_total).toLocaleString("es-CL")} +IVA`
+      // [PROD-FIX] Detectar items con problemas de fabricación
+      const dimWarnings = d.items.filter(it => it.dim_warning);
+      const needsEscalation = d.items.some(it => it.needs_escalation);
+      const hasSuggestions = d.items.filter(it => it.suggested_product);
+
+      // [PROD-FIX] Si hay sugerencias de producto (ej: proyectante → corredera), informar al cliente
+      if (hasSuggestions.length > 0 && !needsEscalation) {
+        const sugMsgs = hasSuggestions.map(it => {
+          const m = normMeasures(it.measures);
+          return `La medida ${m?.ancho_mm}×${m?.alto_mm} es grande para ${it.product}. Le recomiendo una ventana corredera para esa medida, queda mucho mejor y es más práctica.`;
+        });
+        await waSendMultiH(waId, sugMsgs, true);
+        await waSendH(waId, "¿Le parece si ajusto la cotización con corredera en esos items?", true);
+        ses.history.push({ role: "assistant", content: sugMsgs.join("\n") + "\n¿Le parece si ajusto la cotización con corredera?" });
+        saveSession(waId, ses);
+        try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-suggestion", e); }
+        earlyExit = true;
+      }
+
+      // [PROD-FIX] Si necesita escalación técnica → avisar al cliente y al equipo
+      if (!earlyExit && needsEscalation) {
+        const escalationReasons = dimWarnings.filter(it => it.needs_escalation).map(it => it.dim_warning).join("; ");
+        await waSendH(waId, "Algunas medidas que me indica necesitan validación técnica. Le paso con nuestro equipo para confirmar la mejor solución.", true);
+        fireAndForget("escalation.dimensions", sendEscalationAlert(
+          `Medidas fuera de rango: ${escalationReasons}`,
+          normPhone(waId), d
+        ));
+        ses.history.push({ role: "assistant", content: "Medidas necesitan validación técnica, paso con el equipo." });
+        saveSession(waId, ses);
+        try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-escalation", e); }
+        earlyExit = true;
+      }
+
+      if (!earlyExit) {
+        const wantsPdf =
+          isComplete(d) &&
+          d.grand_total &&
+          (d.wants_pdf || /pdf|cotiza|cotizaci[oó]n|formal|env[ií]a|manda|propuesta/i.test(userText));
+
+        if (wantsPdf && !ses.pdfSent) {
+          // [PROD-FIX] Resumen de cotización ANTES del PDF — sin mencionar Zoho Books
+          const resumenLines = [];
+          resumenLines.push("📋 Le preparo su propuesta:");
+          for (const it of d.items) {
+            const c = it.color || d.default_color || "";
+            const precio = it.total_price ? `$${Number(it.total_price).toLocaleString("es-CL")}` : "precio pendiente";
+            const prod = normProduct(it.product || "");
+            const tipoNombre = prod.includes("CORREDERA") ? "Corredera" : prod.includes("PUERTA") ? "Puerta" : prod.includes("PROYECT") ? "Proyectante" : prod.includes("ABAT") ? "Abatible" : prod.includes("FIJO") ? "Marco fijo" : "Ventana";
+            resumenLines.push(`${it.qty}× ${tipoNombre} ${it.measures} ${c} → ${precio}`);
+          }
+          if (d.grand_total) {
+            resumenLines.push(`\nTotal neto: $${Number(d.grand_total).toLocaleString("es-CL")} + IVA`);
+          }
+          resumenLines.push("\nTodas en PVC línea europea WinHouse, con termopanel DVH y garantía de fábrica.");
+          await waSendH(waId, resumenLines.join("\n"), true);
+          await sleep(800);
+
+          await waSendH(waId, "Preparando su propuesta formal… 📄", true);
+
+          const qn = `COT-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+          ses.quoteNum = qn;
+          d.quote_num = qn;
+
+          try {
+            const estimate = await zhBooksCreateEstimate(
+              d,
+              d.name || "Cliente WhatsApp",
+              normPhone(waId)
+            );
+            if (estimate?.estimate_id) {
+              ses.zohoEstimateId = estimate.estimate_id;
+              ses.pdfSent = true;
+              d.stageKey = "propuesta";
+              try {
+                const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
+                await waSendPdf(
+                  waId,
+                  pdfBuf,
+                  `${qn}.pdf`,
+                  `✅ Propuesta ${qn} lista. Si quiere ajustar algo, me avisa y la actualizo.`
+                );
+              } catch (pdfErr) {
+                logErr("waSendPdf", pdfErr);
+                const estimateUrl = estimate.estimate_url || "";
+                await waSendH(
+                  waId,
+                  `✅ Propuesta ${qn} lista.\n📎 Link: ${estimateUrl}`,
+                  true
                 );
               }
-            } catch (e) {
-              logErr("zhUpsert/zhNote-post-pdf", e);
+              // Follow-up de cierre
+              await sleep(1500);
+              await waSendH(waId, "¿Le gustaría agendar una visita técnica gratuita para validar las medidas en terreno? Sin compromiso.", true);
+
+              try {
+                await zhUpsert(ses, waId);
+                if (ses.zohoDealId && estimate.estimate_number) {
+                  await zhNote(
+                    "Deals",
+                    ses.zohoDealId,
+                    `Cotización ${qn}`,
+                    `Estimate: ${estimate.estimate_number}\nTotal: $${Number(d.grand_total).toLocaleString("es-CL")} +IVA`
+                  );
+                }
+              } catch (e) {
+                logErr("zhUpsert/zhNote-post-pdf", e);
+              }
+              fireAndForget(
+                "trackQuoteEvent.formal",
+                trackQuoteEvent(
+                  buildQuotePayload(ses, waId, {
+                    status: "formal_sent",
+                    zoho_estimate_id: estimate.estimate_id,
+                    zoho_estimate_url: estimate.estimate_url || "",
+                    quote_number: qn,
+                  })
+                )
+              );
+            } else {
+              throw new Error("No se pudo crear propuesta");
             }
-            fireAndForget(
-              "trackQuoteEvent.formal",
-              trackQuoteEvent(
-                buildQuotePayload(ses, waId, {
-                  status: "formal_sent",
-                  zoho_estimate_id: estimate.estimate_id,
-                  zoho_estimate_url: estimate.estimate_url || "",
-                  quote_number: qn,
-                })
-              )
+          } catch (e) {
+            logErr("Estimate", e);
+            await waSendH(
+              waId,
+              "Tuve un problema generando la propuesta. Se la preparo manual y se la envío en breve 🙏",
+              true
             );
-          } else {
-            throw new Error("No se pudo crear estimate en Zoho Books");
+            fireAndForget("escalation.pdf-fail", sendEscalationAlert(
+              `Fallo generando PDF para ${d.name || "cliente"} — preparar propuesta manual`,
+              normPhone(waId), d
+            ));
           }
-        } catch (e) {
-          logErr("Zoho Books Estimate", e);
-          await waSendH(
-            waId,
-            "Tuve un problema generando la propuesta en Zoho Books. Lo preparo manual 🙏",
-            true
-          );
+        } else {
+          let reply = (ai.content || "").replace(/<PROFILE:\w+>/gi, "").trim();
+          if (!reply) {
+            if (!isComplete(d)) {
+              reply = `Perfecto, para avanzar necesito: ${nextMissing(d)}.`;
+            } else if (!d.grand_total) {
+              reply = `Ya tengo los datos. Hubo un tema conectando al cotizador, pero en breve le confirmo el precio.`;
+            } else {
+              // [PROD-FIX] Resumen rápido en vez de "Zoho Books"
+              const total = `$${Number(d.grand_total).toLocaleString("es-CL")} + IVA`;
+              reply = `Tengo todo listo. Su cotización queda en ${total} (PVC línea europea WinHouse con termopanel). ¿Le envío la propuesta formal en PDF?`;
+            }
+          }
+          const parts = smartSplitForWhatsApp(reply);
+          if (parts.length > 1) await waSendMultiH(waId, parts, true);
+          else await waSendH(waId, parts[0], true);
+          ses.history.push({ role: "assistant", content: reply });
+          try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-inline", e); }
         }
-      } else {
-        let reply = (ai.content || "").replace(/<PROFILE:\w+>/gi, "").trim();
-        if (!reply) {
-          if (!isComplete(d))
-            reply = `Perfecto, para avanzar necesito: ${nextMissing(d)}.`;
-          else if (!d.grand_total)
-            reply = `Ya tengo los datos, pero hubo un problema conectando al cotizador. ¡En breve le confirmo!`;
-          else
-            reply =
-              "¡Todo listo! ¿Desea que le envíe la propuesta formal en Zoho Books?";
-        }
-        // [PROD] Smart split para burbujas WhatsApp cortas
-        const parts = smartSplitForWhatsApp(reply);
-        if (parts.length > 1) await waSendMultiH(waId, parts, true);
-        else await waSendH(waId, parts[0], true);
-        ses.history.push({ role: "assistant", content: reply });
-        // [F6] zhUpsert dentro del lock
-        try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-inline", e); }
-      }
+      } // end !earlyExit
     } else {
       let reply = (ai?.content || "").replace(/<PROFILE:\w+>/gi, "").trim();
       if (!reply) reply = "No le entendí, ¿me repite? 🤔";
@@ -2127,6 +2295,6 @@ setInterval(async () => {
    ========================= */
 app.listen(PORT, () => {
   console.log(
-    `🚀 Ferrari 9.4.0-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"}`
+    `🚀 Ferrari 9.5.0-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"}`
   );
 });
