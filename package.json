@@ -1,0 +1,33 @@
+{
+  "name": "whatsapp-ia-ferrari5",
+  "version": "5.3.0",
+  "description": "Ferrari 5.3 — WhatsApp IA + Zoho CRM (Deals pipeline + typing indicator)",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "form-data": "^4.0.0",
+    "openai": "^4.52.0",
+    "pdf-parse": "^1.1.1",
+    "pdfkit": "^0.15.0"
+  },
+  "keywords": [
+    "whatsapp",
+    "chatbot",
+    "openai",
+    "zoho",
+    "crm",
+    "ventanas"
+  ],
+  "author": "Activa Inversiones",
+  "license": "MIT"
+}
