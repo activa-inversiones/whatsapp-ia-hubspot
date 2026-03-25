@@ -148,6 +148,19 @@ const STAGES = {
   competencia: process.env.ZOHO_STAGE_COMPETENCIA || "Perdido para la competencia",
 };
 
+// Voice / TTS config — controlado por Railway env vars
+const VOICE_ENABLED = String(process.env.VOICE_ENABLED || "false") === "true";
+const VOICE_SEND_MODE = (process.env.VOICE_SEND_MODE || "audio_if_inbound_audio").toLowerCase();
+const VOICE_TTS_PROVIDER = (process.env.VOICE_TTS_PROVIDER || "elevenlabs").toLowerCase();
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
+const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "";
+const ELEVENLABS_MODEL_ID = process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2";
+const ELEVENLABS_OUTPUT_FORMAT = process.env.ELEVENLABS_OUTPUT_FORMAT || "mp3_44100_128";
+// Legacy TTS bridge (backward compat — not used if VOICE_TTS_PROVIDER=elevenlabs)
+const VOICE_TTS_URL = process.env.VOICE_TTS_URL || "";
+const VOICE_TTS_TOKEN = process.env.VOICE_TTS_TOKEN || "";
+const VOICE_TTS_VOICE_ID = process.env.VOICE_TTS_VOICE_ID || "";
+
 /* =========================
    3) VALIDATION — [F4] validación de formato mejorada
    ========================= */
@@ -857,6 +870,146 @@ async function waSendMultiH(to, msgs, skipTyping = false, meta = {}) {
   }
 }
 // @patch:sales-os:send:end
+
+/* =========================
+   9b) VOICE / TTS — ElevenLabs
+   ========================= */
+
+const TTS_MAX_CHARS = 1000; // Limitar input a TTS para evitar costos/timeouts
+
+function sanitizeForTts(text) {
+  return String(text || "")
+    .replace(/[<>]/g, "")                       // strip angle brackets (elimina cualquier tag o patrón similar)
+    .replace(/\*{1,3}([^*\n]+)\*{1,3}/g, "$1") // strip markdown bold/italic
+    .replace(/_([^_\n]+)_/g, "$1")              // strip italic _text_
+    .replace(/`[^`\n]*`/g, "")                  // strip inline code
+    .replace(/#{1,6}\s+/g, "")                  // strip markdown headers
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")   // strip links → solo texto ancla
+    .replace(/[^\S\n]+/g, " ")                  // colapsar espacios horizontales
+    .replace(/\n{3,}/g, "\n\n")                 // máx 2 newlines consecutivos
+    .trim()
+    .slice(0, TTS_MAX_CHARS);
+}
+
+function shouldSendVoice(incomingType) {
+  if (!VOICE_ENABLED) return false;
+  if (VOICE_TTS_PROVIDER !== "elevenlabs") return false;
+  if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) return false;
+  const mode = VOICE_SEND_MODE;
+  if (mode === "text") return false;
+  if (mode === "audio" || mode === "both") return true;
+  // audio_if_inbound_audio (default seguro)
+  return String(incomingType || "") === "audio";
+}
+
+function elevenLabsMimeInfo() {
+  const f = (ELEVENLABS_OUTPUT_FORMAT || "").toLowerCase();
+  if (f.startsWith("mp3")) return { mime: "audio/mpeg", ext: "mp3" };
+  if (f.startsWith("ogg") || f.startsWith("opus")) return { mime: "audio/ogg; codecs=opus", ext: "ogg" };
+  return { mime: "audio/mpeg", ext: "mp3" }; // fallback seguro
+}
+
+async function ttsElevenlabs(text) {
+  const clean = sanitizeForTts(text);
+  if (!clean) throw new Error("ttsElevenlabs: texto vacío tras sanitizar");
+  const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(ELEVENLABS_VOICE_ID)}?output_format=${encodeURIComponent(ELEVENLABS_OUTPUT_FORMAT)}`;
+  const { data } = await axios.post(
+    url,
+    { text: clean, model_id: ELEVENLABS_MODEL_ID },
+    {
+      headers: {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+        Accept: "*/*",
+      },
+      responseType: "arraybuffer",
+      timeout: 30000,
+      httpsAgent,
+    }
+  );
+  return Buffer.from(data);
+}
+
+async function waUploadAudio(audioBuffer, mimeType, filename) {
+  const FormData = (await import("form-data")).default;
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", "audio");
+  form.append("file", audioBuffer, { filename, contentType: mimeType });
+  const resp = await axiosWA.post(`/${META.PHONE_ID}/media`, form, {
+    headers: form.getHeaders(),
+    timeout: 30000,
+  });
+  const mediaId = resp.data?.id;
+  if (!mediaId) throw new Error("waUploadAudio: no se obtuvo media ID de WhatsApp");
+  return mediaId;
+}
+
+async function waSendAudio(to, mediaId) {
+  await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+    messaging_product: "whatsapp",
+    to,
+    type: "audio",
+    audio: { id: mediaId },
+  });
+}
+
+// Envío inteligente: texto, audio o ambos según VOICE_SEND_MODE
+async function waSendSmartH(to, text, skipTyping = false, meta = {}) {
+  const incomingType = meta.incomingType || "text";
+  const sendVoice = shouldSendVoice(incomingType);
+  const mode = VOICE_SEND_MODE;
+
+  // Enviar texto siempre, excepto si el modo es "audio" (solo audio)
+  if (!sendVoice || mode !== "audio") {
+    await waSendH(to, text, skipTyping, meta);
+  }
+
+  if (sendVoice) {
+    try {
+      const { mime, ext } = elevenLabsMimeInfo();
+      const audioBuf = await ttsElevenlabs(text);
+      const mediaId = await waUploadAudio(audioBuf, mime, `reply_${Date.now()}.${ext}`);
+      await waSendAudio(to, mediaId);
+      logInfo("TTS", `audio enviado modo=${mode} provider=elevenlabs to=${to}`);
+    } catch (e) {
+      logErr("TTS", e);
+      // Fallback: si el modo era "audio" y falló TTS, enviar texto
+      if (mode === "audio") {
+        await waSendH(to, text, skipTyping, meta);
+      }
+    }
+  }
+}
+
+// Envío inteligente multi-burbuja: texto + un solo audio TTS con texto combinado
+async function waSendSmartMultiH(to, msgs, skipTyping = false, meta = {}) {
+  const incomingType = meta.incomingType || "text";
+  const sendVoice = shouldSendVoice(incomingType);
+  const mode = VOICE_SEND_MODE;
+
+  // Enviar burbujas de texto siempre, excepto si el modo es "audio"
+  if (!sendVoice || mode !== "audio") {
+    await waSendMultiH(to, msgs, skipTyping, meta);
+  }
+
+  if (sendVoice) {
+    const combined = msgs.filter(Boolean).join(". ");
+    try {
+      const { mime, ext } = elevenLabsMimeInfo();
+      const audioBuf = await ttsElevenlabs(combined);
+      const mediaId = await waUploadAudio(audioBuf, mime, `reply_${Date.now()}.${ext}`);
+      await waSendAudio(to, mediaId);
+      logInfo("TTS", `audio multi enviado modo=${mode} provider=elevenlabs to=${to}`);
+    } catch (e) {
+      logErr("TTS", e);
+      // Fallback: si el modo era "audio" y falló TTS, enviar texto
+      if (mode === "audio") {
+        await waSendMultiH(to, msgs, skipTyping, meta);
+      }
+    }
+  }
+}
 
 async function waRead(id) {
   try {
@@ -1874,6 +2027,13 @@ app.get("/health", async (_req, res) => {
     zoho_books: ZOHO.ORG_ID ? "enabled" : "disabled",
     sales_os_bridge: salesOsConfigured() ? "enabled" : "disabled",
     internal_operator_bridge: INTERNAL_OPERATOR_TOKEN ? "enabled" : "missing",
+    voice_tts: VOICE_ENABLED
+      ? `enabled/${VOICE_SEND_MODE}`
+      : "disabled",
+    voice_provider: VOICE_ENABLED ? VOICE_TTS_PROVIDER : "n/a",
+    voice_elevenlabs: VOICE_ENABLED && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID
+      ? "configured"
+      : "not_configured",
     // [F1] memory stats
     sessions_active: sessions.size,
     seen_size: seen.size,
@@ -2129,8 +2289,8 @@ app.post("/webhook", async (req, res) => {
           const m = normMeasures(it.measures);
           return `La medida ${m?.ancho_mm}×${m?.alto_mm} es grande para ${it.product}. Le recomiendo una ventana corredera para esa medida, queda mucho mejor y es más práctica.`;
         });
-        await waSendMultiH(waId, sugMsgs, true);
-        await waSendH(waId, "¿Le parece si ajusto la cotización con corredera en esos items?", true);
+        await waSendSmartMultiH(waId, sugMsgs, true, { incomingType: type });
+        await waSendSmartH(waId, "¿Le parece si ajusto la cotización con corredera en esos items?", true, { incomingType: type });
         ses.history.push({ role: "assistant", content: sugMsgs.join("\n") + "\n¿Le parece si ajusto la cotización con corredera?" });
         saveSession(waId, ses);
         try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-suggestion", e); }
@@ -2266,8 +2426,8 @@ app.post("/webhook", async (req, res) => {
             }
           }
           const parts = smartSplitForWhatsApp(reply);
-          if (parts.length > 1) await waSendMultiH(waId, parts, true);
-          else await waSendH(waId, parts[0], true);
+          if (parts.length > 1) await waSendSmartMultiH(waId, parts, true, { incomingType: type });
+          else await waSendSmartH(waId, parts[0], true, { incomingType: type });
           ses.history.push({ role: "assistant", content: reply });
           try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-inline", e); }
         }
@@ -2277,8 +2437,8 @@ app.post("/webhook", async (req, res) => {
       if (!reply) reply = "No le entendí, ¿me repite? 🤔";
       // [PROD] Smart split para burbujas WhatsApp cortas
       const parts = smartSplitForWhatsApp(reply);
-      if (parts.length > 1) await waSendMultiH(waId, parts, true);
-      else await waSendH(waId, parts[0], true);
+      if (parts.length > 1) await waSendSmartMultiH(waId, parts, true, { incomingType: type });
+      else await waSendSmartH(waId, parts[0], true, { incomingType: type });
       ses.history.push({ role: "assistant", content: reply });
     }
 
