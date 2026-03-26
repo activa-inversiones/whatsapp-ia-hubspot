@@ -308,5 +308,86 @@
 
 # Puedes ajustar esto con variables `HUMAN\_\*` del `.env.example`.
 
+# \## 🏗️ Integración con Cotizador Winhouse
+
+# 
+
+# Este servicio se conecta a `cotizador-winhouse` (API de cotización de ventanas/puertas PVC).
+
+# 
+
+# \### Variables de entorno requeridas
+
+# 
+
+# | Variable | Descripción | Ejemplo |
+
+# |---|---|---|
+
+# | `COTIZADOR_BASE_URL` | URL base del cotizador (sin `/` al final) | `https://cotizador-winhouse-production.up.railway.app` |
+
+# | `COTIZADOR_API_KEY` | API key para autenticar requests (`X-API-Key`) | `activa_cotizador_2026` |
+
+# | `COTIZADOR_TIMEOUT_MS` | Timeout en ms (opcional, default: 15000) | `15000` |
+
+# | `PRICER_MODE` | Debe ser `cotizador_winhouse` para activar | `cotizador_winhouse` |
+
+# 
+
+# \### Configuración en Railway
+
+# 
+
+# 1\. En Railway → servicio `whatsapp-ia-hubspot` → **Variables**, agrega:
+
+# 
+
+# ```env
+
+# PRICER\_MODE=cotizador\_winhouse
+
+# COTIZADOR\_BASE\_URL=https://cotizador-winhouse-production.up.railway.app
+
+# COTIZADOR\_API\_KEY=activa\_cotizador\_2026
+
+# ```
+
+# 
+
+# 2\. El servicio hace `POST {COTIZADOR_BASE_URL}/api/cotizar` con header `X-API-Key: <COTIZADOR_API_KEY>`.
+
+# 
+
+# \### Comportamiento ante errores
+
+# 
+
+# \- **Variables faltantes**: log de error claro en startup, cotizador marcado como deshabilitado.
+
+# \- **401 Unauthorized**: log con hint `Verifica COTIZADOR_API_KEY en Railway`, sin reintentos.
+
+# \- **5xx / timeout**: log técnico, 1 reintento automático con 2 s de espera.
+
+# \- **Timeout** por defecto: 15 s (configurable con `COTIZADOR_TIMEOUT_MS`).
+
+# 
+
+# > ⚠️ El valor de `COTIZADOR_API_KEY` **nunca se loggea** para proteger el secreto.
+
+# 
+
+# \### Red privada Railway (opcional, más rápido)
+
+# 
+
+# Si ambos servicios están en el mismo proyecto Railway, puedes usar la red interna:
+
+# 
+
+# ```env
+
+# COTIZADOR\_BASE\_URL=http://$\{\{cotizador-winhouse.RAILWAY\_PRIVATE\_DOMAIN\}\}:$\{\{cotizador-winhouse.PORT\}\}
+
+# ```
 
 
