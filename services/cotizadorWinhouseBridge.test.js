@@ -112,7 +112,7 @@ test("cotizarWinhouse — envía X-API-Key y Content-Type correctos", async () =
       "debe llamar a /api/cotizar"
     );
     assert.ok(
-      capturedRequest.url.startsWith("https://example.cotizador.test"),
+      capturedRequest.url.startsWith("https://example.cotizador.test/"),
       "debe usar COTIZADOR_BASE_URL"
     );
   } finally {
@@ -195,31 +195,35 @@ test("cotizarWinhouse — no loggea el valor de COTIZADOR_API_KEY", async () => 
   const loggedMessages = [];
   const origLog = console.log;
   const origError = console.error;
-  console.log = (...args) => loggedMessages.push(args.join(" "));
-  console.error = (...args) => loggedMessages.push(args.join(" "));
-
-  const fakeResponse = makeFetchResponse(401, { error: "API key inválida o faltante" });
-  const fetchStub = async () => fakeResponse;
-
-  const { prev } = await loadBridgeWithEnv({
-    baseUrl: "https://example.cotizador.test",
-    apiKey: secretKey,
-    fetchStub,
-  });
 
   try {
-    const mod = await import(
-      `./cotizadorWinhouseBridge.js?t=${Date.now()}`
-    );
-    await mod.cotizarWinhouse({ items: [] });
+    console.log = (...args) => loggedMessages.push(args.join(" "));
+    console.error = (...args) => loggedMessages.push(args.join(" "));
 
-    const allLogs = loggedMessages.join("\n");
-    assert.ok(
-      !allLogs.includes(secretKey),
-      "el valor de COTIZADOR_API_KEY no debe aparecer en los logs"
-    );
+    const fakeResponse = makeFetchResponse(401, { error: "API key inválida o faltante" });
+    const fetchStub = async () => fakeResponse;
+
+    const { prev } = await loadBridgeWithEnv({
+      baseUrl: "https://example.cotizador.test",
+      apiKey: secretKey,
+      fetchStub,
+    });
+
+    try {
+      const mod = await import(
+        `./cotizadorWinhouseBridge.js?t=${Date.now()}`
+      );
+      await mod.cotizarWinhouse({ items: [] });
+
+      const allLogs = loggedMessages.join("\n");
+      assert.ok(
+        !allLogs.includes(secretKey),
+        "el valor de COTIZADOR_API_KEY no debe aparecer en los logs"
+      );
+    } finally {
+      restoreEnv(prev);
+    }
   } finally {
-    restoreEnv(prev);
     console.log = origLog;
     console.error = origError;
   }
