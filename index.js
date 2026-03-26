@@ -105,7 +105,7 @@ const STT_MODEL = process.env.AI_MODEL_STT || "whisper-1";
 const PRICER_MODE = (process.env.PRICER_MODE || "winperfil").toLowerCase();
 const WINPERFIL_API_BASE = (process.env.WINPERFIL_API_BASE || "").replace(/\/$/, "");
 const WINPERFIL_API_KEY = process.env.WINPERFIL_API_KEY || "";
-
+const QUOTE_API_KEY = process.env.QUOTE_API_KEY || "";
 const REQUIRE_ZOHO = String(process.env.REQUIRE_ZOHO || "true") === "true";
 const ZOHO = {
   CLIENT_ID: process.env.ZOHO_CLIENT_ID,
@@ -1889,6 +1889,14 @@ app.get("/webhook", (req, res) => {
 
 app.post("/quote", async (req, res) => {
   try {
+        const key = req.get("x-api-key") || req.get("X-API-Key") || "";
+
+    if (!QUOTE_API_KEY) {
+      return res.status(500).json({ ok: false, error: "QUOTE_API_KEY missing" });
+    }
+    if (key !== QUOTE_API_KEY) {
+      return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
     const message = String(req.body?.message || "").trim();
     const supplier = req.body?.supplier || detectSupplier(message);
     const items = Array.isArray(req.body?.items) ? req.body.items : null;
