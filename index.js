@@ -2564,25 +2564,24 @@ app.post("/webhook", async (req, res) => {
               await sleep(1500);
               await waSendH(waId, "✅ Propuesta lista. Si quiere ajustar algo o tiene preguntas, me avisa.", true);
 
-              try {
-                await zhUpsert(ses, waId);
-                if (ses.zohoDealId && estimate.estimate_number) {
-                  await zhNote(
-                                       // [FEATURE] Log para dashboard — permite seguimiento sin molestar al cliente
+                     try {
+                 await zhUpsert(ses, waId);
+                 if (ses.zohoDealId && estimate.estimate_number) {
+                   // [FEATURE] Log para dashboard
                    logInfo(
                      "pdf_sent_tracking",
                      `PDF enviado a ${waId} | Nombre: ${ses.data.name || "Sin nombre"} | Estimate: ${estimate.estimate_number} | Esperando revisión...`
                    );
+                   await zhNote(
+                     "Deals",
+                     ses.zohoDealId,
+                     `Cotización ${qn}`,
+                     `Estimate: ${estimate.estimate_number}\nTotal: $${Number(d.grand_total).toLocaleString("es-CL")} +IVA`
+                   );
                  }
-                    "Deals",
-                    ses.zohoDealId,
-                    `Cotización ${qn}`,
-                    `Estimate: ${estimate.estimate_number}\nTotal: $${Number(d.grand_total).toLocaleString("es-CL")} +IVA`
-                  );
-                }
-              } catch (e) {
-                logErr("zhUpsert/zhNote-post-pdf", e);
-              }
+               } catch (e) {
+                 logErr("zhUpsert/zhNote-post-pdf", e);
+               }
               fireAndForget(
                 "trackQuoteEvent.formal",
                 trackQuoteEvent(
