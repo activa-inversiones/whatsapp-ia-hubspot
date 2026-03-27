@@ -536,6 +536,97 @@ function validateDimensions(product, ancho_mm, alto_mm) {
    ────────────────────────────────────────────────────────────── */
 const ESCALATION_PHONE = process.env.ESCALATION_PHONE || "";
 const ESCALATION_EMAIL = process.env.ESCALATION_EMAIL || "";
+// ═══════════════════════════════════════════════════════════════════
+// [ADMIN] OLIVER MODE — Control remoto + Cubicación Automática
+// ═══════════════════════════════════════════════════════════════════
+const ADMIN_PHONE = "+56957296035";
+const ADMIN_PIN = "1976";
+
+// Map de cubicaciones pendientes por entrega automática en 60s
+const cubicacionPendientes = new Map(); // { waId: { items, timestamp, tries } }
+
+function adminCheckAuth(phone, pin) {
+  return phone === ADMIN_PHONE && pin === ADMIN_PIN;
+}
+
+// Parser minimalista de comandos admin
+function parseAdminCmd(text) {
+  const s = String(text || "").trim().toUpperCase();
+  
+  // OLIVER IN 1976 | OLIVER OFF 1976
+  if (/^OLIVER\s+(IN|ON)\s+(\d+)/.test(s)) {
+    const m = s.match(/^OLIVER\s+(IN|ON)\s+(\d+)/);
+    return { type: "admin_in", pin: m[2] };
+  }
+  if (/^OLIVER\s+OFF\s+(\d+)/.test(s)) {
+    const m = s.match(/^OLIVER\s+OFF\s+(\d+)/);
+    return { type: "admin_off", pin: m[1] };
+  }
+  if (s === "ADMIN STATUS") return { type: "admin_status" };
+  if (s === "ADMIN LAST CUBICACION") return { type: "admin_last_cubi" };
+  if (s === "ADMIN FORCE PDF") return { type: "admin_force_pdf" };
+  
+  return null;
+}
+
+// Dispatcher de cubicación pendiente — revisar cada 15s, enviar a los 60s
+setInterval(() => {
+  const now = Date.now();
+  for (const [waId, pending] of cubicacionPendientes) {
+    if (now - pending.timestamp >= 60_000) {
+      fireAndForget(
+        "cubicacion_dispatcher",
+        (async () => {
+          const ses = getSession(waId);
+          const d = ses.data;
+          try {
+            // Intentar cotizar
+            const priced = await priceAll(d, waId);
+            if (!priced.ok && !priced.partial) {
+              await waSendH(waId, `❌ No pude cotizar: ${priced.error}`, true);
+              cubicacionPendientes.delete(waId);
+              return;
+            }
+            
+            // Crear Estimate en Zoho Books
+            const estimate = await zhBooksCreateEstimate(d, d.name || "Cliente", normPhone(waId));
+            if (estimate?.estimate_id) {
+              try {
+                const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
+                ses.zohoEstimateId = estimate.estimate_id;
+                ses.pdfSent = true;
+                d.stageKey = "propuesta";
+                
+                // Enviar PDF
+                await waSendPdf(waId, pdfBuf, `COT-${Date.now()}.pdf`, 
+                  `✅ Propuesta lista. Si quiere ajustar algo, me avisa.`);
+                
+                // Mensaje post-PDF
+                await waSendH(waId, 
+                  `Se adjunta Propuesta Técnico Comercial con presupuesto y especificaciones.\n\nConfort térmico y acústico garantizado.\n\n¿Desea una visita técnica gratuita?`, 
+                  true
+                );
+                
+                logInfo("cubicacion_dispatcher", `PDF automático enviado a ${waId}`);
+              } catch (pdfErr) {
+                logErr("cubicacion_dispatcher.pdf", pdfErr);
+              }
+            }
+            
+            cubicacionPendientes.delete(waId);
+            saveSession(waId, ses);
+          } catch (e) {
+            logErr("cubicacion_dispatcher", e);
+            pending.tries = (pending.tries || 0) + 1;
+            if (pending.tries >= 3) {
+              cubicacionPendientes.delete(waId);
+            }
+          }
+        })()
+      );
+    }
+  }
+}, 15_000);
 
 async function sendEscalationAlert(reason, customerPhone, sessionData) {
   const d = sessionData || {};
@@ -2174,6 +2265,71 @@ app.post("/webhook", async (req, res) => {
     );
 
     const control = await getConversationControl(waId);
+        // [ADMIN] Chequear comando OLIVER IN/OFF o admin
+    const adminCmd = parseAdminCmd(userText);
+    if (adminCmd) {
+      if (adminCmd.type === "admin_in" || adminCmd.type === "admin_off") {
+        if (!adminCheckAuth(waId, adminCmd.pin)) {
+          await waSendH(waId, "❌ PIN inválido o teléfono no autorizado.", true);
+          return;
+        }
+        if (adminCmd.type === "admin_in") {
+          ses.adminMode = true;
+          await waSendH(waId, "✅ Modo admin ACTIVADO.", true);
+        } else {
+          ses.adminMode = false;
+          await waSendH(waId, "✅ Modo admin DESACTIVADO.", true);
+        }
+        saveSession(waId, ses);
+        return;
+      }
+      
+      // Comandos admin (solo si está en modo admin)
+      if (ses.adminMode !== true && waId !== ADMIN_PHONE) {
+        await waSendH(waId, "❌ No autorizado.", true);
+        return;
+      }
+      
+      if (adminCmd.type === "admin_status") {
+        const active = cubicacionPendientes.size;
+        const msg = `📊 ADMIN STATUS\n\nSesión: ${waId}\nItems: ${ses.data.items.length}\nPendientes: ${active}\nPDF: ${ses.pdfSent ? "✓" : "✗"}\nZoho: ${ses.zohoDealId || "—"}`;
+        await waSendH(waId, msg, true);
+        return;
+      }
+      
+      if (adminCmd.type === "admin_last_cubi") {
+        const pending = cubicacionPendientes.get(waId);
+        const msg = pending 
+          ? `⏳ Pendiente hace ${Math.round((Date.now() - pending.timestamp) / 1000)}s`
+          : `✅ Sin pendientes`;
+        await waSendH(waId, msg, true);
+        return;
+      }
+      
+      if (adminCmd.type === "admin_force_pdf") {
+        if (ses.data.items.length === 0) {
+          await waSendH(waId, "❌ Sin items.", true);
+          return;
+        }
+        const priced = await priceAll(ses.data, waId);
+        if (!priced.ok) {
+          await waSendH(waId, `❌ ${priced.error}`, true);
+          return;
+        }
+        const estimate = await zhBooksCreateEstimate(ses.data, ses.data.name || "Cliente", normPhone(waId));
+        if (estimate?.estimate_id) {
+          const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
+          await waSendPdf(waId, pdfBuf, `PropuestaManual_${Date.now()}.pdf`, "PDF enviado manualmente");
+          ses.zohoEstimateId = estimate.estimate_id;
+          ses.pdfSent = true;
+          saveSession(waId, ses);
+          await waSendH(waId, "✅ PDF reenviado.", true);
+        }
+        return;
+      }
+      
+      return;
+    }
     if (control?.ai_paused || control?.operator_status === "human") {
       ses.history.push({ role: "user", content: userText });
       saveSession(waId, ses);
@@ -2270,6 +2426,15 @@ app.post("/webhook", async (req, res) => {
         }
 
         if (canQuote(d)) {
+                  // Si hay items nuevos en la cubicación → iniciar timer automático
+        if (Array.isArray(args.items) && args.items.length > 0 && canQuote(ses.data)) {
+          cubicacionPendientes.set(waId, {
+            items: args.items,
+            timestamp: Date.now(),
+            tries: 0,
+          });
+          logInfo("cubicacion_timer", `Timer iniciado para ${waId}, PDF en 60s`);
+        }
           const qr = await priceAll(d, "");
           if (qr.ok && qr.total) {
             d.grand_total = qr.total;
