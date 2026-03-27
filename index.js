@@ -2560,12 +2560,20 @@ app.post("/webhook", async (req, res) => {
               }
               // Follow-up de cierre
               await sleep(1500);
-              await waSendH(waId, "¿Le gustaría agendar una visita técnica gratuita para validar las medidas en terreno? Sin compromiso.", true);
+                            // Follow-up de cierre — SOLO confirmación
+              await sleep(1500);
+              await waSendH(waId, "✅ Propuesta lista. Si quiere ajustar algo o tiene preguntas, me avisa.", true);
 
               try {
                 await zhUpsert(ses, waId);
                 if (ses.zohoDealId && estimate.estimate_number) {
                   await zhNote(
+                                       // [FEATURE] Log para dashboard — permite seguimiento sin molestar al cliente
+                   logInfo(
+                     "pdf_sent_tracking",
+                     `PDF enviado a ${waId} | Nombre: ${ses.data.name || "Sin nombre"} | Estimate: ${estimate.estimate_number} | Esperando revisión...`
+                   );
+                 }
                     "Deals",
                     ses.zohoDealId,
                     `Cotización ${qn}`,
