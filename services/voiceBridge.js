@@ -1,81 +1,32 @@
 // services/voiceBridge.js
 // Node 18+ (ESM). Usa fetch global.
-// ✅ ACTUALIZADO: ElevenLabs funcional + Sistema de precios desde archivo
-
-import fs from "fs";
-import path from "path";
-
+// ✅ LIMPIO: Solo TTS/voz. Sin pricing (usa cotizadorWinhouseBridge para precios).
+ 
 const VOICE_ENABLED = String(process.env.VOICE_ENABLED || "false") === "true";
-const VOICE_SEND_MODE = String(process.env.VOICE_SEND_MODE || "text_only"); // text_only | text_and_audio
+const VOICE_SEND_MODE = String(process.env.VOICE_SEND_MODE || "text_only"); // text_only | text_and_audio | audio_if_inbound_audio
 const VOICE_TTS_PROVIDER = String(process.env.VOICE_TTS_PROVIDER || "").toLowerCase(); // elevenlabs | bridge | ""
-
+ 
 const VOICE_TTS_URL = process.env.VOICE_TTS_URL || "";
 const VOICE_TTS_TOKEN = process.env.VOICE_TTS_TOKEN || "";
 const VOICE_TTS_VOICE_ID = process.env.VOICE_TTS_VOICE_ID || "";
-
+ 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "";
 const ELEVENLABS_MODEL_ID = process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2";
 const ELEVENLABS_OUTPUT_FORMAT = process.env.ELEVENLABS_OUTPUT_FORMAT || "ogg_opus";
-
-// ✅ NUEVO: Sistema de precios desde archivo
-const PRICING_FILE = process.env.PRICING_FILE || "/data/pricing.json"; // Railway usa /data para datos persistentes
-let pricingCache = {};
-let pricingLastRead = 0;
-const PRICING_CACHE_TTL = 60000; // Recargar cada 60s
-
-// ✅ NUEVO: Cargar precios desde archivo JSON
-function loadPricingFromFile() {
-  try {
-    if (!fs.existsSync(PRICING_FILE)) {
-      console.warn(`[PRICING] Archivo no encontrado: ${PRICING_FILE}`);
-      return {};
-    }
-
-    const now = Date.now();
-    if (pricingCache && now - pricingLastRead < PRICING_CACHE_TTL) {
-      return pricingCache; // Usar cache si es reciente
-    }
-
-    const raw = fs.readFileSync(PRICING_FILE, "utf-8");
-    pricingCache = JSON.parse(raw);
-    pricingLastRead = now;
-
-    console.log(`[PRICING] Archivo cargado: ${Object.keys(pricingCache).length} productos`);
-    return pricingCache;
-  } catch (e) {
-    console.error(`[PRICING] Error leyendo ${PRICING_FILE}:`, e.message);
-    return {};
-  }
-}
-
-// ✅ NUEVO: Obtener precio actualizado de un producto
-export function getPriceByProduct(productName) {
-  const pricing = loadPricingFromFile();
-  const key = String(productName || "").toLowerCase().trim();
-  return pricing[key] || null;
-}
-
-// ✅ NUEVO: Obtener TODOS los precios (para dashboard)
-export function getAllPrices() {
-  return loadPricingFromFile();
-}
-
-// ✅ NUEVO: Recargar precios forzadamente
-export function reloadPricing() {
-  pricingLastRead = 0; // Forzar recarga en próxima llamada
-  console.log("[PRICING] Cache invalidado");
-  return loadPricingFromFile();
-}
-
+ 
+// ═══════════════════════════════════════════════════════════════════
+// Detección de proveedores
+// ═══════════════════════════════════════════════════════════════════
+ 
 function hasElevenLabs() {
   return !!(ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID);
 }
-
+ 
 function hasBridge() {
   return !!VOICE_TTS_URL;
 }
-
+ 
 function resolveProvider() {
   if (VOICE_TTS_PROVIDER === "elevenlabs") return "elevenlabs";
   if (VOICE_TTS_PROVIDER === "bridge") return "bridge";
@@ -83,34 +34,45 @@ function resolveProvider() {
   if (hasBridge()) return "bridge";
   return "none";
 }
-
+ 
+// ═══════════════════════════════════════════════════════════════════
+// API pública
+// ═══════════════════════════════════════════════════════════════════
+ 
 export function voiceEnabled() {
   if (!VOICE_ENABLED) return false;
   const p = resolveProvider();
   return p === "elevenlabs" || p === "bridge";
 }
-
+ 
 export function shouldSendVoice(userText = "", session = null, opts = {}) {
   if (!voiceEnabled()) return false;
-
+ 
+  // Si el cliente mandó audio, SIEMPRE responder con audio
   const incomingType = opts?.incomingType || "text";
   if (incomingType === "audio") return true;
-
+ 
+  // Si el texto menciona "audio" / "nota de voz" / "voz"
   const t = String(userText || "").toLowerCase();
   const explicit =
     t.includes("audio") ||
     t.includes("nota de voz") ||
     t.includes("mensaje de voz") ||
     t.includes("voz");
-
   if (explicit) return true;
-
+ 
+  // Modo "text_and_audio" = siempre audio (salvo si quiere PDF)
   const wantsPdf = !!session?.data?.wants_pdf;
   if (VOICE_SEND_MODE === "text_and_audio" && !wantsPdf) return true;
-
+ 
+  // Modo "audio_if_inbound_audio" = solo si el inbound fue audio (ya cubierto arriba)
   return false;
 }
-
+ 
+// ═══════════════════════════════════════════════════════════════════
+// Síntesis de voz — Bridge personalizado
+// ═══════════════════════════════════════════════════════════════════
+ 
 async function synthesizeViaBridge({ text, waId = "", context = {} }) {
   const res = await fetch(VOICE_TTS_URL, {
     method: "POST",
@@ -126,16 +88,17 @@ async function synthesizeViaBridge({ text, waId = "", context = {} }) {
       format: "ogg",
     }),
   });
-
+ 
   if (!res.ok) {
     const err = await res.text().catch(() => "");
-    throw new Error(`TTS failed [${res.status}] ${err}`);
+    throw new Error(`TTS Bridge failed [${res.status}] ${err}`);
   }
-
+ 
   const contentType = res.headers.get("content-type") || "";
+ 
   if (contentType.includes("application/json")) {
     const data = await res.json();
-
+ 
     if (data.audio_base64) {
       return {
         buffer: Buffer.from(data.audio_base64, "base64"),
@@ -143,7 +106,7 @@ async function synthesizeViaBridge({ text, waId = "", context = {} }) {
         filename: data.filename || "reply.ogg",
       };
     }
-
+ 
     if (data.audio_url) {
       const audioRes = await fetch(data.audio_url);
       if (!audioRes.ok) throw new Error(`TTS audio_url fetch failed [${audioRes.status}]`);
@@ -154,10 +117,10 @@ async function synthesizeViaBridge({ text, waId = "", context = {} }) {
         filename: "reply.ogg",
       };
     }
-
+ 
     throw new Error("TTS response missing audio payload");
   }
-
+ 
   const arr = await res.arrayBuffer();
   return {
     buffer: Buffer.from(arr),
@@ -165,86 +128,86 @@ async function synthesizeViaBridge({ text, waId = "", context = {} }) {
     filename: "reply.ogg",
   };
 }
-
-// ✅ MEJORADO: ElevenLabs con validación y reintentos
+ 
+// ═══════════════════════════════════════════════════════════════════
+// Síntesis de voz — ElevenLabs (mejorado con validación + logs)
+// ═══════════════════════════════════════════════════════════════════
+ 
 async function synthesizeViaElevenLabs({ text, waId = "" }) {
-  // Validar credenciales
   if (!ELEVENLABS_API_KEY) {
-    throw new Error("ElevenLabs: ELEVENLABS_API_KEY no configurada");
+    throw new Error("ElevenLabs: ELEVENLABS_API_KEY no configurada en variables de entorno");
   }
   if (!ELEVENLABS_VOICE_ID) {
-    throw new Error("ElevenLabs: ELEVENLABS_VOICE_ID no configurada");
+    throw new Error("ElevenLabs: ELEVENLABS_VOICE_ID no configurada en variables de entorno");
   }
-
+ 
   const cleanText = String(text || "").trim();
   if (!cleanText) {
-    throw new Error("ElevenLabs: Texto vacío");
+    throw new Error("ElevenLabs: texto vacío, no se puede sintetizar");
   }
-
-  // Limitar a 1000 caracteres para no gastar cuota
-  const limitedText = cleanText.slice(0, 1000);
-
+ 
+  // Limitar a 1000 caracteres para controlar cuota de ElevenLabs
+  const limitedText = cleanText.length > 1000 ? cleanText.slice(0, 1000) : cleanText;
+ 
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(
     ELEVENLABS_VOICE_ID
   )}?output_format=${encodeURIComponent(ELEVENLABS_OUTPUT_FORMAT)}`;
-
+ 
   const body = {
     text: limitedText,
     model_id: ELEVENLABS_MODEL_ID,
   };
-
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "xi-api-key": ELEVENLABS_API_KEY,
-        "Content-Type": "application/json",
-        Accept: "audio/ogg",
-      },
-      body: JSON.stringify(body),
-      timeout: 30000,
-    });
-
-    if (!res.ok) {
-      const err = await res.text().catch(() => "");
-      const statusMsg = {
-        400: "Parámetros inválidos",
-        401: "API Key inválida o expirada",
-        403: "Acceso denegado",
-        429: "Límite de cuota excedido",
-        500: "Error del servidor ElevenLabs",
-      }[res.status] || `Error HTTP ${res.status}`;
-
-      throw new Error(`ElevenLabs [${res.status}] ${statusMsg}\n${err}`);
-    }
-
-    const arr = await res.arrayBuffer();
-    if (arr.byteLength === 0) {
-      throw new Error("ElevenLabs: Audio vacío recibido");
-    }
-
-    console.log(`[TTS-ElevenLabs] ✅ Audio generado (${arr.byteLength} bytes) para ${waId}`);
-
-    return {
-      buffer: Buffer.from(arr),
-      mime: "audio/ogg",
-      filename: `reply_${waId || "wa"}.ogg`,
-    };
-  } catch (error) {
-    console.error(`[TTS-ElevenLabs] ❌ Error:`, error.message);
-    throw error;
+ 
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "xi-api-key": ELEVENLABS_API_KEY,
+      "Content-Type": "application/json",
+      Accept: "audio/ogg",
+    },
+    body: JSON.stringify(body),
+  });
+ 
+  if (!res.ok) {
+    const err = await res.text().catch(() => "");
+    const statusMsg = {
+      400: "Parámetros inválidos",
+      401: "API Key inválida o expirada",
+      403: "Acceso denegado",
+      429: "Límite de cuota excedido",
+      500: "Error del servidor ElevenLabs",
+    }[res.status] || `Error HTTP ${res.status}`;
+ 
+    throw new Error(`ElevenLabs [${res.status}] ${statusMsg} — ${err}`);
   }
+ 
+  const arr = await res.arrayBuffer();
+  if (arr.byteLength === 0) {
+    throw new Error("ElevenLabs: audio vacío recibido (0 bytes)");
+  }
+ 
+  console.log(`[TTS-ElevenLabs] ✅ Audio generado (${arr.byteLength} bytes) para ${waId || "desconocido"}`);
+ 
+  return {
+    buffer: Buffer.from(arr),
+    mime: "audio/ogg",
+    filename: `reply_${waId || "wa"}.ogg`,
+  };
 }
-
+ 
+// ═══════════════════════════════════════════════════════════════════
+// Síntesis principal — elige proveedor automáticamente
+// ═══════════════════════════════════════════════════════════════════
+ 
 export async function synthesizeVoiceBuffer({ text, waId = "", context = {} }) {
   if (!voiceEnabled()) {
-    console.warn("[TTS] Voz deshabilitada (VOICE_ENABLED=false)");
+    console.warn("[TTS] Voz deshabilitada (VOICE_ENABLED=false o sin proveedor configurado)");
     return null;
   }
-
+ 
   const p = resolveProvider();
-  console.log(`[TTS] Proveedor: ${p}`);
-
+  console.log(`[TTS] Proveedor seleccionado: ${p} | waId: ${waId}`);
+ 
   try {
     if (p === "elevenlabs") {
       return await synthesizeViaElevenLabs({ text, waId, context });
@@ -252,16 +215,20 @@ export async function synthesizeVoiceBuffer({ text, waId = "", context = {} }) {
     if (p === "bridge") {
       return await synthesizeViaBridge({ text, waId, context });
     }
-
-    console.warn("[TTS] Ningún proveedor disponible");
+ 
+    console.warn("[TTS] Ningún proveedor disponible (ni ElevenLabs ni Bridge)");
     return null;
   } catch (error) {
-    console.error(`[TTS] Error síntesis:`, error.message);
-    throw error;
+    console.error(`[TTS] ❌ Error en síntesis (${p}):`, error.message);
+    // No relanzar — el bot puede seguir respondiendo texto si falla voz
+    return null;
   }
 }
-
-// ✅ EXPORTAR info de debug
+ 
+// ═══════════════════════════════════════════════════════════════════
+// Debug / health check
+// ═══════════════════════════════════════════════════════════════════
+ 
 export function getVoiceConfig() {
   return {
     enabled: VOICE_ENABLED,
