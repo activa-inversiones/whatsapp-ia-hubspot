@@ -539,14 +539,25 @@ const ESCALATION_EMAIL = process.env.ESCALATION_EMAIL || "";
 // ═══════════════════════════════════════════════════════════════════
 // [ADMIN] OLIVER MODE — Control remoto + Cubicación Automática
 // ═══════════════════════════════════════════════════════════════════
-const ADMIN_PHONE = "+56957296035";
-const ADMIN_PIN = "1976";
+const ADMIN_PHONE = process.env.ADMIN_PHONE || "+56957296035";
+const ADMIN_PIN = process.env.ADMIN_PIN || "1976";
+
+// Normalizar el waId para comparación
+function normalizeWaId(waId) {
+  return String(waId || "").replace(/[^\d]/g, "");
+}
+
+function normalizeAdminPhone(phone) {
+  return String(phone || "").replace(/[^\d]/g, "");
+}
 
 // Map de cubicaciones pendientes por entrega automática en 60s
 const cubicacionPendientes = new Map(); // { waId: { items, timestamp, tries } }
 
 function adminCheckAuth(phone, pin) {
-  return phone === ADMIN_PHONE && pin === ADMIN_PIN;
+  const phoneNorm = normalizeWaId(phone);
+  const adminNorm = normalizeAdminPhone(ADMIN_PHONE);
+  return phoneNorm === adminNorm && pin === ADMIN_PIN;
 }
 
 // Parser minimalista de comandos admin
