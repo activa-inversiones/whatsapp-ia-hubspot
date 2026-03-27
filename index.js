@@ -993,15 +993,23 @@ function sanitizeForTts(text) {
     .slice(0, TTS_MAX_CHARS);
 }
 
-function shouldSendVoice(incomingType) {
+function shouldSendVoice(incomingType, userText = "") {
   if (!VOICE_ENABLED) return false;
   if (VOICE_TTS_PROVIDER !== "elevenlabs") return false;
   if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) return false;
   const mode = VOICE_SEND_MODE;
   if (mode === "text") return false;
   if (mode === "audio" || mode === "both") return true;
-  // audio_if_inbound_audio (default seguro)
-  return String(incomingType || "") === "audio";
+  // Si el cliente manda audio → responder con audio
+  if (String(incomingType || "") === "audio") return true;
+  // Si el cliente PIDE audio por texto → responder con audio
+  const t = String(userText || "").toLowerCase();
+  if (t.includes("audio") || t.includes("nota de voz") || t.includes("voz") ||
+      t.includes("sin lentes") || t.includes("no puedo leer") || t.includes("háblame") ||
+      t.includes("hablame") || t.includes("mándame") || t.includes("mandame")) {
+    return true;
+  }
+  return false;
 }
 
 function elevenLabsMimeInfo() {
@@ -1059,7 +1067,7 @@ async function waSendAudio(to, mediaId) {
 // Envío inteligente: texto, audio o ambos según VOICE_SEND_MODE
 async function waSendSmartH(to, text, skipTyping = false, meta = {}) {
   const incomingType = meta.incomingType || "text";
-  const sendVoice = shouldSendVoice(incomingType);
+  const sendVoice = shouldSendVoice(incomingType, text);
   const mode = VOICE_SEND_MODE;
 
   // Enviar texto siempre, excepto si el modo es "audio" (solo audio)
@@ -1087,7 +1095,7 @@ async function waSendSmartH(to, text, skipTyping = false, meta = {}) {
 // Envío inteligente multi-burbuja: texto + un solo audio TTS con texto combinado
 async function waSendSmartMultiH(to, msgs, skipTyping = false, meta = {}) {
   const incomingType = meta.incomingType || "text";
-  const sendVoice = shouldSendVoice(incomingType);
+  const sendVoice = shouldSendVoice(incomingType, msgs.join(" "));
   const mode = VOICE_SEND_MODE;
 
   // Enviar burbujas de texto siempre, excepto si el modo es "audio"
@@ -1476,7 +1484,14 @@ gris/plomo/antracita → GRAFITO | negro/oscuro → NEW BLACK | blanco/crema →
 ═══ AUTORIDAD TÉCNICA (solo con perfil TÉCNICO, no al inicio) ═══
 Consultor acreditado MINVU, Resolución 266/2025. Evaluador energético de envolventes.
 Úsalo como cierre de autoridad, no como apertura.
-
+═══ AUDIO Y VOZ ═══
+Puedes recibir y enviar mensajes de audio/voz por WhatsApp.
+Si el cliente te manda un audio, el sistema lo transcribe automáticamente y tú recibes el texto.
+Si el cliente te pide "mándame un audio", "háblame por voz", "nota de voz", o dice que no puede leer,
+responde normalmente por texto — el sistema AUTOMÁTICAMENTE también le enviará un audio con tu respuesta.
+NUNCA digas "solo puedo responder por texto" ni "no puedo enviar audios".
+Simplemente responde normal y el sistema se encarga del audio.
+Si el cliente dice que anda sin lentes o no puede leer, dile: "Le mando la info por audio también, no se preocupe."
 ═══ REGLAS DURAS ═══
 Solo WinHouse PVC y Sodal Aluminio.
 update_quote UNA vez con todos los items completos.
