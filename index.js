@@ -2267,6 +2267,10 @@ app.post("/webhook", async (req, res) => {
     const control = await getConversationControl(waId);
         // [ADMIN] Chequear comando OLIVER IN/OFF o admin
     const adminCmd = parseAdminCmd(userText);
+        // [DEBUG] Log del número para ver formato
+    if (userText.includes("OLIVER") || userText.includes("ADMIN")) {
+      logInfo("ADMIN_DEBUG", `waId=${waId}, ADMIN_PHONE=${ADMIN_PHONE}, Match=${waId === ADMIN_PHONE}`);
+    }
     if (adminCmd) {
       if (adminCmd.type === "admin_in" || adminCmd.type === "admin_off") {
         if (!adminCheckAuth(waId, adminCmd.pin)) {
