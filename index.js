@@ -1664,119 +1664,98 @@ async function runAI(session, userText) {
 /* =========================
    17) QUOTE APPLY
    ========================= */
+/* =========================
+   17) QUOTE APPLY — SOLO COTIZADOR WINHOUSE, ESCALAR SI FALLA
+   ========================= */
 async function priceAll(d, customer_id = "") {
   if (!ALLOWED_SUPPLIERS.includes(d.supplier)) d.supplier = "WINHOUSE_PVC";
   d.items = sortItemsForCotizador(d.items);
 
-  const items = d.items.map((it) => {
-    const color = normColor(it.color || d.default_color || "");
-    const product = normProduct(it.product || "");
-    const m = normMeasures(it.measures);
+  if (!d.items.length) {
+    return { ok: false, error: "No hay items para cotizar.", escalate: false };
+  }
+
+  // Solo WinHouse PVC con cotizador automático
+  if (d.supplier !== "WINHOUSE_PVC") {
     return {
-      product: product || it.product || "",
-      measures: it.measures || "",
-      ancho_mm: m ? m.ancho_mm : 1500,
-      alto_mm: m ? m.alto_mm : 1200,
-      qty: Math.max(1, Number(it.qty) || 1),
-      color,
+      ok: false,
+      error: "La línea de aluminio requiere validación manual.",
+      escalate: true,
+      reason: "supplier_manual",
     };
-  });
-
-  let allOkInputs = true;
-  for (const it of items) {
-    if (!it.product || !it.measures || !it.color) allOkInputs = false;
-  }
-  if (!allOkInputs) return { ok: false, error: "Faltan datos en items (producto/medidas/color)" };
-
-  if (PRICER_MODE === "cotizador_winhouse") {
-    if (d.supplier !== "WINHOUSE_PVC") {
-      return { ok: false, error: "La línea de aluminio requiere cotización manual." };
-    }
-    if (!cotizadorWinhouseConfigured()) {
-      return { ok: false, error: "Cotizador Winhouse no configurado en Railway." };
-    }
-    const mapped = d.items.map((it) =>
-      mapQuoteItemToCotizador(it, d.default_color || "")
-    );
-    const unsupported = mapped.filter((x) => x.unsupported);
-    if (unsupported.length > 0) {
-      for (const u of unsupported) {
-        const target = d.items.find((it) => it === u.raw);
-        if (target) {
-          target.price_warning = u.reason;
-          target.source = "cotizador_manual";
-          target.confidence = "manual";
-        }
-      }
-      return { ok: false, error: "Uno o más ítems requieren validación manual." };
-    }
-    const payload = {
-      items: mapped.map((x) => x.payload),
-      cliente: {
-        nombre: d.name || "Cliente WhatsApp",
-        telefono: customer_id || "",
-      },
-    };
-    const r = await cotizarWinhouse(payload);
-    if (!r.ok || !r.json)
-      return {
-        ok: false,
-        error: r.json?.error || r.error || "Cotizador Winhouse no disponible.",
-      };
-    const applied = applyCotizadorResultToSessionItems(d.items, r.json);
-    d.grand_total = Number(r.json?.resumen?.subtotal_neto || applied.total || 0) || null;
-    if (applied.escaladas > 0)
-      return {
-        ok: false,
-        error:
-          "La cotización base quedó armada, pero uno o más ítems requieren validación manual.",
-        partial: true,
-        total: d.grand_total,
-      };
-    return { ok: true, total: d.grand_total, source: "cotizador_winhouse" };
   }
 
-  if (PRICER_MODE === "winperfil" && WINPERFIL_API_BASE) {
-    const payload = {
-      supplier: d.supplier,
-      message: "",
-      items,
-      customer_id: customer_id || "",
-      meta: {
-        comuna: d.comuna || "",
-        zona_termica: d.zona_termica || null,
-      },
+  // Si no está configurado el cotizador → escalar
+  if (!cotizadorWinhouseConfigured()) {
+    return {
+      ok: false,
+      error: "El cotizador automático no está disponible en este momento.",
+      escalate: true,
+      reason: "cotizador_not_configured",
     };
-    const r = await quoteByWinperfil(payload);
-    if (r.ok) {
-      if (r.items && r.items.length) {
-        for (let i = 0; i < d.items.length && i < r.items.length; i++) {
-          d.items[i].unit_price = r.items[i].unit_price;
-          d.items[i].total_price = r.items[i].total_price;
-          d.items[i].source = r.items[i].source || "unknown";
-          d.items[i].confidence = r.items[i].confidence || "unknown";
-          if (r.items[i].confidence === "low")
-            d.items[i].price_warning =
-              "⚠️ Precio estimado (histórico limitado). Sujeto a validación.";
-          else if (r.items[i].source === "winperfil_estimated")
-            d.items[i].price_warning = "⚠️ Precio estimado desde histórico Winperfil.";
-        }
-      } else if (r.total) {
-        const unitEach = Math.round(r.total / d.items.length);
-        for (const it of d.items) {
-          it.unit_price = unitEach;
-          it.total_price = unitEach * it.qty;
-          it.source = "unknown";
-        }
+  }
+
+  const mapped = d.items.map((it) =>
+    mapQuoteItemToCotizador(it, d.default_color || "")
+  );
+
+  const unsupported = mapped.filter((x) => x.unsupported);
+  if (unsupported.length > 0) {
+    for (const u of unsupported) {
+      const target = d.items.find((it) => it === u.raw);
+      if (target) {
+        target.price_warning = u.reason;
+        target.source = "cotizador_manual";
+        target.confidence = "manual";
       }
-      d.grand_total = r.total;
     }
-    return r;
+    return {
+      ok: false,
+      error: "Uno o más ítems requieren validación manual.",
+      escalate: true,
+      reason: "unsupported_items",
+    };
+  }
+
+  const payload = {
+    items: mapped.map((x) => x.payload),
+    cliente: {
+      nombre: d.name || "Cliente WhatsApp",
+      telefono: customer_id || "",
+    },
+  };
+
+  const r = await cotizarWinhouse(payload);
+
+  // Si el cotizador no respondió o falló → escalar
+  if (!r.ok || !r.json) {
+    return {
+      ok: false,
+      error: r.json?.error || r.error || "Cotizador WinHouse no disponible.",
+      escalate: true,
+      reason: r.isTimeout ? "cotizador_timeout" : "cotizador_error",
+    };
+  }
+
+  const applied = applyCotizadorResultToSessionItems(d.items, r.json);
+  d.grand_total = Number(r.json?.resumen?.subtotal_neto || applied.total || 0) || null;
+
+  if (applied.escaladas > 0) {
+    return {
+      ok: false,
+      error: "La cotización requiere revisión de especialista.",
+      partial: true,
+      total: d.grand_total,
+      escalate: true,
+      reason: "partial_cotization",
+    };
   }
 
   return {
-    ok: false,
-    error: "Cotización automática no disponible. Sistema operativo en modo manual.",
+    ok: true,
+    total: d.grand_total,
+    source: "cotizador_winhouse",
+    escalate: false,
   };
 }
 
@@ -2451,13 +2430,26 @@ app.post("/webhook", async (req, res) => {
           logInfo("cubicacion_timer", `Timer iniciado para ${waId}, PDF en 60s`);
         }
           const qr = await priceAll(d, "");
-          if (qr.ok && qr.total) {
-            d.grand_total = qr.total;
-          } else {
-            for (const it of d.items)
-              it.price_warning = qr.error || "No pude cotizar";
-            d.grand_total = null;
-          }
+
+if (qr.ok && qr.total) {
+  d.grand_total = qr.total;
+} else {
+  for (const it of d.items) {
+    it.price_warning = qr.error || "No pude cotizar";
+  }
+  d.grand_total = qr.total || null;
+
+  if (qr.escalate) {
+    fireAndForget(
+      "escalation.cotizador",
+      sendEscalationAlert(
+        `Cotización escalada: ${qr.reason || qr.error}`,
+        normPhone(waId),
+        d
+      )
+    );
+  }
+}
         }
       }
 
@@ -2501,9 +2493,10 @@ app.post("/webhook", async (req, res) => {
 
       if (!earlyExit) {
         const wantsPdf =
-          isComplete(d) &&
-          d.grand_total &&
-          (d.wants_pdf || /pdf|cotiza|cotizaci[oó]n|formal|env[ií]a|manda|propuesta/i.test(userText));
+  isComplete(d) &&
+  d.grand_total &&
+  !d.items.some(it => it.source === "cotizador_manual" || it.needs_escalation) &&
+  (d.wants_pdf || /pdf|cotiza|cotizaci[oó]n|formal|env[ií]a|manda|propuesta/i.test(userText));
 
         if (wantsPdf && !ses.pdfSent) {
           // [PROD-FIX] Resumen SIN precios — describe productos y ventajas
@@ -2608,18 +2601,22 @@ app.post("/webhook", async (req, res) => {
               normPhone(waId), d
             ));
           }
-        } else {
-          let reply = (ai.content || "").replace(/<PROFILE:\w+>/gi, "").trim();
-          if (!reply) {
-            if (!isComplete(d)) {
-              reply = `Perfecto, para avanzar necesito: ${nextMissing(d)}.`;
-            } else if (!d.grand_total) {
-              reply = `Ya tengo los datos. Hubo un tema conectando al cotizador, pero en breve le confirmo el precio.`;
-            } else {
-              // [PROD-FIX] Sin precios en chat — solo beneficios
-              reply = `Tengo todo listo para armarle la propuesta. Son ventanas PVC línea europea con termopanel, aislación térmica y acústica, y garantía de fábrica. ¿Le envío la propuesta formal en PDF?`;
-            }
-          }
+       } else {
+  let reply = (ai.content || "").replace(/<PROFILE:\w+>/gi, "").trim();
+  if (!reply) {
+    if (!isComplete(d)) {
+      reply = `Perfecto, para avanzar necesito: ${nextMissing(d)}.`;
+    } else if (!d.grand_total) {
+      const hasManual = d.items.some(it => it.source === "cotizador_manual" || it.price_warning);
+      if (hasManual) {
+        reply = `Hay una validación técnica pendiente para su proyecto. Le derivaré con un especialista para confirmar factibilidad, medidas y propuesta final.`;
+      } else {
+        reply = `Ya tengo los datos. Hubo un tema conectando al cotizador, pero en breve le confirmo el precio.`;
+      }
+    } else {
+      reply = `Tengo todo listo para armarle la propuesta. Son ventanas PVC línea europea con termopanel, aislación térmica y acústica, y garantía de fábrica. ¿Le envío la propuesta formal en PDF?`;
+    }
+  }
           const parts = smartSplitForWhatsApp(reply);
           if (parts.length > 1) await waSendSmartMultiH(waId, parts, true, { incomingType: type });
           else await waSendSmartH(waId, parts[0], true, { incomingType: type });
