@@ -534,6 +534,57 @@ function validateDimensions(product, ancho_mm, alto_mm) {
    - Items requieren validación manual
    - Cliente pide algo que el bot no puede resolver
    ────────────────────────────────────────────────────────────── */
+
+/* ─── [ADMIN] Merge multi-hoja tablas de precios ────────────────── */
+function mergeTablePages(pages) {
+  if (!pages || pages.length === 0) return null;
+  if (pages.length === 1) return pages[0];
+  const base = JSON.parse(JSON.stringify(pages[0]));
+  for (let p = 1; p < pages.length; p++) {
+    const page = pages[p];
+    if (!base.modelo && page.modelo) base.modelo = page.modelo;
+    if (!base.color && page.color) base.color = page.color;
+    if (!base.vidrio && page.vidrio) base.vidrio = page.vidrio;
+    const altosMatch = base.altos.length === page.altos.length &&
+      base.altos.every((a, i) => a === page.altos[i]);
+    if (altosMatch) {
+      for (let c = 0; c < page.anchos.length; c++) {
+        const ancho = page.anchos[c];
+        if (!base.anchos.includes(ancho)) {
+          base.anchos.push(ancho);
+          for (let r = 0; r < base.precios.length; r++) {
+            base.precios[r].push(page.precios[r]?.[c] ?? null);
+          }
+        }
+      }
+    } else {
+      for (let r = 0; r < page.altos.length; r++) {
+        const alto = page.altos[r];
+        if (!base.altos.includes(alto)) {
+          base.altos.push(alto);
+          base.precios.push(new Array(base.anchos.length).fill(null));
+        }
+        for (let c = 0; c < page.anchos.length; c++) {
+          const ancho = page.anchos[c];
+          if (!base.anchos.includes(ancho)) {
+            base.anchos.push(ancho);
+            for (let er = 0; er < base.precios.length; er++) base.precios[er].push(null);
+          }
+          const ri = base.altos.indexOf(alto);
+          const ci = base.anchos.indexOf(ancho);
+          if (ri >= 0 && ci >= 0 && page.precios[r]?.[c] != null) base.precios[ri][ci] = page.precios[r][c];
+        }
+      }
+    }
+  }
+  const ao = base.anchos.map((a, i) => ({ a, i })).sort((x, y) => x.a - y.a);
+  base.anchos = ao.map(x => x.a);
+  base.precios = base.precios.map(row => ao.map(x => row[x.i]));
+  const ho = base.altos.map((a, i) => ({ a, i })).sort((x, y) => x.a - y.a);
+  base.altos = ho.map(x => x.a);
+  base.precios = ho.map(x => base.precios[x.i]);
+  return base;
+}
 const ESCALATION_PHONE = process.env.ESCALATION_PHONE || "";
 const ESCALATION_EMAIL = process.env.ESCALATION_EMAIL || "";
 // ═══════════════════════════════════════════════════════════════════
@@ -999,30 +1050,15 @@ function sanitizeForTts(text) {
     .slice(0, TTS_MAX_CHARS);
 }
 
-function shouldSendVoice(incomingType, userText = "", funnelMoment = "") {
+function shouldSendVoice(incomingType) {
   if (!VOICE_ENABLED) return false;
   if (VOICE_TTS_PROVIDER !== "elevenlabs") return false;
   if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) return false;
- 
-  // 1) Si el cliente mandó audio → responder con audio (espejo)
-  if (String(incomingType || "") === "audio") return true;
- 
-  // 2) Momentos clave del funnel → audio para generar confianza
-  if (funnelMoment === "saludo" || funnelMoment === "propuesta" || 
-      funnelMoment === "followup" || funnelMoment === "cierre_pdf") {
-    return true;
-  }
- 
-  // 3) Cliente pide audio explícitamente por texto
-  const t = String(userText || "").toLowerCase();
-  if (t.includes("audio") || t.includes("nota de voz") || t.includes("voz") ||
-      t.includes("sin lentes") || t.includes("no puedo leer") || t.includes("háblame") ||
-      t.includes("hablame") || t.includes("mándame") || t.includes("mandame")) {
-    return true;
-  }
- 
-  // 4) Todo lo demás → solo texto (rápido, barato)
-  return false;
+  const mode = VOICE_SEND_MODE;
+  if (mode === "text") return false;
+  if (mode === "audio" || mode === "both") return true;
+  // audio_if_inbound_audio (default seguro)
+  return String(incomingType || "") === "audio";
 }
 
 function elevenLabsMimeInfo() {
@@ -1077,50 +1113,44 @@ async function waSendAudio(to, mediaId) {
   });
 }
 
-// Envío inteligente: SOLO texto o SOLO audio según estrategia de funnel
+// Envío inteligente: texto, audio o ambos según VOICE_SEND_MODE
 async function waSendSmartH(to, text, skipTyping = false, meta = {}) {
   const incomingType = meta.incomingType || "text";
-  const userText = meta.userText || "";
-  const funnelMoment = meta.funnelMoment || "";
-  const sendVoice = shouldSendVoice(incomingType, userText, funnelMoment);
- 
+  const sendVoice = shouldSendVoice(incomingType);
+  const mode = VOICE_SEND_MODE;
+
+  // Enviar texto siempre, excepto si el modo es "audio" (solo audio)
+  if (!sendVoice || mode !== "audio") {
+    await waSendH(to, text, skipTyping, meta);
+  }
+
   if (sendVoice) {
-    // SOLO AUDIO — sin texto (más humano)
     try {
       const { mime, ext } = elevenLabsMimeInfo();
       const audioBuf = await ttsElevenlabs(text);
       const mediaId = await waUploadAudio(audioBuf, mime, `reply_${Date.now()}.${ext}`);
       await waSendAudio(to, mediaId);
-      logInfo("TTS", `🎙️ SOLO audio enviado | momento=${funnelMoment || "espejo"} | to=${to}`);
-      // Track el evento como audio
-      if (meta.track !== false) {
-        fireAndForget("trackConversationEvent.outbound_voice", trackConversationEvent({
-          channel: "whatsapp", external_id: to,
-          customer_name: meta.customer_name || "",
-          direction: "outbound", actor_type: "assistant",
-          actor_name: AGENT_NAME, message_type: "audio",
-          body: text,
-          metadata: { source: "whatsapp_ia", voice: true, funnel_moment: funnelMoment },
-          quote_status: meta.quote_status, unread_count: 0,
-        }));
-      }
-      return; // ← SOLO audio, no texto
+      logInfo("TTS", `audio enviado modo=${mode} provider=elevenlabs to=${to}`);
     } catch (e) {
       logErr("TTS", e);
-      // Fallback: si TTS falla, enviar texto
-      logInfo("TTS", `Fallback a texto para ${to}`);
+      // Fallback: si el modo era "audio" y falló TTS, enviar texto
+      if (mode === "audio") {
+        await waSendH(to, text, skipTyping, meta);
+      }
     }
   }
- 
-  // SOLO TEXTO — sin audio
-  await waSendH(to, text, skipTyping, meta);
 }
-// Envío inteligente multi-burbuja: SOLO texto o SOLO audio
+
+// Envío inteligente multi-burbuja: texto + un solo audio TTS con texto combinado
 async function waSendSmartMultiH(to, msgs, skipTyping = false, meta = {}) {
   const incomingType = meta.incomingType || "text";
-  const userText = meta.userText || "";
-  const funnelMoment = meta.funnelMoment || "";
-  const sendVoice = shouldSendVoice(incomingType, userText, funnelMoment);
+  const sendVoice = shouldSendVoice(incomingType);
+  const mode = VOICE_SEND_MODE;
+
+  // Enviar burbujas de texto siempre, excepto si el modo es "audio"
+  if (!sendVoice || mode !== "audio") {
+    await waSendMultiH(to, msgs, skipTyping, meta);
+  }
 
   if (sendVoice) {
     const combined = msgs.filter(Boolean).join(". ");
@@ -1129,13 +1159,15 @@ async function waSendSmartMultiH(to, msgs, skipTyping = false, meta = {}) {
       const audioBuf = await ttsElevenlabs(combined);
       const mediaId = await waUploadAudio(audioBuf, mime, `reply_${Date.now()}.${ext}`);
       await waSendAudio(to, mediaId);
-      logInfo("TTS", `SOLO audio multi | momento=${funnelMoment || "espejo"} | to=${to}`);
-      return;
+      logInfo("TTS", `audio multi enviado modo=${mode} provider=elevenlabs to=${to}`);
     } catch (e) {
       logErr("TTS", e);
+      // Fallback: si el modo era "audio" y falló TTS, enviar texto
+      if (mode === "audio") {
+        await waSendMultiH(to, msgs, skipTyping, meta);
+      }
     }
   }
-  await waSendMultiH(to, msgs, skipTyping, meta);
 }
 
 async function waRead(id) {
@@ -1501,14 +1533,7 @@ gris/plomo/antracita → GRAFITO | negro/oscuro → NEW BLACK | blanco/crema →
 ═══ AUTORIDAD TÉCNICA (solo con perfil TÉCNICO, no al inicio) ═══
 Consultor acreditado MINVU, Resolución 266/2025. Evaluador energético de envolventes.
 Úsalo como cierre de autoridad, no como apertura.
-═══ AUDIO Y VOZ ═══
-Puedes recibir y enviar mensajes de audio/voz por WhatsApp.
-Si el cliente te manda un audio, el sistema lo transcribe automáticamente y tú recibes el texto.
-Si el cliente te pide "mándame un audio", "háblame por voz", "nota de voz", o dice que no puede leer,
-responde normalmente por texto — el sistema AUTOMÁTICAMENTE también le enviará un audio con tu respuesta.
-NUNCA digas "solo puedo responder por texto" ni "no puedo enviar audios".
-Simplemente responde normal y el sistema se encarga del audio.
-Si el cliente dice que anda sin lentes o no puede leer, dile: "Le mando la info por audio también, no se preocupe."
+
 ═══ REGLAS DURAS ═══
 Solo WinHouse PVC y Sodal Aluminio.
 update_quote UNA vez con todos los items completos.
@@ -2251,27 +2276,11 @@ app.post("/webhook", async (req, res) => {
       userText = t ? `[Audio]: ${t}` : "[Audio no reconocido]";
     }
 
- // ═══════════════════════════════════════════════════════════════════
-// PARTE C MEJORADA — Soporte multi-hoja para tablas de precios
-// ═══════════════════════════════════════════════════════════════════
-//
-// INSTRUCCIÓN: En index.js, reemplaza el bloque de imagen del webhook.
-//
-// BUSCAR:
-//
-//     if (type === "image" && inc.imageId) {
-//       const meta = await waMediaUrl(inc.imageId);
-//       const { buffer, mime } = await waDownload(meta.url);
-//       const ext = await vision(buffer, mime);
-//
-// REEMPLAZAR POR TODO ESTE BLOQUE (hasta donde empieza "const ext = await vision"):
-// ═══════════════════════════════════════════════════════════════════
-
     if (type === "image" && inc.imageId) {
       const imgMeta = await waMediaUrl(inc.imageId);
       const { buffer, mime } = await waDownload(imgMeta.url);
 
-      // ─── ADMIN: imagen = hoja de tabla de precios ─────────────
+      // ADMIN: imagen = hoja de tabla de precios
       if (ses.adminMode === true) {
         try {
           const b64 = buffer.toString("base64");
@@ -2280,209 +2289,38 @@ app.post("/webhook", async (req, res) => {
             messages: [{
               role: "user",
               content: [
-                { type: "text", text: `Analiza esta imagen de tabla de precios de ventanas PVC.
-La primera columna son ALTOS (mm) y la primera fila son ANCHOS (mm).
-Donde se intersectan está el PRECIO (entero, sin puntos ni comas).
-Extrae en JSON exacto:
-{
-  "modelo": "nombre del modelo si es visible",
-  "color": "color del perfil",
-  "vidrio": "tipo de vidrio si visible",
-  "anchos": [400, 490, 580, ...],
-  "altos": [400, 490, 580, ...],
-  "precios": [[precio_alto0_ancho0, precio_alto0_ancho1, ...], [precio_alto1_ancho0, ...], ...],
-  "metadata": { "tarifa": "", "fecha": "" }
-}
-REGLAS:
-- anchos y altos en orden ascendente, en milímetros
-- precios son ENTEROS sin separadores de miles
-- Si no puedes leer un valor usa null
-- precios.length DEBE ser igual a altos.length
-- precios[i].length DEBE ser igual a anchos.length
-Responde SOLO el JSON, sin texto adicional.` },
+                { type: "text", text: "Analiza esta tabla de precios de ventanas PVC. La primera columna son ALTOS (mm), la primera fila son ANCHOS (mm). Donde se intersectan está el PRECIO (entero sin separadores). Extrae en JSON: { \"modelo\": \"\", \"color\": \"\", \"vidrio\": \"\", \"anchos\": [], \"altos\": [], \"precios\": [[]], \"metadata\": {} }. Si no puedes leer un valor usa null. Responde SOLO JSON." },
                 { type: "image_url", image_url: { url: `data:${mime};base64,${b64}`, detail: "high" } },
               ],
             }],
             max_tokens: 4096,
           });
-
           let raw = (vr.choices?.[0]?.message?.content || "").trim();
           raw = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "").trim();
-
           let parsed;
-          try {
-            parsed = JSON.parse(raw);
-          } catch {
-            await waSendH(waId, "❌ No pude leer la tabla. Intente con mejor resolución o recorte la imagen.", true);
+          try { parsed = JSON.parse(raw); } catch {
+            await waSendH(waId, "❌ No pude leer la tabla. Intente con mejor resolución.", true);
             return;
           }
-
-          // Validación básica
           if (!parsed.anchos?.length || !parsed.altos?.length || !parsed.precios?.length) {
-            await waSendH(waId, "❌ La imagen no parece una tabla de precios válida.", true);
+            await waSendH(waId, "❌ No parece una tabla de precios válida.", true);
             return;
           }
-
-          // ─── Multi-hoja: acumular hojas ───
-          if (!ses.pendingTablePages) {
-            ses.pendingTablePages = [];
-          }
+          if (!ses.pendingTablePages) ses.pendingTablePages = [];
           ses.pendingTablePages.push(parsed);
           const pageNum = ses.pendingTablePages.length;
-
-          // Unir hojas para preview
           const merged = mergeTablePages(ses.pendingTablePages);
-
           saveSession(waId, ses);
-
-          await waSendH(waId, `📊 HOJA ${pageNum} RECIBIDA ✅\n\nModelo: ${parsed.modelo || merged.modelo || "?"}\nColor: ${parsed.color || merged.color || "?"}\nEsta hoja: ${parsed.anchos.length} anchos × ${parsed.altos.length} altos\n\n📋 TABLA ACUMULADA: ${merged.anchos.length} anchos × ${merged.altos.length} altos (${merged.anchos.length * merged.altos.length} celdas)\n\n¿Hay más hojas? Envíe la siguiente imagen.\nSi ya están todas → escriba ADMIN TABLA LISTA`, true);
+          await waSendH(waId, `📊 HOJA ${pageNum} RECIBIDA ✅\n\nModelo: ${parsed.modelo || "?"}\nColor: ${parsed.color || "?"}\nEsta hoja: ${parsed.anchos.length} anchos × ${parsed.altos.length} altos\n\nACUMULADO: ${merged.anchos.length} anchos × ${merged.altos.length} altos\n\n¿Más hojas? Envíe imagen.\nSi ya están todas → ADMIN TABLA LISTA`, true);
           return;
-
         } catch (e) {
           logErr("admin.vision_table", e);
-          await waSendH(waId, `❌ Error analizando imagen: ${e.message}`, true);
+          await waSendH(waId, `❌ Error: ${e.message}`, true);
           return;
         }
       }
 
       const ext = await vision(buffer, mime);
-
-// ═══════════════════════════════════════════════════════════════════
-// FUNCIÓN AUXILIAR: Unir múltiples hojas de una tabla de precios
-// ═══════════════════════════════════════════════════════════════════
-// AGREGAR esta función ANTES del webhook handler (por ejemplo después
-// de la función validateDimensions, alrededor de línea 530)
-// ═══════════════════════════════════════════════════════════════════
-
-function mergeTablePages(pages) {
-  if (!pages || pages.length === 0) return null;
-  if (pages.length === 1) return pages[0];
-
-  // La primera hoja define el modelo, color, vidrio y los altos base
-  const base = JSON.parse(JSON.stringify(pages[0]));
-
-  for (let p = 1; p < pages.length; p++) {
-    const page = pages[p];
-
-    // Tomar metadata de la primera hoja que la tenga
-    if (!base.modelo && page.modelo) base.modelo = page.modelo;
-    if (!base.color && page.color) base.color = page.color;
-    if (!base.vidrio && page.vidrio) base.vidrio = page.vidrio;
-
-    // Verificar que los altos coincidan (mismas filas)
-    const altosMatch = base.altos.length === page.altos.length &&
-      base.altos.every((a, i) => a === page.altos[i]);
-
-    if (altosMatch) {
-      // CASO NORMAL: mismos altos, anchos nuevos → unir columnas
-      // Agregar solo anchos que no existan
-      for (let c = 0; c < page.anchos.length; c++) {
-        const ancho = page.anchos[c];
-        if (!base.anchos.includes(ancho)) {
-          base.anchos.push(ancho);
-          // Agregar la columna de precios correspondiente a cada fila
-          for (let r = 0; r < base.precios.length; r++) {
-            const precio = page.precios[r]?.[c] ?? null;
-            base.precios[r].push(precio);
-          }
-        }
-      }
-    } else {
-      // CASO RARO: altos diferentes → intentar merge inteligente
-      // Agregar filas nuevas que no existan
-      for (let r = 0; r < page.altos.length; r++) {
-        const alto = page.altos[r];
-        if (!base.altos.includes(alto)) {
-          base.altos.push(alto);
-          // Crear fila con nulls para anchos existentes + precios de la hoja nueva
-          const newRow = new Array(base.anchos.length).fill(null);
-          base.precios.push(newRow);
-        }
-        // Agregar columnas nuevas
-        for (let c = 0; c < page.anchos.length; c++) {
-          const ancho = page.anchos[c];
-          if (!base.anchos.includes(ancho)) {
-            base.anchos.push(ancho);
-            for (let existingRow = 0; existingRow < base.precios.length; existingRow++) {
-              base.precios[existingRow].push(null);
-            }
-          }
-          // Colocar el precio en la posición correcta
-          const rowIdx = base.altos.indexOf(alto);
-          const colIdx = base.anchos.indexOf(ancho);
-          if (rowIdx >= 0 && colIdx >= 0 && page.precios[r]?.[c] != null) {
-            base.precios[rowIdx][colIdx] = page.precios[r][c];
-          }
-        }
-      }
-    }
-  }
-
-  // Ordenar anchos y reordenar precios correspondientemente
-  const anchoOrder = base.anchos.map((a, i) => ({ ancho: a, idx: i }))
-    .sort((a, b) => a.ancho - b.ancho);
-  base.anchos = anchoOrder.map(x => x.ancho);
-  base.precios = base.precios.map(row => anchoOrder.map(x => row[x.idx]));
-
-  // Ordenar altos y reordenar precios
-  const altoOrder = base.altos.map((a, i) => ({ alto: a, idx: i }))
-    .sort((a, b) => a.alto - b.alto);
-  base.altos = altoOrder.map(x => x.alto);
-  base.precios = altoOrder.map(x => base.precios[x.idx]);
-
-  return base;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// AGREGAR COMANDO "ADMIN TABLA LISTA" en parseAdminCmd:
-// ═══════════════════════════════════════════════════════════════════
-// En parseAdminCmd, agregar esta línea junto con los otros comandos:
-//
-//   if (s === "ADMIN TABLA LISTA") return { type: "admin_table_ready" };
-//
-// ═══════════════════════════════════════════════════════════════════
-// Y en el handler de comandos admin, agregar:
-// ═══════════════════════════════════════════════════════════════════
-
-      if (adminCmd.type === "admin_table_ready") {
-        if (!ses.pendingTablePages || ses.pendingTablePages.length === 0) {
-          await waSendH(waId, "❌ No hay hojas pendientes. Envíe imágenes primero.", true);
-          return;
-        }
-
-        const merged = mergeTablePages(ses.pendingTablePages);
-        const totalPages = ses.pendingTablePages.length;
-
-        // Guardar tabla unida como pendiente
-        ses.pendingTableUpdate = merged;
-        ses.pendingTablePages = null;
-        saveSession(waId, ses);
-
-        // Verificar calidad
-        const totalCells = merged.anchos.length * merged.altos.length;
-        const nullCells = merged.precios.flat().filter(p => p === null).length;
-        const quality = Math.round(((totalCells - nullCells) / totalCells) * 100);
-
-        // Rango de precios para verificación rápida
-        const allPrices = merged.precios.flat().filter(p => p !== null);
-        const minPrice = Math.min(...allPrices);
-        const maxPrice = Math.max(...allPrices);
-
-        await waSendH(waId, `📊 TABLA UNIDA — ${totalPages} hojas\n\nModelo: ${merged.modelo || "?"}\nColor: ${merged.color || "?"}\nVidrio: ${merged.vidrio || "?"}\n\n📐 ${merged.anchos.length} anchos × ${merged.altos.length} altos\n📦 ${totalCells} celdas totales\n✅ ${totalCells - nullCells} con precio (${quality}%)\n❌ ${nullCells} sin precio\n\n💰 Rango: $${Number(minPrice).toLocaleString("es-CL")} — $${Number(maxPrice).toLocaleString("es-CL")}\n\nAncho mín: ${merged.anchos[0]}mm | máx: ${merged.anchos[merged.anchos.length - 1]}mm\nAlto mín: ${merged.altos[0]}mm | máx: ${merged.altos[merged.altos.length - 1]}mm\n\n→ ADMIN APLICAR TABLA para confirmar\n→ ADMIN CANCELAR para descartar`, true);
-        return;
-      }
-
-// ═══════════════════════════════════════════════════════════════════
-// MODIFICAR "admin_cancel" para limpiar también las hojas pendientes:
-// ═══════════════════════════════════════════════════════════════════
-
-      if (adminCmd.type === "admin_cancel") {
-        ses.pendingTableUpdate = null;
-        ses.pendingTablePages = null;
-        saveSession(waId, ses);
-        await waSendH(waId, "✅ Operación cancelada. Hojas descartadas.", true);
-        return;
-      }
       userText = ext
         ? `[IMAGEN ANALIZADA — Productos detectados]:\n${ext}\n\nINSTRUCCIÓN: extrae TODOS los items y envíalos con update_quote en UNA sola llamada.`
         : "[Imagen no legible]";
@@ -2570,13 +2408,20 @@ function mergeTablePages(pages) {
           await waSendH(waId, `❌ ${priced.error}`, true);
           return;
         }
-        if (adminCmd.type === "admin_tablas") {
-        try {
-          const r = await cotizarWinhouse({ items: [] });
-          await waSendH(waId, `📊 Cotizador: ${cotizadorWinhouseConfigured() ? "✅ Online" : "❌ Offline"}\n\nPara actualizar precios:\n1. Envía imagen de tabla de precios\n2. El sistema la analiza con IA\n3. Te muestra preview\n4. Confirmas y se aplica`, true);
-        } catch (e) {
-          await waSendH(waId, `❌ Cotizador no responde: ${e.message}`, true);
+        const estimate = await zhBooksCreateEstimate(ses.data, ses.data.name || "Cliente", normPhone(waId));
+        if (estimate?.estimate_id) {
+          const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
+          await waSendPdf(waId, pdfBuf, `PropuestaManual_${Date.now()}.pdf`, "PDF enviado manualmente");
+          ses.zohoEstimateId = estimate.estimate_id;
+          ses.pdfSent = true;
+          saveSession(waId, ses);
+          await waSendH(waId, "✅ PDF reenviado.", true);
         }
+        return;
+      }
+
+      if (adminCmd.type === "admin_tablas") {
+        await waSendH(waId, `📊 Cotizador: ${cotizadorWinhouseConfigured() ? "✅ Online" : "❌ Offline"}\n\nPara actualizar precios:\n1. Envíe imagen de tabla\n2. El sistema analiza con IA\n3. Escriba ADMIN TABLA LISTA\n4. Confirme con ADMIN APLICAR TABLA`, true);
         return;
       }
 
@@ -2585,12 +2430,10 @@ function mergeTablePages(pages) {
         const m = normMeasures(q);
         const colorMatch = q.match(/\b(blanco|nogal|roble|grafito|newblack|negro)\b/i);
         const tipoMatch = q.match(/\b(corredera|proyectante|abatible|puerta|fijo)\b/i);
-        
         if (!m) {
           await waSendH(waId, "❌ Formato: ADMIN PRECIO corredera 1500x1200 blanco", true);
           return;
         }
-        
         const testItem = {
           tipo: "ventana",
           serie: (tipoMatch?.[1] || "").toLowerCase().includes("corredera") ? "SLIDING" : "S60",
@@ -2602,7 +2445,6 @@ function mergeTablePages(pages) {
           hoja: "98",
           vidrio: process.env.DEFAULT_GLASS || "DVH 4+12+4 CL",
         };
-        
         try {
           const r = await cotizarWinhouse({ items: [testItem], cliente: { nombre: "Test Admin" } });
           if (r.ok && r.json?.items?.[0]) {
@@ -2621,32 +2463,75 @@ function mergeTablePages(pages) {
         return;
       }
 
-      if (adminCmd.type === "admin_cotiza") {
-        await waSendH(waId, "🔧 Usa: ADMIN PRECIO corredera 1500x1200 nogal\n\nPara cotización completa, manda los items como cliente normal.", true);
-        return;
-      }
-
       if (adminCmd.type === "admin_voice_config") {
         const vc = {
           enabled: VOICE_ENABLED,
           provider: VOICE_TTS_PROVIDER,
           mode: VOICE_SEND_MODE,
           elevenlabs_key: ELEVENLABS_API_KEY ? "✅ configurada" : "❌ falta",
-          elevenlabs_voice: ELEVENLABS_VOICE_ID ? `✅ ${ELEVENLABS_VOICE_ID.slice(-8)}` : "❌ falta",
+          elevenlabs_voice: ELEVENLABS_VOICE_ID ? `✅ ...${ELEVENLABS_VOICE_ID.slice(-8)}` : "❌ falta",
           format: ELEVENLABS_OUTPUT_FORMAT,
         };
         await waSendH(waId, `🎙️ VOZ CONFIG\n\n${Object.entries(vc).map(([k,v]) => `${k}: ${v}`).join("\n")}`, true);
         return;
       }
-        const estimate = await zhBooksCreateEstimate(ses.data, ses.data.name || "Cliente", normPhone(waId));
-        if (estimate?.estimate_id) {
-          const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
-          await waSendPdf(waId, pdfBuf, `PropuestaManual_${Date.now()}.pdf`, "PDF enviado manualmente");
-          ses.zohoEstimateId = estimate.estimate_id;
-          ses.pdfSent = true;
-          saveSession(waId, ses);
-          await waSendH(waId, "✅ PDF reenviado.", true);
+
+      if (adminCmd.type === "admin_table_ready") {
+        if (!ses.pendingTablePages || ses.pendingTablePages.length === 0) {
+          await waSendH(waId, "❌ No hay hojas pendientes. Envíe imágenes primero.", true);
+          return;
         }
+        const merged = mergeTablePages(ses.pendingTablePages);
+        const totalPages = ses.pendingTablePages.length;
+        ses.pendingTableUpdate = merged;
+        ses.pendingTablePages = null;
+        saveSession(waId, ses);
+        const totalCells = merged.anchos.length * merged.altos.length;
+        const nullCells = merged.precios.flat().filter(p => p === null).length;
+        const quality = Math.round(((totalCells - nullCells) / totalCells) * 100);
+        const allPrices = merged.precios.flat().filter(p => p !== null);
+        const minPrice = Math.min(...allPrices);
+        const maxPrice = Math.max(...allPrices);
+        await waSendH(waId, `📊 TABLA UNIDA — ${totalPages} hojas\n\nModelo: ${merged.modelo || "?"}\nColor: ${merged.color || "?"}\n\n${merged.anchos.length} anchos × ${merged.altos.length} altos\n${totalCells} celdas (${quality}% con precio)\n\nRango: $${Number(minPrice).toLocaleString("es-CL")} — $${Number(maxPrice).toLocaleString("es-CL")}\n\n→ ADMIN APLICAR TABLA\n→ ADMIN CANCELAR`, true);
+        return;
+      }
+
+      if (adminCmd.type === "admin_apply_table") {
+        if (!ses.pendingTableUpdate) {
+          await waSendH(waId, "❌ No hay tabla pendiente. Envíe imágenes y luego ADMIN TABLA LISTA.", true);
+          return;
+        }
+        try {
+          const parsed = ses.pendingTableUpdate;
+          const modelo = (parsed.modelo || "tabla").toLowerCase().replace(/\s+/g, "_");
+          const color = (parsed.color || "blanco").toLowerCase();
+          const tableId = `${modelo}_${color}`;
+          const cotizadorUrl = process.env.COTIZADOR_BASE_URL || "";
+          const adminKey = process.env.ADMIN_API_KEY || process.env.COTIZADOR_API_KEY || "";
+          const r = await fetch(`${cotizadorUrl}/api/tablas/upload`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-API-Key": adminKey },
+            body: JSON.stringify({ tabla_id: tableId, ...parsed }),
+          });
+          if (r.ok) {
+            ses.pendingTableUpdate = null;
+            saveSession(waId, ses);
+            await waSendH(waId, `✅ Tabla "${tableId}" aplicada.\n\nPruebe: ADMIN PRECIO corredera 1500x1200 blanco`, true);
+          } else {
+            const err = await r.text();
+            await waSendH(waId, `❌ Error: ${err.slice(0, 200)}`, true);
+          }
+        } catch (e) {
+          await waSendH(waId, `❌ Error: ${e.message}`, true);
+        }
+        return;
+      }
+
+      if (adminCmd.type === "admin_cancel") {
+        ses.pendingTableUpdate = null;
+        ses.pendingTablePages = null;
+        saveSession(waId, ses);
+        await waSendH(waId, "✅ Operación cancelada.", true);
         return;
       }
       
@@ -2673,7 +2558,6 @@ function mergeTablePages(pages) {
 
     ses.history.push({ role: "user", content: userText });
     const ai = await runAI(ses, userText);
-    const isFirstMessage = ses.history.filter(h => h.role === "user").length <= 1;
 
     // [F10] Handoff humano detectado en runAI — usa d.stageKey
     if (ses.data.stageKey === "escalado_humano" && ai?.content) {
@@ -2884,7 +2768,7 @@ if (qr.ok && qr.total) {
               await sleep(1500);
                             // Follow-up de cierre — SOLO confirmación
               await sleep(1500);
-              await waSendSmartH(waId, "✅ Propuesta lista. Si quiere ajustar algo o tiene preguntas, me avisa.", true, { funnelMoment: "cierre_pdf" });
+              await waSendH(waId, "✅ Propuesta lista. Si quiere ajustar algo o tiene preguntas, me avisa.", true);
 
                      try {
                  await zhUpsert(ses, waId);
@@ -2985,11 +2869,10 @@ setInterval(async () => {
       ses.data.stageKey === "propuesta" // [F10] unificado
     ) {
       try {
-        await waSendSmartH(
+        await waSendH(
           waId,
           `Hola${ses.data?.name ? " " + ses.data.name : ""}, ¿pudo revisar la propuesta que le preparé? Si tiene dudas de medidas o materiales con gusto le ayudo 🏠`,
-          true,
-          { funnelMoment: "followup" }
+          true
         );
         ses.followupEnviado = true;
         logInfo("followup", `Enviado a ${waId}`);
