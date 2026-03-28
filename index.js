@@ -2899,7 +2899,7 @@ if (qr.ok && qr.total) {
   }
           const parts = smartSplitForWhatsApp(reply);
           if (parts.length > 1) await waSendSmartMultiH(waId, parts, true, { incomingType: type });
-          else await waSendSmartH(waId, parts[0], true, { incomingType: type });
+          else await waSendSmartH(waId, parts[0], false, { incomingType: type });
           ses.history.push({ role: "assistant", content: reply });
           try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-inline", e); }
         }
