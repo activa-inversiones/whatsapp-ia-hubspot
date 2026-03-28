@@ -576,6 +576,12 @@ function parseAdminCmd(text) {
   if (s === "ADMIN STATUS") return { type: "admin_status" };
   if (s === "ADMIN LAST CUBICACION") return { type: "admin_last_cubi" };
   if (s === "ADMIN FORCE PDF") return { type: "admin_force_pdf" };
+  if (s.startsWith("ADMIN PRECIO ")) return { type: "admin_precio", query: text.slice(13).trim() };
+  if (s.startsWith("ADMIN COTIZA ")) return { type: "admin_cotiza", query: text.slice(13).trim() };
+  if (s === "ADMIN TABLAS") return { type: "admin_tablas" };
+  if (s === "ADMIN VOICE CONFIG") return { type: "admin_voice_config" };
+  if (s === "ADMIN APLICAR TABLA") return { type: "admin_apply_table" };
+  if (s === "ADMIN CANCELAR") return { type: "admin_cancel" };
   
   return null;
 }
@@ -2245,10 +2251,238 @@ app.post("/webhook", async (req, res) => {
       userText = t ? `[Audio]: ${t}` : "[Audio no reconocido]";
     }
 
+ // ═══════════════════════════════════════════════════════════════════
+// PARTE C MEJORADA — Soporte multi-hoja para tablas de precios
+// ═══════════════════════════════════════════════════════════════════
+//
+// INSTRUCCIÓN: En index.js, reemplaza el bloque de imagen del webhook.
+//
+// BUSCAR:
+//
+//     if (type === "image" && inc.imageId) {
+//       const meta = await waMediaUrl(inc.imageId);
+//       const { buffer, mime } = await waDownload(meta.url);
+//       const ext = await vision(buffer, mime);
+//
+// REEMPLAZAR POR TODO ESTE BLOQUE (hasta donde empieza "const ext = await vision"):
+// ═══════════════════════════════════════════════════════════════════
+
     if (type === "image" && inc.imageId) {
-      const meta = await waMediaUrl(inc.imageId);
-      const { buffer, mime } = await waDownload(meta.url);
+      const imgMeta = await waMediaUrl(inc.imageId);
+      const { buffer, mime } = await waDownload(imgMeta.url);
+
+      // ─── ADMIN: imagen = hoja de tabla de precios ─────────────
+      if (ses.adminMode === true) {
+        try {
+          const b64 = buffer.toString("base64");
+          const vr = await openai.chat.completions.create({
+            model: AI_MODEL,
+            messages: [{
+              role: "user",
+              content: [
+                { type: "text", text: `Analiza esta imagen de tabla de precios de ventanas PVC.
+La primera columna son ALTOS (mm) y la primera fila son ANCHOS (mm).
+Donde se intersectan está el PRECIO (entero, sin puntos ni comas).
+Extrae en JSON exacto:
+{
+  "modelo": "nombre del modelo si es visible",
+  "color": "color del perfil",
+  "vidrio": "tipo de vidrio si visible",
+  "anchos": [400, 490, 580, ...],
+  "altos": [400, 490, 580, ...],
+  "precios": [[precio_alto0_ancho0, precio_alto0_ancho1, ...], [precio_alto1_ancho0, ...], ...],
+  "metadata": { "tarifa": "", "fecha": "" }
+}
+REGLAS:
+- anchos y altos en orden ascendente, en milímetros
+- precios son ENTEROS sin separadores de miles
+- Si no puedes leer un valor usa null
+- precios.length DEBE ser igual a altos.length
+- precios[i].length DEBE ser igual a anchos.length
+Responde SOLO el JSON, sin texto adicional.` },
+                { type: "image_url", image_url: { url: `data:${mime};base64,${b64}`, detail: "high" } },
+              ],
+            }],
+            max_tokens: 4096,
+          });
+
+          let raw = (vr.choices?.[0]?.message?.content || "").trim();
+          raw = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "").trim();
+
+          let parsed;
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            await waSendH(waId, "❌ No pude leer la tabla. Intente con mejor resolución o recorte la imagen.", true);
+            return;
+          }
+
+          // Validación básica
+          if (!parsed.anchos?.length || !parsed.altos?.length || !parsed.precios?.length) {
+            await waSendH(waId, "❌ La imagen no parece una tabla de precios válida.", true);
+            return;
+          }
+
+          // ─── Multi-hoja: acumular hojas ───
+          if (!ses.pendingTablePages) {
+            ses.pendingTablePages = [];
+          }
+          ses.pendingTablePages.push(parsed);
+          const pageNum = ses.pendingTablePages.length;
+
+          // Unir hojas para preview
+          const merged = mergeTablePages(ses.pendingTablePages);
+
+          saveSession(waId, ses);
+
+          await waSendH(waId, `📊 HOJA ${pageNum} RECIBIDA ✅\n\nModelo: ${parsed.modelo || merged.modelo || "?"}\nColor: ${parsed.color || merged.color || "?"}\nEsta hoja: ${parsed.anchos.length} anchos × ${parsed.altos.length} altos\n\n📋 TABLA ACUMULADA: ${merged.anchos.length} anchos × ${merged.altos.length} altos (${merged.anchos.length * merged.altos.length} celdas)\n\n¿Hay más hojas? Envíe la siguiente imagen.\nSi ya están todas → escriba ADMIN TABLA LISTA`, true);
+          return;
+
+        } catch (e) {
+          logErr("admin.vision_table", e);
+          await waSendH(waId, `❌ Error analizando imagen: ${e.message}`, true);
+          return;
+        }
+      }
+
       const ext = await vision(buffer, mime);
+
+// ═══════════════════════════════════════════════════════════════════
+// FUNCIÓN AUXILIAR: Unir múltiples hojas de una tabla de precios
+// ═══════════════════════════════════════════════════════════════════
+// AGREGAR esta función ANTES del webhook handler (por ejemplo después
+// de la función validateDimensions, alrededor de línea 530)
+// ═══════════════════════════════════════════════════════════════════
+
+function mergeTablePages(pages) {
+  if (!pages || pages.length === 0) return null;
+  if (pages.length === 1) return pages[0];
+
+  // La primera hoja define el modelo, color, vidrio y los altos base
+  const base = JSON.parse(JSON.stringify(pages[0]));
+
+  for (let p = 1; p < pages.length; p++) {
+    const page = pages[p];
+
+    // Tomar metadata de la primera hoja que la tenga
+    if (!base.modelo && page.modelo) base.modelo = page.modelo;
+    if (!base.color && page.color) base.color = page.color;
+    if (!base.vidrio && page.vidrio) base.vidrio = page.vidrio;
+
+    // Verificar que los altos coincidan (mismas filas)
+    const altosMatch = base.altos.length === page.altos.length &&
+      base.altos.every((a, i) => a === page.altos[i]);
+
+    if (altosMatch) {
+      // CASO NORMAL: mismos altos, anchos nuevos → unir columnas
+      // Agregar solo anchos que no existan
+      for (let c = 0; c < page.anchos.length; c++) {
+        const ancho = page.anchos[c];
+        if (!base.anchos.includes(ancho)) {
+          base.anchos.push(ancho);
+          // Agregar la columna de precios correspondiente a cada fila
+          for (let r = 0; r < base.precios.length; r++) {
+            const precio = page.precios[r]?.[c] ?? null;
+            base.precios[r].push(precio);
+          }
+        }
+      }
+    } else {
+      // CASO RARO: altos diferentes → intentar merge inteligente
+      // Agregar filas nuevas que no existan
+      for (let r = 0; r < page.altos.length; r++) {
+        const alto = page.altos[r];
+        if (!base.altos.includes(alto)) {
+          base.altos.push(alto);
+          // Crear fila con nulls para anchos existentes + precios de la hoja nueva
+          const newRow = new Array(base.anchos.length).fill(null);
+          base.precios.push(newRow);
+        }
+        // Agregar columnas nuevas
+        for (let c = 0; c < page.anchos.length; c++) {
+          const ancho = page.anchos[c];
+          if (!base.anchos.includes(ancho)) {
+            base.anchos.push(ancho);
+            for (let existingRow = 0; existingRow < base.precios.length; existingRow++) {
+              base.precios[existingRow].push(null);
+            }
+          }
+          // Colocar el precio en la posición correcta
+          const rowIdx = base.altos.indexOf(alto);
+          const colIdx = base.anchos.indexOf(ancho);
+          if (rowIdx >= 0 && colIdx >= 0 && page.precios[r]?.[c] != null) {
+            base.precios[rowIdx][colIdx] = page.precios[r][c];
+          }
+        }
+      }
+    }
+  }
+
+  // Ordenar anchos y reordenar precios correspondientemente
+  const anchoOrder = base.anchos.map((a, i) => ({ ancho: a, idx: i }))
+    .sort((a, b) => a.ancho - b.ancho);
+  base.anchos = anchoOrder.map(x => x.ancho);
+  base.precios = base.precios.map(row => anchoOrder.map(x => row[x.idx]));
+
+  // Ordenar altos y reordenar precios
+  const altoOrder = base.altos.map((a, i) => ({ alto: a, idx: i }))
+    .sort((a, b) => a.alto - b.alto);
+  base.altos = altoOrder.map(x => x.alto);
+  base.precios = altoOrder.map(x => base.precios[x.idx]);
+
+  return base;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// AGREGAR COMANDO "ADMIN TABLA LISTA" en parseAdminCmd:
+// ═══════════════════════════════════════════════════════════════════
+// En parseAdminCmd, agregar esta línea junto con los otros comandos:
+//
+//   if (s === "ADMIN TABLA LISTA") return { type: "admin_table_ready" };
+//
+// ═══════════════════════════════════════════════════════════════════
+// Y en el handler de comandos admin, agregar:
+// ═══════════════════════════════════════════════════════════════════
+
+      if (adminCmd.type === "admin_table_ready") {
+        if (!ses.pendingTablePages || ses.pendingTablePages.length === 0) {
+          await waSendH(waId, "❌ No hay hojas pendientes. Envíe imágenes primero.", true);
+          return;
+        }
+
+        const merged = mergeTablePages(ses.pendingTablePages);
+        const totalPages = ses.pendingTablePages.length;
+
+        // Guardar tabla unida como pendiente
+        ses.pendingTableUpdate = merged;
+        ses.pendingTablePages = null;
+        saveSession(waId, ses);
+
+        // Verificar calidad
+        const totalCells = merged.anchos.length * merged.altos.length;
+        const nullCells = merged.precios.flat().filter(p => p === null).length;
+        const quality = Math.round(((totalCells - nullCells) / totalCells) * 100);
+
+        // Rango de precios para verificación rápida
+        const allPrices = merged.precios.flat().filter(p => p !== null);
+        const minPrice = Math.min(...allPrices);
+        const maxPrice = Math.max(...allPrices);
+
+        await waSendH(waId, `📊 TABLA UNIDA — ${totalPages} hojas\n\nModelo: ${merged.modelo || "?"}\nColor: ${merged.color || "?"}\nVidrio: ${merged.vidrio || "?"}\n\n📐 ${merged.anchos.length} anchos × ${merged.altos.length} altos\n📦 ${totalCells} celdas totales\n✅ ${totalCells - nullCells} con precio (${quality}%)\n❌ ${nullCells} sin precio\n\n💰 Rango: $${Number(minPrice).toLocaleString("es-CL")} — $${Number(maxPrice).toLocaleString("es-CL")}\n\nAncho mín: ${merged.anchos[0]}mm | máx: ${merged.anchos[merged.anchos.length - 1]}mm\nAlto mín: ${merged.altos[0]}mm | máx: ${merged.altos[merged.altos.length - 1]}mm\n\n→ ADMIN APLICAR TABLA para confirmar\n→ ADMIN CANCELAR para descartar`, true);
+        return;
+      }
+
+// ═══════════════════════════════════════════════════════════════════
+// MODIFICAR "admin_cancel" para limpiar también las hojas pendientes:
+// ═══════════════════════════════════════════════════════════════════
+
+      if (adminCmd.type === "admin_cancel") {
+        ses.pendingTableUpdate = null;
+        ses.pendingTablePages = null;
+        saveSession(waId, ses);
+        await waSendH(waId, "✅ Operación cancelada. Hojas descartadas.", true);
+        return;
+      }
       userText = ext
         ? `[IMAGEN ANALIZADA — Productos detectados]:\n${ext}\n\nINSTRUCCIÓN: extrae TODOS los items y envíalos con update_quote en UNA sola llamada.`
         : "[Imagen no legible]";
@@ -2336,6 +2570,74 @@ app.post("/webhook", async (req, res) => {
           await waSendH(waId, `❌ ${priced.error}`, true);
           return;
         }
+        if (adminCmd.type === "admin_tablas") {
+        try {
+          const r = await cotizarWinhouse({ items: [] });
+          await waSendH(waId, `📊 Cotizador: ${cotizadorWinhouseConfigured() ? "✅ Online" : "❌ Offline"}\n\nPara actualizar precios:\n1. Envía imagen de tabla de precios\n2. El sistema la analiza con IA\n3. Te muestra preview\n4. Confirmas y se aplica`, true);
+        } catch (e) {
+          await waSendH(waId, `❌ Cotizador no responde: ${e.message}`, true);
+        }
+        return;
+      }
+
+      if (adminCmd.type === "admin_precio") {
+        const q = adminCmd.query;
+        const m = normMeasures(q);
+        const colorMatch = q.match(/\b(blanco|nogal|roble|grafito|newblack|negro)\b/i);
+        const tipoMatch = q.match(/\b(corredera|proyectante|abatible|puerta|fijo)\b/i);
+        
+        if (!m) {
+          await waSendH(waId, "❌ Formato: ADMIN PRECIO corredera 1500x1200 blanco", true);
+          return;
+        }
+        
+        const testItem = {
+          tipo: "ventana",
+          serie: (tipoMatch?.[1] || "").toLowerCase().includes("corredera") ? "SLIDING" : "S60",
+          apertura: (tipoMatch?.[1] || "proyectante").toLowerCase(),
+          color: normColor(colorMatch?.[1] || "blanco").toLowerCase(),
+          ancho: m.ancho_mm,
+          alto: m.alto_mm,
+          cantidad: 1,
+          hoja: "98",
+          vidrio: process.env.DEFAULT_GLASS || "DVH 4+12+4 CL",
+        };
+        
+        try {
+          const r = await cotizarWinhouse({ items: [testItem], cliente: { nombre: "Test Admin" } });
+          if (r.ok && r.json?.items?.[0]) {
+            const it = r.json.items[0];
+            const precio = it.precio_unitario || it.total || "N/A";
+            const metodo = it.metodo || "desconocido";
+            const tabla = it.tabla_usada || "?";
+            const notas = (it.notas || []).join("\n") || "Sin notas";
+            await waSendH(waId, `💰 PRECIO TEST\n\n${testItem.apertura} ${m.ancho_mm}×${m.alto_mm} ${testItem.color}\n\nPrecio: $${Number(precio).toLocaleString("es-CL")}\nMétodo: ${metodo}\nTabla: ${tabla}\n\n${notas}`, true);
+          } else {
+            await waSendH(waId, `⚠️ ${r.json?.escalaciones?.[0]?.razon || r.error || "No cotizable"}`, true);
+          }
+        } catch (e) {
+          await waSendH(waId, `❌ Error: ${e.message}`, true);
+        }
+        return;
+      }
+
+      if (adminCmd.type === "admin_cotiza") {
+        await waSendH(waId, "🔧 Usa: ADMIN PRECIO corredera 1500x1200 nogal\n\nPara cotización completa, manda los items como cliente normal.", true);
+        return;
+      }
+
+      if (adminCmd.type === "admin_voice_config") {
+        const vc = {
+          enabled: VOICE_ENABLED,
+          provider: VOICE_TTS_PROVIDER,
+          mode: VOICE_SEND_MODE,
+          elevenlabs_key: ELEVENLABS_API_KEY ? "✅ configurada" : "❌ falta",
+          elevenlabs_voice: ELEVENLABS_VOICE_ID ? `✅ ${ELEVENLABS_VOICE_ID.slice(-8)}` : "❌ falta",
+          format: ELEVENLABS_OUTPUT_FORMAT,
+        };
+        await waSendH(waId, `🎙️ VOZ CONFIG\n\n${Object.entries(vc).map(([k,v]) => `${k}: ${v}`).join("\n")}`, true);
+        return;
+      }
         const estimate = await zhBooksCreateEstimate(ses.data, ses.data.name || "Cliente", normPhone(waId));
         if (estimate?.estimate_id) {
           const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
