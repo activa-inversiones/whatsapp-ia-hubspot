@@ -860,13 +860,15 @@ async function quoteByWinperfil(payload) {
 /* =========================
    9) WHATSAPP API
    ========================= */
+let _lastMsgId = null;
+
 async function waTyping(to) {
+  if (!_lastMsgId) return;
   try {
     await axiosWA.post(`/${META.PHONE_ID}/messages`, {
       messaging_product: "whatsapp",
-      recipient_type: "individual",
-      to,
-      type: "text",
+      status: "read",
+      message_id: _lastMsgId,
       typing_indicator: { type: "text" },
     });
   } catch {}
@@ -2289,6 +2291,7 @@ app.post("/webhook", async (req, res) => {
 
   const { waId, msgId, type } = inc;
   if (isDup(msgId)) return;
+  _lastMsgId = msgId;
 
   const rc = rateOk(waId);
   if (!rc.ok) return waSend(waId, rc.msg);
