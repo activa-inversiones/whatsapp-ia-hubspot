@@ -993,22 +993,29 @@ function sanitizeForTts(text) {
     .slice(0, TTS_MAX_CHARS);
 }
 
-function shouldSendVoice(incomingType, userText = "") {
+function shouldSendVoice(incomingType, userText = "", funnelMoment = "") {
   if (!VOICE_ENABLED) return false;
   if (VOICE_TTS_PROVIDER !== "elevenlabs") return false;
   if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) return false;
-  const mode = VOICE_SEND_MODE;
-  if (mode === "text") return false;
-  if (mode === "audio" || mode === "both") return true;
-  // Si el cliente manda audio → responder con audio
+ 
+  // 1) Si el cliente mandó audio → responder con audio (espejo)
   if (String(incomingType || "") === "audio") return true;
-  // Si el cliente PIDE audio por texto → responder con audio
+ 
+  // 2) Momentos clave del funnel → audio para generar confianza
+  if (funnelMoment === "saludo" || funnelMoment === "propuesta" || 
+      funnelMoment === "followup" || funnelMoment === "cierre_pdf") {
+    return true;
+  }
+ 
+  // 3) Cliente pide audio explícitamente por texto
   const t = String(userText || "").toLowerCase();
   if (t.includes("audio") || t.includes("nota de voz") || t.includes("voz") ||
       t.includes("sin lentes") || t.includes("no puedo leer") || t.includes("háblame") ||
       t.includes("hablame") || t.includes("mándame") || t.includes("mandame")) {
     return true;
   }
+ 
+  // 4) Todo lo demás → solo texto (rápido, barato)
   return false;
 }
 
@@ -1064,44 +1071,50 @@ async function waSendAudio(to, mediaId) {
   });
 }
 
-// Envío inteligente: texto, audio o ambos según VOICE_SEND_MODE
+// Envío inteligente: SOLO texto o SOLO audio según estrategia de funnel
 async function waSendSmartH(to, text, skipTyping = false, meta = {}) {
   const incomingType = meta.incomingType || "text";
-  const sendVoice = shouldSendVoice(incomingType, text);
-  const mode = VOICE_SEND_MODE;
-
-  // Enviar texto siempre, excepto si el modo es "audio" (solo audio)
-  if (!sendVoice || mode !== "audio") {
-    await waSendH(to, text, skipTyping, meta);
-  }
-
+  const userText = meta.userText || "";
+  const funnelMoment = meta.funnelMoment || "";
+  const sendVoice = shouldSendVoice(incomingType, userText, funnelMoment);
+ 
   if (sendVoice) {
+    // SOLO AUDIO — sin texto (más humano)
     try {
       const { mime, ext } = elevenLabsMimeInfo();
       const audioBuf = await ttsElevenlabs(text);
       const mediaId = await waUploadAudio(audioBuf, mime, `reply_${Date.now()}.${ext}`);
       await waSendAudio(to, mediaId);
-      logInfo("TTS", `audio enviado modo=${mode} provider=elevenlabs to=${to}`);
+      logInfo("TTS", `🎙️ SOLO audio enviado | momento=${funnelMoment || "espejo"} | to=${to}`);
+      // Track el evento como audio
+      if (meta.track !== false) {
+        fireAndForget("trackConversationEvent.outbound_voice", trackConversationEvent({
+          channel: "whatsapp", external_id: to,
+          customer_name: meta.customer_name || "",
+          direction: "outbound", actor_type: "assistant",
+          actor_name: AGENT_NAME, message_type: "audio",
+          body: text,
+          metadata: { source: "whatsapp_ia", voice: true, funnel_moment: funnelMoment },
+          quote_status: meta.quote_status, unread_count: 0,
+        }));
+      }
+      return; // ← SOLO audio, no texto
     } catch (e) {
       logErr("TTS", e);
-      // Fallback: si el modo era "audio" y falló TTS, enviar texto
-      if (mode === "audio") {
-        await waSendH(to, text, skipTyping, meta);
-      }
+      // Fallback: si TTS falla, enviar texto
+      logInfo("TTS", `Fallback a texto para ${to}`);
     }
   }
+ 
+  // SOLO TEXTO — sin audio
+  await waSendH(to, text, skipTyping, meta);
 }
-
-// Envío inteligente multi-burbuja: texto + un solo audio TTS con texto combinado
+// Envío inteligente multi-burbuja: SOLO texto o SOLO audio
 async function waSendSmartMultiH(to, msgs, skipTyping = false, meta = {}) {
   const incomingType = meta.incomingType || "text";
-  const sendVoice = shouldSendVoice(incomingType, msgs.join(" "));
-  const mode = VOICE_SEND_MODE;
-
-  // Enviar burbujas de texto siempre, excepto si el modo es "audio"
-  if (!sendVoice || mode !== "audio") {
-    await waSendMultiH(to, msgs, skipTyping, meta);
-  }
+  const userText = meta.userText || "";
+  const funnelMoment = meta.funnelMoment || "";
+  const sendVoice = shouldSendVoice(incomingType, userText, funnelMoment);
 
   if (sendVoice) {
     const combined = msgs.filter(Boolean).join(". ");
@@ -1110,15 +1123,13 @@ async function waSendSmartMultiH(to, msgs, skipTyping = false, meta = {}) {
       const audioBuf = await ttsElevenlabs(combined);
       const mediaId = await waUploadAudio(audioBuf, mime, `reply_${Date.now()}.${ext}`);
       await waSendAudio(to, mediaId);
-      logInfo("TTS", `audio multi enviado modo=${mode} provider=elevenlabs to=${to}`);
+      logInfo("TTS", `SOLO audio multi | momento=${funnelMoment || "espejo"} | to=${to}`);
+      return;
     } catch (e) {
       logErr("TTS", e);
-      // Fallback: si el modo era "audio" y falló TTS, enviar texto
-      if (mode === "audio") {
-        await waSendMultiH(to, msgs, skipTyping, meta);
-      }
     }
   }
+  await waSendMultiH(to, msgs, skipTyping, meta);
 }
 
 async function waRead(id) {
@@ -2360,6 +2371,7 @@ app.post("/webhook", async (req, res) => {
 
     ses.history.push({ role: "user", content: userText });
     const ai = await runAI(ses, userText);
+    const isFirstMessage = ses.history.filter(h => h.role === "user").length <= 1;
 
     // [F10] Handoff humano detectado en runAI — usa d.stageKey
     if (ses.data.stageKey === "escalado_humano" && ai?.content) {
@@ -2570,7 +2582,7 @@ if (qr.ok && qr.total) {
               await sleep(1500);
                             // Follow-up de cierre — SOLO confirmación
               await sleep(1500);
-              await waSendH(waId, "✅ Propuesta lista. Si quiere ajustar algo o tiene preguntas, me avisa.", true);
+              await waSendSmartH(waId, "✅ Propuesta lista. Si quiere ajustar algo o tiene preguntas, me avisa.", true, { funnelMoment: "cierre_pdf" });
 
                      try {
                  await zhUpsert(ses, waId);
@@ -2671,10 +2683,11 @@ setInterval(async () => {
       ses.data.stageKey === "propuesta" // [F10] unificado
     ) {
       try {
-        await waSendH(
+        await waSendSmartH(
           waId,
           `Hola${ses.data?.name ? " " + ses.data.name : ""}, ¿pudo revisar la propuesta que le preparé? Si tiene dudas de medidas o materiales con gusto le ayudo 🏠`,
-          true
+          true,
+          { funnelMoment: "followup" }
         );
         ses.followupEnviado = true;
         logInfo("followup", `Enviado a ${waId}`);
