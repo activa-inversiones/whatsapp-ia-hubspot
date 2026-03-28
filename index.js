@@ -683,7 +683,7 @@ setInterval(() => {
                 
                 // Mensaje post-PDF
                 await waSendH(waId, 
-                  `Se adjunta Propuesta Técnico Comercial con presupuesto y especificaciones.\n\nConfort térmico y acústico garantizado.\n\n¿Desea una visita técnica gratuita?`, 
+                  `Si tiene dudas sobre la propuesta o quiere ajustar algo, me avisa con confianza.`, 
                   true
                 );
                 
@@ -1136,8 +1136,10 @@ async function waSendSmartH(to, text, skipTyping = false, meta = {}) {
     await waSendH(to, text, skipTyping, meta);
   }
 
-  if (sendVoice) {
+if (sendVoice) {
+    // SOLO AUDIO — con indicador "grabando audio"
     try {
+      await waTyping(to);
       const { mime, ext } = elevenLabsMimeInfo();
       const audioBuf = await ttsElevenlabs(text);
       const mediaId = await waUploadAudio(audioBuf, mime, `reply_${Date.now()}.${ext}`);
@@ -1167,6 +1169,7 @@ async function waSendSmartMultiH(to, msgs, skipTyping = false, meta = {}) {
   if (sendVoice) {
     const combined = msgs.filter(Boolean).join(". ");
     try {
+      await waTyping(to);
       const { mime, ext } = elevenLabsMimeInfo();
       const audioBuf = await ttsElevenlabs(combined);
       const mediaId = await waUploadAudio(audioBuf, mime, `reply_${Date.now()}.${ext}`);
@@ -1497,10 +1500,17 @@ Ejemplos MALOS (nunca):
 2. ESCUCHAR: ¿Frío? ¿Ruido? ¿Proyecto nuevo? UNA pregunta, ESPERA respuesta.
 3. CONECTAR: Reformula su necesidad. "Entiendo, el frío en invierno es lo que más le complica."
 4. EDUCAR CON VALOR: "¿Sabía que una ventana con termopanel reduce el frío hasta un 50%?"
-5. DATOS: Cuando hay confianza, pide medidas + color + comuna.
+5. D5. DATOS: Antes de cotizar NECESITAS estos 4 datos mínimos:
+   - Nombre del cliente (pregunta naturalmente: "¿Con quién tengo el gusto?")
+   - Productos con medidas y cantidad
+   - Color (si no dice, pregunta: "¿Tiene algún color en mente? Tenemos blanco, nogal, roble, grafito y negro.")
+   - Comuna (pregunta: "¿En qué comuna está?" — NUNCA pidas dirección, es intimidante)
+   Si falta alguno, PREGUNTA antes de cotizar. No saltes directo a la propuesta.
    NUNCA pidas dirección, es intimidante. Solo COMUNA.
 6. COTIZAR: Llama update_quote. NUNCA digas precio en el chat (solo en PDF).
-   NUNCA preguntes "¿Le envío el PDF?". Di "Le adjunto la propuesta formal al WhatsApp".
+  NUNCA JAMÁS preguntes "¿Le envío el PDF?" ni "¿Le envío la propuesta?". Eso suena a vendedor insistente.
+Simplemente di "Le adjunto la propuesta formal al WhatsApp" y el sistema la envía.
+Si ya la enviaste, NO repitas el mensaje. Di "Ya se la envié, revísela con calma."
 7. CERRAR: Visita técnica gratuita sin compromiso.
 
 ═══ INSTALACIÓN — REGLA ABSOLUTA ═══
@@ -1565,8 +1575,9 @@ update_quote UNA vez con todos los items.
 Visita técnica gratuita sin compromiso.
 Si no sabes → "Lo verifico y le confirmo hoy mismo."
 No descuentes sin autorización. No inventes datos técnicos.
+NUNCA repitas el mismo mensaje dos veces seguidas. Si ya dijiste algo, avanza al siguiente paso.
+Si ya enviaste la propuesta, NO vuelvas a decir "¿Le envío la propuesta?". Di "Ya se la envié".
 `.trim();
-
 const tools = [
   {
     type: "function",
@@ -2883,7 +2894,7 @@ if (qr.ok && qr.total) {
         reply = `Ya tengo los datos. Hubo un tema conectando al cotizador, pero en breve le confirmo el precio.`;
       }
     } else {
-      reply = `Tengo todo listo para armarle la propuesta. Son ventanas PVC línea europea con termopanel, aislación térmica y acústica, y garantía de fábrica. ¿Le envío la propuesta formal en PDF?`;
+      NUNCA preguntes "¿Le envío el PDF?". Di "Le adjunto la propuesta formal al WhatsApp".
     }
   }
           const parts = smartSplitForWhatsApp(reply);
@@ -2898,8 +2909,8 @@ if (qr.ok && qr.total) {
       if (!reply) reply = "No le entendí, ¿me repite? 🤔";
       // [PROD] Smart split para burbujas WhatsApp cortas
       const parts = smartSplitForWhatsApp(reply);
-      if (parts.length > 1) await waSendSmartMultiH(waId, parts, true, { incomingType: type });
-      else await waSendSmartH(waId, parts[0], true, { incomingType: type });
+      if (parts.length > 1) await waSendSmartMultiH(waId, parts, false, { incomingType: type });
+          else await waSendSmartH(waId, parts[0], false, { incomingType: type });
       ses.history.push({ role: "assistant", content: reply });
     }
 
