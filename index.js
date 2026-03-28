@@ -577,9 +577,9 @@ function parseAdminCmd(text) {
   if (s === "ADMIN LAST CUBICACION") return { type: "admin_last_cubi" };
   if (s === "ADMIN FORCE PDF") return { type: "admin_force_pdf" };
   if (s.startsWith("ADMIN PRECIO ")) return { type: "admin_precio", query: text.slice(13).trim() };
-  if (s.startsWith("ADMIN COTIZA ")) return { type: "admin_cotiza", query: text.slice(13).trim() };
   if (s === "ADMIN TABLAS") return { type: "admin_tablas" };
   if (s === "ADMIN VOICE CONFIG") return { type: "admin_voice_config" };
+  if (s === "ADMIN TABLA LISTA") return { type: "admin_table_ready" };
   if (s === "ADMIN APLICAR TABLA") return { type: "admin_apply_table" };
   if (s === "ADMIN CANCELAR") return { type: "admin_cancel" };
   
