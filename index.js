@@ -2894,7 +2894,7 @@ if (qr.ok && qr.total) {
         reply = `Ya tengo los datos. Hubo un tema conectando al cotizador, pero en breve le confirmo el precio.`;
       }
     } else {
-      NUNCA preguntes "¿Le envío el PDF?". Di "Le adjunto la propuesta formal al WhatsApp".
+      
     }
   }
           const parts = smartSplitForWhatsApp(reply);
