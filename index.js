@@ -1123,7 +1123,7 @@ async function waSendAudio(to, mediaId) {
     messaging_product: "whatsapp",
     to,
     type: "audio",
-    audio: { id: mediaId },
+    audio: { id: mediaId, voice: true },
   });
 }
 
