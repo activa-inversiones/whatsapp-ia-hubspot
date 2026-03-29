@@ -1,4 +1,4 @@
-// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 9.5.1-prod)
+// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 10.2-prod)
 // Railway | Node 18+ | ESM
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS vs 9.4.0 — Fixes producción real (captura WhatsApp):
@@ -854,13 +854,15 @@ async function quoteByWinperfil(payload) {
 /* =========================
    9) WHATSAPP API
    ========================= */
+let _lastMsgId = null;
+
 async function waTyping(to) {
+  if (!_lastMsgId) return;
   try {
     await axiosWA.post(`/${META.PHONE_ID}/messages`, {
       messaging_product: "whatsapp",
-      recipient_type: "individual",
-      to,
-      type: "text",
+      status: "read",
+      message_id: _lastMsgId,
       typing_indicator: { type: "text" },
     });
   } catch {}
@@ -1176,6 +1178,182 @@ async function waSendSmartMultiH(to, msgs, skipTyping = false, meta = {}) {
   }
 }
 
+/* =========================
+   9c) ORCHESTRATOR 2-PASS GPT — Fase 2
+   Paso 1: GPT extrae intención + tool calls (NO genera texto al cliente)
+   Paso 2: Backend ejecuta acciones (cotizar, PDF, etc.)
+   Paso 3: GPT genera texto final SOLO después de las acciones
+   ========================= */
+
+function buildStatusContext(session) {
+  const d = session.data;
+  const status = [];
+  status.push(`Proveedor: ${d.supplier}`);
+  if (d.zona_termica) status.push(zonaInfo(d.zona_termica).note);
+  if (d.items.length) {
+    status.push(`═══ ${d.items.length} ITEMS ═══`);
+    for (const [i, it] of d.items.entries()) {
+      const c = it.color || d.default_color || "SIN COLOR";
+      let priceInfo = "pendiente";
+      if (it.unit_price) {
+        priceInfo = `$${Number(it.unit_price).toLocaleString("es-CL")} c/u`;
+      } else if (it.price_warning) {
+        priceInfo = it.price_warning;
+      }
+      status.push(`${i + 1}. ${it.qty}× ${it.product} ${it.measures} [${c}] → ${priceInfo}`);
+    }
+    if (d.grand_total) status.push(`★ TOTAL: $${Number(d.grand_total).toLocaleString("es-CL")} + IVA`);
+  }
+  const missing = nextMissing(d);
+  if (missing) status.push(`FALTA: "${missing}"`);
+  return status.join("\n");
+}
+
+// Paso 1: GPT decide acciones (tool calling only)
+async function orchestratorPass1(session, userText) {
+  if (necesitaHumano(userText)) {
+    session.data.stageKey = "escalado_humano";
+    return { handoff: true, content: `Entiendo, le conecto con nuestro equipo directamente.\n📱 ${COMPANY.PHONE}\n⏰ Lun-Vie 9:00-18:00 | Sáb 9:00-13:00` };
+  }
+
+  const perfil = detectarPerfil(userText, session);
+  const statusCtx = buildStatusContext(session);
+
+  const msgs = [
+    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() },
+    { role: "system", content: statusCtx + `\n\nPERFIL CLIENTE: ${perfil} (tecnico=${session.perfilAcumulado?.tecnico || 0} / emocional=${session.perfilAcumulado?.emocional || 0})` },
+    ...session.history.slice(-12),
+    { role: "user", content: userText },
+  ];
+
+  try {
+    const r = await openai.chat.completions.create({
+      model: AI_MODEL,
+      messages: msgs,
+      tools,
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+      temperature: 0.3,
+      max_tokens: 500,
+    });
+    const msg = r.choices?.[0]?.message;
+    return {
+      handoff: false,
+      tool_calls: msg?.tool_calls || [],
+      content: msg?.content || "",
+    };
+  } catch (e) {
+    logErr("orchestratorPass1", e);
+    return { handoff: false, tool_calls: [], content: "Dame un segundo… 🔍" };
+  }
+}
+
+// Paso 2: GPT genera texto final DESPUÉS de las acciones ejecutadas
+async function orchestratorPass2(session, userText, actionsResult) {
+  const perfil = detectarPerfil(userText, session);
+  const statusCtx = buildStatusContext(session);
+
+  const contextInfo = [
+    `ESTADO ACTUAL: ${statusCtx}`,
+    `ACCIONES EJECUTADAS: ${JSON.stringify(actionsResult)}`,
+    `PDF ENVIADO: ${session.pdfSent ? "SÍ, ya fue enviado al cliente" : "NO"}`,
+  ].join("\n");
+
+  const msgs = [
+    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() },
+    { role: "system", content: `${contextInfo}\n\nPERFIL: ${perfil}\n\nINSTRUCCIÓN: Genera SOLO el texto de respuesta al cliente. NO prometas enviar nada. Si el PDF ya fue enviado, no lo menciones de nuevo. Si faltan datos, pregunta. Sé breve (2-3 líneas máx).` },
+    ...session.history.slice(-8),
+    { role: "user", content: userText },
+  ];
+
+  try {
+    const r = await openai.chat.completions.create({
+      model: AI_MODEL,
+      messages: msgs,
+      temperature: 0.4,
+      max_tokens: 350,
+    });
+    return (r.choices?.[0]?.message?.content || "").replace(/<PROFILE:\w+>/gi, "").trim();
+  } catch (e) {
+    logErr("orchestratorPass2", e);
+    return "Listo, ¿en qué más le ayudo?";
+  }
+}
+
+/* =========================
+   9d) VOICE NOTE — Conversión MP3→OGG Opus + envío como nota de voz
+   Si ffmpeg no está instalado, envía como audio MP3 adjunto (fallback)
+   ========================= */
+
+let _ffmpegAvailable = null;
+
+async function checkFfmpeg() {
+  if (_ffmpegAvailable !== null) return _ffmpegAvailable;
+  try {
+    const { execSync } = await import("child_process");
+    execSync("ffmpeg -version", { stdio: "ignore" });
+    _ffmpegAvailable = true;
+    logInfo("ffmpeg", "ffmpeg disponible — notas de voz OGG Opus habilitadas");
+  } catch {
+    _ffmpegAvailable = false;
+    logInfo("ffmpeg", "ffmpeg NO disponible — audio se envía como MP3 adjunto");
+  }
+  return _ffmpegAvailable;
+}
+
+async function convertToOggOpus(mp3Buffer) {
+  const { exec } = await import("child_process");
+  const { promisify } = await import("util");
+  const execAsync = promisify(exec);
+  const ts = Date.now();
+  const mp3Path = `/tmp/voice_${ts}.mp3`;
+  const oggPath = `/tmp/voice_${ts}.ogg`;
+  
+  fs.writeFileSync(mp3Path, mp3Buffer);
+  await execAsync(`ffmpeg -i ${mp3Path} -c:a libopus -b:a 32k -ac 1 -ar 48000 ${oggPath} -y`);
+  const oggBuf = fs.readFileSync(oggPath);
+  
+  // Cleanup
+  try { fs.unlinkSync(mp3Path); } catch {}
+  try { fs.unlinkSync(oggPath); } catch {}
+  
+  return oggBuf;
+}
+
+async function sendVoiceOrAudio(to, text, incomingType = "text") {
+  if (!shouldSendVoice(incomingType)) return false;
+
+  try {
+    await waTyping(to);
+    const audioBuf = await ttsElevenlabs(text);
+    
+    const hasFfmpeg = await checkFfmpeg();
+    
+    if (hasFfmpeg) {
+      // Nota de voz real (OGG Opus + voice: true)
+      const oggBuf = await convertToOggOpus(audioBuf);
+      const mediaId = await waUploadAudio(oggBuf, "audio/ogg; codecs=opus", `voice_${Date.now()}.ogg`);
+      await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+        messaging_product: "whatsapp",
+        to,
+        type: "audio",
+        audio: { id: mediaId, voice: true },
+      });
+      logInfo("TTS", `🎙️ nota de voz OGG enviada a ${to}`);
+    } else {
+      // Fallback: audio MP3 adjunto (siempre funciona)
+      const { mime, ext } = elevenLabsMimeInfo();
+      const mediaId = await waUploadAudio(audioBuf, mime, `reply_${Date.now()}.${ext}`);
+      await waSendAudio(to, mediaId);
+      logInfo("TTS", `🔊 audio MP3 enviado a ${to}`);
+    }
+    return true;
+  } catch (e) {
+    logErr("sendVoiceOrAudio", e);
+    return false;
+  }
+}
+
 async function waRead(id) {
   try {
     await axiosWA.post(`/${META.PHONE_ID}/messages`, {
@@ -1454,7 +1632,7 @@ function canQuote(d) {
 }
 
 /* =========================
-   15) SYSTEM PROMPT — Ferrari 10.1 VENDEDOR CONSULTIVO + REGLAS GEMINI
+   15) SYSTEM PROMPT — Ferrari 10.2 VENDEDOR CONSULTIVO + ORCHESTRATOR
    ========================= */
 const SYSTEM_PROMPT = `
 Eres MARCELO CIFUENTES, asesor técnico-comercial de ventanas y puertas de ${COMPANY.NAME} (${COMPANY.ADDRESS}).
@@ -2180,7 +2358,7 @@ async function waSendPdf(to, pdfBuffer, filename, caption) {
 app.get("/health", async (_req, res) => {
   res.json({
     ok: true,
-    v: "9.5.1-prod",
+    v: "10.2-prod",
     agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
     winperfil_api: WINPERFIL_API_BASE ? "set" : "missing",
@@ -2279,6 +2457,7 @@ app.post("/webhook", async (req, res) => {
 
   const { waId, msgId, type } = inc;
   if (isDup(msgId)) return;
+  _lastMsgId = msgId;
 
   const rc = rateOk(waId);
   if (!rc.ok) return waSend(waId, rc.msg);
@@ -2614,63 +2793,49 @@ app.post("/webhook", async (req, res) => {
     }
 
     ses.history.push({ role: "user", content: userText });
-    const ai = await runAI(ses, userText);
 
-    // [F10] Handoff humano detectado en runAI — usa d.stageKey
-    if (ses.data.stageKey === "escalado_humano" && ai?.content) {
-      await waSendH(waId, ai.content, true);
+    // ═══ ORCHESTRATOR 2-PASS — Fase 2 ═══
+    // Paso 1: GPT decide acciones (tool calls)
+    const pass1 = await orchestratorPass1(ses, userText);
+
+    // Handoff humano
+    if (pass1.handoff) {
+      await waSendH(waId, pass1.content, false);
+      ses.history.push({ role: "assistant", content: pass1.content });
       saveSession(waId, ses);
       return;
     }
 
-    if (ai?.tool_calls?.length) {
-      for (const tc of ai.tool_calls) {
+    // Paso 2: Ejecutar acciones (update_quote, cotizar, PDF)
+    const actionsResult = { quoted: false, pdfSent: false, escalated: false, errors: [] };
+
+    if (pass1.tool_calls?.length) {
+      for (const tc of pass1.tool_calls) {
         if (tc.function?.name !== "update_quote") continue;
         let args = {};
-        try {
-          args = JSON.parse(tc.function.arguments || "{}");
-        } catch {
-          continue;
-        }
+        try { args = JSON.parse(tc.function.arguments || "{}"); } catch { continue; }
 
         const d = ses.data;
-        if (args.supplier && ALLOWED_SUPPLIERS.includes(args.supplier))
-          d.supplier = args.supplier;
+        if (args.supplier && ALLOWED_SUPPLIERS.includes(args.supplier)) d.supplier = args.supplier;
         else d.supplier = detectSupplier(userText + " " + safeJson(args));
 
-        for (const k of [
-          "name",
-          "default_color",
-          "comuna",
-          "address",
-          "project_type",
-          "install",
-          "notes",
-        ]) {
+        for (const k of ["name", "default_color", "comuna", "address", "project_type", "install", "notes"]) {
           if (args[k] != null && args[k] !== "") d[k] = args[k];
         }
         if (args.wants_pdf === true) d.wants_pdf = true;
 
         if (Array.isArray(args.items) && args.items.length > 0) {
-          // [PROD-FIX] Resetear pdfSent cuando los items cambian
-          // Esto permite re-cotizar cuantas veces quiera el cliente
           ses.pdfSent = false;
           d.wants_pdf = false;
-
           d.items = args.items.map((it, i) => ({
             id: i + 1,
             product: it.product || "",
             measures: it.measures || "",
             qty: Math.max(1, Number(it.qty) || 1),
             color: it.color || "",
-            unit_price: null,
-            total_price: null,
-            price_warning: "",
-            source: null,
-            confidence: null,
+            unit_price: null, total_price: null, price_warning: "", source: null, confidence: null,
           }));
 
-          // [PROD-FIX] Validar medidas vs límites reales de fabricación WinHouse
           for (const it of d.items) {
             const m = normMeasures(it.measures);
             if (!m) continue;
@@ -2689,218 +2854,159 @@ app.post("/webhook", async (req, res) => {
           if (zt) d.zona_termica = zt;
         }
 
+        // Cotizar si tenemos datos completos
         if (canQuote(d)) {
-                  // Si hay items nuevos en la cubicación → iniciar timer automático
-        if (Array.isArray(args.items) && args.items.length > 0 && canQuote(ses.data)) {
-          cubicacionPendientes.set(waId, {
-            items: args.items,
-            timestamp: Date.now(),
-            tries: 0,
-          });
-          logInfo("cubicacion_timer", `Timer iniciado para ${waId}, PDF en 60s`);
-        }
           const qr = await priceAll(d, "");
+          if (qr.ok && qr.total) {
+            d.grand_total = qr.total;
+            actionsResult.quoted = true;
+          } else {
+            for (const it of d.items) it.price_warning = qr.error || "No pude cotizar";
+            d.grand_total = qr.total || null;
+            if (qr.escalate) {
+              actionsResult.escalated = true;
+              fireAndForget("escalation.cotizador", sendEscalationAlert(
+                `Cotización escalada: ${qr.reason || qr.error}`, normPhone(waId), d
+              ));
+            }
+          }
+        }
 
-if (qr.ok && qr.total) {
-  d.grand_total = qr.total;
-} else {
-  for (const it of d.items) {
-    it.price_warning = qr.error || "No pude cotizar";
-  }
-  d.grand_total = qr.total || null;
+        // Detectar problemas de fabricación
+        const needsEscalation = d.items.some(it => it.needs_escalation);
+        const hasSuggestions = d.items.filter(it => it.suggested_product);
 
-  if (qr.escalate) {
-    fireAndForget(
-      "escalation.cotizador",
-      sendEscalationAlert(
-        `Cotización escalada: ${qr.reason || qr.error}`,
-        normPhone(waId),
-        d
-      )
-    );
-  }
-}
+        if (hasSuggestions.length > 0 && !needsEscalation) {
+          const sugMsgs = hasSuggestions.map(it => {
+            const m = normMeasures(it.measures);
+            return `La medida ${m?.ancho_mm}×${m?.alto_mm} es grande para ${it.product}. Le recomiendo corredera para esa medida.`;
+          });
+          await waSendSmartMultiH(waId, sugMsgs, false, { incomingType: type });
+          await waSendSmartH(waId, "¿Le parece si ajusto la cotización con corredera?", false, { incomingType: type });
+          ses.history.push({ role: "assistant", content: sugMsgs.join("\n") + "\n¿Ajusto con corredera?" });
+          saveSession(waId, ses);
+          try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-suggestion", e); }
+          return;
+        }
+
+        if (needsEscalation) {
+          actionsResult.escalated = true;
+          const reasons = d.items.filter(it => it.needs_escalation).map(it => it.dim_warning).join("; ");
+          await waSendH(waId, "Algunas medidas necesitan validación técnica. Le paso con nuestro equipo.", false);
+          fireAndForget("escalation.dimensions", sendEscalationAlert(`Medidas fuera de rango: ${reasons}`, normPhone(waId), d));
+          ses.history.push({ role: "assistant", content: "Medidas necesitan validación técnica." });
+          saveSession(waId, ses);
+          try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-escalation", e); }
+          return;
         }
       }
+    }
 
-      const d = ses.data;
+    // Paso 2b: Generar y enviar PDF si corresponde
+    const d = ses.data;
+    const shouldSendPdf = isComplete(d) && d.grand_total && !ses.pdfSent &&
+      !d.items.some(it => it.source === "cotizador_manual" || it.needs_escalation) &&
+      (d.wants_pdf || actionsResult.quoted || /pdf|cotiza|cotizaci[oó]n|formal|env[ií]a|manda|propuesta/i.test(userText));
 
-      // [PROD-FIX] Flag para saltar el flujo PDF si se detectan problemas de fabricación
-      let earlyExit = false;
+    if (shouldSendPdf) {
+      const qn = `COT-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+      ses.quoteNum = qn;
+      d.quote_num = qn;
 
-      // [PROD-FIX] Detectar items con problemas de fabricación
-      const dimWarnings = d.items.filter(it => it.dim_warning);
-      const needsEscalation = d.items.some(it => it.needs_escalation);
-      const hasSuggestions = d.items.filter(it => it.suggested_product);
-
-      // [PROD-FIX] Si hay sugerencias de producto (ej: proyectante → corredera), informar al cliente
-      if (hasSuggestions.length > 0 && !needsEscalation) {
-        const sugMsgs = hasSuggestions.map(it => {
-          const m = normMeasures(it.measures);
-          return `La medida ${m?.ancho_mm}×${m?.alto_mm} es grande para ${it.product}. Le recomiendo una ventana corredera para esa medida, queda mucho mejor y es más práctica.`;
-        });
-        await waSendSmartMultiH(waId, sugMsgs, true, { incomingType: type });
-        await waSendSmartH(waId, "¿Le parece si ajusto la cotización con corredera en esos items?", true, { incomingType: type });
-        ses.history.push({ role: "assistant", content: sugMsgs.join("\n") + "\n¿Le parece si ajusto la cotización con corredera?" });
-        saveSession(waId, ses);
-        try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-suggestion", e); }
-        earlyExit = true;
+      // Resumen breve
+      const resumenLines = ["📋 Le preparo su propuesta con lo siguiente:"];
+      for (const it of d.items) {
+        const c = it.color || d.default_color || "blanco";
+        const prod = normProduct(it.product || "");
+        let tipoDesc = "Ventana PVC línea europea";
+        if (prod.includes("CORREDERA")) tipoDesc = "Ventana corredera PVC línea europea";
+        else if (prod.includes("PUERTA")) tipoDesc = "Puerta PVC línea europea";
+        else if (prod.includes("PROYECT")) tipoDesc = "Ventana proyectante PVC línea europea";
+        else if (prod.includes("ABAT")) tipoDesc = "Ventana abatible PVC línea europea";
+        else if (prod.includes("FIJO")) tipoDesc = "Marco fijo PVC línea europea";
+        else if (prod.includes("OSCILO")) tipoDesc = "Ventana oscilobatiente PVC línea europea";
+        resumenLines.push(`${it.qty}× ${tipoDesc} de ${it.measures} en ${c}`);
       }
+      await waSendH(waId, resumenLines.join("\n"), true);
+      await sleep(800);
+      await waSendH(waId, "Generando su propuesta… 📄", true);
 
-      // [PROD-FIX] Si necesita escalación técnica → avisar al cliente y al equipo
-      if (!earlyExit && needsEscalation) {
-        const escalationReasons = dimWarnings.filter(it => it.needs_escalation).map(it => it.dim_warning).join("; ");
-        await waSendH(waId, "Algunas medidas que me indica necesitan validación técnica. Le paso con nuestro equipo para confirmar la mejor solución.", true);
-        fireAndForget("escalation.dimensions", sendEscalationAlert(
-          `Medidas fuera de rango: ${escalationReasons}`,
-          normPhone(waId), d
-        ));
-        ses.history.push({ role: "assistant", content: "Medidas necesitan validación técnica, paso con el equipo." });
-        saveSession(waId, ses);
-        try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-escalation", e); }
-        earlyExit = true;
-      }
-
-      if (!earlyExit) {
-        const wantsPdf =
-  isComplete(d) &&
-  d.grand_total &&
-  !d.items.some(it => it.source === "cotizador_manual" || it.needs_escalation) &&
-  (d.wants_pdf || /pdf|cotiza|cotizaci[oó]n|formal|env[ií]a|manda|propuesta/i.test(userText));
-
-        if (wantsPdf && !ses.pdfSent) {
-          // [PROD-FIX] Resumen SIN precios — describe productos y ventajas
-          const resumenLines = [];
-          resumenLines.push("📋 Le preparo su propuesta con lo siguiente:");
-          for (const it of d.items) {
-            const c = it.color || d.default_color || "blanco";
-            const prod = normProduct(it.product || "");
-            let tipoDesc = "Ventana PVC línea europea";
-            if (prod.includes("CORREDERA")) tipoDesc = "Ventana corredera PVC línea europea";
-            else if (prod.includes("PUERTA")) tipoDesc = "Puerta PVC línea europea";
-            else if (prod.includes("PROYECT")) tipoDesc = "Ventana proyectante PVC línea europea";
-            else if (prod.includes("ABAT")) tipoDesc = "Ventana abatible PVC línea europea";
-            else if (prod.includes("FIJO")) tipoDesc = "Marco fijo PVC línea europea";
-            else if (prod.includes("OSCILO")) tipoDesc = "Ventana oscilobatiente PVC línea europea";
-            resumenLines.push(`${it.qty}× ${tipoDesc} de ${it.measures} en ${c}`);
-          }
-          resumenLines.push("\nTodas con termopanel DVH, aislación térmica y acústica, perfiles certificados y garantía de fábrica. Los colores son laminados Renolit que no se descascaran.");
-          await waSendH(waId, resumenLines.join("\n"), true);
-          await sleep(800);
-
-          await waSendH(waId, "Preparando su propuesta formal… 📄", true);
-
-          const qn = `COT-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-          ses.quoteNum = qn;
-          d.quote_num = qn;
+      try {
+        const estimate = await zhBooksCreateEstimate(d, d.name || "Cliente WhatsApp", normPhone(waId));
+        if (estimate?.estimate_id) {
+          ses.zohoEstimateId = estimate.estimate_id;
+          cubicacionPendientes.delete(waId);
+          
+          const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
+          await waSendPdf(waId, pdfBuf, `${qn}.pdf`, `Propuesta ${qn} — Si quiere ajustar algo, me avisa.`);
+          
+          ses.pdfSent = true;
+          d.stageKey = "propuesta";
+          actionsResult.pdfSent = true;
 
           try {
-            const estimate = await zhBooksCreateEstimate(
-              d,
-              d.name || "Cliente WhatsApp",
-              normPhone(waId)
-            );
-            if (estimate?.estimate_id) {
-              ses.zohoEstimateId = estimate.estimate_id;
-              ses.pdfSent = true;
-              d.stageKey = "propuesta";
-              cubicacionPendientes.delete(waId); // cancelar dispatcher para no duplicar
-              try {
-                const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
-                await waSendPdf(
-                  waId,
-                  pdfBuf,
-                  `${qn}.pdf`,
-                  `✅ Propuesta ${qn} lista. Si quiere ajustar algo, me avisa y la actualizo.`
-                );
-              } catch (pdfErr) {
-                logErr("waSendPdf", pdfErr);
-                const estimateUrl = estimate.estimate_url || "";
-                await waSendH(
-                  waId,
-                  `✅ Propuesta ${qn} lista.\n📎 Link: ${estimateUrl}`,
-                  true
-                );
-              }
-              // PDF ya enviado con caption — no enviar más mensajes duplicados
-
-                     try {
-                 await zhUpsert(ses, waId);
-                 if (ses.zohoDealId && estimate.estimate_number) {
-                   // [FEATURE] Log para dashboard
-                   logInfo(
-                     "pdf_sent_tracking",
-                     `PDF enviado a ${waId} | Nombre: ${ses.data.name || "Sin nombre"} | Estimate: ${estimate.estimate_number} | Esperando revisión...`
-                   );
-                   await zhNote(
-                     "Deals",
-                     ses.zohoDealId,
-                     `Cotización ${qn}`,
-                     `Estimate: ${estimate.estimate_number}\nTotal: $${Number(d.grand_total).toLocaleString("es-CL")} +IVA`
-                   );
-                 }
-               } catch (e) {
-                 logErr("zhUpsert/zhNote-post-pdf", e);
-               }
-              fireAndForget(
-                "trackQuoteEvent.formal",
-                trackQuoteEvent(
-                  buildQuotePayload(ses, waId, {
-                    status: "formal_sent",
-                    zoho_estimate_id: estimate.estimate_id,
-                    zoho_estimate_url: estimate.estimate_url || "",
-                    quote_number: qn,
-                  })
-                )
-              );
-            } else {
-              throw new Error("No se pudo crear propuesta");
+            await zhUpsert(ses, waId);
+            if (ses.zohoDealId && estimate.estimate_number) {
+              logInfo("pdf_sent_tracking", `PDF enviado a ${waId} | ${ses.data.name || "Sin nombre"} | ${estimate.estimate_number}`);
+              await zhNote("Deals", ses.zohoDealId, `Cotización ${qn}`, `Estimate: ${estimate.estimate_number}\nTotal: $${Number(d.grand_total).toLocaleString("es-CL")} +IVA`);
             }
-          } catch (e) {
-            logErr("Estimate", e);
-            await waSendH(
-              waId,
-              "Tuve un problema generando la propuesta. Se la preparo manual y se la envío en breve 🙏",
-              true
-            );
-            fireAndForget("escalation.pdf-fail", sendEscalationAlert(
-              `Fallo generando PDF para ${d.name || "cliente"} — preparar propuesta manual`,
-              normPhone(waId), d
-            ));
-          }
-       } else {
-  let reply = (ai.content || "").replace(/<PROFILE:\w+>/gi, "").trim();
-  if (!reply) {
-    if (!isComplete(d)) {
-      reply = `Perfecto, para avanzar necesito: ${nextMissing(d)}.`;
-    } else if (!d.grand_total) {
-      const hasManual = d.items.some(it => it.source === "cotizador_manual" || it.price_warning);
-      if (hasManual) {
-        reply = `Hay una validación técnica pendiente para su proyecto. Le derivaré con un especialista para confirmar factibilidad, medidas y propuesta final.`;
-      } else {
-        reply = `Ya tengo los datos. Hubo un tema conectando al cotizador, pero en breve le confirmo el precio.`;
-      }
-    } else {
-      reply = `Tengo todo listo para armarle la propuesta. Son ventanas PVC línea europea con termopanel, aislación térmica y acústica, y garantía de fábrica. ¿Le envío la propuesta formal en PDF?`;
-    }
-  }
-          const parts = smartSplitForWhatsApp(reply);
-          if (parts.length > 1) await waSendSmartMultiH(waId, parts, true, { incomingType: type });
-          else await waSendSmartH(waId, parts[0], true, { incomingType: type });
-          ses.history.push({ role: "assistant", content: reply });
-          try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-inline", e); }
+          } catch (e) { logErr("zhUpsert-post-pdf", e); }
+
+          fireAndForget("trackQuoteEvent.formal", trackQuoteEvent(buildQuotePayload(ses, waId, {
+            status: "formal_sent", zoho_estimate_id: estimate.estimate_id,
+            zoho_estimate_url: estimate.estimate_url || "", quote_number: qn,
+          })));
         }
-      } // end !earlyExit
-    } else {
-      let reply = (ai?.content || "").replace(/<PROFILE:\w+>/gi, "").trim();
-      if (!reply) reply = "No le entendí, ¿me repite? 🤔";
-      // [PROD] Smart split para burbujas WhatsApp cortas
-      const parts = smartSplitForWhatsApp(reply);
-      if (parts.length > 1) await waSendSmartMultiH(waId, parts, true, { incomingType: type });
-      else await waSendSmartH(waId, parts[0], true, { incomingType: type });
-      ses.history.push({ role: "assistant", content: reply });
+      } catch (e) {
+        logErr("Estimate", e);
+        actionsResult.errors.push("pdf_generation_failed");
+        await waSendH(waId, "Tuve un problema generando la propuesta. Se la preparo manual y se la envío en breve 🙏", true);
+        fireAndForget("escalation.pdf-fail", sendEscalationAlert(`Fallo PDF para ${d.name || "cliente"}`, normPhone(waId), d));
+      }
     }
 
+    // Paso 3: GPT genera texto final DESPUÉS de las acciones
+    // Solo si NO enviamos PDF (para no duplicar mensajes)
+    if (!actionsResult.pdfSent) {
+      let reply = "";
+      
+      // Si hubo tool calls, usar pass2 para generar respuesta contextualizada
+      if (pass1.tool_calls?.length) {
+        reply = await orchestratorPass2(ses, userText, actionsResult);
+      } else {
+        // Sin tool calls, usar el contenido de pass1 (respuesta conversacional)
+        reply = (pass1.content || "").replace(/<PROFILE:\w+>/gi, "").trim();
+      }
+
+      if (!reply) {
+        if (!isComplete(d)) {
+          reply = `Perfecto, para avanzar necesito: ${nextMissing(d)}.`;
+        } else if (!d.grand_total) {
+          const hasManual = d.items.some(it => it.source === "cotizador_manual" || it.price_warning);
+          reply = hasManual
+            ? "Hay una validación técnica pendiente. Le derivaré con un especialista."
+            : "Ya tengo los datos. Hubo un tema con el cotizador, en breve le confirmo.";
+        } else {
+          reply = "Listo, ¿en qué más le puedo ayudar?";
+        }
+      }
+
+      // Enviar como voz o texto según contexto
+      const voiceSent = await sendVoiceOrAudio(waId, reply, type);
+      if (!voiceSent) {
+        const parts = smartSplitForWhatsApp(reply);
+        if (parts.length > 1) await waSendSmartMultiH(waId, parts, false, { incomingType: type });
+        else await waSendSmartH(waId, parts[0], false, { incomingType: type });
+      }
+
+      ses.history.push({ role: "assistant", content: reply });
+      try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-inline", e); }
+    } else {
+      // PDF enviado — no enviar texto adicional, el caption del PDF es suficiente
+      ses.history.push({ role: "assistant", content: `[PDF enviado: ${ses.quoteNum}]` });
+    }
+
+    saveSession(waId, ses);
     saveSession(waId, ses);
   } catch (e) {
     logErr("WEBHOOK", e);
@@ -2942,6 +3048,6 @@ setInterval(async () => {
    ========================= */
 app.listen(PORT, () => {
   console.log(
-    `🚀 Ferrari 9.5.1-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"}`
+    `🚀 Ferrari 10.2-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} ffmpeg=checking`
   );
 });
