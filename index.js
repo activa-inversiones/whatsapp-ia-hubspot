@@ -1,4 +1,4 @@
-// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 10.2.1-prod)
+// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 10.2.2-prod)
 // Railway | Node 18+ | ESM
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS vs 9.4.0 — Fixes producción real (captura WhatsApp):
@@ -1257,7 +1257,10 @@ async function orchestratorPass2(session, userText, actionsResult) {
     `ESTADO ACTUAL: ${statusCtx}`,
     `ACCIONES EJECUTADAS: ${JSON.stringify(actionsResult)}`,
     `PDF ENVIADO: ${session.pdfSent ? "SÍ, ya fue enviado al cliente" : "NO"}`,
-  ].join("\n");
+    `NOMBRE CLIENTE: ${session.data?.name || "desconocido"}`,
+    `COMUNA: ${session.data?.comuna || "desconocida"}`,
+    session.data?.name ? `IMPORTANTE: Ya conoces a este cliente. Salúdalo por su nombre si vuelve.` : "",
+  ].filter(Boolean).join("\n");
 
   const msgs = [
     { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() },
@@ -1465,8 +1468,8 @@ async function readPdf(buf) {
    11) SESIONES
    ========================= */
 const sessions = new Map();
-const SESSION_TTL = 6 * 3_600_000;
-const MAX_HIST = 30;
+const SESSION_TTL = 48 * 3_600_000; // 48 horas — el bot recuerda al cliente por 2 días
+const MAX_HIST = 50; // Más historial = bot recuerda mejor la conversación
 
 function emptyData() {
   return {
@@ -1680,7 +1683,13 @@ Ejemplos MALOS (nunca):
   "Nuestro sistema cuenta con 4 cámaras de aislación..."
 
 ═══ FLUJO DE CONVERSACIÓN ═══
-1. SALUDO CÁLIDO: Breve, pregunta en qué puede ayudar.
+1. SALUDO — Usa el saludo correcto según la hora de Chile:
+   Antes de 12:00 → "Buenos días"
+   12:00 a 20:00 → "Buenas tardes"
+   Después de 20:00 → "Buenas noches"
+   Presentación PRIMERA VEZ: "[saludo], soy Marcelo Cifuentes, Ing. Consultor externo del MINVU, Resolución 266/2025 en eficiencia energética. ¿En qué puedo ayudarle?"
+   Si el cliente ya dio datos (medidas, tipo, etc.) en su PRIMER mensaje, no hagas preguntas genéricas. Di: "[saludo], soy Marcelo Cifuentes. Voy a preparar su propuesta con los datos que me envía."
+   SIEMPRE habla de "propuesta" (no cotización, no presupuesto).
 2. ESCUCHAR: ¿Frío? ¿Ruido? ¿Proyecto nuevo? UNA pregunta, ESPERA respuesta.
 3. CONECTAR: Reformula su necesidad.
 4. EDUCAR: "¿Sabía que con termopanel reduce el frío hasta un 50%?"
@@ -2287,7 +2296,7 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
       else if (p.includes("ABAT")) tipo = "Ventana Abatible PVC Línea Europea";
       else if (p.includes("MARCO") || p.includes("FIJO")) tipo = "Marco Fijo PVC Línea Europea";
       const desc =
-        it.descripcion || `${tipo} | Color: ${color} | Medidas: ${measures}mm | Vidrio: ${glass} | Perfiles certificados IFT Rosenheim | Laminado Renolit`;
+        it.descripcion || `${tipo} | Color: ${color} | Medidas: ${measures}mm | Vidrio: ${glass} | Perfiles certificados IFT Rosenheim | Laminado Renolit | Cumple OGUC 4.1.10 | Instalación profesional incluida | Garantía 5 años estructura + 1 año herrajes`;
       const lineItem = {
         name: tipo,
         description: desc,
@@ -2365,7 +2374,7 @@ async function waSendPdf(to, pdfBuffer, filename, caption) {
 app.get("/health", async (_req, res) => {
   res.json({
     ok: true,
-    v: "10.2.1-prod",
+    v: "10.2.2-prod",
     agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
     winperfil_api: WINPERFIL_API_BASE ? "set" : "missing",
@@ -2958,7 +2967,22 @@ app.post("/webhook", async (req, res) => {
       }
       await waSendH(waId, resumenLines.join("\n"), true);
       await sleep(800);
-      await waSendH(waId, "Generando su propuesta… 📄", true);
+      await waSendH(waId, "Generando su propuesta… 📄 Mientras le preparo el documento, le comparto un poco de nuestra empresa.", true);
+
+      // Enviar videos de la empresa mientras se genera el PDF
+      const videoSources = [
+        { url: process.env.VIDEO_PLANTA, label: "🏭 Nuestra planta de producción" },
+        { url: process.env.VIDEO_OFICINA, label: "🏢 Nuestras oficinas" },
+        { url: process.env.VIDEO_OFICINA2, label: "🏢 Recorrido por nuestras instalaciones" },
+        { url: process.env.VIDEO_INSTALACIONES, label: "🏠 Proyectos terminados" },
+        { url: process.env.VIDEO_INSTALACIONES2, label: "🏠 Más trabajos realizados" },
+        { url: process.env.VIDEO_PLANTA2, label: "🏭 Proceso de fabricación" },
+      ].filter(v => v.url);
+      // Enviar máximo 3 videos para no saturar
+      for (const v of videoSources.slice(0, 3)) {
+        await waSend(waId, `${v.label}\n${v.url}`);
+        await sleep(600);
+      }
 
       try {
         const estimate = await zhBooksCreateEstimate(d, d.name || "Cliente WhatsApp", normPhone(waId));
@@ -3077,6 +3101,6 @@ setInterval(async () => {
    ========================= */
 app.listen(PORT, () => {
   console.log(
-    `🚀 Ferrari 10.2.1-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} ffmpeg=checking`
+    `🚀 Ferrari 10.2.2-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} ffmpeg=checking`
   );
 });
