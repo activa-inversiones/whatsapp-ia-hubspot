@@ -1,4 +1,4 @@
-// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 10.2-prod)
+// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 10.2.1-prod)
 // Railway | Node 18+ | ESM
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS vs 9.4.0 — Fixes producción real (captura WhatsApp):
@@ -1684,9 +1684,15 @@ Ejemplos MALOS (nunca):
 2. ESCUCHAR: ¿Frío? ¿Ruido? ¿Proyecto nuevo? UNA pregunta, ESPERA respuesta.
 3. CONECTAR: Reformula su necesidad.
 4. EDUCAR: "¿Sabía que con termopanel reduce el frío hasta un 50%?"
-5. DATOS MÍNIMOS antes de cotizar: Nombre, Productos con medidas, Color, Comuna.
-   NUNCA pidas dirección. Solo COMUNA.
-6. COTIZAR: Avisa "Voy a ingresar los datos al sistema" y ejecuta update_quote.
+5. DATOS MÍNIMOS — OBLIGATORIO antes de ejecutar update_quote:
+   a) NOMBRE: Si no lo tienes, pregunta: "¿Con quién tengo el gusto?" — SIEMPRE antes de cotizar.
+   b) PRODUCTOS: tipo, medidas y cantidad.
+   c) COLOR: Si no dice, pregunta: "¿Tiene algún color en mente? Tenemos blanco, nogal, roble, grafito y negro."
+   d) COMUNA: "¿En qué comuna está?" — NUNCA pidas dirección.
+   REGLA DURA: Si falta CUALQUIERA de estos 4 datos, PREGUNTA antes de llamar update_quote.
+   NUNCA ejecutes update_quote sin nombre del cliente.
+   NUNCA saltes directo a cotizar sin preguntar los datos que faltan.
+6. COTIZAR: Solo cuando tengas los 4 datos. Avisa "Voy a ingresar los datos al sistema" y ejecuta update_quote.
 7. CERRAR: Visita técnica gratuita sin compromiso.
 
 ═══ INSTALACIÓN — REGLA ABSOLUTA ═══
@@ -1740,6 +1746,7 @@ NUNCA "solo puedo responder por texto". Si no puede leer: "Le mando por audio."
 ═══ REGLAS DURAS ═══
 Solo WinHouse PVC y Sodal Aluminio.
 update_quote UNA vez con todos los items.
+NUNCA ejecutes update_quote sin tener el NOMBRE del cliente. Si no lo tienes, pregunta primero.
 Visita técnica gratuita sin compromiso.
 Si no sabes → "Lo verifico y le confirmo hoy mismo."
 No descuentes sin autorización. No inventes datos técnicos.
@@ -2358,7 +2365,7 @@ async function waSendPdf(to, pdfBuffer, filename, caption) {
 app.get("/health", async (_req, res) => {
   res.json({
     ok: true,
-    v: "10.2-prod",
+    v: "10.2.1-prod",
     agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
     winperfil_api: WINPERFIL_API_BASE ? "set" : "missing",
@@ -2513,7 +2520,9 @@ app.post("/webhook", async (req, res) => {
           const pageNum = ses.pendingTablePages.length;
           const merged = mergeTablePages(ses.pendingTablePages);
           saveSession(waId, ses);
-          await waSendH(waId, `📊 HOJA ${pageNum} RECIBIDA ✅\n\nModelo: ${parsed.modelo || "?"}\nColor: ${parsed.color || "?"}\nEsta hoja: ${parsed.anchos.length} anchos × ${parsed.altos.length} altos\n\nACUMULADO: ${merged.anchos.length} anchos × ${merged.altos.length} altos\n\n¿Más hojas? Envíe imagen.\nSi ya están todas → ADMIN TABLA LISTA`, true);
+          const safeColor = typeof parsed.color === "string" ? parsed.color : (typeof parsed.color === "object" ? JSON.stringify(parsed.color) : String(parsed.color || "?"));
+          const safeModelo = typeof parsed.modelo === "string" ? parsed.modelo : String(parsed.modelo || "?");
+          await waSendH(waId, `📊 HOJA ${pageNum} RECIBIDA ✅\n\nModelo: ${safeModelo}\nColor: ${safeColor}\nEsta hoja: ${parsed.anchos.length} anchos × ${parsed.altos.length} altos\n\nACUMULADO: ${merged.anchos.length} anchos × ${merged.altos.length} altos\n\n¿Más hojas? Envíe imagen.\nSi ya están todas → ADMIN TABLA LISTA`, true);
           return;
         } catch (e) {
           logErr("admin.vision_table", e);
@@ -2691,10 +2700,30 @@ app.post("/webhook", async (req, res) => {
         const totalCells = merged.anchos.length * merged.altos.length;
         const nullCells = merged.precios.flat().filter(p => p === null).length;
         const quality = Math.round(((totalCells - nullCells) / totalCells) * 100);
-        const allPrices = merged.precios.flat().filter(p => p !== null);
-        const minPrice = Math.min(...allPrices);
-        const maxPrice = Math.max(...allPrices);
-        await waSendH(waId, `📊 TABLA UNIDA — ${totalPages} hojas\n\nModelo: ${merged.modelo || "?"}\nColor: ${merged.color || "?"}\n\n${merged.anchos.length} anchos × ${merged.altos.length} altos\n${totalCells} celdas (${quality}% con precio)\n\nRango: $${Number(minPrice).toLocaleString("es-CL")} — $${Number(maxPrice).toLocaleString("es-CL")}\n\n→ ADMIN APLICAR TABLA\n→ ADMIN CANCELAR`, true);
+        const allPrices = merged.precios.flat().filter(p => p !== null && !isNaN(p));
+        const minPrice = allPrices.length ? Math.min(...allPrices) : 0;
+        const maxPrice = allPrices.length ? Math.max(...allPrices) : 0;
+
+        // Preview detallado: mostrar altos, anchos y muestra de precios
+        const altosStr = merged.altos.slice(0, 8).join(", ") + (merged.altos.length > 8 ? ` ...+${merged.altos.length - 8} más` : "");
+        const anchosStr = merged.anchos.slice(0, 8).join(", ") + (merged.anchos.length > 8 ? ` ...+${merged.anchos.length - 8} más` : "");
+
+        // Muestra de precios: esquinas de la tabla
+        const fmt = (v) => v != null && !isNaN(v) ? `$${Number(v).toLocaleString("es-CL")}` : "—";
+        const lastRow = merged.precios.length - 1;
+        const lastCol = merged.anchos.length - 1;
+        const samplePrices = [
+          `${merged.altos[0]}×${merged.anchos[0]}: ${fmt(merged.precios[0]?.[0])}`,
+          `${merged.altos[0]}×${merged.anchos[lastCol]}: ${fmt(merged.precios[0]?.[lastCol])}`,
+          `${merged.altos[lastRow]}×${merged.anchos[0]}: ${fmt(merged.precios[lastRow]?.[0])}`,
+          `${merged.altos[lastRow]}×${merged.anchos[lastCol]}: ${fmt(merged.precios[lastRow]?.[lastCol])}`,
+        ].join("\n");
+
+        // Primer mensaje: resumen
+        await waSendH(waId, `📊 TABLA UNIDA — ${totalPages} hoja(s)\n\nModelo: ${String(merged.modelo || "?")}\nColor: ${String(merged.color || "?")}\n\n${merged.anchos.length} anchos × ${merged.altos.length} altos\n${totalCells} celdas (${quality}% con precio)\n\nRango: ${fmt(minPrice)} — ${fmt(maxPrice)}`, true);
+        
+        // Segundo mensaje: preview de datos
+        await waSendH(waId, `📐 ALTOS (columna izquierda):\n${altosStr}\n\n📏 ANCHOS (fila superior):\n${anchosStr}\n\n💰 MUESTRA DE PRECIOS (alto×ancho):\n${samplePrices}\n\n→ ADMIN APLICAR TABLA para confirmar\n→ ADMIN CANCELAR para descartar`, true);
         return;
       }
 
@@ -3048,6 +3077,6 @@ setInterval(async () => {
    ========================= */
 app.listen(PORT, () => {
   console.log(
-    `🚀 Ferrari 10.2-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} ffmpeg=checking`
+    `🚀 Ferrari 10.2.1-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} ffmpeg=checking`
   );
 });
