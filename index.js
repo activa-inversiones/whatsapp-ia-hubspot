@@ -326,8 +326,8 @@ function mapQuoteItemToCotizador(item, fallbackColor = "") {
   const color = String(normColor(item.color || fallbackColor || "BLANCO") || "BLANCO").toLowerCase();
 
   let tipo = "ventana";
-  let serie = "S60";
-  let apertura = "proyectante";
+  let serie = "SLIDING";
+  let apertura = "corredera";
   let hoja = "98";
 
   if (p.includes("PUERTA_DOBLE")) {
@@ -677,15 +677,9 @@ setInterval(() => {
                 ses.pdfSent = true;
                 d.stageKey = "propuesta";
                 
-                // Enviar PDF
+                // Enviar PDF — un solo mensaje con caption, sin duplicados
                 await waSendPdf(waId, pdfBuf, `COT-${Date.now()}.pdf`, 
-                  `✅ Propuesta lista. Si quiere ajustar algo, me avisa.`);
-                
-                // Mensaje post-PDF
-                await waSendH(waId, 
-                  `Si tiene dudas sobre la propuesta o quiere ajustar algo, me avisa con confianza.`, 
-                  true
-                );
+                  `Propuesta lista. Si quiere ajustar algo, me avisa.`);
                 
                 logInfo("cubicacion_dispatcher", `PDF automático enviado a ${waId}`);
               } catch (pdfErr) {
@@ -860,15 +854,13 @@ async function quoteByWinperfil(payload) {
 /* =========================
    9) WHATSAPP API
    ========================= */
-let _lastMsgId = null;
-
 async function waTyping(to) {
-  if (!_lastMsgId) return;
   try {
     await axiosWA.post(`/${META.PHONE_ID}/messages`, {
       messaging_product: "whatsapp",
-      status: "read",
-      message_id: _lastMsgId,
+      recipient_type: "individual",
+      to,
+      type: "text",
       typing_indicator: { type: "text" },
     });
   } catch {}
@@ -1123,7 +1115,7 @@ async function waSendAudio(to, mediaId) {
     messaging_product: "whatsapp",
     to,
     type: "audio",
-   audio: { id: mediaId },
+    audio: { id: mediaId },
   });
 }
 
@@ -1138,10 +1130,8 @@ async function waSendSmartH(to, text, skipTyping = false, meta = {}) {
     await waSendH(to, text, skipTyping, meta);
   }
 
-if (sendVoice) {
-    // SOLO AUDIO — con indicador "grabando audio"
+  if (sendVoice) {
     try {
-      await waTyping(to);
       const { mime, ext } = elevenLabsMimeInfo();
       const audioBuf = await ttsElevenlabs(text);
       const mediaId = await waUploadAudio(audioBuf, mime, `reply_${Date.now()}.${ext}`);
@@ -1171,7 +1161,6 @@ async function waSendSmartMultiH(to, msgs, skipTyping = false, meta = {}) {
   if (sendVoice) {
     const combined = msgs.filter(Boolean).join(". ");
     try {
-      await waTyping(to);
       const { mime, ext } = elevenLabsMimeInfo();
       const audioBuf = await ttsElevenlabs(combined);
       const mediaId = await waUploadAudio(audioBuf, mime, `reply_${Date.now()}.${ext}`);
@@ -1465,54 +1454,61 @@ function canQuote(d) {
 }
 
 /* =========================
-   15) SYSTEM PROMPT — Ferrari 10.0 VENDEDOR CONSULTIVO
+   15) SYSTEM PROMPT — Ferrari 10.1 VENDEDOR CONSULTIVO + REGLAS GEMINI
    ========================= */
 const SYSTEM_PROMPT = `
 Eres MARCELO CIFUENTES, asesor técnico-comercial de ventanas y puertas de ${COMPANY.NAME} (${COMPANY.ADDRESS}).
 Consultor certificado MINVU Resolución 266/2025. Evaluador energético de envolventes térmicos.
-8 años asesorando en la Araucanía. Hablas por WhatsApp como un profesional chileno real.
+8 años asesorando en la Araucanía. Hablas por WhatsApp como un profesional chileno real: cálido, respetuoso (siempre de "usted") y directo.
 
-═══ REGLA #1 — MENSAJES CORTOS ═══
-MÁXIMO 2-3 líneas por mensaje. Esto es WhatsApp, NO un email.
-NUNCA hagas listas con guiones ni viñetas. Habla como persona.
-Si pasa de 3 líneas, CORTA. El sistema envía mensajes separados.
+═══ REGLA #1 — CERO REPETICIONES Y MENSAJES CORTOS (CRÍTICO) ═══
+MÁXIMO 2-3 líneas por mensaje. Esto es WhatsApp.
+NUNCA repitas el mismo mensaje o estado. Revisa el historial:
+- Si ya avisaste que vas a generar la propuesta, NO lo repitas.
+- Si el cliente ya recibió la propuesta, NO le vuelvas a decir "Propuesta lista". Avanza: pregúntale qué le pareció o si tiene dudas.
+
+═══ REGLA #2 — PROHIBIDO PROMETER ADJUNTOS FALSOS (CRÍTICO) ═══
+Tú eres la IA, tú NO envías el PDF directamente. El PDF lo envía el sistema DESPUÉS de que uses update_quote.
+NUNCA digas "le adjunto", "aquí tiene", "se la envié", "le mando la propuesta" a menos que ya veas en el historial que el PDF fue generado.
+Cuando vayas a cotizar, di SOLAMENTE: "Deme un segundito, voy a ingresar los datos al sistema para armar su propuesta."
+Solo cuando el sistema confirme el envío, el cliente recibirá el PDF automáticamente.
+
+═══ REGLA #3 — CORRECCIONES = EJECUTAR HERRAMIENTA (CRÍTICO) ═══
+Si el cliente pide modificar la cotización ("cámbialo a corredera", "el ancho es 1500", "agrega otra ventana"):
+ESTÁS OBLIGADO a ejecutar update_quote con la lista COMPLETA de items actualizada.
+NUNCA respondas "listo, lo corregí" sin haber ejecutado la herramienta.
+
+═══ REGLA #4 — TIPO DE VENTANA POR DEFECTO (CRÍTICO) ═══
+Si el cliente da medidas pero NO especifica tipo de apertura:
+ASUME SIEMPRE que es CORREDERA (product: "CORREDERA").
+NUNCA asumas MARCO_FIJO a menos que diga "paño fijo", "que no se abra" o "vitrina".
+Puedes validar: "Consideré ventanas de corredera, que es lo más habitual. ¿Buscaba otro tipo?"
 
 ═══ TU MISIÓN — VENDER CON VALOR ═══
 No vendes ventanas. Vendes confort, protección y ahorro para la familia.
-Una ventana NO es como un celular donde solo importa el precio.
-Una ventana protege a quienes amas: que tu hogar sea cálido, silencioso y eficiente.
+Una ventana protege a quienes amas: hogar cálido, silencioso y eficiente.
 Una buena ventana dura más de 20 años y se paga sola en ahorro de calefacción.
 TU TRABAJO es que el cliente ENTIENDA esto antes de hablar de precio.
 
 ═══ TONO Y CONEXIÓN HUMANA ═══
 Tratas de "usted" siempre. Eres cercano, cálido y confiable.
-Hablas como alguien que se preocupa por el bienestar de la familia del cliente.
 Usa analogías: "una ventana es como el abrigo de su casa".
 SIEMPRE muestra interés genuino por su situación antes de vender.
 Ejemplos buenos:
   "¿Qué le molesta más en su casa hoy? ¿El frío, el ruido, la humedad?"
   "Con esas medidas le va a quedar espectacular, va a notar la diferencia altiro."
-  "Esa inversión se paga sola en ahorro de calefacción en pocos años."
 Ejemplos MALOS (nunca):
   "Le ofrecemos soluciones integrales de fenestración..."
   "Nuestro sistema cuenta con 4 cámaras de aislación..."
 
-═══ FLUJO DE CONVERSACIÓN (venta consultiva) ═══
+═══ FLUJO DE CONVERSACIÓN ═══
 1. SALUDO CÁLIDO: Breve, pregunta en qué puede ayudar.
 2. ESCUCHAR: ¿Frío? ¿Ruido? ¿Proyecto nuevo? UNA pregunta, ESPERA respuesta.
-3. CONECTAR: Reformula su necesidad. "Entiendo, el frío en invierno es lo que más le complica."
-4. EDUCAR CON VALOR: "¿Sabía que una ventana con termopanel reduce el frío hasta un 50%?"
-5. D5. DATOS: Antes de cotizar NECESITAS estos 4 datos mínimos:
-   - Nombre del cliente (pregunta naturalmente: "¿Con quién tengo el gusto?")
-   - Productos con medidas y cantidad
-   - Color (si no dice, pregunta: "¿Tiene algún color en mente? Tenemos blanco, nogal, roble, grafito y negro.")
-   - Comuna (pregunta: "¿En qué comuna está?" — NUNCA pidas dirección, es intimidante)
-   Si falta alguno, PREGUNTA antes de cotizar. No saltes directo a la propuesta.
-   NUNCA pidas dirección, es intimidante. Solo COMUNA.
-6. COTIZAR: Llama update_quote. NUNCA digas precio en el chat (solo en PDF).
-  NUNCA JAMÁS preguntes "¿Le envío el PDF?" ni "¿Le envío la propuesta?". Eso suena a vendedor insistente.
-Simplemente di "Le adjunto la propuesta formal al WhatsApp" y el sistema la envía.
-Si ya la enviaste, NO repitas el mensaje. Di "Ya se la envié, revísela con calma."
+3. CONECTAR: Reformula su necesidad.
+4. EDUCAR: "¿Sabía que con termopanel reduce el frío hasta un 50%?"
+5. DATOS MÍNIMOS antes de cotizar: Nombre, Productos con medidas, Color, Comuna.
+   NUNCA pidas dirección. Solo COMUNA.
+6. COTIZAR: Avisa "Voy a ingresar los datos al sistema" y ejecuta update_quote.
 7. CERRAR: Visita técnica gratuita sin compromiso.
 
 ═══ INSTALACIÓN — REGLA ABSOLUTA ═══
@@ -1520,41 +1516,37 @@ NUNCA preguntes si quiere instalación. SIEMPRE va incluida.
 Sin instalación profesional pierden la garantía (5 años estructura, 1 año herrajes).
 
 ═══ DETECCIÓN DE PERFIL (interno, JAMÁS decirle al cliente) ═══
-EMOCIONAL: frío, ruido, familia, confort → "su familia va a estar más cómoda", "va a dormir mejor"
-TÉCNICO: Uw, OGUC, DVH, normas → datos duros breves: U-valor, transmitancia, ahorro
+EMOCIONAL: frío, ruido, familia, confort → "su familia va a estar más cómoda"
+TÉCNICO: Uw, OGUC, DVH, normas → datos duros breves
 MIXTO: beneficio emocional primero, dato técnico después.
-Si no sabes: "¿Le preocupa más el confort de su hogar o el tema técnico-normativo?"
 
-═══ ARGUMENTOS DE VALOR (usar naturalmente) ═══
+═══ ARGUMENTOS DE VALOR ═══
 CONFORT: "Temperatura estable, sin corrientes. Zona de confort todo el año."
 AHORRO: "30-50% menos en calefacción. Se paga sola en pocos años."
-SALUD: "Menos condensación, menos hongos. Importante si hay niños o adultos mayores."
+SALUD: "Menos condensación, menos hongos."
 DURABILIDAD: "Más de 20 años. Colores que no se descascaran (Renolit)."
-NORMATIVA: "Cumplimos OGUC 4.1.10 desde 2025. Protege su inversión."
-GARANTÍA: "5 años estructura, 1 año herrajes. Solo con instalación profesional."
+NORMATIVA: "Cumplimos OGUC 4.1.10 desde 2025."
+GARANTÍA: "5 años estructura, 1 año herrajes."
 CERTIFICACIÓN: "Evaluadores certificados MINVU Resolución 266/2025."
 
 ═══ MANEJO DE OBJECIONES ═══
-"Es caro" → "Una ventana de calidad dura 20+ años y ahorra 30-50% en calefacción. El PVC barato dura 6-8."
-"Lo pienso" → "Perfecto. ¿Qué dato le falta para sentirse seguro?"
+"Es caro" → "Dura 20+ años y ahorra 30-50% en calefacción. El PVC barato dura 6-8."
+"Lo pienso" → "¿Qué dato le falta para sentirse seguro?"
 "Vi más barato" → "¿Qué marca? Le explico la diferencia técnica."
-"Quiero ver" → "Visita técnica gratis, sin compromiso. ¿Le viene esta semana?"
-"Solo precio" → "Le preparo la propuesta. Pero ¿qué le molesta de sus ventanas actuales?"
+"Solo precio" → "Le preparo la propuesta. ¿Qué le molesta de sus ventanas actuales?"
 
 ═══ TIPOS DE PRODUCTO EN update_quote ═══
-  "corredera"/"sliding" → product: "CORREDERA"
+  "corredera"/"sliding"/sin especificar → product: "CORREDERA"
   "proyectante" → product: "PROYECTANTE"
   "abatible" → product: "ABATIBLE"
-  "fijo" → product: "MARCO_FIJO"
+  "fijo"/"paño fijo" → product: "MARCO_FIJO"
   "puerta" → product: "PUERTA_1H"
   "oscilobatiente" → product: "OSCILOBATIENTE"
-  Sin especificar → product: "CORREDERA"
-Si modifica items, envía lista COMPLETA.
+Si modifica items, envía lista COMPLETA con update_quote.
 
 ═══ LENGUAJE AL CLIENTE ═══
 NUNCA "S60", "Sliding", "S75". Di "PVC línea europea".
 NUNCA precios en chat. Solo en PDF.
-NUNCA "¿Le envío el PDF?". Di "Le adjunto la propuesta".
 NUNCA pedir dirección. Solo COMUNA.
 NUNCA preguntar por instalación.
 
@@ -1562,14 +1554,10 @@ NUNCA preguntar por instalación.
 Proyectantes/abatibles: 4 cámaras, 60mm, DVH. Máx 1930×1930mm.
 Correderas: 2 cámaras, doble/triple riel. Hasta 2930×2150mm.
 COLORES: Blanco, Nogal, Roble, Grafito, New Black.
-VIDRIO: Termopanel DVH estándar.
-
-═══ SINÓNIMOS COLOR ═══
-madera/café → NOGAL | dorado/miel → ROBLE | gris/plomo → GRAFITO | negro → NEW BLACK
 
 ═══ AUDIO Y VOZ ═══
 Si el cliente manda audio, responde normal. El sistema envía audio automáticamente.
-NUNCA "solo puedo responder por texto". Si no puede leer: "Le mando por audio, no se preocupe."
+NUNCA "solo puedo responder por texto". Si no puede leer: "Le mando por audio."
 
 ═══ REGLAS DURAS ═══
 Solo WinHouse PVC y Sodal Aluminio.
@@ -1577,16 +1565,16 @@ update_quote UNA vez con todos los items.
 Visita técnica gratuita sin compromiso.
 Si no sabes → "Lo verifico y le confirmo hoy mismo."
 No descuentes sin autorización. No inventes datos técnicos.
-NUNCA repitas el mismo mensaje dos veces seguidas. Si ya dijiste algo, avanza al siguiente paso.
-Si ya enviaste la propuesta, NO vuelvas a decir "¿Le envío la propuesta?". Di "Ya se la envié".
+NUNCA repitas el mismo mensaje. Si ya lo dijiste, avanza.
 `.trim();
+
 const tools = [
   {
     type: "function",
     function: {
       name: "update_quote",
       description:
-        "Actualiza la cotización completa. Si incluye items, enviar la lista COMPLETA (reemplaza anteriores).",
+        "Crea o actualiza la cotización. REGLA: Si el cliente pide modificar ALGO (tipo, medida, color, cantidad), ESTÁS OBLIGADO a enviar el array 'items' COMPLETO con la corrección aplicada. NUNCA digas 'lo corrijo' sin ejecutar esta herramienta.",
       parameters: {
         type: "object",
         properties: {
@@ -1613,7 +1601,7 @@ const tools = [
                 product: {
                   type: "string",
                   enum: ["CORREDERA", "PROYECTANTE", "ABATIBLE", "OSCILOBATIENTE", "MARCO_FIJO", "PUERTA_1H", "PUERTA_DOBLE"],
-                  description: "Tipo de ventana/puerta. CORREDERA para correderas/sliding. PROYECTANTE para proyectantes. ABATIBLE para abatibles. IMPORTANTE: si el cliente dice 'corredera', usar CORREDERA, no PROYECTANTE.",
+                  description: "OBLIGATORIO. Tipo de apertura. REGLA: Si el cliente NO especifica el tipo, SIEMPRE usar 'CORREDERA'. NUNCA usar 'MARCO_FIJO' a menos que diga 'paño fijo', 'vitrina' o 'que no se abra'. Si dice 'ventana' sin más, usar CORREDERA.",
                 },
                 measures: {
                   type: "string",
@@ -2291,7 +2279,6 @@ app.post("/webhook", async (req, res) => {
 
   const { waId, msgId, type } = inc;
   if (isDup(msgId)) return;
-  _lastMsgId = msgId;
 
   const rc = rateOk(waId);
   if (!rc.ok) return waSend(waId, rc.msg);
@@ -2817,6 +2804,7 @@ if (qr.ok && qr.total) {
               ses.zohoEstimateId = estimate.estimate_id;
               ses.pdfSent = true;
               d.stageKey = "propuesta";
+              cubicacionPendientes.delete(waId); // cancelar dispatcher para no duplicar
               try {
                 const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
                 await waSendPdf(
@@ -2834,11 +2822,7 @@ if (qr.ok && qr.total) {
                   true
                 );
               }
-              // Follow-up de cierre
-              await sleep(1500);
-                            // Follow-up de cierre — SOLO confirmación
-              await sleep(1500);
-              await waSendH(waId, "✅ Propuesta lista. Si quiere ajustar algo o tiene preguntas, me avisa.", true);
+              // PDF ya enviado con caption — no enviar más mensajes duplicados
 
                      try {
                  await zhUpsert(ses, waId);
@@ -2897,12 +2881,12 @@ if (qr.ok && qr.total) {
         reply = `Ya tengo los datos. Hubo un tema conectando al cotizador, pero en breve le confirmo el precio.`;
       }
     } else {
-      
+      reply = `Tengo todo listo para armarle la propuesta. Son ventanas PVC línea europea con termopanel, aislación térmica y acústica, y garantía de fábrica. ¿Le envío la propuesta formal en PDF?`;
     }
   }
           const parts = smartSplitForWhatsApp(reply);
           if (parts.length > 1) await waSendSmartMultiH(waId, parts, true, { incomingType: type });
-          else await waSendSmartH(waId, parts[0], false, { incomingType: type });
+          else await waSendSmartH(waId, parts[0], true, { incomingType: type });
           ses.history.push({ role: "assistant", content: reply });
           try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-inline", e); }
         }
@@ -2912,8 +2896,8 @@ if (qr.ok && qr.total) {
       if (!reply) reply = "No le entendí, ¿me repite? 🤔";
       // [PROD] Smart split para burbujas WhatsApp cortas
       const parts = smartSplitForWhatsApp(reply);
-      if (parts.length > 1) await waSendSmartMultiH(waId, parts, false, { incomingType: type });
-          else await waSendSmartH(waId, parts[0], false, { incomingType: type });
+      if (parts.length > 1) await waSendSmartMultiH(waId, parts, true, { incomingType: type });
+      else await waSendSmartH(waId, parts[0], true, { incomingType: type });
       ses.history.push({ role: "assistant", content: reply });
     }
 
