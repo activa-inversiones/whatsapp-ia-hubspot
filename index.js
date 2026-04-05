@@ -1,24 +1,25 @@
-// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 10.2.2-prod)
+// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 10.3.0-prod)
 // Railway | Node 18+ | ESM
 // ═══════════════════════════════════════════════════════════════════
-// CAMBIOS vs 9.4.0 — Fixes producción real (captura WhatsApp):
+// CAMBIOS vs 10.2.2 — Fixes producción (estabilidad + concurrencia):
 //
-// [P7] FIX CRÍTICO: Loop "¿Desea envíe propuesta Zoho Books?" 
-//      → pdfSent se resetea cuando items cambian → permite re-cotizar
-// [P8] FIX: Eliminado "Zoho Books" de todos los mensajes al cliente
-// [P9] FEAT: Resumen de cotización ANTES de enviar PDF (precios + beneficios)
-// [P10] FEAT: Validación de medidas vs límites fabricación WinHouse
-//       → S60 máx 1930×1930 | SLIDING máx 2930×2150 | Puerta máx 1970×2400
-//       → Si excede S60 pero cabe en SLIDING → sugiere corredera al cliente
-//       → Si excede todo → escala al equipo técnico
-// [P11] FEAT: Escalación automática vía WhatsApp al equipo técnico
-//       → ESCALATION_PHONE env var para recibir alertas
-// [P12] FEAT: Cierre post-PDF con oferta visita técnica gratuita
-// [P13] FIX: regex wantsPdf ampliado (formal, envía, manda, propuesta)
+// [P14] FIX: _lastMsgId era global → race condition con usuarios concurrentes
+//       → ahora es per-session (_lastMsgIds Map)
+// [P15] FIX: saveSession duplicado al final del webhook
+// [P16] FIX: Admin phone comparison nunca matcheaba
+//       → waId="56957296035" vs ADMIN_PHONE="+56957296035"
+//       → ahora ambos se normalizan con normalizeWaId/normalizeAdminPhone
+// [P17] FEAT: Graceful shutdown (SIGTERM/SIGINT) para Railway/Docker
+//       → cierra conexiones limpiamente, logea sesiones activas
+// [P18] FEAT: Startup health check del cotizador + pre-cache ffmpeg
+//       → diagnóstico inmediato en logs al levantar
+// [P19] FIX: Guard contra userText vacío/null llegando al AI
+// [P20] FIX: Cleanup de _lastMsgIds en interval de purga
+// [P21] FEAT: Health endpoint actualizado con versión 10.3.0
 //
-// Riesgos resueltos: loop infinito post-cotización, cotización de 
-// ventanas imposibles de fabricar, cliente sin resumen de precios,
-// equipo técnico sin visibilidad de escalaciones
+// Riesgos resueltos: typing indicator cruzado entre usuarios,
+// admin commands inaccesibles por formato de teléfono,
+// shutdown abrupto sin cleanup en Railway
 // ═══════════════════════════════════════════════════════════════════
 
 import express from "express";
@@ -854,15 +855,25 @@ async function quoteByWinperfil(payload) {
 /* =========================
    9) WHATSAPP API
    ========================= */
-let _lastMsgId = null;
+// Per-session last message ID to avoid race conditions with concurrent users
+const _lastMsgIds = new Map();
+
+function setLastMsgId(waId, msgId) {
+  _lastMsgIds.set(waId, msgId);
+}
+
+function getLastMsgId(waId) {
+  return _lastMsgIds.get(waId) || null;
+}
 
 async function waTyping(to) {
-  if (!_lastMsgId) return;
+  const lastMsgId = getLastMsgId(to);
+  if (!lastMsgId) return;
   try {
     await axiosWA.post(`/${META.PHONE_ID}/messages`, {
       messaging_product: "whatsapp",
       status: "read",
-      message_id: _lastMsgId,
+      message_id: lastMsgId,
       typing_indicator: { type: "text" },
     });
   } catch {}
@@ -1556,14 +1567,19 @@ setInterval(() => {
   const now = Date.now();
   let seenPurged = 0;
   let ratePurged = 0;
+  let msgIdsPurged = 0;
   for (const [id, ts] of seen) {
     if (now - ts > SEEN_TTL) { seen.delete(id); seenPurged++; }
   }
   for (const [id, r] of rateM) {
     if (now - r.r > RATE_TTL) { rateM.delete(id); ratePurged++; }
   }
-  if (seenPurged || ratePurged) {
-    logInfo("cleanup", `Purged seen=${seenPurged} rate=${ratePurged} | seen.size=${seen.size} rate.size=${rateM.size}`);
+  // Purge _lastMsgIds for sessions that no longer exist
+  for (const [id] of _lastMsgIds) {
+    if (!sessions.has(id)) { _lastMsgIds.delete(id); msgIdsPurged++; }
+  }
+  if (seenPurged || ratePurged || msgIdsPurged) {
+    logInfo("cleanup", `Purged seen=${seenPurged} rate=${ratePurged} msgIds=${msgIdsPurged} | seen.size=${seen.size} rate.size=${rateM.size}`);
   }
 }, CLEANUP_INTERVAL);
 
@@ -2374,7 +2390,7 @@ async function waSendPdf(to, pdfBuffer, filename, caption) {
 app.get("/health", async (_req, res) => {
   res.json({
     ok: true,
-    v: "10.2.2-prod",
+    v: "10.3.0-prod",
     agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
     winperfil_api: WINPERFIL_API_BASE ? "set" : "missing",
@@ -2473,7 +2489,7 @@ app.post("/webhook", async (req, res) => {
 
   const { waId, msgId, type } = inc;
   if (isDup(msgId)) return;
-  _lastMsgId = msgId;
+  setLastMsgId(waId, msgId);
 
   const rc = rateOk(waId);
   if (!rc.ok) return waSend(waId, rc.msg);
@@ -2597,7 +2613,7 @@ app.post("/webhook", async (req, res) => {
       }
       
       // Comandos admin (solo si está en modo admin)
-      if (ses.adminMode !== true && waId !== ADMIN_PHONE) {
+      if (ses.adminMode !== true && normalizeWaId(waId) !== normalizeAdminPhone(ADMIN_PHONE)) {
         await waSendH(waId, "❌ No autorizado.", true);
         return;
       }
@@ -2832,6 +2848,13 @@ app.post("/webhook", async (req, res) => {
 
     ses.history.push({ role: "user", content: userText });
 
+    // [P19] Guard: si userText está vacío tras todo el procesamiento, no llamar al AI
+    if (!userText?.trim()) {
+      logInfo("webhook", `userText vacío para ${waId} (type=${type}) — ignorando`);
+      saveSession(waId, ses);
+      return;
+    }
+
     // ═══ ORCHESTRATOR 2-PASS — Fase 2 ═══
     // Paso 1: GPT decide acciones (tool calls)
     const pass1 = await orchestratorPass1(ses, userText);
@@ -3060,7 +3083,6 @@ app.post("/webhook", async (req, res) => {
     }
 
     saveSession(waId, ses);
-    saveSession(waId, ses);
   } catch (e) {
     logErr("WEBHOOK", e);
   } finally {
@@ -3097,10 +3119,50 @@ setInterval(async () => {
 }, 30 * 60 * 1000);
 
 /* =========================
-   21) START
+   22) GRACEFUL SHUTDOWN
+   Cierra el servidor limpiamente al recibir SIGTERM/SIGINT (Railway, Docker, etc.)
    ========================= */
-app.listen(PORT, () => {
+let _server = null;
+
+function gracefulShutdown(signal) {
+  logInfo("shutdown", `${signal} recibido — cerrando servidor...`);
+  if (_server) {
+    _server.close(() => {
+      logInfo("shutdown", `Servidor cerrado. Sesiones activas: ${sessions.size}`);
+      process.exit(0);
+    });
+    // Forzar cierre si no termina en 10s
+    setTimeout(() => {
+      logErr("shutdown", { message: "Timeout — cierre forzado" });
+      process.exit(1);
+    }, 10_000);
+  } else {
+    process.exit(0);
+  }
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+/* =========================
+   23) START
+   ========================= */
+_server = app.listen(PORT, async () => {
+  // Startup health checks
+  let cotizadorStatus = "NO";
+  if (cotizadorWinhouseConfigured()) {
+    try {
+      const h = await cotizadorWinhouseHealth();
+      cotizadorStatus = h.ok ? `OK (${h.latencyMs}ms)` : `FAIL (${h.error || h.status})`;
+    } catch {
+      cotizadorStatus = "ERROR";
+    }
+  }
+
+  // Pre-cache ffmpeg availability
+  checkFfmpeg().catch(() => {});
+
   console.log(
-    `🚀 Ferrari 10.2.2-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} ffmpeg=checking`
+    `🚀 Ferrari 10.3.0-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorStatus} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} sessions=${sessions.size}`
   );
 });
