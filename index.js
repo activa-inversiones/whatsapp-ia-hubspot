@@ -2,7 +2,6 @@
 // Railway | Node 18+ | ESM
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS vs 9.4.0 — Fixes producción real (captura WhatsApp):
-//
 // [P7] FIX CRÍTICO: Loop "¿Desea envíe propuesta Zoho Books?" 
 //      → pdfSent se resetea cuando items cambian → permite re-cotizar
 // [P8] FIX: Eliminado "Zoho Books" de todos los mensajes al cliente
@@ -2440,7 +2439,7 @@ registerMultiChannelRoutes(app, {
   processMessage: async ({ channel, senderId, senderName, text, msgId, sendFn }) => {
     // Enviar el mensaje al pipeline de Sales-OS para tracking
     try {
-      const payload = buildLeadPayload(channel, senderId, senderName, text, "inbound", "customer");
+      const payload = buildMultiChannelPayload(channel, senderId, senderName, text, "inbound", "customer");
       await pushLeadEvent(payload);
     } catch (e) {
       logErr("multiChannel.push", e);
@@ -2469,7 +2468,7 @@ Si es una consulta simple, responde directamente.`;
       await sendFn(senderId, reply);
  
       // Trackear respuesta del bot
-      const outPayload = buildLeadPayload(channel, senderId, senderName, reply, "outbound", "assistant");
+      const outPayload = buildMultiChannelPayload(channel, senderId, senderName, reply, "outbound", "assistant");
       await pushLeadEvent(outPayload);
     } catch (e) {
       logErr("multiChannel.aiReply", e);
