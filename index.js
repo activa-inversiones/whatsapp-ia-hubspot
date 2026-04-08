@@ -47,6 +47,13 @@ import {
   checkStaleHighValue,
 } from "./services/highValueNotifier.js";
 import {
+  detectChannel,
+  normalizeIncoming,
+  sendMessage as multiSend,
+  buildLeadPayload,
+  registerMultiChannelRoutes,
+} from "./services/multiChannelHandler.js";
+import {
   cotizadorWinhouseConfigured,
   cotizadorWinhouseHealth,
   cotizarWinhouse,
@@ -2427,7 +2434,56 @@ app.get("/health", async (_req, res) => {
     rate_size: rateM.size,
   });
 });
-
+// Multi-channel routes (Instagram DM + Facebook Messenger)
+registerMultiChannelRoutes(app, {
+  processMessage: async ({ channel, senderId, senderName, text, msgId, sendFn }) => {
+    // Enviar el mensaje al pipeline de Sales-OS para tracking
+    try {
+      const payload = buildLeadPayload(channel, senderId, senderName, text, "inbound", "customer");
+      await pushLeadEvent(payload);
+    } catch (e) {
+      logErr("multiChannel.push", e);
+    }
+ 
+    // Respuesta automática del bot (mismo flujo que WhatsApp)
+    // Para IG/FB usamos una respuesta simplificada con IA
+    try {
+      const systemPrompt = `Eres el asistente de Activa Inversiones, fábrica de ventanas PVC termopanel en Temuco.
+Servicios: ventanas, puertas, cierres de terraza, cortinas de cristal, muros cortina, tabiques.
+Comunas: Temuco, Villarrica, Pucón, Padre Las Casas.
+Responde brevemente y amable. Si el cliente quiere cotizar, pídele que nos escriba por WhatsApp al +56 9 8441 2961 para una cotización detallada con nuestro sistema automatizado.
+Si es una consulta simple, responde directamente.`;
+ 
+      const aiResp = await openai.chat.completions.create({
+        model: process.env.AI_MODEL || "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: text },
+        ],
+        max_tokens: 300,
+      });
+ 
+      const reply = aiResp.choices?.[0]?.message?.content || "Gracias por contactarnos. Escríbenos al +56 9 8441 2961 por WhatsApp para una atención personalizada.";
+ 
+      await sendFn(senderId, reply);
+ 
+      // Trackear respuesta del bot
+      const outPayload = buildLeadPayload(channel, senderId, senderName, reply, "outbound", "assistant");
+      await pushLeadEvent(outPayload);
+    } catch (e) {
+      logErr("multiChannel.aiReply", e);
+      // Fallback: respuesta genérica
+      try {
+        await sendFn(senderId, "¡Hola! Gracias por contactarnos. Para una cotización personalizada, escríbenos por WhatsApp al +56 9 8441 2961. ¡Te esperamos!");
+      } catch (e2) {
+        logErr("multiChannel.fallback", e2);
+      }
+    }
+  },
+  waSend,
+  logInfo,
+  logErr,
+});
 app.get("/webhook", (req, res) => {
   if (req.query["hub.verify_token"] === META.VERIFY)
     return res.send(req.query["hub.challenge"]);
