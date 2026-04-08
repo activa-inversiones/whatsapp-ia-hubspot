@@ -47,10 +47,11 @@ import {
   checkStaleHighValue,
 } from "./services/highValueNotifier.js";
 import {
+  import {
   detectChannel,
   normalizeIncoming,
   sendMessage as multiSend,
-  buildLeadPayload,
+  buildLeadPayload as buildMultiChannelPayload,
   registerMultiChannelRoutes,
 } from "./services/multiChannelHandler.js";
 import {
