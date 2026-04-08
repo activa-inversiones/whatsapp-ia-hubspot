@@ -46,7 +46,6 @@ import {
   checkStaleHighValue,
 } from "./services/highValueNotifier.js";
 import {
-  import {
   detectChannel,
   normalizeIncoming,
   sendMessage as multiSend,
