@@ -41,6 +41,12 @@ import {
 } from "./services/salesOsBridge.js";
 // @patch:sales-os:imports:end
 import {
+  evaluateLeadValue,
+  notifyHighValue,
+  notifyHandoff,
+  checkStaleHighValue,
+} from "./services/highValueNotifier.js";
+import {
   cotizadorWinhouseConfigured,
   cotizadorWinhouseHealth,
   cotizarWinhouse,
@@ -586,6 +592,7 @@ function mergeTablePages(pages) {
   return base;
 }
 const ESCALATION_PHONE = process.env.ESCALATION_PHONE || "";
+const OWNER_NOTIFICATION_PHONE = process.env.OWNER_NOTIFICATION_PHONE || ESCALATION_PHONE;
 const ESCALATION_EMAIL = process.env.ESCALATION_EMAIL || "";
 // ═══════════════════════════════════════════════════════════════════
 // [ADMIN] OLIVER MODE — Control remoto + Cubicación Automática
@@ -701,16 +708,22 @@ setInterval(() => {
     }
   }
 }, 15_000);
+// Check leads de alto valor sin respuesta cada 15 minutos
+setInterval(() => {
+  try {
+    checkStaleHighValue(sessions, waSend);
+  } catch (e) {
+    logErr("staleHighValue.check", e);
+  }
+}, 15 * 60 * 1000);
+
 
 async function sendEscalationAlert(reason, customerPhone, sessionData) {
   const d = sessionData || {};
   const itemsSummary = (d.items || []).map((it, i) =>
     `${i + 1}. ${it.qty || 1}× ${it.product} ${it.measures} ${it.color || d.default_color || ""} ${it.dim_warning || ""}`
   ).join("\n");
-
   const alertMsg = `⚠️ ESCALACIÓN — ${reason}\n\nCliente: ${d.name || "Sin nombre"}\nTeléfono: ${customerPhone}\nComuna: ${d.comuna || "?"}\n\nItems:\n${itemsSummary}\n\nMotivo: ${reason}\n\nResponder desde Sales OS → ops.activalabs.ai`;
-
-  // Enviar al teléfono de escalación via WhatsApp
   if (ESCALATION_PHONE) {
     try {
       await waSend(ESCALATION_PHONE, alertMsg);
@@ -719,10 +732,25 @@ async function sendEscalationAlert(reason, customerPhone, sessionData) {
       logErr("escalation.whatsapp", e);
     }
   }
-
+  const session = sessions.get(customerPhone) || sessions.get(normPhone(customerPhone));
+  if (session) {
+    await notifyHandoff(waSend, customerPhone, session, reason);
+  }
+  try {
+    await pushLeadEvent({
+      phone: customerPhone,
+      name: d.name || "",
+      stage: "escalado_humano",
+      priority: "HIGH",
+      reason,
+      items: d.items || [],
+      value: d.grand_total || 0,
+    });
+  } catch (e) {
+    logErr("escalation.salesOs", e);
+  }
   logInfo("escalation", `ESCALACIÓN: ${reason} | cliente=${customerPhone}`);
 }
-
 /* =========================
    7) CATÁLOGO
    ========================= */
@@ -1863,15 +1891,19 @@ function necesitaHumano(text) {
    ========================= */
 async function runAI(session, userText) {
   // ── Handoff humano ───────────────────────────────────────────
-  if (necesitaHumano(userText)) {
-    // [F10] usar d.stageKey en vez de ses.stage
-    session.data.stageKey = "escalado_humano";
-    return {
-      role: "assistant",
-      content: `Entiendo, le conecto con nuestro equipo directamente.\n📱 ${COMPANY.PHONE}\n⏰ Lun-Vie 9:00-18:00 | Sáb 9:00-13:00`,
-    };
-  }
-
+ if (necesitaHumano(userText)) {
+  session.data.stageKey = "escalado_humano";
+  
+  // Enviar alerta con contexto completo al owner
+  fireAndForget("handoff.notify", async () => {
+    await notifyHandoff(waSend, normPhone(session.waId || ""), session, "Cliente solicitó hablar con humano");
+  });
+  
+  return {
+    role: "assistant",
+    content: `Entiendo, le conecto con nuestro equipo directamente. En este momento le estoy enviando toda la información de su consulta a nuestro especialista.\n\n📱 ${COMPANY.PHONE}\n⏰ Lun-Vie 9:00-18:00 | Sáb 9:00-13:00\n\nUn momento por favor, ya le contactamos.`,
+  };
+}
   const d = session.data;
   const missing = nextMissing(d);
   const done = isComplete(d);
@@ -2898,6 +2930,14 @@ app.post("/webhook", async (req, res) => {
           if (qr.ok && qr.total) {
             d.grand_total = qr.total;
             actionsResult.quoted = true;
+            try {
+              const hvResult = await notifyHighValue(waSend, normPhone(waId), session, "auto");
+              if (hvResult.sent) {
+                logInfo("highValue", `Alerta ${hvResult.tier} enviada para ${normPhone(waId)}`);
+              }
+            } catch (e) {
+              logErr("highValue.check", e);
+            }
           } else {
             for (const it of d.items) it.price_warning = qr.error || "No pude cotizar";
             d.grand_total = qr.total || null;
