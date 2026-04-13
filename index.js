@@ -2917,19 +2917,38 @@ app.post("/webhook", async (req, res) => {
     }
 
     // === LÓGICA ANTI-BUCLE + ESCALACIÓN INTELIGENTE A MARCELO ===
+    // === LÓGICA ANTI-BUCLE + ESCALACIÓN POR PRODUCTO (VERSIÓN LIMPIA Y ORDENADA) ===
     const t = userText.toLowerCase().trim();
 
-    // 1. Frustración del cliente → Escala a tu WhatsApp con resumen
+    // 1. Productos que SIEMPRE se escalan (no son PVC europea)
+    const specialProductKeywords = [
+      "templado", "vidrio templado", "mampara", "cierre de terraza", 
+      "cierre terraza", "celosia", "celosía", "aluminio", "cortina", 
+      "reja", "reja de seguridad"
+    ];
+    const isSpecialProduct = specialProductKeywords.some(kw => t.includes(kw));
+
+    // 2. Frustración del cliente
     const frustradoKeywords = ["ya", "chao", "basta", "mal humor", "repetis", "me tiene harto", "no amigo", "ya te dije", "ya envié", "ya mandé", "ya te lo", "perder el tiempo", "pierdo el tiempo", "me voy", "adiós", "adios", "frustrado", "hartó", "me cansé", "olvídelo"];
-    if (frustradoKeywords.some(word => t.includes(word))) {
-      await waSendH(waId, `✅ Entendido. Te voy a pasar directamente con Marcelo ahora mismo para que te atienda personalmente.`, true);
+    const isFrustrated = frustradoKeywords.some(word => t.includes(word));
+
+    // 3. Escalación (producto especial o frustración)
+    if (isSpecialProduct || isFrustrated) {
+      const agente = process.env.AGENT_NAME || "Marcelo Cifuentes";
       
+      await waSendH(waId, `✅ Entendido. Te voy a pasar directamente con nuestro ingeniero especialista ${agente} ahora mismo para que te atienda personalmente.`, true);
+      
+      // Videos mientras espera
+      await waSendH(waId, `Mientras tanto te envío estos videos de nuestra fábrica y oficina:\n\n🏭 Video Planta: ${process.env.PLANT_VIDEO_URL}\n🏢 Video Oficina: ${process.env.OFFICE_VIDEO_URL}`, true);
+      
+      // Resumen para ti + Zoho CRM
       const summary = buildEscalationSummary(ses, userText);
-      await sendEscalationAlert(summary, normPhone(waId), ses.data);
+      await sendEscalationAlert(summary, normPhone(process.env.ESCALATION_PHONE || process.env.OWNER_NOTIFICATION_PHONE), ses.data);
+      
       return;
     }
 
-    // 2. Cliente ya envió las medidas
+    // 4. Cliente ya envió medidas (flujo normal PVC)
     if (t.includes("adjunto") || t.includes("envié") || t.includes("mandé") || t.includes("ya te lo") || t.includes("fb.me") || t.includes("medidas")) {
       ses.data.medidasEnviadas = true;
       await waSendH(waId, `✅ Recibí tus medidas. Gracias!\n\nAhora dime:\n• Color (blanco, nogal, grafito, negro)\n• Comuna`, true);
@@ -2937,19 +2956,25 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // 3. "Ventanas normales" = CORREDERA automáticamente
-    if (t.includes("normal") || t.includes("normales")) {
-      ses.data.default_tipo = "CORREDERA";
+    // 5. Normalizar tipo de apertura (todos los modelos WinHouse son válidos)
+    if (t.includes("normal") || t.includes("normales") || 
+        t.includes("abatible") || t.includes("oscilobatiente") || t.includes("proyectante") || 
+        t.includes("fijo") || t.includes("corredera") || t.includes("sliding") || 
+        t.includes("basculante") || t.includes("plegable")) {
+      ses.data.default_tipo = normTipoApertura(userText);
     }
 
-    // 4. Avance directo si ya tiene medidas
-    if (ses.data.medidasEnviadas && (t.includes("blanco") || t.includes("nogal") || t.includes("grafito") || t.includes("negro") || t.includes("color"))) {
+    // 6. Avance directo si ya tiene medidas
+    if (ses.data.medidasEnviadas && 
+        (t.includes("blanco") || t.includes("nogal") || t.includes("roble") || t.includes("dorado") ||
+         t.includes("grafito") || t.includes("antracita") || t.includes("gris") || t.includes("plomo") ||
+         t.includes("negro") || t.includes("new black") || t.includes("color"))) {
       ses.data.default_color = normColor(userText);
       await procesarCotizacionCompleta(waId, ses);
       return;
     }
 
-    // 5. Lógica normal
+    // 7. Lógica normal (todas las ventanas y puertas PVC)
     ses.history.push({ role: "user", content: userText });
 
     // ═══ ORCHESTRATOR 2-PASS — Fase 2 ═══
@@ -3238,6 +3263,29 @@ function buildEscalationSummary(ses, lastMessage) {
   summary += `💬 Último mensaje del cliente: "${lastMessage}"\n\n`;
   summary += `📋 Estado actual: ${ses.data?.medidasEnviadas ? 'Medidas enviadas' : 'Sin medidas'}`;
   return summary;
+}
+function normColor(text) {
+  if (!text) return "BLANCO";
+  const t = text.toLowerCase().trim();
+
+  if (t.includes("blanco") || t.includes("white")) return "BLANCO";
+  if (t.includes("nogal") || t.includes("roble") || t.includes("madera") || t.includes("dorado")) return "NOGAL";
+  if (t.includes("grafito") || t.includes("antracita") || t.includes("gris") || t.includes("plomo")) return "GRAFITO";
+  if (t.includes("negro") || t.includes("black") || t.includes("new black")) return "NEGRO";
+
+  return "BLANCO"; // default
+}
+
+function normTipoApertura(text) {
+  const t = text.toLowerCase();
+  if (t.includes("abatible") || t.includes("abatir")) return "ABATIBLE";
+  if (t.includes("oscilobatiente") || t.includes("oscilo")) return "OSCILOBATIENTE";
+  if (t.includes("proyectante") || t.includes("proy")) return "PROYECTANTE";
+  if (t.includes("fijo") || t.includes("marco fijo")) return "FIJO";
+  if (t.includes("corredera") || t.includes("sliding")) return "CORREDERA";
+  if (t.includes("basculante")) return "BASCULANTE";
+  if (t.includes("plegable")) return "PLEGABLE";
+  return "CORREDERA"; // más común
 }
 app.listen(PORT, () => {
   console.log(
