@@ -2884,6 +2884,7 @@ app.post("/webhook", async (req, res) => {
     }
 
        // === RESET ===
+    // === RESET ===
     if (/^reset|nueva cotizaci[oó]n|empezar de nuevo/i.test(userText)) {
       ses.data = emptyData();
       ses.pdfSent = false;
@@ -2894,7 +2895,7 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // === LÓGICA ANTI-BUCLE + ESCALACIÓN + ENVÍO DE COTIZACIÓN ===
+    // === LÓGICA INTELIGENTE CON GPT + CONFIRMACIÓN (VERSIÓN FINAL) ===
     const t = userText.toLowerCase().trim();
 
     // 1. Productos especiales que SIEMPRE se escalan
@@ -2909,14 +2910,23 @@ app.post("/webhook", async (req, res) => {
     if (isSpecialProduct || isFrustrated) {
       const agente = process.env.AGENT_NAME || "Marcelo Cifuentes";
       await waSendH(waId, `✅ Entendido. Te voy a pasar directamente con nuestro ingeniero especialista ${agente} ahora mismo.`, true);
-      await waSendH(waId, `Mientras tanto revisa estos videos de nuestra fábrica y oficina:\n\n🏭 Video Planta: ${process.env.PLANT_VIDEO_URL}\n🏢 Video Oficina: ${process.env.OFFICE_VIDEO_URL}`, true);
+      await waSendH(waId, `Mientras tanto revisa estos videos:\n\n🏭 Video Planta: ${process.env.PLANT_VIDEO_URL}\n🏢 Video Oficina: ${process.env.OFFICE_VIDEO_URL}`, true);
 
       const summary = buildEscalationSummary(ses, userText);
       await sendEscalationAlert(summary, normPhone(process.env.ESCALATION_PHONE || process.env.OWNER_NOTIFICATION_PHONE), ses.data);
       return;
     }
 
-    // 4. Cliente ya envió medidas
+    // 4. Corrección de medidas por el cliente
+    if (t.includes("no decia") || t.includes("no era") || t.includes("no 3000") || t.includes("300x300") || t.includes("300 × 300")) {
+      delete ses.data.items;
+      ses.data.medidasEnviadas = true;
+      await waSendH(waId, `✅ Entendido, corregí las medidas a 300×300 mm. ¿Qué color prefieres?`, true);
+      saveSession(waId, ses);
+      return;
+    }
+
+    // 5. Cliente ya envió medidas
     if (t.includes("adjunto") || t.includes("envié") || t.includes("mandé") || t.includes("ya te lo") || t.includes("fb.me") || t.includes("medidas")) {
       ses.data.medidasEnviadas = true;
       await waSendH(waId, `✅ Recibí tus medidas. Gracias!\n\nAhora dime:\n• Color (blanco, nogal, grafito, negro)\n• Comuna`, true);
@@ -2924,7 +2934,7 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // 5. Normalizar tipo de apertura
+    // 6. Normalizar tipo de apertura
     if (t.includes("normal") || t.includes("normales") || 
         t.includes("abatible") || t.includes("oscilobatiente") || t.includes("proyectante") || 
         t.includes("fijo") || t.includes("corredera") || t.includes("sliding") || 
@@ -2932,20 +2942,27 @@ app.post("/webhook", async (req, res) => {
       ses.data.default_tipo = normTipoApertura(userText);
     }
 
-    // 6. AVANCE AUTOMÁTICO → Enviar cotización
+    // 7. AVANCE AUTOMÁTICO + CONFIRMACIÓN (lo más importante)
     if (ses.data.medidasEnviadas && 
         (t.includes("blanco") || t.includes("nogal") || t.includes("roble") || t.includes("dorado") ||
          t.includes("grafito") || t.includes("antracita") || t.includes("gris") || t.includes("plomo") ||
          t.includes("negro") || t.includes("new black") || t.includes("color"))) {
 
       ses.data.default_color = normColor(userText);
-      await waSendH(waId, `Perfecto, ya tengo todos los datos. Generando tu cotización ahora mismo...`, true);
-      
-      await procesarCotizacionCompleta(waId, ses);   // ← Esta línea envía la cotización
+
+      // Resumen claro y ordenado para que el cliente confirme
+      const resumen = `✅ **Resumen de tu cotización:**\n\n` +
+        `• Tipo: ${ses.data.default_tipo || "CORREDERA"}\n` +
+        `• Color: ${ses.data.default_color}\n` +
+        `• Medidas: ${ses.data.items ? JSON.stringify(ses.data.items) : "Las que mencionaste"}\n` +
+        `• Comuna: ${ses.data.comuna || "Pendiente"}\n\n` +
+        `¿Está todo correcto? Responde **SÍ** o **CONFIRMO** para generar la cotización definitiva.`;
+
+      await waSendH(waId, resumen, true);
       return;
     }
 
-    // 7. Lógica normal
+    // 8. Lógica normal
     ses.history.push({ role: "user", content: userText });
     // ═══ ORCHESTRATOR 2-PASS — Fase 2 ═══
     // Paso 1: GPT decide acciones (tool calls)
