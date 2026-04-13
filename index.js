@@ -1256,7 +1256,7 @@ async function orchestratorPass1(session, userText) {
   const msgs = [
     { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() },
     { role: "system", content: statusCtx + `\n\nPERFIL CLIENTE: ${perfil} (tecnico=${session.perfilAcumulado?.tecnico || 0} / emocional=${session.perfilAcumulado?.emocional || 0})` },
-    ...session.history.slice(-12),
+    ...session.history.slice(-20),
     { role: "user", content: userText },
   ];
 
@@ -1299,7 +1299,7 @@ async function orchestratorPass2(session, userText, actionsResult) {
   const msgs = [
     { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() },
     { role: "system", content: `${contextInfo}\n\nPERFIL: ${perfil}\n\nINSTRUCCIÓN: Genera SOLO el texto de respuesta al cliente. NO prometas enviar nada. Si el PDF ya fue enviado, no lo menciones de nuevo. Si faltan datos, pregunta. Sé breve (2-3 líneas máx).` },
-    ...session.history.slice(-8),
+    ...session.history.slice(-14),
     { role: "user", content: userText },
   ];
 
@@ -2905,18 +2905,51 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
+      // === RESET ===
     if (/^reset|nueva cotizaci[oó]n|empezar de nuevo/i.test(userText)) {
       ses.data = emptyData();
       ses.pdfSent = false;
       ses.followupEnviado = false;
       ses.perfilAcumulado = { tecnico: 0, emocional: 0 };
-      await waSendH(waId, "Listo, empecemos de cero.\n¿Qué ventanas o puertas necesita?", true, {
-        customer_name: "",
-      });
+      await waSendH(waId, "Listo, empecemos de cero.\n¿Qué ventanas o puertas necesita?", true);
       saveSession(waId, ses);
       return;
     }
 
+    // === LÓGICA ANTI-BUCLE + ESCALACIÓN INTELIGENTE A MARCELO ===
+    const t = userText.toLowerCase().trim();
+
+    // 1. Frustración del cliente → Escala a tu WhatsApp con resumen
+    const frustradoKeywords = ["ya", "chao", "basta", "mal humor", "repetis", "me tiene harto", "no amigo", "ya te dije", "ya envié", "ya mandé", "ya te lo", "perder el tiempo", "pierdo el tiempo", "me voy", "adiós", "adios", "frustrado", "hartó", "me cansé", "olvídelo"];
+    if (frustradoKeywords.some(word => t.includes(word))) {
+      await waSendH(waId, `✅ Entendido. Te voy a pasar directamente con Marcelo ahora mismo para que te atienda personalmente.`, true);
+      
+      const summary = buildEscalationSummary(ses, userText);
+      await sendEscalationAlert(summary, normPhone(waId), ses.data);
+      return;
+    }
+
+    // 2. Cliente ya envió las medidas
+    if (t.includes("adjunto") || t.includes("envié") || t.includes("mandé") || t.includes("ya te lo") || t.includes("fb.me") || t.includes("medidas")) {
+      ses.data.medidasEnviadas = true;
+      await waSendH(waId, `✅ Recibí tus medidas. Gracias!\n\nAhora dime:\n• Color (blanco, nogal, grafito, negro)\n• Comuna`, true);
+      saveSession(waId, ses);
+      return;
+    }
+
+    // 3. "Ventanas normales" = CORREDERA automáticamente
+    if (t.includes("normal") || t.includes("normales")) {
+      ses.data.default_tipo = "CORREDERA";
+    }
+
+    // 4. Avance directo si ya tiene medidas
+    if (ses.data.medidasEnviadas && (t.includes("blanco") || t.includes("nogal") || t.includes("grafito") || t.includes("negro") || t.includes("color"))) {
+      ses.data.default_color = normColor(userText);
+      await procesarCotizacionCompleta(waId, ses);
+      return;
+    }
+
+    // 5. Lógica normal
     ses.history.push({ role: "user", content: userText });
 
     // ═══ ORCHESTRATOR 2-PASS — Fase 2 ═══
@@ -3194,6 +3227,18 @@ setInterval(async () => {
 /* =========================
    21) START
    ========================= */
+function buildEscalationSummary(ses, lastMessage) {
+  let summary = `🚨 ESCALACIÓN - Cliente frustrado\n\n`;
+  summary += `📱 Teléfono: ${normPhone ? normPhone(ses.waId || '') : 'Desconocido'}\n`;
+  summary += `👤 Nombre: ${ses.data?.name || 'No dijo'}\n`;
+  summary += `🏠 Comuna: ${ses.data?.comuna || 'No dijo'}\n`;
+  summary += `📏 Medidas: ${ses.data?.items ? JSON.stringify(ses.data.items) : 'No guardadas aún'}\n`;
+  summary += `🎨 Color: ${ses.data?.default_color || 'No dijo'}\n`;
+  summary += `🔄 Tipo: ${ses.data?.default_tipo || 'CORREDERA (por defecto)'}\n`;
+  summary += `💬 Último mensaje del cliente: "${lastMessage}"\n\n`;
+  summary += `📋 Estado actual: ${ses.data?.medidasEnviadas ? 'Medidas enviadas' : 'Sin medidas'}`;
+  return summary;
+}
 app.listen(PORT, () => {
   console.log(
     `🚀 Ferrari 10.2.2-prod — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} ffmpeg=checking`
