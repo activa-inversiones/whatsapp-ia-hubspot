@@ -842,28 +842,6 @@ function normMeasures(raw) {
    Mapeo coloquial chileno → color más cercano en catálogo
    ANTES: retornaba "GRIS" que NO existe → rompía cotización
    ────────────────────────────────────────────────────────────── */
-function normColor(text = "") {
-  const s = strip(text).toUpperCase();
-
-  // NOGAL — todo lo que suene a "madera" oscura
-  if (/NOGAL|MADERA|CASTANO|RAULI|CEREZO|CAOBA|CAFE|MARRON|CHOCOLATE|TABACO|WENGUE|ALERCE/.test(s))
-    return "NOGAL";
-
-  // ROBLE — tonos madera clara / dorada
-  if (/ROBLE|DORADO|MIEL|HAYA|PINO|CLARO/.test(s))
-    return "ROBLE";
-
-  // GRAFITO — todo lo que suene a gris (GRIS no es stock)
-  if (/GRAFITO|ANTRAC|GRIS|PLOMO|CENIZA|HUMO|TITANIO|ANODIZ/.test(s))
-    return "GRAFITO";
-
-  // NEWBLACK — negro y variantes oscuras
-  if (/NEGR|BLACK|OSCUR|CARBON|EBANO/.test(s))
-    return "NEWBLACK";
-
-  // DEFAULT → BLANCO (blanco, crema, marfil, sin color)
-  return "BLANCO";
-}
 
 /* =========================
    8) MOTOR DE PRECIOS
