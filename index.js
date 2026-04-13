@@ -2883,7 +2883,7 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-      // === RESET ===
+       // === RESET ===
     if (/^reset|nueva cotizaci[oó]n|empezar de nuevo/i.test(userText)) {
       ses.data = emptyData();
       ses.pdfSent = false;
@@ -2894,39 +2894,29 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // === LÓGICA ANTI-BUCLE + ESCALACIÓN INTELIGENTE A MARCELO ===
-    // === LÓGICA ANTI-BUCLE + ESCALACIÓN POR PRODUCTO (VERSIÓN LIMPIA Y ORDENADA) ===
+    // === LÓGICA ANTI-BUCLE + ESCALACIÓN + ENVÍO DE COTIZACIÓN ===
     const t = userText.toLowerCase().trim();
 
-    // 1. Productos que SIEMPRE se escalan (no son PVC europea)
-    const specialProductKeywords = [
-      "templado", "vidrio templado", "mampara", "cierre de terraza", 
-      "cierre terraza", "celosia", "celosía", "aluminio", "cortina", 
-      "reja", "reja de seguridad"
-    ];
+    // 1. Productos especiales que SIEMPRE se escalan
+    const specialProductKeywords = ["templado", "vidrio templado", "mampara", "cierre de terraza", "cierre terraza", "celosia", "celosía", "aluminio", "cortina", "reja"];
     const isSpecialProduct = specialProductKeywords.some(kw => t.includes(kw));
 
     // 2. Frustración del cliente
     const frustradoKeywords = ["ya", "chao", "basta", "mal humor", "repetis", "me tiene harto", "no amigo", "ya te dije", "ya envié", "ya mandé", "ya te lo", "perder el tiempo", "pierdo el tiempo", "me voy", "adiós", "adios", "frustrado", "hartó", "me cansé", "olvídelo"];
     const isFrustrated = frustradoKeywords.some(word => t.includes(word));
 
-    // 3. Escalación (producto especial o frustración)
+    // 3. Escalación inmediata
     if (isSpecialProduct || isFrustrated) {
       const agente = process.env.AGENT_NAME || "Marcelo Cifuentes";
-      
-      await waSendH(waId, `✅ Entendido. Te voy a pasar directamente con nuestro ingeniero especialista ${agente} ahora mismo para que te atienda personalmente.`, true);
-      
-      // Videos mientras espera
-      await waSendH(waId, `Mientras tanto te envío estos videos de nuestra fábrica y oficina:\n\n🏭 Video Planta: ${process.env.PLANT_VIDEO_URL}\n🏢 Video Oficina: ${process.env.OFFICE_VIDEO_URL}`, true);
-      
-      // Resumen para ti + Zoho CRM
+      await waSendH(waId, `✅ Entendido. Te voy a pasar directamente con nuestro ingeniero especialista ${agente} ahora mismo.`, true);
+      await waSendH(waId, `Mientras tanto revisa estos videos de nuestra fábrica y oficina:\n\n🏭 Video Planta: ${process.env.PLANT_VIDEO_URL}\n🏢 Video Oficina: ${process.env.OFFICE_VIDEO_URL}`, true);
+
       const summary = buildEscalationSummary(ses, userText);
       await sendEscalationAlert(summary, normPhone(process.env.ESCALATION_PHONE || process.env.OWNER_NOTIFICATION_PHONE), ses.data);
-      
       return;
     }
 
-    // 4. Cliente ya envió medidas (flujo normal PVC)
+    // 4. Cliente ya envió medidas
     if (t.includes("adjunto") || t.includes("envié") || t.includes("mandé") || t.includes("ya te lo") || t.includes("fb.me") || t.includes("medidas")) {
       ses.data.medidasEnviadas = true;
       await waSendH(waId, `✅ Recibí tus medidas. Gracias!\n\nAhora dime:\n• Color (blanco, nogal, grafito, negro)\n• Comuna`, true);
@@ -2934,7 +2924,7 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // 5. Normalizar tipo de apertura (todos los modelos WinHouse son válidos)
+    // 5. Normalizar tipo de apertura
     if (t.includes("normal") || t.includes("normales") || 
         t.includes("abatible") || t.includes("oscilobatiente") || t.includes("proyectante") || 
         t.includes("fijo") || t.includes("corredera") || t.includes("sliding") || 
@@ -2942,19 +2932,21 @@ app.post("/webhook", async (req, res) => {
       ses.data.default_tipo = normTipoApertura(userText);
     }
 
-    // 6. Avance directo si ya tiene medidas
+    // 6. AVANCE AUTOMÁTICO → Enviar cotización
     if (ses.data.medidasEnviadas && 
         (t.includes("blanco") || t.includes("nogal") || t.includes("roble") || t.includes("dorado") ||
          t.includes("grafito") || t.includes("antracita") || t.includes("gris") || t.includes("plomo") ||
          t.includes("negro") || t.includes("new black") || t.includes("color"))) {
+
       ses.data.default_color = normColor(userText);
-      await procesarCotizacionCompleta(waId, ses);
+      await waSendH(waId, `Perfecto, ya tengo todos los datos. Generando tu cotización ahora mismo...`, true);
+      
+      await procesarCotizacionCompleta(waId, ses);   // ← Esta línea envía la cotización
       return;
     }
 
-    // 7. Lógica normal (todas las ventanas y puertas PVC)
+    // 7. Lógica normal
     ses.history.push({ role: "user", content: userText });
-
     // ═══ ORCHESTRATOR 2-PASS — Fase 2 ═══
     // Paso 1: GPT decide acciones (tool calls)
     const pass1 = await orchestratorPass1(ses, userText);
