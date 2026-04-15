@@ -1011,9 +1011,28 @@ async function waSendH(to, text, skipTyping = false, meta = {}) {
           unread_count: 0,
         })
       );
+      // [v5.2] Marcar lead como respondido (idempotente, falla silenciosa)
+      fireAndForget("markLeadResponded", markLeadResponded(to));
     }
   } finally {
     stop?.();
+  }
+}
+
+// [v5.2] Marca first_response_at en sales-os via /internal/lead-responded/:phone
+async function markLeadResponded(phone) {
+  if (!SALES_OS_URL || !SALES_OS_OPERATOR_TOKEN) return;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3000);
+    await fetch(`${SALES_OS_URL}/internal/lead-responded/${encodeURIComponent(phone)}`, {
+      method: "POST",
+      headers: { "x-internal-token": SALES_OS_OPERATOR_TOKEN },
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+  } catch {
+    // silencioso
   }
 }
 
@@ -1477,11 +1496,20 @@ async function readPdf(buf) {
 }
 
 /* =========================
-   11) SESIONES
+   11) SESIONES — v5.1 con persistencia en Postgres via sales-os
    ========================= */
-const sessions = new Map();
-const SESSION_TTL = 48 * 3_600_000; // 48 horas — el bot recuerda al cliente por 2 días
-const MAX_HIST = 50; // Más historial = bot recuerda mejor la conversación
+const sessions = new Map(); // Cache en memoria (rapidísimo, mismo patrón v1)
+const SESSION_TTL = 48 * 3_600_000; // 48 horas
+const MAX_HIST = 50;
+
+// Configuración del backend de persistencia
+const SALES_OS_URL = process.env.SALES_OS_URL || "";
+const SALES_OS_OPERATOR_TOKEN =
+  process.env.SALES_OS_OPERATOR_TOKEN ||
+  process.env.INTERNAL_OPERATOR_TOKEN ||
+  "";
+const WA_PERSISTENCE_ENABLED = !!(SALES_OS_URL && SALES_OS_OPERATOR_TOKEN);
+const WA_PERSIST_TIMEOUT_MS = parseInt(process.env.WA_PERSIST_TIMEOUT_MS || "3000", 10);
 
 function emptyData() {
   return {
@@ -1502,21 +1530,100 @@ function emptyData() {
   };
 }
 
+function newSession() {
+  return {
+    lastAt: Date.now(),
+    data: emptyData(),
+    history: [],
+    pdfSent: false,
+    quoteNum: null,
+    zohoDealId: null,
+    zohoEstimateId: null,
+    perfilAcumulado: { tecnico: 0, emocional: 0 },
+    followupEnviado: false,
+  };
+}
+
+// getSession síncrono (compatibilidad con el código existente)
+// Si la sesión NO está en cache, devuelve una vacía Y dispara hidratación async desde Postgres
 function getSession(waId) {
   if (!sessions.has(waId)) {
-    sessions.set(waId, {
-      lastAt: Date.now(),
-      data: emptyData(),
-      history: [],
-      pdfSent: false,
-      quoteNum: null,
-      zohoDealId: null,
-      zohoEstimateId: null,
-      perfilAcumulado: { tecnico: 0, emocional: 0 },
-      followupEnviado: false,
-    });
+    sessions.set(waId, newSession());
   }
   return sessions.get(waId);
+}
+
+// loadSessionFromStore — async, llamar al inicio del webhook ANTES de getSession()
+// Si Postgres tiene una sesión más reciente que la del cache, la rehidrata
+async function loadSessionFromStore(waId) {
+  if (!WA_PERSISTENCE_ENABLED) return false;
+  // Si ya tenemos sesión en cache con history reciente, no recargamos
+  const cached = sessions.get(waId);
+  if (cached && Array.isArray(cached.history) && cached.history.length > 0) {
+    // Cache caliente — solo recargamos si pasaron > 5 min sin actividad (posible restart)
+    if (Date.now() - (cached.lastAt || 0) < 5 * 60_000) return true;
+  }
+
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), WA_PERSIST_TIMEOUT_MS);
+    const r = await fetch(
+      `${SALES_OS_URL}/internal/wa-sessions/${encodeURIComponent(waId)}`,
+      {
+        headers: { "x-internal-token": SALES_OS_OPERATOR_TOKEN },
+        signal: ctrl.signal,
+      }
+    );
+    clearTimeout(timer);
+    if (!r.ok) return false;
+    const json = await r.json();
+    const stored = json?.session;
+    if (!stored) return false;
+
+    // Hidratar el cache con los datos de Postgres
+    const ses = newSession();
+    ses.data = (stored.data && typeof stored.data === "object") ? stored.data : emptyData();
+    ses.history = Array.isArray(stored.history) ? stored.history : [];
+    ses.perfilAcumulado = stored.perfil_acumulado || { tecnico: 0, emocional: 0 };
+    ses.adminMode = !!stored.admin_mode;
+    ses.pdfSent = !!stored.pdf_sent;
+    ses.zohoDealId = stored.zoho_deal_id || null;
+    if (stored.pending_table_pages) ses.pendingTablePages = stored.pending_table_pages;
+    ses.lastAt = stored.last_activity ? new Date(stored.last_activity).getTime() : Date.now();
+    sessions.set(waId, ses);
+    return true;
+  } catch (e) {
+    // Falla silenciosa — bot sigue operando con cache local
+    return false;
+  }
+}
+
+// persistSessionToStore — fire-and-forget (no bloquea el bot)
+function persistSessionToStore(waId, ses) {
+  if (!WA_PERSISTENCE_ENABLED) return;
+  const payload = {
+    data: ses.data || {},
+    history: ses.history || [],
+    perfilAcumulado: ses.perfilAcumulado || {},
+    adminMode: !!ses.adminMode,
+    pdfSent: !!ses.pdfSent,
+    zohoDealId: ses.zohoDealId || null,
+    pendingTablePages: ses.pendingTablePages || null,
+  };
+  // Fire and forget con timeout — no esperamos respuesta
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), WA_PERSIST_TIMEOUT_MS);
+  fetch(`${SALES_OS_URL}/internal/wa-sessions/${encodeURIComponent(waId)}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "x-internal-token": SALES_OS_OPERATOR_TOKEN,
+    },
+    body: JSON.stringify(payload),
+    signal: ctrl.signal,
+  })
+    .then(() => clearTimeout(timer))
+    .catch(() => clearTimeout(timer));
 }
 
 function saveSession(waId, s) {
@@ -1524,9 +1631,11 @@ function saveSession(waId, s) {
   s.lastActivity = Date.now();
   if (s.history.length > MAX_HIST) s.history = s.history.slice(-MAX_HIST);
   sessions.set(waId, s);
+  // Persistir async (no bloquea)
+  persistSessionToStore(waId, s);
 }
 
-// Cleanup de sesiones expiradas
+// Cleanup de sesiones expiradas (en cache)
 setInterval(() => {
   const cut = Date.now() - SESSION_TTL;
   for (const [id, s] of sessions) {
@@ -2547,6 +2656,9 @@ app.post("/webhook", async (req, res) => {
   const stopType = startTypingLoop(waId, 8000);
 
   try {
+    // [v5.1] Hidratar sesión desde Postgres si el cache está frío (sobrevive a redeploys)
+    await loadSessionFromStore(waId);
+
     const ses = getSession(waId);
     await waRead(msgId);
 
