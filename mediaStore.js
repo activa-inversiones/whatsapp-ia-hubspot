@@ -132,4 +132,4 @@ async function notifyQuoteSent(opts) {
   }
 }
 
-module.exports = { saveMedia, logActivity, notifyQuoteSent, MEDIA_ENABLED };
+export { saveMedia, logActivity, notifyQuoteSent, MEDIA_ENABLED };
