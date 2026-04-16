@@ -61,6 +61,8 @@ import {
 dotenv.config();
 const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
+const { saveMedia, logActivity, notifyQuoteSent, MEDIA_ENABLED } = require("./mediaStore");
+if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
    0) APP
@@ -2669,6 +2671,10 @@ app.post("/webhook", async (req, res) => {
       const { buffer, mime } = await waDownload(meta.url);
       const t = await stt(buffer, mime);
       userText = t ? `[Audio]: ${t}` : "[Audio no reconocido]";
+      // v5.3: Guardar audio en BD
+      if (MEDIA_ENABLED && buffer) {
+        saveMedia({ phone: waId, direction: 'inbound', mediaType: 'audio', mimeType: mime || 'audio/ogg', filename: `audio_${waId}_${Date.now()}.ogg`, buffer, waMediaId: inc.audioId, transcription: t || '' }).catch(() => {});
+      }
     }
 
     if (type === "image" && inc.imageId) {
@@ -2721,6 +2727,10 @@ app.post("/webhook", async (req, res) => {
       userText = ext
         ? `[IMAGEN ANALIZADA — Productos detectados]:\n${ext}\n\nINSTRUCCIÓN: extrae TODOS los items y envíalos con update_quote en UNA sola llamada.`
         : "[Imagen no legible]";
+      // v5.3: Guardar imagen en BD
+      if (MEDIA_ENABLED && buffer) {
+        saveMedia({ phone: waId, direction: 'inbound', mediaType: 'image', mimeType: mime || 'image/jpeg', filename: `img_${waId}_${Date.now()}.jpg`, buffer, waMediaId: inc.imageId, aiDescription: ext || '' }).catch(() => {});
+      }
     }
 
     if (type === "document" && inc.docId && inc.docMime === "application/pdf") {
@@ -2730,6 +2740,10 @@ app.post("/webhook", async (req, res) => {
       userText = t
         ? `[PDF ANALIZADO]:\n${t}\n\nINSTRUCCIÓN: extrae TODOS los items y envíalos con update_quote.`
         : "[PDF sin texto]";
+      // v5.3: Guardar PDF en BD
+      if (MEDIA_ENABLED && buffer) {
+        saveMedia({ phone: waId, direction: 'inbound', mediaType: 'document', mimeType: 'application/pdf', filename: `doc_${waId}_${Date.now()}.pdf`, buffer, waMediaId: inc.docId, transcription: t || '' }).catch(() => {});
+      }
     }
 
     fireAndForget(
