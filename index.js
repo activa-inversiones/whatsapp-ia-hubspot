@@ -61,7 +61,7 @@ import {
 dotenv.config();
 const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
-const { saveMedia, logActivity, notifyQuoteSent, MEDIA_ENABLED } = require("./mediaStore");
+import { saveMedia, logActivity, notifyQuoteSent, MEDIA_ENABLED } from "./mediaStore.js";
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
