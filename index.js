@@ -1,4 +1,4 @@
-// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 10.3-prod — MEDIA FULL)
+// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 10.5-prod — EJECUCIÓN INMEDIATA)
 // Railway | Node 18+ | ESM
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS vs 9.4.0 — Fixes producción real (captura WhatsApp):
@@ -1771,10 +1771,20 @@ NUNCA repitas el mismo mensaje o estado. Revisa el historial:
 - Si ya avisaste que vas a generar la propuesta, NO lo repitas.
 - Si el cliente ya recibió la propuesta, NO le vuelvas a decir "Propuesta lista". Avanza: pregúntale qué le pareció o si tiene dudas.
 
-═══ REGLA #2 — PROHIBIDO PROMETER ADJUNTOS FALSOS (CRÍTICO) ═══
+═══ REGLA #2 — EJECUCIÓN INMEDIATA DE COTIZACIÓN (CRÍTICO) ═══
 Tú eres la IA, tú NO envías el PDF directamente. El PDF lo envía el sistema DESPUÉS de que uses update_quote.
 NUNCA digas "le adjunto", "aquí tiene", "se la envié", "le mando la propuesta" a menos que ya veas en el historial que el PDF fue generado.
-Cuando vayas a cotizar, di SOLAMENTE: "Deme un segundito, voy a ingresar los datos al sistema para armar su propuesta."
+
+**REGLA DE ORO — EJECUTA update_quote EN LA MISMA RESPUESTA QUE ANUNCIAS:**
+Cuando tengas los 4 datos (nombre, producto/medidas, color, comuna), debes:
+1. Decir "Perfecto [nombre], voy a ingresar sus datos al sistema…"
+2. EN LA MISMA RESPUESTA, EJECUTAR update_quote de inmediato — NO esperes otro mensaje del cliente.
+
+PROHIBIDO decir "Voy a ingresar los datos" sin ejecutar update_quote en la misma respuesta.
+PROHIBIDO decir "Consideraré..." o "tomaré..." como un anuncio — si vas a cotizar, COTIZA YA.
+PROHIBIDO preguntar "¿está bien así?" cuando ya tienes los 4 datos — pierdes ventas por esperar confirmación innecesaria.
+
+Si ya tienes los 4 datos mínimos → EJECUTA update_quote SIEMPRE, no preguntes de nuevo.
 Solo cuando el sistema confirme el envío, el cliente recibirá el PDF automáticamente.
 
 ═══ REGLA #3 — CORRECCIONES = EJECUTAR HERRAMIENTA (CRÍTICO) ═══
@@ -1824,7 +1834,7 @@ Ejemplos MALOS (nunca):
    REGLA DURA: Si falta CUALQUIERA de estos 4 datos, PREGUNTA antes de llamar update_quote.
    NUNCA ejecutes update_quote sin nombre del cliente.
    NUNCA saltes directo a cotizar sin preguntar los datos que faltan.
-6. COTIZAR: Solo cuando tengas los 4 datos. Avisa "Voy a ingresar los datos al sistema" y ejecuta update_quote.
+6. COTIZAR: Solo cuando tengas los 4 datos. **EJECUTA update_quote INMEDIATAMENTE en la misma respuesta donde avisas "voy a ingresar los datos".** NUNCA esperes confirmación adicional del cliente si ya tienes nombre+producto+color+comuna.
 7. CERRAR: Visita técnica gratuita sin compromiso.
 
 ═══ INSTALACIÓN — REGLA ABSOLUTA ═══
@@ -2544,6 +2554,124 @@ async function zhBooksDownloadEstimatePdf(estimateId) {
   return Buffer.from(data);
 }
 
+// [FIX P14 — v10.4] PDF local con pdfkit cuando Zoho falla
+// Garantiza que el cliente SIEMPRE reciba un PDF aunque Zoho esté caído
+async function generateLocalQuotePdf(data, quoteNumber) {
+  const { default: PDFDocument } = await import("pdfkit");
+  return new Promise(async (resolve, reject) => {
+    try {
+      const doc = new PDFDocument({ size: "A4", margin: 50 });
+      const chunks = [];
+      doc.on("data", c => chunks.push(c));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+
+      const navy = "#0B3D6F";
+      const gold = "#C4993B";
+      const gray = "#6B7B8D";
+      const dark = "#1A2332";
+
+      // HEADER
+      doc.rect(0, 0, doc.page.width, 90).fill(navy);
+      doc.fillColor("#fff").fontSize(22).font("Helvetica-Bold").text("ACTIVA INVERSIONES", 50, 28);
+      doc.fillColor(gold).fontSize(10).font("Helvetica").text("Ventanas PVC · Termopanel · Aluminio", 50, 56);
+      doc.fillColor("#fff").fontSize(9).text("Temuco · La Araucanía · Chile", 50, 72);
+      doc.fillColor("#fff").fontSize(9).text(`+56 9 5729 6035  ·  contacto@activaspa.cl`, doc.page.width - 250, 56, { width: 200, align: "right" });
+
+      doc.moveDown(3);
+      doc.fillColor(dark).fontSize(18).font("Helvetica-Bold").text("PROPUESTA TÉCNICO COMERCIAL", 50, 120);
+      doc.fillColor(gold).fontSize(12).text(`N° ${quoteNumber}`, 50, 145);
+      doc.fillColor(gray).fontSize(9).text(`Fecha: ${new Date().toLocaleDateString("es-CL")}`, 50, 162);
+      doc.text(`Válido por: 15 días hábiles`, 50, 175);
+
+      // CLIENTE
+      doc.moveTo(50, 195).lineTo(doc.page.width - 50, 195).strokeColor(gold).lineWidth(1).stroke();
+      doc.fillColor(dark).fontSize(11).font("Helvetica-Bold").text("CLIENTE", 50, 205);
+      doc.fillColor(dark).fontSize(10).font("Helvetica");
+      doc.text(`Nombre: ${data.name || "—"}`, 50, 222);
+      doc.text(`Teléfono: ${data.phone || "—"}`, 50, 237);
+      doc.text(`Comuna: ${data.comuna || "—"}`, 50, 252);
+      if (data.address) doc.text(`Dirección: ${data.address}`, 50, 267);
+
+      // ITEMS
+      let y = data.address ? 295 : 285;
+      doc.moveTo(50, y).lineTo(doc.page.width - 50, y).strokeColor(gold).lineWidth(1).stroke();
+      y += 10;
+      doc.fillColor(dark).fontSize(11).font("Helvetica-Bold").text("DETALLE DE LA COTIZACIÓN", 50, y);
+      y += 20;
+
+      // Tabla header
+      doc.rect(50, y, doc.page.width - 100, 20).fill(navy);
+      doc.fillColor("#fff").fontSize(9).font("Helvetica-Bold");
+      doc.text("PRODUCTO", 55, y + 6);
+      doc.text("MEDIDAS", 200, y + 6);
+      doc.text("CANT.", 290, y + 6, { width: 40, align: "center" });
+      doc.text("PRECIO UNIT.", 340, y + 6, { width: 80, align: "right" });
+      doc.text("SUBTOTAL", 440, y + 6, { width: 100, align: "right" });
+      y += 20;
+
+      let grandTotal = 0;
+      const items = data.items || [];
+      items.forEach((it, idx) => {
+        const bg = idx % 2 === 0 ? "#F7F9FC" : "#FFFFFF";
+        doc.rect(50, y, doc.page.width - 100, 30).fill(bg);
+        doc.fillColor(dark).fontSize(9).font("Helvetica");
+        const prodName = (it.product || "Ventana").replace(/_/g, " ");
+        const color = it.color || data.default_color || "Blanco";
+        doc.text(`${prodName}`, 55, y + 5, { width: 140 });
+        doc.fontSize(7).fillColor(gray).text(`Color: ${color}`, 55, y + 18, { width: 140 });
+        doc.fontSize(9).fillColor(dark);
+        doc.text(it.measures || "—", 200, y + 10);
+        doc.text(String(it.qty || 1), 290, y + 10, { width: 40, align: "center" });
+        const unit = Number(it.unit_price || 0);
+        const sub = unit * (Number(it.qty) || 1);
+        grandTotal += sub;
+        doc.text(`$${unit.toLocaleString("es-CL")}`, 340, y + 10, { width: 80, align: "right" });
+        doc.text(`$${sub.toLocaleString("es-CL")}`, 440, y + 10, { width: 100, align: "right" });
+        y += 30;
+      });
+
+      y += 10;
+      const iva = Math.round(grandTotal * 0.19);
+      const total = grandTotal + iva;
+
+      doc.fillColor(dark).fontSize(10).font("Helvetica");
+      doc.text("Subtotal neto:", 340, y, { width: 100, align: "right" });
+      doc.text(`$${grandTotal.toLocaleString("es-CL")}`, 440, y, { width: 100, align: "right" });
+      y += 18;
+      doc.text("IVA 19%:", 340, y, { width: 100, align: "right" });
+      doc.text(`$${iva.toLocaleString("es-CL")}`, 440, y, { width: 100, align: "right" });
+      y += 18;
+      doc.rect(340, y - 4, 200, 24).fill(gold);
+      doc.fillColor("#fff").fontSize(12).font("Helvetica-Bold");
+      doc.text("TOTAL:", 345, y + 2, { width: 95, align: "right" });
+      doc.text(`$${total.toLocaleString("es-CL")}`, 440, y + 2, { width: 100, align: "right" });
+      y += 40;
+
+      // CONDICIONES
+      doc.fillColor(dark).fontSize(10).font("Helvetica-Bold").text("CONDICIONES", 50, y);
+      y += 15;
+      doc.fontSize(8).font("Helvetica").fillColor(gray);
+      doc.text("• Precios netos + IVA (19%). Válidos por 15 días hábiles.", 50, y); y += 12;
+      doc.text("• Instalación profesional por equipo propio certificado.", 50, y); y += 12;
+      doc.text("• Perfiles WinHouse línea europea · Vidrio DVH termopanel.", 50, y); y += 12;
+      doc.text("• Cumple normativa OGUC 4.1.10 — Acondicionamiento térmico.", 50, y); y += 12;
+      doc.text("• Garantía: 5 años en estructura · 1 año en herrajes.", 50, y); y += 12;
+      doc.text("• Sujeto a rectificación técnica en terreno.", 50, y); y += 20;
+
+      // FOOTER
+      doc.rect(0, doc.page.height - 60, doc.page.width, 60).fill(navy);
+      doc.fillColor("#fff").fontSize(9).font("Helvetica-Bold").text("Activa Inversiones · Ventanas PVC certificadas", 50, doc.page.height - 48, { align: "center", width: doc.page.width - 100 });
+      doc.fillColor(gold).fontSize(8).font("Helvetica").text("WhatsApp: +56 9 8441 2961   ·   www.activaspa.cl", 50, doc.page.height - 32, { align: "center", width: doc.page.width - 100 });
+      doc.fillColor("#fff").fontSize(7).text("Contacto directo: Marcelo Cifuentes — +56 9 5729 6035", 50, doc.page.height - 18, { align: "center", width: doc.page.width - 100 });
+
+      doc.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
 async function waSendPdf(to, pdfBuffer, filename, caption) {
   const FormData = (await import("form-data")).default;
   const form = new FormData();
@@ -3077,14 +3205,31 @@ app.post("/webhook", async (req, res) => {
           await waSendH(waId, `❌ ${priced.error}`, true);
           return;
         }
-        const estimate = await zhBooksCreateEstimate(ses.data, ses.data.name || "Cliente", normPhone(waId));
-        if (estimate?.estimate_id) {
-          const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
-          await waSendPdf(waId, pdfBuf, `PropuestaManual_${Date.now()}.pdf`, "PDF enviado manualmente");
-          ses.zohoEstimateId = estimate.estimate_id;
+        const qnLocal = `COT-${Date.now()}`;
+        try {
+          const estimate = await zhBooksCreateEstimate(ses.data, ses.data.name || "Cliente", normPhone(waId));
+          if (estimate?.estimate_id) {
+            const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
+            await waSendPdf(waId, pdfBuf, `PropuestaManual_${Date.now()}.pdf`, "PDF enviado manualmente");
+            ses.zohoEstimateId = estimate.estimate_id;
+            ses.pdfSent = true;
+            saveSession(waId, ses);
+            await waSendH(waId, "✅ PDF reenviado (Zoho).", true);
+            return;
+          }
+        } catch (zhErr) {
+          logErr("admin_force_pdf.zoho", zhErr);
+        }
+        // Fallback: PDF local
+        try {
+          const pdfBuf = await generateLocalQuotePdf({ ...ses.data, phone: normPhone(waId), quote_num: qnLocal }, qnLocal);
+          await waSendPdf(waId, pdfBuf, `${qnLocal}.pdf`, `Propuesta manual ${qnLocal}`);
           ses.pdfSent = true;
           saveSession(waId, ses);
-          await waSendH(waId, "✅ PDF reenviado.", true);
+          await waSendH(waId, "✅ PDF generado localmente y enviado.", true);
+        } catch (localErr) {
+          logErr("admin_force_pdf.local", localErr);
+          await waSendH(waId, `❌ Error generando PDF: ${localErr.message}`, true);
         }
         return;
       }
@@ -3428,7 +3573,7 @@ app.post("/webhook", async (req, res) => {
             d.grand_total = qr.total;
             actionsResult.quoted = true;
             try {
-              const hvResult = await notifyHighValue(waSend, normPhone(waId), session, "auto");
+              const hvResult = await notifyHighValue(waSend, normPhone(waId), ses, "auto");
               if (hvResult.sent) {
                 logInfo("highValue", `Alerta ${hvResult.tier} enviada para ${normPhone(waId)}`);
               }
@@ -3548,10 +3693,33 @@ app.post("/webhook", async (req, res) => {
           })));
         }
       } catch (e) {
+        // [FIX P14 — v10.4] Si Zoho falla → generar PDF LOCAL y enviarlo al cliente
         logErr("Estimate", e);
-        actionsResult.errors.push("pdf_generation_failed");
-        await waSendH(waId, "Tuve un problema generando la propuesta. Se la preparo manual y se la envío en breve 🙏", true);
-        fireAndForget("escalation.pdf-fail", sendEscalationAlert(`Fallo PDF para ${d.name || "cliente"}`, normPhone(waId), d));
+        actionsResult.errors.push("zoho_failed_using_local_pdf");
+        try {
+          // Enriquecer data con items precificados del cotizador
+          const localData = {
+            ...d,
+            phone: normPhone(waId),
+            quote_num: qn,
+          };
+          const localPdf = await generateLocalQuotePdf(localData, qn);
+          await waSendPdf(waId, localPdf, `${qn}.pdf`, `Propuesta ${qn} — ${d.name || "su proyecto"}. Si quiere ajustar algo, me avisa.`);
+
+          ses.pdfSent = true;
+          d.stageKey = "propuesta";
+          actionsResult.pdfSent = true;
+          logInfo("local_pdf_sent", `PDF LOCAL enviado a ${waId} | ${d.name || "Sin nombre"} | ${qn}`);
+
+          fireAndForget("trackQuoteEvent.local", trackQuoteEvent(buildQuotePayload(ses, waId, {
+            status: "formal_sent_local", quote_number: qn,
+          })));
+        } catch (pdfErr) {
+          // Si hasta el PDF local falla, avisamos y escalamos
+          logErr("local_pdf_failed", pdfErr);
+          await waSendH(waId, "Tuve un problema generando la propuesta. Marcelo la revisa personalmente y se la envía en minutos 🙏", true);
+          fireAndForget("escalation.pdf-fail", sendEscalationAlert(`Fallo TOTAL PDF (Zoho + Local) para ${d.name || "cliente"}: ${pdfErr.message}`, normPhone(waId), d));
+        }
       }
     }
 
@@ -3673,6 +3841,6 @@ function normTipoApertura(text) {
 }
 app.listen(PORT, () => {
   console.log(
-    `🚀 Ferrari 10.3-prod MEDIA FULL — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} ffmpeg=checking`
+    `🚀 Ferrari 10.5-prod EJECUCIÓN INMEDIATA — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} ffmpeg=checking`
   );
 });
