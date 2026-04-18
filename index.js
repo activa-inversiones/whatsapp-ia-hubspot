@@ -1,4 +1,4 @@
-// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 10.2.2-prod)
+// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 10.3-prod — MEDIA FULL)
 // Railway | Node 18+ | ESM
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS vs 9.4.0 — Fixes producción real (captura WhatsApp):
@@ -1934,7 +1934,76 @@ const tools = [
       },
     },
   },
+  // [FIX P13] Permitir a Oliver enviar catálogos, fotos de planta, videos de instalaciones
+  {
+    type: "function",
+    function: {
+      name: "send_media",
+      description: "Envía una imagen, video o documento al cliente vía WhatsApp. Usar cuando el cliente pida: ver catálogo, fotos de ventanas, videos de la planta, video de instalación, ficha técnica, folleto, o cuando quieras mostrarle visualmente un producto.",
+      parameters: {
+        type: "object",
+        properties: {
+          media_type: {
+            type: "string",
+            enum: ["image", "video", "document"],
+            description: "Tipo de archivo a enviar"
+          },
+          catalog_key: {
+            type: "string",
+            enum: ["catalogo_pvc", "catalogo_colores", "ficha_tecnica_s60", "ficha_tecnica_sliding", "video_planta", "video_oficina", "video_instalaciones", "foto_proyecto_1", "foto_proyecto_2", "certificacion_tse"],
+            description: "Clave del catálogo/media predefinido a enviar. Se resuelve automáticamente desde env vars."
+          },
+          caption: {
+            type: "string",
+            description: "Mensaje que acompaña al archivo (máx 200 chars)"
+          }
+        },
+        required: ["media_type", "catalog_key"]
+      }
+    }
+  }
 ];
+
+// [FIX P13] Mapa catálogo → URL (env vars). El admin define estas URLs en Railway/Cloudflare.
+function resolveCatalogUrl(key) {
+  const map = {
+    catalogo_pvc: process.env.CATALOGO_PVC_URL,
+    catalogo_colores: process.env.CATALOGO_COLORES_URL,
+    ficha_tecnica_s60: process.env.FICHA_S60_URL,
+    ficha_tecnica_sliding: process.env.FICHA_SLIDING_URL,
+    video_planta: process.env.VIDEO_PLANTA,
+    video_oficina: process.env.VIDEO_OFICINA,
+    video_instalaciones: process.env.VIDEO_INSTALACIONES,
+    foto_proyecto_1: process.env.FOTO_PROYECTO_1_URL,
+    foto_proyecto_2: process.env.FOTO_PROYECTO_2_URL,
+    certificacion_tse: process.env.CERTIFICACION_TSE_URL,
+  };
+  return map[key] || null;
+}
+
+async function handleSendMediaCall(waId, args) {
+  const { media_type, catalog_key, caption } = args || {};
+  const url = resolveCatalogUrl(catalog_key);
+  if (!url) {
+    logErr("send_media", new Error(`No URL configurada para ${catalog_key}`));
+    return { ok: false, error: `Catálogo '${catalog_key}' no configurado. Configurar env var.` };
+  }
+  try {
+    if (media_type === "image") {
+      await waSendImageUrl(waId, url, caption || "");
+    } else if (media_type === "video") {
+      await waSendVideoUrl(waId, url, caption || "");
+    } else if (media_type === "document") {
+      await waSendDocumentUrl(waId, url, `${catalog_key}.pdf`, caption || "");
+    } else {
+      return { ok: false, error: `media_type inválido: ${media_type}` };
+    }
+    return { ok: true, sent: true, catalog_key, url };
+  } catch (e) {
+    logErr("send_media.exec", e);
+    return { ok: false, error: e.message };
+  }
+}
 
 /* =========================
    15b) PERFIL ACUMULATIVO + HANDOFF
@@ -2496,6 +2565,112 @@ async function waSendPdf(to, pdfBuffer, filename, caption) {
     type: "document",
     document: { id: mediaId, filename, caption: caption || "" },
   });
+  // [FIX P13] Trackear envío en CRM
+  fireAndForget("trackConversationEvent.outbound_pdf", trackConversationEvent({
+    channel: "whatsapp", external_id: to, direction: "outbound",
+    actor_type: "assistant", actor_name: AGENT_NAME, message_type: "document",
+    body: `📄 PDF enviado: ${filename}${caption ? ' — ' + caption : ''}`,
+    metadata: { source: "whatsapp_ia", filename, caption, media_id: mediaId }, unread_count: 0,
+  }));
+}
+
+// [FIX P13] Enviar IMAGEN desde Oliver al cliente (buffer local)
+async function waSendImage(to, imageBuffer, filename = "image.jpg", caption = "", mimeType = "image/jpeg") {
+  const FormData = (await import("form-data")).default;
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", "image");
+  form.append("file", imageBuffer, { filename, contentType: mimeType });
+  const uploadResp = await axiosWA.post(`/${META.PHONE_ID}/media`, form, {
+    headers: form.getHeaders(), timeout: 30000,
+  });
+  const mediaId = uploadResp.data?.id;
+  if (!mediaId) throw new Error("No se pudo subir imagen a WhatsApp");
+  await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+    messaging_product: "whatsapp", to, type: "image",
+    image: { id: mediaId, caption: caption || "" },
+  });
+  // Guardar en BD
+  if (MEDIA_ENABLED && imageBuffer) {
+    saveMedia({ phone: to, direction: 'outbound', mediaType: 'image', mimeType, filename, buffer: imageBuffer, waMediaId: mediaId }).catch(() => {});
+  }
+  fireAndForget("trackConversationEvent.outbound_image", trackConversationEvent({
+    channel: "whatsapp", external_id: to, direction: "outbound",
+    actor_type: "assistant", actor_name: AGENT_NAME, message_type: "image",
+    body: `🖼️ Imagen enviada${caption ? ': ' + caption : ''}`,
+    metadata: { source: "whatsapp_ia", filename, caption, media_id: mediaId }, unread_count: 0,
+  }));
+  return mediaId;
+}
+
+// [FIX P13] Enviar IMAGEN desde URL pública (catálogos, fotos hosted)
+async function waSendImageUrl(to, imageUrl, caption = "") {
+  await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+    messaging_product: "whatsapp", to, type: "image",
+    image: { link: imageUrl, caption: caption || "" },
+  });
+  fireAndForget("trackConversationEvent.outbound_image_url", trackConversationEvent({
+    channel: "whatsapp", external_id: to, direction: "outbound",
+    actor_type: "assistant", actor_name: AGENT_NAME, message_type: "image",
+    body: `🖼️ Imagen enviada${caption ? ': ' + caption : ''} (${imageUrl})`,
+    metadata: { source: "whatsapp_ia", url: imageUrl, caption }, unread_count: 0,
+  }));
+}
+
+// [FIX P13] Enviar VIDEO desde buffer local
+async function waSendVideo(to, videoBuffer, filename = "video.mp4", caption = "", mimeType = "video/mp4") {
+  const FormData = (await import("form-data")).default;
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", "video");
+  form.append("file", videoBuffer, { filename, contentType: mimeType });
+  const uploadResp = await axiosWA.post(`/${META.PHONE_ID}/media`, form, {
+    headers: form.getHeaders(), timeout: 60000,
+  });
+  const mediaId = uploadResp.data?.id;
+  if (!mediaId) throw new Error("No se pudo subir video a WhatsApp");
+  await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+    messaging_product: "whatsapp", to, type: "video",
+    video: { id: mediaId, caption: caption || "" },
+  });
+  if (MEDIA_ENABLED && videoBuffer) {
+    saveMedia({ phone: to, direction: 'outbound', mediaType: 'video', mimeType, filename, buffer: videoBuffer, waMediaId: mediaId }).catch(() => {});
+  }
+  fireAndForget("trackConversationEvent.outbound_video", trackConversationEvent({
+    channel: "whatsapp", external_id: to, direction: "outbound",
+    actor_type: "assistant", actor_name: AGENT_NAME, message_type: "video",
+    body: `🎥 Video enviado${caption ? ': ' + caption : ''}`,
+    metadata: { source: "whatsapp_ia", filename, caption, media_id: mediaId }, unread_count: 0,
+  }));
+  return mediaId;
+}
+
+// [FIX P13] Enviar VIDEO desde URL pública
+async function waSendVideoUrl(to, videoUrl, caption = "") {
+  await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+    messaging_product: "whatsapp", to, type: "video",
+    video: { link: videoUrl, caption: caption || "" },
+  });
+  fireAndForget("trackConversationEvent.outbound_video_url", trackConversationEvent({
+    channel: "whatsapp", external_id: to, direction: "outbound",
+    actor_type: "assistant", actor_name: AGENT_NAME, message_type: "video",
+    body: `🎥 Video enviado${caption ? ': ' + caption : ''} (${videoUrl})`,
+    metadata: { source: "whatsapp_ia", url: videoUrl, caption }, unread_count: 0,
+  }));
+}
+
+// [FIX P13] Enviar DOCUMENTO desde URL pública (catálogos PDF hosted)
+async function waSendDocumentUrl(to, docUrl, filename = "documento.pdf", caption = "") {
+  await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+    messaging_product: "whatsapp", to, type: "document",
+    document: { link: docUrl, filename, caption: caption || "" },
+  });
+  fireAndForget("trackConversationEvent.outbound_doc_url", trackConversationEvent({
+    channel: "whatsapp", external_id: to, direction: "outbound",
+    actor_type: "assistant", actor_name: AGENT_NAME, message_type: "document",
+    body: `📄 Documento enviado: ${filename}${caption ? ' — ' + caption : ''} (${docUrl})`,
+    metadata: { source: "whatsapp_ia", url: docUrl, filename, caption }, unread_count: 0,
+  }));
 }
 
 app.get("/health", async (_req, res) => {
@@ -2640,6 +2815,77 @@ app.post("/internal/operator-send", async (req, res) => {
 });
 // @patch:sales-os:operator-route:end
 
+// [FIX P13] Endpoints para que el CRM Oliver envíe media al cliente
+// POST /internal/operator-send-image { phone, image_url, caption }
+app.post("/internal/operator-send-image", async (req, res) => {
+  try {
+    if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
+    const phone = normPhone(req.body?.phone || "");
+    const url = String(req.body?.image_url || "").trim();
+    const caption = String(req.body?.caption || "").trim();
+    if (!phone || !url) return res.status(400).json({ ok: false, error: "phone_and_image_url_required" });
+    await waSendImageUrl(phone, url, caption);
+    res.json({ ok: true, sent: true, phone });
+  } catch (e) {
+    logErr("/internal/operator-send-image", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /internal/operator-send-video { phone, video_url, caption }
+app.post("/internal/operator-send-video", async (req, res) => {
+  try {
+    if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
+    const phone = normPhone(req.body?.phone || "");
+    const url = String(req.body?.video_url || "").trim();
+    const caption = String(req.body?.caption || "").trim();
+    if (!phone || !url) return res.status(400).json({ ok: false, error: "phone_and_video_url_required" });
+    await waSendVideoUrl(phone, url, caption);
+    res.json({ ok: true, sent: true, phone });
+  } catch (e) {
+    logErr("/internal/operator-send-video", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /internal/operator-send-document { phone, doc_url, filename, caption }
+app.post("/internal/operator-send-document", async (req, res) => {
+  try {
+    if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
+    const phone = normPhone(req.body?.phone || "");
+    const url = String(req.body?.doc_url || "").trim();
+    const filename = String(req.body?.filename || "documento.pdf").trim();
+    const caption = String(req.body?.caption || "").trim();
+    if (!phone || !url) return res.status(400).json({ ok: false, error: "phone_and_doc_url_required" });
+    await waSendDocumentUrl(phone, url, filename, caption);
+    res.json({ ok: true, sent: true, phone });
+  } catch (e) {
+    logErr("/internal/operator-send-document", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /internal/operator-send-voice { phone, text }  → TTS ElevenLabs y envía como nota de voz
+app.post("/internal/operator-send-voice", async (req, res) => {
+  try {
+    if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
+    const phone = normPhone(req.body?.phone || "");
+    const text = String(req.body?.text || "").trim();
+    if (!phone || !text) return res.status(400).json({ ok: false, error: "phone_and_text_required" });
+    await sendVoiceOrAudio(phone, text, "audio");
+    fireAndForget("trackConversationEvent.operator_voice", trackConversationEvent({
+      channel: "whatsapp", external_id: phone, direction: "outbound",
+      actor_type: "operator", actor_name: req.body?.operator_name || "Operador",
+      message_type: "audio", body: `🎤 Nota de voz: ${text.slice(0,120)}${text.length>120?'…':''}`,
+      metadata: { source: "sales_os_operator", tts: true }, unread_count: 0,
+    }));
+    res.json({ ok: true, sent: true, phone });
+  } catch (e) {
+    logErr("/internal/operator-send-voice", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
   if (!verifySig(req)) return;
@@ -2665,12 +2911,15 @@ app.post("/webhook", async (req, res) => {
     await waRead(msgId);
 
     let userText = inc.text || "";
+    // [FIX P12] displayText = lo que se muestra en el CRM. userText = prompt interno a la IA
+    let displayText = inc.text || "";
 
     if (type === "audio" && inc.audioId) {
       const meta = await waMediaUrl(inc.audioId);
       const { buffer, mime } = await waDownload(meta.url);
       const t = await stt(buffer, mime);
       userText = t ? `[Audio]: ${t}` : "[Audio no reconocido]";
+      displayText = t ? `🎤 Audio: ${t}` : "🎤 Audio recibido (no transcribible)";
       // v5.3: Guardar audio en BD
       if (MEDIA_ENABLED && buffer) {
         saveMedia({ phone: waId, direction: 'inbound', mediaType: 'audio', mimeType: mime || 'audio/ogg', filename: `audio_${waId}_${Date.now()}.ogg`, buffer, waMediaId: inc.audioId, transcription: t || '' }).catch(() => {});
@@ -2724,9 +2973,13 @@ app.post("/webhook", async (req, res) => {
       }
 
       const ext = await vision(buffer, mime);
+      // [FIX P12] Separamos: userText = prompt interno a la IA | displayText = lo que se guarda en CRM
       userText = ext
         ? `[IMAGEN ANALIZADA — Productos detectados]:\n${ext}\n\nINSTRUCCIÓN: extrae TODOS los items y envíalos con update_quote en UNA sola llamada.`
         : "[Imagen no legible]";
+      displayText = ext
+        ? `📷 Imagen enviada — ${ext.length > 120 ? ext.slice(0,120).replace(/\n/g, ' ') + '…' : ext.replace(/\n/g, ' ')}`
+        : "📷 Imagen enviada (no legible)";
       // v5.3: Guardar imagen en BD
       if (MEDIA_ENABLED && buffer) {
         saveMedia({ phone: waId, direction: 'inbound', mediaType: 'image', mimeType: mime || 'image/jpeg', filename: `img_${waId}_${Date.now()}.jpg`, buffer, waMediaId: inc.imageId, aiDescription: ext || '' }).catch(() => {});
@@ -2737,9 +2990,13 @@ app.post("/webhook", async (req, res) => {
       const meta = await waMediaUrl(inc.docId);
       const { buffer } = await waDownload(meta.url);
       const t = await readPdf(buffer);
+      // [FIX P12] Separamos prompt interno vs display CRM
       userText = t
         ? `[PDF ANALIZADO]:\n${t}\n\nINSTRUCCIÓN: extrae TODOS los items y envíalos con update_quote.`
         : "[PDF sin texto]";
+      displayText = t
+        ? `📄 PDF enviado — ${t.length > 120 ? t.slice(0,120).replace(/\n/g, ' ') + '…' : t.replace(/\n/g, ' ')}`
+        : "📄 PDF enviado (sin texto extraíble)";
       // v5.3: Guardar PDF en BD
       if (MEDIA_ENABLED && buffer) {
         saveMedia({ phone: waId, direction: 'inbound', mediaType: 'document', mimeType: 'application/pdf', filename: `doc_${waId}_${Date.now()}.pdf`, buffer, waMediaId: inc.docId, transcription: t || '' }).catch(() => {});
@@ -2756,7 +3013,8 @@ app.post("/webhook", async (req, res) => {
         actor_type: "customer",
         actor_name: "Cliente",
         message_type: type || "text",
-        body: userText,
+        // [FIX P12] En CRM guardamos displayText (limpio), no el prompt interno a la IA
+        body: displayText || userText,
         metadata: { source: "whatsapp_webhook", msg_id: msgId, raw_type: type },
         quote_status: ses.data?.stageKey || undefined,
         unread_count: 1,
@@ -3107,6 +3365,19 @@ app.post("/webhook", async (req, res) => {
 
     if (pass1.tool_calls?.length) {
       for (const tc of pass1.tool_calls) {
+        // [FIX P13] Procesar send_media tool (catálogos, fotos, videos)
+        if (tc.function?.name === "send_media") {
+          let args = {};
+          try { args = JSON.parse(tc.function.arguments || "{}"); } catch { continue; }
+          const mediaResult = await handleSendMediaCall(waId, args);
+          if (mediaResult.ok) {
+            logInfo("send_media", `${args.media_type} ${args.catalog_key} → ${waId}`);
+          } else {
+            logErr("send_media", new Error(mediaResult.error));
+            actionsResult.errors.push(`send_media_failed: ${mediaResult.error}`);
+          }
+          continue;
+        }
         if (tc.function?.name !== "update_quote") continue;
         let args = {};
         try { args = JSON.parse(tc.function.arguments || "{}"); } catch { continue; }
