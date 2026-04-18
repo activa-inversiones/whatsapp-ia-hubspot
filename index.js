@@ -1,4 +1,4 @@
-// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 10.5-prod — EJECUCIÓN INMEDIATA)
+// index.js — WhatsApp IA + Zoho Books PDF (Ferrari 10.6-prod — CRM MEDIA FULL)
 // Railway | Node 18+ | ESM
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS vs 9.4.0 — Fixes producción real (captura WhatsApp):
@@ -3014,6 +3014,68 @@ app.post("/internal/operator-send-voice", async (req, res) => {
   }
 });
 
+// [FIX P14] Endpoint que recibe archivo en BASE64 y lo envía al cliente vía WhatsApp
+// Usado por el Sales OS cuando el operador sube un archivo desde el CRM
+app.post("/internal/operator-upload-media", async (req, res) => {
+  try {
+    if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
+    const { phone, kind, filename, mime_type, file_base64, caption, operator_name } = req.body || {};
+    if (!phone) return res.status(400).json({ ok: false, error: "phone_required" });
+    if (!file_base64) return res.status(400).json({ ok: false, error: "file_base64_required" });
+    if (!["image", "video", "document"].includes(kind)) return res.status(400).json({ ok: false, error: "invalid_kind" });
+
+    const buffer = Buffer.from(file_base64, "base64");
+    const cleanPhone = normPhone(phone);
+    const cap = caption || "";
+
+    let mediaId;
+    if (kind === "image") {
+      mediaId = await waSendImage(cleanPhone, buffer, filename || "image.jpg", cap, mime_type || "image/jpeg");
+    } else if (kind === "video") {
+      mediaId = await waSendVideo(cleanPhone, buffer, filename || "video.mp4", cap, mime_type || "video/mp4");
+    } else if (kind === "document") {
+      await waSendPdf(cleanPhone, buffer, filename || "documento.pdf", cap);
+      mediaId = "document-sent";
+    }
+
+    res.json({ ok: true, sent: true, phone: cleanPhone, media_id: mediaId });
+  } catch (e) {
+    logErr("/internal/operator-upload-media", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// [FIX P14] Resolver de catálogo: el Sales OS manda catalog_key (ej "catalogo_pvc")
+// y este endpoint busca la URL en env vars y la envía
+app.post("/internal/operator-send-catalog", async (req, res) => {
+  try {
+    if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
+    const { phone, catalog_key, media_type, caption } = req.body || {};
+    if (!phone || !catalog_key) return res.status(400).json({ ok: false, error: "phone_and_catalog_key_required" });
+
+    const url = resolveCatalogUrl(catalog_key);
+    if (!url) return res.status(404).json({ ok: false, error: `catalog_not_configured: ${catalog_key}` });
+
+    const cleanPhone = normPhone(phone);
+    if (media_type === "image") {
+      await waSendImageUrl(cleanPhone, url, caption || "");
+    } else if (media_type === "video") {
+      await waSendVideoUrl(cleanPhone, url, caption || "");
+    } else if (media_type === "document") {
+      await waSendDocumentUrl(cleanPhone, url, `${catalog_key}.pdf`, caption || "");
+    } else {
+      return res.status(400).json({ ok: false, error: "invalid_media_type" });
+    }
+
+    res.json({ ok: true, sent: true, phone: cleanPhone, catalog_key, url });
+  } catch (e) {
+    logErr("/internal/operator-send-catalog", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// [FIX P14] Aumentar límite del body parser del bot para archivos base64 hasta 25MB
+// (ya debería estar configurado, pero forzamos)
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
   if (!verifySig(req)) return;
@@ -3841,6 +3903,6 @@ function normTipoApertura(text) {
 }
 app.listen(PORT, () => {
   console.log(
-    `🚀 Ferrari 10.5-prod EJECUCIÓN INMEDIATA — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} ffmpeg=checking`
+    `🚀 Ferrari 10.6-prod CRM MEDIA FULL — Marcelo Cifuentes MINVU — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} ffmpeg=checking`
   );
 });
