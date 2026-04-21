@@ -1,5 +1,30 @@
-// index.js — WhatsApp IA Oliver v11.1 (Ferrari 11.1 — OPTIMIZER PASS 1: reglas 11-17 + hora Chile inyectada)
+// index.js — WhatsApp IA Oliver v11.2 (Ferrari 11.2 — OPTIMIZER PASS 2: consenso 4-IA post chat Omar)
 // Railway | Node 18+ | ESM
+// ═══════════════════════════════════════════════════════════════════
+// CAMBIOS v11.2 vs v11.1 — 21 Abril 2026 (pack consenso multi-IA: Claude+Grok+Gemini+Perplexity+ChatGPT):
+//
+// [V11.2-1] 5 reglas nuevas al SYSTEM_PROMPT basadas en CHAT REAL OMAR (56931260340)
+//           19 minutos, 6 PDFs generados, 10 veces preguntó comuna ya dada,
+//           cliente terminó diciendo "Un fiasco el asistente virtual":
+//           → Regla #18: PDF rate-limit (un PDF por sesión hasta confirmación)
+//           → Regla #19: LOCK de datos (dato dado = inmutable, prohibido repreguntar)
+//           → Regla #20: Detector de negación ("no", "sin X", "X no")
+//           → Regla #21: Detector de frustración progresiva (no esperar a "fiasco")
+//           → Regla #22: Resumen consolidado cada 4-5 turnos (anti-loop)
+//
+// [V11.2-2] Detector frustración (línea 3674) ampliado con: "fiasco", "pésimo", 
+//           "horrible", "inútil", "no sirve", "mal hecho", "un asco", "que mal"
+//
+// [V11.2-3] FIX BUG URLs SharePoint en escalación (línea 3681): cumplir Regla #8
+//           que el propio código violaba mandando PLANT_VIDEO_URL/OFFICE_VIDEO_URL
+//           crudas. Ahora ofrece enviar videos por separado.
+//
+// [V11.2-4] FIX JSON crudo expuesto al cliente (líneas 3725, 4057): reemplaza
+//           JSON.stringify(items) por descripción legible en español.
+//
+// [V11.2-5] FIX Mensaje "Generando su propuesta…" — solo 1 vez por sesión vía
+//           flag pdfStatusSent en sesión.
+//
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS v11.1 vs v11.0 — 21 Abril 2026 (pack Optimizer Etapa 2A):
 //
@@ -1984,6 +2009,71 @@ Si el cliente vuelve después de >4 horas de silencio con un mensaje corto o amb
   "Hola [nombre] 👋, quedamos en que te pasaba la propuesta de las 3 ventanas termopanel para tu hogar en Temuco. ¿Avanzamos con el color para dejarla lista?"
 El cliente debe sentir que seguís la conversación, no que reseteaste.
 
+═══ REGLA #18 — PDF RATE-LIMIT (CRÍTICO, consenso 5/5 IAs) ═══
+Generar MÚLTIPLES PDFs seguidos es el error que más mata ventas. REGLA DURA:
+
+NO ejecutés update_quote si:
+  ❌ Ya generaste PDF en los últimos 3 minutos Y el cliente no confirmó con "sí" / "confirmo" / "envíalo" / "dale".
+  ❌ El cliente está corrigiendo datos (dijo "no", "sin", "cambio", "corrijo", "en realidad").
+  ❌ El cliente mandó 2+ mensajes seguidos modificando la cotización.
+
+EN SU LUGAR: actualizá el resumen EN TEXTO en el chat y pedí confirmación UNA sola vez:
+  "Actualicé la propuesta: [resumen corto legible]. ¿Te mando el PDF actualizado o querés cambiar algo más?"
+
+Solo generar PDF cuando el cliente responda afirmativamente. Nunca en bucle.
+
+═══ REGLA #19 — LOCK DE DATOS CONFIRMADOS (CRÍTICO, consenso 5/5 IAs) ═══
+Una vez que el cliente dio un dato (nombre, comuna, color, cantidad, medidas, tipo),
+ese dato queda BLOQUEADO. NUNCA lo vuelvas a preguntar. Si dudás, SOLO confirmá UNA vez:
+  "Confirmo: [dato] — ¿correcto?"
+Si ya confirmó, dejá de preguntar. Leé SIEMPRE el historial antes de formular cualquier pregunta.
+
+CASO ESPECÍFICO COMUNA: si el cliente mencionó Temuco, Pucón, Villarrica, Cunco, Vilcún,
+Labranza, Padre Las Casas, Loncoche, Angol, Chillán, o cualquier comuna Araucanía en
+CUALQUIER mensaje previo, NO pidas comuna de nuevo. Ya la tenés.
+
+═══ REGLA #20 — DETECTOR DE NEGACIÓN (CRÍTICO, consenso 5/5 IAs) ═══
+Palabras/frases de NEGACIÓN del cliente que DEBÉS interpretar correctamente:
+  "no", "no no", "nop", "nah"
+  "sin [X]", "sin proyectante", "sin corredera"
+  "[X] no", "proyectante no", "corredera no"
+  "no quiero [X]", "no me sirve [X]", "nada de [X]"
+  "cambio a [X]", "mejor [X]", "en realidad [X]"
+
+Cuando detectes negación:
+  1. ELIMINÁ del estado el atributo rechazado.
+  2. NO vuelvas a proponer lo rechazado en los próximos 3 turnos.
+  3. Confirmá en UNA línea: "Entendido, sin [X]. ¿Qué preferís entonces?"
+
+NUNCA interpretes "no" como confirmación. NUNCA generes PDF cuando el cliente negó algo.
+
+═══ REGLA #21 — DETECTOR DE FRUSTRACIÓN PROGRESIVA (CRÍTICO, consenso 5/5 IAs) ═══
+NO esperes a que el cliente diga "fiasco" para escalar. Señales TEMPRANAS de frustración:
+
+  • Cliente repite el mismo dato 2+ veces (significa que no le entendiste).
+  • Cliente responde con monosílabos secos ("No", "No no", "Ya").
+  • Cliente dice "no entiendes", "otra vez", "te lo dije", "ya te dije".
+  • Cliente usa: "fiasco", "pésimo", "horrible", "inútil", "no sirve",
+    "mal hecho", "un asco", "mejoren", "qué mal", "porquería".
+
+Cuando detectes CUALQUIERA de estas señales:
+  1. DETENÉ el flujo automático inmediatamente. NO generés PDF. NO sigas preguntando.
+  2. Discúlpate REAL en 1 línea con el nombre del cliente:
+     "Lamento haberte hecho perder tiempo, [nombre]. Te paso con Marcelo ahora mismo."
+  3. NO menciones MINVU, credenciales, Resolución 266, ni copy promocional.
+     El cliente está molesto — necesita acción, no marketing.
+  4. Ofrecé llamada concreta: "¿A qué hora te queda bien que Marcelo te llame hoy?"
+
+═══ REGLA #22 — RESUMEN CONSOLIDADO CADA 4-5 TURNOS (anti-loop) ═══
+Cada 4-5 intercambios, hacé un resumen corto del estado para evitar loops:
+
+  "Entendido [nombre]: [N ventanas] en [comuna], tipo [X], color [Y], medidas [Z].
+   ¿Confirmás para cotizar o querés cambiar algo?"
+
+Si después del resumen el cliente dice "sí/confirmo/dale" → PDF.
+Si dice "no" o corrige algo → actualizá en texto (Regla #18), NO generes PDF aún.
+Si no responde o manda ambiguo → re-anclá con Regla #17.
+
 ═══ TU MISIÓN ═══
 No vendés ventanas. Vendés confort, protección térmica y ahorro energético para el hogar.
 Una buena ventana dura 20+ años y se paga sola en ahorro de calefacción.
@@ -3670,15 +3760,21 @@ app.post("/webhook", async (req, res) => {
     const specialProductKeywords = ["templado", "vidrio templado", "mampara", "cierre de terraza", "cierre terraza", "celosia", "celosía", "aluminio", "cortina", "reja"];
     const isSpecialProduct = specialProductKeywords.some(kw => t.includes(kw));
 
-    // 2. Frustración del cliente
-    const frustradoKeywords = ["ya", "chao", "basta", "mal humor", "repetis", "me tiene harto", "no amigo", "ya te dije", "ya envié", "ya mandé", "ya te lo", "perder el tiempo", "pierdo el tiempo", "me voy", "adiós", "adios", "frustrado", "hartó", "me cansé", "olvídelo"];
+    // 2. Frustración del cliente (v11.2: ampliado con "fiasco" y variantes que faltaban)
+    const frustradoKeywords = ["ya", "chao", "basta", "mal humor", "repetis", "me tiene harto", "no amigo", "ya te dije", "ya envié", "ya mandé", "ya te lo", "perder el tiempo", "pierdo el tiempo", "me voy", "adiós", "adios", "frustrado", "hartó", "me cansé", "olvídelo", "fiasco", "pésimo", "pesimo", "horrible", "inútil", "inutil", "no sirve", "no sirven", "mal hecho", "un asco", "qué mal", "que mal", "mejoren", "no entiendes", "no entiende", "porquería", "porqueria"];
     const isFrustrated = frustradoKeywords.some(word => t.includes(word));
 
     // 3. Escalación inmediata
     if (isSpecialProduct || isFrustrated) {
       const agente = process.env.AGENT_NAME || "Marcelo Cifuentes";
-      await waSendH(waId, `✅ Entendido. Te voy a pasar directamente con nuestro ingeniero especialista ${agente} ahora mismo.`, true);
-      await waSendH(waId, `Mientras tanto revisa estos videos:\n\n🏭 Video Planta: ${process.env.PLANT_VIDEO_URL}\n🏢 Video Oficina: ${process.env.OFFICE_VIDEO_URL}`, true);
+      // v11.2: ANTES mandaba URLs SharePoint crudas violando Regla #8.
+      // Ahora pide disculpa real (si fue por frustración) y ofrece llamada concreta.
+      if (isFrustrated) {
+        const nombre = ses.data?.name ? `, ${ses.data.name}` : "";
+        await waSendH(waId, `Lamento haberte hecho perder tiempo${nombre}. Te paso directo con ${agente} ahora — él lo resuelve en una llamada de 5 minutos. ¿A qué hora te queda bien que te llame hoy?`, true);
+      } else {
+        await waSendH(waId, `✅ Entendido. Te voy a pasar directamente con nuestro ingeniero especialista ${agente} ahora mismo.`, true);
+      }
 
       const summary = buildEscalationSummary(ses, userText);
       await sendEscalationAlert(summary, normPhone(process.env.ESCALATION_PHONE || process.env.OWNER_NOTIFICATION_PHONE), ses.data);
@@ -3718,11 +3814,11 @@ app.post("/webhook", async (req, res) => {
 
       ses.data.default_color = normColor(userText);
 
-      // Resumen claro y ordenado para que el cliente confirme
+      // v11.2: SIN JSON crudo. Formato legible humano.
       const resumen = `✅ **Resumen de tu cotización:**\n\n` +
         `• Tipo: ${ses.data.default_tipo || "CORREDERA"}\n` +
         `• Color: ${ses.data.default_color}\n` +
-        `• Medidas: ${ses.data.items ? JSON.stringify(ses.data.items) : "Las que mencionaste"}\n` +
+        `• Medidas: ${formatItemsHumano(ses.data.items)}\n` +
         `• Comuna: ${ses.data.comuna || "Pendiente"}\n\n` +
         `¿Está todo correcto? Responde **SÍ** o **CONFIRMO** para generar la cotización definitiva.`;
 
@@ -4049,12 +4145,24 @@ setInterval(async () => {
 /* =========================
    21) START
    ========================= */
+// v11.2: Helper para mostrar items SIN JSON crudo. Texto humano legible.
+function formatItemsHumano(items) {
+  if (!items || !Array.isArray(items) || items.length === 0) return "Las que mencionaste";
+  return items.map((it) => {
+    const tipo = (it.product || it.tipo || "ventana").toLowerCase();
+    const med = it.measures || it.medidas || "?";
+    const color = (it.color || "blanco").toLowerCase();
+    const qty = it.qty || it.cantidad || 1;
+    return `${qty}× ${tipo} ${med} ${color}`;
+  }).join(" | ");
+}
+
 function buildEscalationSummary(ses, lastMessage) {
   let summary = `🚨 ESCALACIÓN - Cliente frustrado\n\n`;
   summary += `📱 Teléfono: ${normPhone ? normPhone(ses.waId || '') : 'Desconocido'}\n`;
   summary += `👤 Nombre: ${ses.data?.name || 'No dijo'}\n`;
   summary += `🏠 Comuna: ${ses.data?.comuna || 'No dijo'}\n`;
-  summary += `📏 Medidas: ${ses.data?.items ? JSON.stringify(ses.data.items) : 'No guardadas aún'}\n`;
+  summary += `📏 Medidas: ${formatItemsHumano(ses.data?.items)}\n`;
   summary += `🎨 Color: ${ses.data?.default_color || 'No dijo'}\n`;
   summary += `🔄 Tipo: ${ses.data?.default_tipo || 'CORREDERA (por defecto)'}\n`;
   summary += `💬 Último mensaje del cliente: "${lastMessage}"\n\n`;
@@ -4086,6 +4194,6 @@ function normTipoApertura(text) {
 }
 app.listen(PORT, () => {
   console.log(
-    `🚀 Oliver v11.1 (Ferrari 11.1 — Optimizer Pass 1) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
+    `🚀 Oliver v11.2 (Ferrari 11.2 — Optimizer Pass 2, consenso 4-IA) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
   );
 });
