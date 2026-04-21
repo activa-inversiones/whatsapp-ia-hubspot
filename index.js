@@ -1,5 +1,24 @@
-// index.js — WhatsApp IA Oliver v11.0 (Ferrari 11.0 — IDENTIDAD OLIVER + FIXES CRÍTICOS)
+// index.js — WhatsApp IA Oliver v11.1 (Ferrari 11.1 — OPTIMIZER PASS 1: reglas 11-17 + hora Chile inyectada)
 // Railway | Node 18+ | ESM
+// ═══════════════════════════════════════════════════════════════════
+// CAMBIOS v11.1 vs v11.0 — 21 Abril 2026 (pack Optimizer Etapa 2A):
+//
+// [V11.1-1] 7 reglas nuevas al SYSTEM_PROMPT basadas en análisis real
+//           de 57 conversaciones / 2182 mensajes (tasa cierre 3.5%):
+//           → Regla #11: UNA pregunta por turno (refuerzo con ejemplo MALO/BUENO)
+//           → Regla #12: detectar cierre del cliente (ok/ya/gracias → parar)
+//           → Regla #13: rango verbal con 3 datos (destrabar diagnóstico)
+//           → Regla #14: no repetir preguntas ya respondidas
+//           → Regla #15: re-engagement personalizado (nombre + urgencia)
+//           → Regla #16: anti-sycophancy (no empezar con "ok/claro/genial")
+//           → Regla #17: re-anclar contexto tras ghosting >4h
+//
+// [V11.1-2] buildRealtimeContext() — inyecta HORA CHILE, DÍA y SALUDO calculado
+//           antes de cada llamada al modelo. Resuelve "Buenas tardes a las 3 AM".
+//
+// [V11.1-3] Reglas 14 (URLs SharePoint) y 18 (reacciones emoji) del informe
+//           NO se agregaron por estar ya cubiertas como Regla #8 y Regla #9.
+//
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS v11.0 vs v10.6 — Abril 2026 (pack consolidado):
 //
@@ -631,6 +650,40 @@ function getAdminRulesText() {
   if (adminDynamicRules.length === 0) return "";
   return "\n\n═══ INSTRUCCIONES DEL ADMINISTRADOR (prioridad máxima) ═══\n" +
     adminDynamicRules.map((r, i) => `${i + 1}. ${r}`).join("\n");
+}
+
+// ═══ v11.1: Contexto en tiempo real (hora Chile + saludo + día) ═══
+// Resuelve "Buenas tardes a las 3 AM". El LLM no tiene reloj — se lo inyectamos en cada turno.
+function buildRealtimeContext() {
+  try {
+    const now = new Date();
+    // Hora real Chile usando Intl
+    const fmt = new Intl.DateTimeFormat("es-CL", {
+      timeZone: "America/Santiago",
+      hour: "2-digit",
+      minute: "2-digit",
+      weekday: "long",
+      day: "2-digit",
+      month: "long",
+      hour12: false,
+    });
+    const parts = fmt.formatToParts(now).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+    const hh = parseInt(parts.hour, 10);
+    const horaStr = `${parts.hour}:${parts.minute}`;
+    // Regla: 05:00-11:59 → Buenos días | 12:00-19:59 → Buenas tardes | resto → Buenas noches
+    let saludo;
+    if (hh >= 5 && hh < 12) saludo = "Buenos días";
+    else if (hh >= 12 && hh < 20) saludo = "Buenas tardes";
+    else saludo = "Buenas noches";
+    const diaSemana = parts.weekday ? parts.weekday.charAt(0).toUpperCase() + parts.weekday.slice(1) : "";
+    return `\n\n═══ CONTEXTO EN TIEMPO REAL (Chile) ═══\n` +
+      `Hora actual Chile (America/Santiago): ${horaStr} — ${diaSemana} ${parts.day} de ${parts.month}\n` +
+      `Saludo correcto para esta hora: "${saludo}"\n` +
+      `USÁ ESTE SALUDO cuando corresponda saludar. NO asumas otra hora.`;
+  } catch (e) {
+    // Si algo falla, devolver string vacío para no romper el flujo
+    return "";
+  }
 }
 
 // Normalizar el waId para comparación
@@ -1269,7 +1322,7 @@ async function orchestratorPass1(session, userText) {
   const statusCtx = buildStatusContext(session);
 
   const msgs = [
-    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() },
+    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + buildRealtimeContext() },
     { role: "system", content: statusCtx + `\n\nPERFIL CLIENTE: ${perfil} (tecnico=${session.perfilAcumulado?.tecnico || 0} / emocional=${session.perfilAcumulado?.emocional || 0})` },
     ...session.history.slice(-20),
     { role: "user", content: userText },
@@ -1312,7 +1365,7 @@ async function orchestratorPass2(session, userText, actionsResult) {
   ].filter(Boolean).join("\n");
 
   const msgs = [
-    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() },
+    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + buildRealtimeContext() },
     { role: "system", content: `${contextInfo}\n\nPERFIL: ${perfil}\n\nINSTRUCCIÓN: Genera SOLO el texto de respuesta al cliente. NO prometas enviar nada. Si el PDF ya fue enviado, no lo menciones de nuevo. Si faltan datos, pregunta. Sé breve (2-3 líneas máx).` },
     ...session.history.slice(-14),
     { role: "user", content: userText },
@@ -1872,6 +1925,65 @@ NUNCA ignores una reacción — respondé algo breve siempre.
 Después de enviar la propuesta, SIEMPRE ofrecé visita técnica gratuita sin compromiso.
 "Si querés, agendamos una visita técnica gratis para medir y afinar. ¿Tenés alguna tarde libre esta semana?"
 
+═══ REGLA #11 — UNA sola pregunta por turno (CRÍTICO) ═══
+NUNCA hagas 2 o 3 preguntas en un mismo mensaje. Si necesitás varios datos, los pedís de a UNO.
+MALO: "¿Con quién tengo el gusto? ¿Y en qué comuna estás? ¿Qué color preferís?"
+BUENO: "¿Con quién tengo el gusto?" (esperás respuesta, después pedís la comuna, después el color).
+Excepción única: podés mencionar 2 opciones cerradas dentro de UNA misma pregunta ("¿es para tu hogar o para un proyecto comercial?"). Eso cuenta como UNA pregunta.
+
+═══ REGLA #12 — DETECTAR CIERRE DEL CLIENTE (CRÍTICO) ═══
+Si el cliente responde con UNA sola palabra/frase corta del tipo:
+  "ok", "ya", "sí", "si", "dale", "listo", "perfecto", "gracias", "bacán", "bkn", "ok gracias", "ya listo"
+→ NO sigas preguntando. NO ofrezcas otra cosa. El cliente está cerrando la conversación.
+Respondé UNA línea amable + call-to-action silencioso, y PARÁ:
+  "Dale [nombre], cuando te acomode avanzamos con la propuesta 👌"
+  "Perfecto [nombre], quedo atento cuando quieras destrabar 🏠"
+NO mandes otro mensaje hasta que el cliente escriba de nuevo.
+
+═══ REGLA #13 — DESTRABAR DIAGNÓSTICO CON RANGO VERBAL (CRÍTICO) ═══
+El error más caro es quedar preguntando detalles sin dar precio. Si ya tenés estos 3 datos:
+  ✅ Medidas aproximadas (aunque sea una sola ventana con medida)
+  ✅ Cantidad de ventanas (aunque sea estimada)
+  ✅ Comuna o zona
+Entonces YA podés dar un RANGO VERBAL estimado en chat para mantener al cliente enganchado,
+SIN ejecutar update_quote todavía:
+  "Con 3 ventanas termopanel de ~1.5×1.2m en Temuco, el rango va entre $1.2M y $1.8M aprox, instalación incluida. ¿Te hace sentido el rango para seguir afinando?"
+IMPORTANTE: el update_quote formal (que genera PDF) sigue necesitando los 4 datos. Si el cliente
+no define color después del rango verbal, ASUMÍ BLANCO (es el más pedido) y avisale:
+  "Te la dejo en blanco que es el más pedido, si querés otra después lo cambiamos altiro."
+Así NO se enfría esperando que decida color para ver precio.
+
+═══ REGLA #14 — NO REPETIR PREGUNTAS YA RESPONDIDAS ═══
+ANTES de preguntar algo, revisá el historial. Si el cliente ya dijo:
+  "estoy en Temuco" → NO vuelvas a preguntar comuna.
+  "son 3 ventanas" → NO vuelvas a preguntar cantidad.
+  "me llamo Pedro" → NO vuelvas a preguntar nombre.
+Si el dato viene del cliente, es sagrado. Repetir preguntas quema la conversación.
+
+═══ REGLA #15 — RE-ENGAGEMENT PERSONALIZADO ═══
+Si tenés que hacer seguimiento después de 24h+ sin respuesta, NUNCA uses copy genérico
+tipo "Hola Cliente, ¿pudo revisar la propuesta?". Personalizá SIEMPRE:
+  • Nombre real del cliente (no "Cliente").
+  • Referencia concreta a lo que pidió (ej: "las 3 ventanas termopanel para Temuco").
+  • Call-to-action con urgencia real y concreta (no urgencia inventada).
+Ejemplo bueno:
+  "Hola Patricia, te quedé debiendo la propuesta de las 3 correderas para tu hogar en Temuco. ¿Le damos cierre esta semana? Si me confirmás el color la dejo lista hoy."
+
+═══ REGLA #16 — CERO MULETILLAS ROBÓTICAS (anti-sycophancy) ═══
+NO empieces mensajes con "Ok,", "Claro,", "Perfecto,", "Genial,", "Por supuesto,", "Excelente,".
+Suenan robóticos y restan calidez. En su lugar:
+  • Usá el nombre del cliente si lo tenés: "Dale Patricia, te cuento…"
+  • Entrá directo a lo útil: "Te explico cómo funciona…"
+  • Reformulá lo que pidió: "Tres ventanas termopanel para Temuco, buenísimo…"
+Chileno natural sí: "Dale", "Bacán", "Buenísimo", "Altiro". Pero no como muletilla — úsalo cuando cae natural, no en todos los mensajes.
+
+═══ REGLA #17 — RE-ANCLAR TRAS GHOSTING ═══
+Si el cliente vuelve después de >4 horas de silencio con un mensaje corto o ambiguo
+("hola", "sigues?", "?", "y?", "estás ahí?"), NO arranques de cero ni preguntes
+"¿en qué puedo ayudarte?" como si nunca hubieran hablado. Re-anclá contexto en UNA línea:
+  "Hola [nombre] 👋, quedamos en que te pasaba la propuesta de las 3 ventanas termopanel para tu hogar en Temuco. ¿Avanzamos con el color para dejarla lista?"
+El cliente debe sentir que seguís la conversación, no que reseteaste.
+
 ═══ TU MISIÓN ═══
 No vendés ventanas. Vendés confort, protección térmica y ahorro energético para el hogar.
 Una buena ventana dura 20+ años y se paga sola en ahorro de calefacción.
@@ -2178,7 +2290,7 @@ async function runAI(session, userText) {
   const perfil = detectarPerfil(userText, session);
 
   const msgs = [
-    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() },
+    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + buildRealtimeContext() },
     {
       role: "system",
       content:
@@ -3974,6 +4086,6 @@ function normTipoApertura(text) {
 }
 app.listen(PORT, () => {
   console.log(
-    `🚀 Oliver v11.0 (Ferrari 11) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
+    `🚀 Oliver v11.1 (Ferrari 11.1 — Optimizer Pass 1) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
   );
 });
