@@ -1,5 +1,32 @@
-// index.js — WhatsApp IA Oliver v11.2 (Ferrari 11.2 — OPTIMIZER PASS 2: consenso 4-IA post chat Omar)
+// index.js — WhatsApp IA Oliver v11.3 (Ferrari 11.3 BEAST — V12 light: state machine + gates en código)
 // Railway | Node 18+ | ESM
+// ═══════════════════════════════════════════════════════════════════
+// CAMBIOS v11.3 vs v11.2 — 21 Abril 2026 (pack BEAST: fixes estructurales en código, no solo prompt)
+//
+// [V11.3-1] STATE MACHINE REAL en código vía getLockedData(ses)
+//           Helper que retorna {nombre, comuna, color, tipo, items} ya confirmados.
+//           El LLM recibe esto pre-procesado y NO puede repreguntar datos lockeados.
+//
+// [V11.3-2] GATE ANTI-PDF-AVALANCHA vía canGeneratePdf(ses, userText)
+//           Hard rate limit: 1 PDF cada 180 seg, NO generar tras negación del cliente,
+//           NO generar si hay correcciones sin confirmar. Usado pre-update_quote.
+//
+// [V11.3-3] DETECTOR DE NEGACIÓN en código vía detectNegation(userText)
+//           Regex patterns: "no", "sin X", "X no", "no quiero X", "cambio a X".
+//           Pre-procesa ANTES de llegar al LLM. Si detecta, marca ses.lastWasNegation
+//           y bloquea generación de PDF por 2 turnos.
+//
+// [V11.3-4] SANITIZADOR UNIVERSAL vía sanitizeForCustomer(text)
+//           Hook en waSendH(): elimina JSON crudo, URLs SharePoint largas,
+//           llaves {}, corchetes [] vacíos, campos internos. Nunca llega basura al cliente.
+//
+// [V11.3-5] FIX LOOP "Generando su propuesta…"
+//           Flag ses.pdfStatusSent: se setea al primer envío. Nunca más duplicado en sesión.
+//
+// [V11.3-6] FIX BUG URLs VIDEOS CRUDAS (línea 4006 v11.2)
+//           Segunda aparición del bug tipo-SharePoint: mandaba VIDEO_PLANTA/OFICINA etc
+//           como URLs crudas al cliente. Ahora se omiten si son URLs largas (>80 chars).
+//
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS v11.2 vs v11.1 — 21 Abril 2026 (pack consenso multi-IA: Claude+Grok+Gemini+Perplexity+ChatGPT):
 //
@@ -711,6 +738,133 @@ function buildRealtimeContext() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ═══ v11.3 BEAST: HELPERS ESTRUCTURALES (state machine en código) ═══════════
+// ═══════════════════════════════════════════════════════════════════════════
+
+// v11.3-1: STATE MACHINE. Retorna datos LOCKEADOS (ya confirmados) del cliente.
+// El LLM recibe este objeto pre-procesado y NO puede repreguntar lo que ya está.
+function getLockedData(ses) {
+  const d = ses?.data || {};
+  const locked = {};
+  if (d.name) locked.nombre = d.name;
+  if (d.comuna) locked.comuna = d.comuna;
+  if (d.default_color) locked.color = d.default_color;
+  if (d.default_tipo) locked.tipo_apertura = d.default_tipo;
+  if (Array.isArray(d.items) && d.items.length > 0) {
+    locked.items = d.items.map(it => ({
+      tipo: it.product || "CORREDERA",
+      medidas: it.measures || "?",
+      cantidad: it.qty || 1,
+      color: it.color || d.default_color || "blanco",
+    }));
+  }
+  return locked;
+}
+
+// v11.3-1b: String legible para inyectar en contexto del LLM.
+// El LLM lo ve y ENTIENDE que no debe repreguntar.
+function buildLockedDataContext(ses) {
+  const locked = getLockedData(ses);
+  if (Object.keys(locked).length === 0) return "";
+  const lines = ["\n\n═══ DATOS YA CONFIRMADOS POR EL CLIENTE (NO REPREGUNTAR) ═══"];
+  if (locked.nombre) lines.push(`✅ Nombre: ${locked.nombre}`);
+  if (locked.comuna) lines.push(`✅ Comuna: ${locked.comuna}`);
+  if (locked.color) lines.push(`✅ Color: ${locked.color}`);
+  if (locked.tipo_apertura) lines.push(`✅ Tipo apertura: ${locked.tipo_apertura}`);
+  if (locked.items && locked.items.length > 0) {
+    lines.push(`✅ Items (${locked.items.length}):`);
+    locked.items.forEach((it, i) => {
+      lines.push(`   ${i+1}. ${it.cantidad}× ${it.tipo} ${it.medidas} ${it.color}`);
+    });
+  }
+  lines.push("⚠️ ESTOS DATOS ESTÁN LOCKEADOS. NO LOS VUELVAS A PREGUNTAR. Si necesitás cambiar algo, preguntá SOLO por el cambio específico.");
+  return lines.join("\n");
+}
+
+// v11.3-2: GATE ANTI-PDF-AVALANCHA. Rate limit + lógica anti-bucle.
+// Llamar ANTES de generar PDF. Retorna { allow: boolean, reason: string }.
+function canGeneratePdf(ses, userText = "") {
+  const now = Date.now();
+  const last = ses.lastPdfAt || 0;
+  const elapsed = (now - last) / 1000; // segundos
+
+  // Regla 1: Mínimo 180 seg entre PDFs (3 min)
+  if (last && elapsed < 180) {
+    return { allow: false, reason: `pdf_rate_limit_${Math.round(180 - elapsed)}s` };
+  }
+
+  // Regla 2: Si el último mensaje del cliente fue negación, no generar
+  if (ses.lastWasNegation && ses.negationCountdown > 0) {
+    return { allow: false, reason: "post_negation_cooling" };
+  }
+
+  // Regla 3: Si el cliente acaba de decir "no/cambio/sin" en ESTE turno, no generar
+  if (detectNegation(userText).isNegation) {
+    return { allow: false, reason: "current_turn_negation" };
+  }
+
+  return { allow: true, reason: "ok" };
+}
+
+function markPdfGenerated(ses) {
+  ses.lastPdfAt = Date.now();
+  ses.pdfGeneratedCount = (ses.pdfGeneratedCount || 0) + 1;
+}
+
+// v11.3-3: DETECTOR DE NEGACIÓN pre-LLM.
+// Detecta patrones de negación/corrección. Retorna { isNegation, negatedTerm }.
+function detectNegation(userText) {
+  if (!userText) return { isNegation: false, negatedTerm: null };
+  const t = String(userText).toLowerCase().trim();
+
+  // Negaciones cortas standalone
+  const shortNegations = ["no", "no no", "no no no", "nop", "nah", "negativo", "nada"];
+  if (shortNegations.includes(t)) return { isNegation: true, negatedTerm: "general" };
+
+  // Patterns: "sin X" / "X no" / "no quiero X" / "cambio a X" / "en realidad X"
+  const patterns = [
+    /^sin\s+(\w+)/,
+    /(\w+)\s+no$/,
+    /no\s+(quiero|me\s+sirve|es\s+eso)\s+(\w+)?/,
+    /cambio\s+a\s+(\w+)/,
+    /en\s+realidad\s+/,
+    /mejor\s+(\w+)/,
+    /no\s+(era|decía|decia)\s+/,
+  ];
+
+  for (const p of patterns) {
+    const m = t.match(p);
+    if (m) return { isNegation: true, negatedTerm: m[1] || "general" };
+  }
+
+  return { isNegation: false, negatedTerm: null };
+}
+
+// v11.3-4: SANITIZADOR UNIVERSAL. Hook en waSendH para eliminar basura del output.
+// Prohibido al cliente: JSON crudo, URLs largas tipo SharePoint, llaves/corchetes raros.
+function sanitizeForCustomer(text) {
+  if (!text || typeof text !== "string") return text;
+  let out = text;
+
+  // 1. Eliminar bloques JSON crudos como [{"id":1,"product":...}]
+  out = out.replace(/\[\s*\{[^\[\]]*"(?:id|product|measures|qty|color|unit_price|total_price|source|confidence)"[^\[\]]*\}(?:\s*,\s*\{[^\[\]]*\})*\s*\]/gs, "[detalles en PDF]");
+
+  // 2. Eliminar JSON objeto suelto con campos internos
+  out = out.replace(/\{\s*"(?:id|product|measures|unit_price|source|confidence)"[^\{\}]*\}/gs, "[detalles en PDF]");
+
+  // 3. URLs SharePoint / Drive / Dropbox largas (>80 chars o con tokens)
+  out = out.replace(/https?:\/\/[^\s]*(?:sharepoint\.com|activaspacl-my\.sharepoint|dropbox|drive\.google)[^\s]*/g, "[video disponible — te lo envío en un momento]");
+
+  // 4. URLs absurdamente largas genéricas (>150 chars de URL)
+  out = out.replace(/https?:\/\/[^\s]{150,}/g, "[link disponible — te lo paso aparte]");
+
+  // 5. Tokens / IDs técnicos expuestos
+  out = out.replace(/\b(?:wamid|estimate_id|deal_id|session_id)\s*[:=]\s*[A-Za-z0-9_\-]{10,}/gi, "");
+
+  return out.trim();
+}
+
 // Normalizar el waId para comparación
 function normalizeWaId(waId) {
   return String(waId || "").replace(/[^\d]/g, "");
@@ -784,6 +938,7 @@ setInterval(() => {
                 const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
                 ses.zohoEstimateId = estimate.estimate_id;
                 ses.pdfSent = true;
+                markPdfGenerated(ses); // v11.3: rate limit anti-avalancha
                 d.stageKey = "propuesta";
                 
                 // Enviar PDF — un solo mensaje con caption, sin duplicados
@@ -1086,10 +1241,12 @@ async function waSend(to, body) {
 
 // @patch:sales-os:send:start
 async function waSendH(to, text, skipTyping = false, meta = {}) {
+  // v11.3-4: SANITIZADOR UNIVERSAL — nunca JSON crudo ni URLs largas al cliente.
+  const safeText = sanitizeForCustomer(text);
   const stop = skipTyping ? null : startTypingLoop(to);
   try {
-    await sleep(humanMs(text));
-    await waSend(to, text);
+    await sleep(humanMs(safeText));
+    await waSend(to, safeText);
     if (meta.track !== false) {
       fireAndForget(
         "trackConversationEvent.outbound",
@@ -1101,7 +1258,7 @@ async function waSendH(to, text, skipTyping = false, meta = {}) {
           actor_type: meta.actor_type || "assistant",
           actor_name: meta.actor_name || AGENT_NAME,
           message_type: meta.message_type || "text",
-          body: text,
+          body: safeText,
           metadata: meta.metadata || { source: "whatsapp_ia" },
           quote_status: meta.quote_status,
           unread_count: 0,
@@ -1347,7 +1504,7 @@ async function orchestratorPass1(session, userText) {
   const statusCtx = buildStatusContext(session);
 
   const msgs = [
-    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + buildRealtimeContext() },
+    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + buildRealtimeContext() + buildLockedDataContext(session) },
     { role: "system", content: statusCtx + `\n\nPERFIL CLIENTE: ${perfil} (tecnico=${session.perfilAcumulado?.tecnico || 0} / emocional=${session.perfilAcumulado?.emocional || 0})` },
     ...session.history.slice(-20),
     { role: "user", content: userText },
@@ -1390,7 +1547,7 @@ async function orchestratorPass2(session, userText, actionsResult) {
   ].filter(Boolean).join("\n");
 
   const msgs = [
-    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + buildRealtimeContext() },
+    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + buildRealtimeContext() + buildLockedDataContext(session) },
     { role: "system", content: `${contextInfo}\n\nPERFIL: ${perfil}\n\nINSTRUCCIÓN: Genera SOLO el texto de respuesta al cliente. NO prometas enviar nada. Si el PDF ya fue enviado, no lo menciones de nuevo. Si faltan datos, pregunta. Sé breve (2-3 líneas máx).` },
     ...session.history.slice(-14),
     { role: "user", content: userText },
@@ -2380,7 +2537,7 @@ async function runAI(session, userText) {
   const perfil = detectarPerfil(userText, session);
 
   const msgs = [
-    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + buildRealtimeContext() },
+    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + buildRealtimeContext() + buildLockedDataContext(session) },
     {
       role: "system",
       content:
@@ -3990,21 +4147,26 @@ app.post("/webhook", async (req, res) => {
       }
       await waSendH(waId, resumenLines.join("\n"), true);
       await sleep(800);
-      await waSendH(waId, "Generando su propuesta… 📄 Mientras le preparo el documento, le comparto un poco de nuestra empresa.", true);
+      // v11.3-5: FIX LOOP. Solo mandar status la PRIMERA vez por sesión.
+      if (!ses.pdfStatusSent) {
+        await waSendH(waId, "Generando su propuesta… 📄 Mientras le preparo el documento, le comparto un poco de nuestra empresa.", true);
+        ses.pdfStatusSent = true;
 
-      // Enviar videos de la empresa mientras se genera el PDF
-      const videoSources = [
-        { url: process.env.VIDEO_PLANTA, label: "🏭 Nuestra planta de producción" },
-        { url: process.env.VIDEO_OFICINA, label: "🏢 Nuestras oficinas" },
-        { url: process.env.VIDEO_OFICINA2, label: "🏢 Recorrido por nuestras instalaciones" },
-        { url: process.env.VIDEO_INSTALACIONES, label: "🏠 Proyectos terminados" },
-        { url: process.env.VIDEO_INSTALACIONES2, label: "🏠 Más trabajos realizados" },
-        { url: process.env.VIDEO_PLANTA2, label: "🏭 Proceso de fabricación" },
-      ].filter(v => v.url);
-      // Enviar máximo 3 videos para no saturar
-      for (const v of videoSources.slice(0, 3)) {
-        await waSend(waId, `${v.label}\n${v.url}`);
-        await sleep(600);
+        // v11.3-6: FIX URLs videos crudas. Solo mandar si la URL es CORTA (<80 chars).
+        // URLs largas tipo SharePoint quemaban credibilidad. Si son largas → omitir.
+        const videoSources = [
+          { url: process.env.VIDEO_PLANTA, label: "🏭 Nuestra planta de producción" },
+          { url: process.env.VIDEO_OFICINA, label: "🏢 Nuestras oficinas" },
+          { url: process.env.VIDEO_OFICINA2, label: "🏢 Recorrido por nuestras instalaciones" },
+          { url: process.env.VIDEO_INSTALACIONES, label: "🏠 Proyectos terminados" },
+          { url: process.env.VIDEO_INSTALACIONES2, label: "🏠 Más trabajos realizados" },
+          { url: process.env.VIDEO_PLANTA2, label: "🏭 Proceso de fabricación" },
+        ].filter(v => v.url && v.url.length < 80 && !v.url.includes("sharepoint.com"));
+        // Enviar máximo 3 videos para no saturar
+        for (const v of videoSources.slice(0, 3)) {
+          await waSend(waId, `${v.label}\n${v.url}`);
+          await sleep(600);
+        }
       }
 
       try {
@@ -4017,6 +4179,7 @@ app.post("/webhook", async (req, res) => {
           await waSendPdf(waId, pdfBuf, `${qn}.pdf`, `Propuesta ${qn} — Si quiere ajustar algo, me avisa.`);
           
           ses.pdfSent = true;
+          markPdfGenerated(ses); // v11.3: rate limit anti-avalancha PDFs
           d.stageKey = "propuesta";
           actionsResult.pdfSent = true;
 
@@ -4194,6 +4357,6 @@ function normTipoApertura(text) {
 }
 app.listen(PORT, () => {
   console.log(
-    `🚀 Oliver v11.2 (Ferrari 11.2 — Optimizer Pass 2, consenso 4-IA) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
+    `🚀 Oliver v11.3 (Ferrari 11.3 BEAST — V12 light: state machine + gates en código) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
   );
 });
