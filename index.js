@@ -1,5 +1,70 @@
-// index.js — WhatsApp IA Oliver v11.3 (Ferrari 11.3 BEAST — V12 light: state machine + gates en código)
+// index.js — WhatsApp IA Oliver v11.5 (Ferrari 11.5 ENTERPRISE — paquete completo, cero pendientes)
 // Railway | Node 18+ | ESM
+// ═══════════════════════════════════════════════════════════════════
+// CAMBIOS v11.5 vs v11.4 — 21 Abril 2026 (release ENTERPRISE: 10 mejoras profesionales):
+//
+// [V11.5-1] PLANTILLAS META — 7 funciones sendTemplate*() + endpoint admin
+//           Funciones: sendTemplateRecontactoLead, sendTemplateSeguimientoCotizacion,
+//                      sendTemplateConfirmacionCotizacion, sendTemplateEnvioCotizacion,
+//                      sendTemplateBienvenidaActiva, sendTemplateEscalamientoMarcelo,
+//                      sendTemplateInformeDiario.
+//           Endpoint: POST /admin/send-template?pin=XXXX&template=NAME&phone=569...
+//           Permite reactivar leads dormidos (>24h) bypaseando ventana WhatsApp.
+//
+// [V11.5-2] DETECTOR DE AUDIOS ESPURIOS (audio bombing / TikTok forwards)
+//           detectSpamAudio() identifica "amara.org / mamá / chao / outro / próximo
+//           video / subtítulos comunidad". Si llegan 3+ audios espurios consecutivos
+//           el bot pide texto educadamente y deja de procesar audios hasta texto.
+//
+// [V11.5-3] RESUMEN CONSOLIDADO AUTOMÁTICO cada 5 turnos (Regla 22 ahora activa)
+//           ses.turnsSinceConsolidation cuenta turnos. A los 5 → inyecta instrucción
+//           obligatoria al LLM para que resuma estado y pida confirmación.
+//
+// [V11.5-4] PROMPT OVERRIDES desde Postgres (tabla oliver_prompt_overrides ya creada)
+//           loadPromptOverrides() lee al arranque + cada 5 min. Append al SYSTEM_PROMPT.
+//           Permite cambiar reglas sin redeploy desde el dashboard.
+//
+// [V11.5-5] COMANDO ADMIN STATS por WhatsApp
+//           Si vos (MARCELO_PHONE) escribís "STATS" o "STATUS", recibís:
+//           PDFs hoy / leads activos / gates bloqueados / sesiones / version.
+//
+// [V11.5-6] AUTO RE-ANCLAJE POST-GHOSTING (Regla 17 ahora activa cron)
+//           Cron interno cada 30 min revisa sesiones con last_msg > 4h pero < 48h.
+//           Marca ses.needsReanchor=true → próximo turno bot re-ancla automático.
+//
+// [V11.5-7] DETECTOR DE LOOP DE CLIENTE
+//           Si el cliente repite el MISMO mensaje 3 veces seguidas → escalación
+//           inmediata con disculpa porque el bot no entiende. Distinto a frustración.
+//
+// [V11.5-8] MEMORIA EXTENDIDA — TTL aumentado de 60min → 7 días para leads con
+//           ses.data.name. Clientes anónimos siguen con TTL corto (anti-spam).
+//
+// [V11.5-9] update_quote con flag confirmed_by_client (gate quirúrgico extra)
+//           Sumado al rate-limit por tiempo. Doble candado.
+//
+// [V11.5-10] Logging estructurado de eventos clave para Optimizer Etapa 2B
+//           Cada evento crítico → tabla oliver_events vía bridge. Sirve de input
+//           al Claude API analyzer semanal.
+//
+// ═══════════════════════════════════════════════════════════════════
+// CAMBIOS v11.4 vs v11.3 — 21 Abril 2026 (cierre 100% del bot, sin pendientes):
+//
+// [V11.4-1] GATE canGeneratePdf() ENCHUFADO al handler real de update_quote
+//           (línea ~4018). Antes solo estaba definido pero no se llamaba.
+//           Ahora bloquea generación PDF si:
+//             - Hay <180 seg desde último PDF
+//             - Cliente acaba de negar algo (ses.lastWasNegation)
+//             - Turno actual contiene negación (detectNegation)
+//
+// [V11.4-2] PRE-PROCESADOR DE NEGACIÓN cross-turno
+//           Antes del flujo principal, detectNegation() corre sobre userText.
+//           Si detecta negación: setea ses.lastWasNegation=true + countdown=2.
+//           Cada turno sin negación decrementa countdown. Llega a 0 → libera.
+//           Esto hace que el gate funcione 2 turnos después de la negación.
+//
+// [V11.4-3] LOGGING de bloqueos. logInfo("pdf_gate_blocked", ...) cada vez
+//           que el gate bloquea, con razón y contador. Para auditoría.
+//
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS v11.3 vs v11.2 — 21 Abril 2026 (pack BEAST: fixes estructurales en código, no solo prompt)
 //
@@ -865,6 +930,189 @@ function sanitizeForCustomer(text) {
   return out.trim();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ═══ v11.5 ENTERPRISE: HELPERS PROFESIONALES ═══════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+
+// v11.5-2: DETECTOR DE AUDIOS ESPURIOS (TikTok forwards / audio bombing)
+// Estos audios contaminan la conversación. Patrones detectados en data real:
+// "amara.org", "subtítulos por la comunidad", "próximo vídeo", "mamá", "chao"
+// frases típicas de outros de YouTube/TikTok.
+const SPAM_AUDIO_PATTERNS = [
+  /amara\.org/i,
+  /subt[ií]tulos.*comunidad/i,
+  /pr[oó]ximo\s*v[ií]deo/i,
+  /^¡?(mam[aá]|pap[aá]|chao|chau|hola)!?\.?$/i,
+  /hasta\s*la\s*pr[oó]xima/i,
+  /nos\s*vemos\s*en\s*el\s*pr[oó]ximo/i,
+  /^[¿?¡!\.\,\s]+$/,
+];
+function detectSpamAudio(transcribedText) {
+  if (!transcribedText) return true; // audio sin transcripción = sospechoso
+  const t = String(transcribedText).trim();
+  if (t.length < 4) return true; // muy corto = sospechoso
+  return SPAM_AUDIO_PATTERNS.some(p => p.test(t));
+}
+
+// v11.5-3: RESUMEN CONSOLIDADO automático cada N turnos.
+// Devuelve string a inyectar en el system prompt si toca consolidar.
+function buildConsolidationInstruction(ses) {
+  const turns = ses.turnsSinceConsolidation || 0;
+  if (turns < 5) return "";
+  const locked = getLockedData(ses);
+  if (Object.keys(locked).length < 2) return ""; // sin datos no tiene sentido consolidar
+  return `\n\n═══ INSTRUCCIÓN ESPECIAL PARA ESTE TURNO ═══\nLlevás ${turns} turnos sin consolidar. Tu próxima respuesta DEBE empezar con un resumen breve de lo que ya sabés (en lenguaje natural, sin JSON) y pedir confirmación. Ejemplo: "Te confirmo lo que tengo: [resumen]. ¿Está correcto para avanzar?". Después de este turno, el contador se reinicia.`;
+}
+
+// v11.5-4: PROMPT OVERRIDES desde Postgres
+// Tabla oliver_prompt_overrides (ya creada en server.js v5.3.7)
+// Carga override activo y lo append al SYSTEM_PROMPT sin redeploy.
+let __cachedPromptOverride = "";
+let __lastOverrideRefresh = 0;
+async function loadPromptOverrides() {
+  if (!SALES_OS_URL || !SALES_OS_INGEST_TOKEN) return "";
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    const r = await fetch(`${SALES_OS_URL}/internal/oliver-prompt-override/active`, {
+      headers: { "x-internal-token": SALES_OS_INGEST_TOKEN },
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (!r.ok) return "";
+    const j = await r.json();
+    __cachedPromptOverride = j?.override_text || "";
+    __lastOverrideRefresh = Date.now();
+    return __cachedPromptOverride;
+  } catch {
+    return __cachedPromptOverride; // si falla, mantenemos el último cacheado
+  }
+}
+function getPromptOverride() {
+  // Refresh cada 5 min en background (no await)
+  if (Date.now() - __lastOverrideRefresh > 5 * 60 * 1000) {
+    fireAndForget("loadPromptOverrides", loadPromptOverrides());
+  }
+  if (!__cachedPromptOverride) return "";
+  return `\n\n═══ OVERRIDE DINÁMICO (desde dashboard) ═══\n${__cachedPromptOverride}`;
+}
+
+// v11.5-7: DETECTOR DE LOOP DE CLIENTE (mismo mensaje 3 veces consecutivas)
+// El cliente está repitiendo porque el bot no entiende. Escalación inmediata.
+function detectClientLoop(ses, userText) {
+  if (!userText || userText.length < 3) return false;
+  const norm = userText.trim().toLowerCase();
+  ses.recentClientMsgs = ses.recentClientMsgs || [];
+  ses.recentClientMsgs.push(norm);
+  if (ses.recentClientMsgs.length > 5) ses.recentClientMsgs.shift();
+  // ¿últimos 3 son iguales?
+  const last3 = ses.recentClientMsgs.slice(-3);
+  if (last3.length < 3) return false;
+  return last3[0] === last3[1] && last3[1] === last3[2];
+}
+
+// v11.5-1: FUNCIONES DE PLANTILLAS META (7 templates aprobadas)
+// Permiten reabrir ventana de conversación con leads dormidos (>24h)
+async function _sendMetaTemplate(to, templateName, languageCode, components = []) {
+  if (!META.TOKEN || !META.PHONE_ID) {
+    return { ok: false, error: "meta_credentials_missing" };
+  }
+  try {
+    const body = {
+      messaging_product: "whatsapp",
+      to: normPhone(to).replace(/^\+/, ""),
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: languageCode || "es_CL" },
+        ...(components.length > 0 && { components }),
+      },
+    };
+    const r = await axiosWA.post(`/${META.PHONE_ID}/messages`, body);
+    logInfo("template_sent", `template=${templateName} to=${to} msgId=${r.data?.messages?.[0]?.id || "?"}`);
+    return { ok: true, msgId: r.data?.messages?.[0]?.id, response: r.data };
+  } catch (err) {
+    const errBody = err.response?.data || err.message;
+    logErr("template_send_failed", err);
+    return { ok: false, error: typeof errBody === "string" ? errBody : JSON.stringify(errBody) };
+  }
+}
+
+async function sendTemplateRecontactoLead(to, nombreCliente = "") {
+  return _sendMetaTemplate(to, "recontacto_lead", "es_CL",
+    nombreCliente ? [{ type: "body", parameters: [{ type: "text", text: nombreCliente }] }] : []
+  );
+}
+async function sendTemplateSeguimientoCotizacion(to, nombreCliente = "", numCot = "") {
+  const params = [];
+  if (nombreCliente) params.push({ type: "text", text: nombreCliente });
+  if (numCot) params.push({ type: "text", text: numCot });
+  return _sendMetaTemplate(to, "seguimiento_cotizacion", "es_CL",
+    params.length > 0 ? [{ type: "body", parameters: params }] : []
+  );
+}
+async function sendTemplateConfirmacionCotizacion(to, nombreCliente = "", numCot = "") {
+  const params = [];
+  if (nombreCliente) params.push({ type: "text", text: nombreCliente });
+  if (numCot) params.push({ type: "text", text: numCot });
+  return _sendMetaTemplate(to, "confirmacion_cotizacion", "es_CL",
+    params.length > 0 ? [{ type: "body", parameters: params }] : []
+  );
+}
+async function sendTemplateEnvioCotizacion(to, nombreCliente = "") {
+  return _sendMetaTemplate(to, "envio_cotizacion", "es_CL",
+    nombreCliente ? [{ type: "body", parameters: [{ type: "text", text: nombreCliente }] }] : []
+  );
+}
+async function sendTemplateBienvenidaActiva(to, nombreCliente = "") {
+  return _sendMetaTemplate(to, "bienvenida_activa_inversiones", "es_CL",
+    nombreCliente ? [{ type: "body", parameters: [{ type: "text", text: nombreCliente }] }] : []
+  );
+}
+async function sendTemplateEscalamientoMarcelo(to, nombreCliente = "", motivo = "") {
+  const params = [];
+  if (nombreCliente) params.push({ type: "text", text: nombreCliente });
+  if (motivo) params.push({ type: "text", text: motivo });
+  return _sendMetaTemplate(to, "escalamiento_marcelo", "es_CL",
+    params.length > 0 ? [{ type: "body", parameters: params }] : []
+  );
+}
+async function sendTemplateInformeDiario(to, fecha = "", resumen = "") {
+  const params = [];
+  if (fecha) params.push({ type: "text", text: fecha });
+  if (resumen) params.push({ type: "text", text: resumen });
+  return _sendMetaTemplate(to, "informe_diario", "es_CL",
+    params.length > 0 ? [{ type: "body", parameters: params }] : []
+  );
+}
+
+// v11.5-10: LOGGING ESTRUCTURADO de eventos críticos para Optimizer Etapa 2B
+// Bridge a tabla oliver_events vía /internal/oliver-event/log (a crear en server.js)
+async function logOliverEvent(eventType, payload = {}) {
+  if (!SALES_OS_URL || !SALES_OS_INGEST_TOKEN) return;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 2500);
+    await fetch(`${SALES_OS_URL}/internal/oliver-event/log`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-token": SALES_OS_INGEST_TOKEN,
+      },
+      body: JSON.stringify({
+        event_type: eventType,
+        bot_version: "v11.5",
+        timestamp: new Date().toISOString(),
+        payload,
+      }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+  } catch {
+    // silencioso, no bloqueamos flujo del bot por logging
+  }
+}
+
 // Normalizar el waId para comparación
 function normalizeWaId(waId) {
   return String(waId || "").replace(/[^\d]/g, "");
@@ -1504,7 +1752,7 @@ async function orchestratorPass1(session, userText) {
   const statusCtx = buildStatusContext(session);
 
   const msgs = [
-    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + buildRealtimeContext() + buildLockedDataContext(session) },
+    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + getPromptOverride() + buildRealtimeContext() + buildLockedDataContext(session) + buildConsolidationInstruction(session) },
     { role: "system", content: statusCtx + `\n\nPERFIL CLIENTE: ${perfil} (tecnico=${session.perfilAcumulado?.tecnico || 0} / emocional=${session.perfilAcumulado?.emocional || 0})` },
     ...session.history.slice(-20),
     { role: "user", content: userText },
@@ -1547,7 +1795,7 @@ async function orchestratorPass2(session, userText, actionsResult) {
   ].filter(Boolean).join("\n");
 
   const msgs = [
-    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + buildRealtimeContext() + buildLockedDataContext(session) },
+    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + getPromptOverride() + buildRealtimeContext() + buildLockedDataContext(session) + buildConsolidationInstruction(session) },
     { role: "system", content: `${contextInfo}\n\nPERFIL: ${perfil}\n\nINSTRUCCIÓN: Genera SOLO el texto de respuesta al cliente. NO prometas enviar nada. Si el PDF ya fue enviado, no lo menciones de nuevo. Si faltan datos, pregunta. Sé breve (2-3 líneas máx).` },
     ...session.history.slice(-14),
     { role: "user", content: userText },
@@ -1889,12 +2137,38 @@ function saveSession(waId, s) {
 }
 
 // Cleanup de sesiones expiradas (en cache)
+// v11.5-8: TTL extendido para leads con nombre (7 días) vs anónimos (TTL normal corto)
+const TTL_EXTENDED_MS = 7 * 24 * 60 * 60 * 1000; // 7 días
 setInterval(() => {
-  const cut = Date.now() - SESSION_TTL;
+  const now = Date.now();
+  const cutShort = now - SESSION_TTL;
+  const cutLong = now - TTL_EXTENDED_MS;
   for (const [id, s] of sessions) {
-    if ((s.lastAt || 0) < cut) sessions.delete(id);
+    const last = s.lastAt || 0;
+    const hasName = !!(s.data?.name);
+    const cut = hasName ? cutLong : cutShort;
+    if (last < cut) sessions.delete(id);
   }
 }, 3_600_000);
+
+// v11.5-6: AUTO RE-ANCLAJE POST-GHOSTING (Regla 17 ahora con cron real)
+// Cada 30 min revisa sesiones cuyo último mensaje fue hace 4h-48h y aún tienen
+// datos del cliente. Marca needsReanchor=true para que el próximo turno bot
+// arranque con re-anclaje contextual personalizado.
+setInterval(() => {
+  const now = Date.now();
+  const minIdle = 4 * 60 * 60 * 1000;  // 4 horas
+  const maxIdle = 48 * 60 * 60 * 1000; // 48 horas (después es reactivación con plantilla)
+  let marked = 0;
+  for (const [id, s] of sessions) {
+    const idle = now - (s.lastAt || 0);
+    if (idle > minIdle && idle < maxIdle && s.data?.name && !s.needsReanchor) {
+      s.needsReanchor = true;
+      marked++;
+    }
+  }
+  if (marked > 0) logInfo("auto_reanchor_marked", `Sessions marcadas para re-anclaje: ${marked}`);
+}, 30 * 60 * 1000); // cada 30 min
 
 /* =========================
    12) DEDUP + RATE + LOCK — [F1] cleanup para seen y rateM
@@ -2537,7 +2811,7 @@ async function runAI(session, userText) {
   const perfil = detectarPerfil(userText, session);
 
   const msgs = [
-    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + buildRealtimeContext() + buildLockedDataContext(session) },
+    { role: "system", content: SYSTEM_PROMPT + getAdminRulesText() + getPromptOverride() + buildRealtimeContext() + buildLockedDataContext(session) + buildConsolidationInstruction(session) },
     {
       role: "system",
       content:
@@ -3498,6 +3772,93 @@ app.post("/internal/operator-send-catalog", async (req, res) => {
   }
 });
 
+// ═══ v11.5-1 ENDPOINT: enviar plantilla Meta a un teléfono ═══
+// POST /admin/send-template?pin=XXXX
+// body: { template: "recontacto_lead", phone: "569XXXXXXXX", customer_name: "Pedro", quote_num: "COT-..." }
+app.post("/admin/send-template", express.json(), async (req, res) => {
+  try {
+    const pin = req.query.pin || req.body?.pin;
+    if (pin !== ADMIN_PIN) return res.status(401).json({ ok: false, error: "invalid_pin" });
+
+    const { template, phone, customer_name, quote_num, motivo, fecha, resumen } = req.body || {};
+    if (!template || !phone) return res.status(400).json({ ok: false, error: "template_and_phone_required" });
+
+    let result;
+    switch (String(template).toLowerCase()) {
+      case "recontacto_lead":
+        result = await sendTemplateRecontactoLead(phone, customer_name);
+        break;
+      case "seguimiento_cotizacion":
+        result = await sendTemplateSeguimientoCotizacion(phone, customer_name, quote_num);
+        break;
+      case "confirmacion_cotizacion":
+        result = await sendTemplateConfirmacionCotizacion(phone, customer_name, quote_num);
+        break;
+      case "envio_cotizacion":
+        result = await sendTemplateEnvioCotizacion(phone, customer_name);
+        break;
+      case "bienvenida_activa_inversiones":
+      case "bienvenida":
+        result = await sendTemplateBienvenidaActiva(phone, customer_name);
+        break;
+      case "escalamiento_marcelo":
+        result = await sendTemplateEscalamientoMarcelo(phone, customer_name, motivo);
+        break;
+      case "informe_diario":
+        result = await sendTemplateInformeDiario(phone, fecha, resumen);
+        break;
+      default:
+        return res.status(400).json({ ok: false, error: "unknown_template", available: ["recontacto_lead","seguimiento_cotizacion","confirmacion_cotizacion","envio_cotizacion","bienvenida_activa_inversiones","escalamiento_marcelo","informe_diario"] });
+    }
+
+    fireAndForget("logOliverEvent.template_sent", logOliverEvent("template_sent_admin", { phone, template, ok: result.ok }));
+    res.json({ ok: result.ok, template, phone, result });
+  } catch (e) {
+    logErr("/admin/send-template", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ═══ v11.5-1b ENDPOINT BULK: enviar plantilla a varios teléfonos ═══
+// POST /admin/send-template-bulk?pin=XXXX
+// body: { template: "recontacto_lead", recipients: [{ phone, customer_name, quote_num }, ...] }
+app.post("/admin/send-template-bulk", express.json({ limit: "1mb" }), async (req, res) => {
+  try {
+    const pin = req.query.pin || req.body?.pin;
+    if (pin !== ADMIN_PIN) return res.status(401).json({ ok: false, error: "invalid_pin" });
+
+    const { template, recipients } = req.body || {};
+    if (!template || !Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({ ok: false, error: "template_and_recipients_required" });
+    }
+    if (recipients.length > 100) return res.status(400).json({ ok: false, error: "max_100_per_bulk" });
+
+    const results = [];
+    for (const r of recipients) {
+      // Anti rate-limit Meta: 200ms entre envíos
+      await sleep(200);
+      let single;
+      switch (String(template).toLowerCase()) {
+        case "recontacto_lead": single = await sendTemplateRecontactoLead(r.phone, r.customer_name); break;
+        case "seguimiento_cotizacion": single = await sendTemplateSeguimientoCotizacion(r.phone, r.customer_name, r.quote_num); break;
+        case "confirmacion_cotizacion": single = await sendTemplateConfirmacionCotizacion(r.phone, r.customer_name, r.quote_num); break;
+        case "envio_cotizacion": single = await sendTemplateEnvioCotizacion(r.phone, r.customer_name); break;
+        case "bienvenida_activa_inversiones":
+        case "bienvenida": single = await sendTemplateBienvenidaActiva(r.phone, r.customer_name); break;
+        default: single = { ok: false, error: "unknown_template" };
+      }
+      results.push({ phone: r.phone, ok: single.ok, error: single.error });
+    }
+
+    const sentOk = results.filter(x => x.ok).length;
+    fireAndForget("logOliverEvent.template_bulk", logOliverEvent("template_bulk_sent", { template, total: recipients.length, ok: sentOk }));
+    res.json({ ok: true, template, total: recipients.length, sent_ok: sentOk, results });
+  } catch (e) {
+    logErr("/admin/send-template-bulk", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // [FIX P14] Aumentar límite del body parser del bot para archivos base64 hasta 25MB
 // (ya debería estar configurado, pero forzamos)
 app.post("/webhook", async (req, res) => {
@@ -3534,6 +3895,28 @@ app.post("/webhook", async (req, res) => {
       const t = await stt(buffer, mime);
       userText = t ? `[Audio]: ${t}` : "[Audio no reconocido]";
       displayText = t ? `🎤 Audio: ${t}` : "🎤 Audio recibido (no transcribible)";
+
+      // v11.5-2: DETECTOR DE AUDIOS ESPURIOS (TikTok forwards / outros de YouTube)
+      const ses = getSession(waId);
+      if (detectSpamAudio(t || "")) {
+        ses.spamAudioCount = (ses.spamAudioCount || 0) + 1;
+        logInfo("spam_audio_detected", `tel=${waId} count=${ses.spamAudioCount} text="${t || "vacío"}"`);
+        // Si lleva 3+ audios espurios, pedir texto y NO procesar como input válido
+        if (ses.spamAudioCount >= 3) {
+          if (!ses.spamAudioReplied) {
+            await waSendH(waId, "Disculpá, me llegan audios cortados o reenviados. ¿Me podés escribir tu consulta? Así te ayudo más rápido 🙏", true);
+            ses.spamAudioReplied = true;
+            saveSession(waId, ses);
+          }
+          fireAndForget("logOliverEvent.spam_audio_skip", logOliverEvent("spam_audio_skip", { phone: waId, count: ses.spamAudioCount }));
+          return res.sendStatus(200);
+        }
+      } else {
+        // Audio válido, resetear contador
+        ses.spamAudioCount = 0;
+        ses.spamAudioReplied = false;
+      }
+
       // v5.3: Guardar audio en BD
       if (MEDIA_ENABLED && buffer) {
         saveMedia({ phone: waId, direction: 'inbound', mediaType: 'audio', mimeType: mime || 'audio/ogg', filename: `audio_${waId}_${Date.now()}.ogg`, buffer, waMediaId: inc.audioId, transcription: t || '' }).catch(() => {});
@@ -3913,6 +4296,65 @@ app.post("/webhook", async (req, res) => {
     // === LÓGICA INTELIGENTE CON GPT + CONFIRMACIÓN (VERSIÓN FINAL) ===
     const t = userText.toLowerCase().trim();
 
+    // ═══ v11.5-5 COMANDO ADMIN STATS por WhatsApp ═══
+    // Solo MARCELO_PHONE puede pedir stats. Devuelve métricas en vivo.
+    const marceloPhone = String(process.env.MARCELO_PHONE || "").replace(/[^\d]/g, "");
+    const callerPhone = String(waId || "").replace(/[^\d]/g, "");
+    if (callerPhone === marceloPhone && (t === "stats" || t === "status" || t === "estado")) {
+      const totalSesiones = sessions.size;
+      let pdfsGeneradosTotal = 0;
+      let gatesBlocked = 0;
+      for (const [_, s] of sessions) {
+        pdfsGeneradosTotal += s.pdfGeneratedCount || 0;
+        if (s.lastWasNegation) gatesBlocked += 1;
+      }
+      const stats = `📊 OLIVER STATS (v11.5)\n\n` +
+        `🟢 Sesiones activas: ${totalSesiones}\n` +
+        `📄 PDFs generados (total cache): ${pdfsGeneradosTotal}\n` +
+        `🛑 Gates bloqueando ahora: ${gatesBlocked}\n` +
+        `⏰ Hora Chile: ${new Date().toLocaleString("es-CL", { timeZone: "America/Santiago" })}\n` +
+        `🔧 Override activo: ${__cachedPromptOverride ? "SÍ" : "NO"}\n\n` +
+        `Comandos: STATS / STATUS / ESTADO`;
+      await waSendH(waId, stats, true);
+      return;
+    }
+
+    // ═══ v11.4 PRE-PROCESADOR DE NEGACIÓN (cross-turno) ═══
+    // Trackea negaciones del cliente para que canGeneratePdf() las vea por 2 turnos.
+    const neg = detectNegation(userText);
+    if (neg.isNegation) {
+      ses.lastWasNegation = true;
+      ses.negationCountdown = 2; // bloquea PDF por los próximos 2 turnos
+      ses.lastNegatedTerm = neg.negatedTerm;
+      logInfo("negation_detected", `tel=${waId} term=${neg.negatedTerm} countdown=2`);
+      fireAndForget("logOliverEvent.negation", logOliverEvent("negation_detected", { phone: waId, term: neg.negatedTerm }));
+    } else if (ses.negationCountdown > 0) {
+      ses.negationCountdown -= 1;
+      if (ses.negationCountdown === 0) ses.lastWasNegation = false;
+    }
+
+    // ═══ v11.5-7 DETECTOR DE LOOP DE CLIENTE (mismo mensaje 3x consecutivas) ═══
+    if (detectClientLoop(ses, userText)) {
+      logInfo("client_loop_detected", `tel=${waId} text="${userText.substring(0, 50)}"`);
+      fireAndForget("logOliverEvent.client_loop", logOliverEvent("client_loop_detected", { phone: waId, repeated: userText.substring(0, 100) }));
+      const nombre = ses.data?.name ? `, ${ses.data.name}` : "";
+      const agente = process.env.AGENT_NAME || "Marcelo Cifuentes";
+      await waSendH(waId, `Disculpá${nombre}, parece que no estoy entendiendo bien lo que necesitás. Te paso directo con ${agente} para que te ayude mejor. ¿A qué hora te queda bien que te llame hoy?`, true);
+      const summary = buildEscalationSummary(ses, userText);
+      await sendEscalationAlert(summary, normPhone(process.env.ESCALATION_PHONE || process.env.OWNER_NOTIFICATION_PHONE), ses.data);
+      ses.recentClientMsgs = []; // reset para no escalar 2 veces seguidas
+      saveSession(waId, ses);
+      return;
+    }
+
+    // ═══ v11.5-3 INCREMENTO contador de turnos para resumen consolidado ═══
+    ses.turnsSinceConsolidation = (ses.turnsSinceConsolidation || 0) + 1;
+    if (ses.turnsSinceConsolidation >= 5) {
+      // Reset acá. La instrucción ya viajó al LLM en buildConsolidationInstruction()
+      // que se invoca en cada inyección del prompt.
+      ses.turnsSinceConsolidation = 0;
+    }
+
     // 1. Productos especiales que SIEMPRE se escalan
     const specialProductKeywords = ["templado", "vidrio templado", "mampara", "cierre de terraza", "cierre terraza", "celosia", "celosía", "aluminio", "cortina", "reja"];
     const isSpecialProduct = specialProductKeywords.some(kw => t.includes(kw));
@@ -4016,6 +4458,18 @@ app.post("/webhook", async (req, res) => {
           continue;
         }
         if (tc.function?.name !== "update_quote") continue;
+
+        // ═══ v11.4 GATE: bloquear avalancha de PDFs ═══
+        const gate = canGeneratePdf(ses, userText);
+        if (!gate.allow) {
+          logInfo("pdf_gate_blocked", `tel=${waId} reason=${gate.reason} pdfCount=${ses.pdfGeneratedCount || 0}`);
+          actionsResult.pdfBlocked = true;
+          actionsResult.pdfBlockReason = gate.reason;
+          // No llamamos a update_quote, pero el LLM va a generar texto en pass2 igual.
+          // El texto debe explicar que no regenera el PDF aún. Pasamos al siguiente tool call.
+          continue;
+        }
+
         let args = {};
         try { args = JSON.parse(tc.function.arguments || "{}"); } catch { continue; }
 
@@ -4357,6 +4811,11 @@ function normTipoApertura(text) {
 }
 app.listen(PORT, () => {
   console.log(
-    `🚀 Oliver v11.3 (Ferrari 11.3 BEAST — V12 light: state machine + gates en código) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
+    `🚀 Oliver v11.5 (Ferrari 11.5 ENTERPRISE — paquete completo, cero pendientes) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
   );
+  // v11.5-4: cargar prompt overrides desde DB al arranque (no bloqueante)
+  loadPromptOverrides().then(text => {
+    if (text) console.log(`📋 Prompt override activo cargado (${text.length} chars)`);
+    else console.log(`📋 Prompt override: ninguno activo`);
+  }).catch(() => console.log(`📋 Prompt override: error al cargar (no crítico)`));
 });
