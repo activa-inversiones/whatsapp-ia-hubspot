@@ -1,5 +1,15 @@
-// index.js — WhatsApp IA Oliver v11.5 (Ferrari 11.5 ENTERPRISE — paquete completo, cero pendientes)
+// index.js — WhatsApp IA Oliver v11.6 (ENTERPRISE + recording)
 // Railway | Node 18+ | ESM
+// ═══════════════════════════════════════════════════════════════════
+// CAMBIOS v11.6 vs v11.5 — 21 Abril 2026 (feature: audio grabado por operador):
+//
+// [V11.6-1] NUEVO endpoint /internal/operator-send-audio-recording
+//           Recibe audio grabado (base64) desde el inbox, lo sube a Meta y lo
+//           envía al cliente como nota de voz. Guarda en media_attachments
+//           con direction=outbound para que aparezca en el inbox.
+//           Complementa a operator-send-voice (texto→ElevenLabs) con
+//           operator-send-audio-recording (voz real del operador → WhatsApp).
+//
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS v11.5 vs v11.4 — 21 Abril 2026 (release ENTERPRISE: 10 mejoras profesionales):
 //
@@ -3743,6 +3753,58 @@ app.post("/internal/operator-upload-media", async (req, res) => {
   }
 });
 
+// [v11.6 2026-04-21] Nota de voz GRABADA por el operador (NO TTS)
+// Recibe audio grabado en base64 desde el inbox y lo envía directo a WhatsApp
+// como nota de voz. Compatible con MediaRecorder web (webm/ogg/mp4).
+app.post("/internal/operator-send-audio-recording", async (req, res) => {
+  try {
+    if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
+    const { phone, audio_base64, mime_type, operator_name } = req.body || {};
+    if (!phone) return res.status(400).json({ ok: false, error: "phone_required" });
+    if (!audio_base64) return res.status(400).json({ ok: false, error: "audio_base64_required" });
+
+    const cleanPhone = normPhone(phone);
+    const buffer = Buffer.from(audio_base64, "base64");
+    const mime = mime_type || "audio/ogg";
+    // WhatsApp acepta: audio/aac, audio/mp4, audio/mpeg, audio/amr, audio/ogg (codecs=opus)
+    const ext = mime.includes("webm") ? "webm" : mime.includes("mp4") ? "m4a" : mime.includes("mpeg") ? "mp3" : "ogg";
+    const filename = `rec_${Date.now()}.${ext}`;
+
+    let mediaId;
+    try {
+      mediaId = await waUploadAudio(buffer, mime, filename);
+      await waSendAudio(cleanPhone, mediaId);
+    } catch (e) {
+      logErr("operator-send-audio-recording.upload", e);
+      return res.status(502).json({ ok: false, error: "whatsapp_upload_failed", detail: e.message });
+    }
+
+    // Registrar en inbox como outbound (audio grabado)
+    fireAndForget("trackConversationEvent.operator_recording", trackConversationEvent({
+      channel: "whatsapp", external_id: cleanPhone, direction: "outbound",
+      actor_type: "operator", actor_name: operator_name || "Marcelo",
+      message_type: "audio", body: `🎙️ Nota de voz grabada (${Math.round(buffer.length/1024)} KB)`,
+      metadata: { source: "sales_os_operator", recording: true, mime_type: mime, size_bytes: buffer.length },
+      unread_count: 0,
+    }));
+
+    // Guardar en media_attachments vía mediaStore para que aparezca en el inbox
+    if (MEDIA_ENABLED) {
+      saveMedia({
+        phone: cleanPhone, direction: 'outbound', mediaType: 'audio',
+        mimeType: mime, filename, buffer, waMediaId: mediaId,
+      }).catch(() => {});
+    }
+
+    logInfo("operator-recording", `🎙️ audio grabado enviado a ${cleanPhone} (${buffer.length} bytes)`);
+    res.json({ ok: true, sent: true, phone: cleanPhone, media_id: mediaId, size_bytes: buffer.length });
+  } catch (e) {
+    logErr("/internal/operator-send-audio-recording", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+
 // [FIX P14] Resolver de catálogo: el Sales OS manda catalog_key (ej "catalogo_pvc")
 // y este endpoint busca la URL en env vars y la envía
 app.post("/internal/operator-send-catalog", async (req, res) => {
@@ -4811,7 +4873,7 @@ function normTipoApertura(text) {
 }
 app.listen(PORT, () => {
   console.log(
-    `🚀 Oliver v11.5 (Ferrari 11.5 ENTERPRISE — paquete completo, cero pendientes) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
+    `🚀 Oliver v11.6 (ENTERPRISE + recording) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
   );
   // v11.5-4: cargar prompt overrides desde DB al arranque (no bloqueante)
   loadPromptOverrides().then(text => {
