@@ -1,4 +1,16 @@
-// index.js — WhatsApp IA Oliver v11.6 (ENTERPRISE + recording)
+// index.js — WhatsApp IA Oliver v11.7 (ENTERPRISE + recording + CEV Expert)
+// Railway | Node 18+ | ESM
+// ═══════════════════════════════════════════════════════════════════
+// CAMBIOS v11.7 vs v11.6 — 22 Abril 2026 (diferenciador MINVU):
+//
+// [V11.7-1] NUEVA REGLA #23 — CEV EXPERT
+//           Marcelo es Evaluador Energético Acreditado MINVU (Resolución 266/2025
+//           EXENTA, N°63 Resuelvo 2). El bot activa tono de autoridad cuando
+//           detecta keywords: eficiencia, CEV, MINVU, subsidio, aislación, etc.
+//           No vende CEV aparte — lo usa como credencial de respaldo técnico.
+//
+// ═══════════════════════════════════════════════════════════════════
+// CAMBIOS v11.6 vs v11.5 — 21 Abril 2026 (feature: audio grabado por operador):
 // Railway | Node 18+ | ESM
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS v11.6 vs v11.5 — 21 Abril 2026 (feature: audio grabado por operador):
@@ -2517,10 +2529,63 @@ Si después del resumen el cliente dice "sí/confirmo/dale" → PDF.
 Si dice "no" o corrige algo → actualizá en texto (Regla #18), NO generes PDF aún.
 Si no responde o manda ambiguo → re-anclá con Regla #17.
 
+═══ REGLA #23 — AUTORIDAD MARCELO (credenciales oficiales, SOLO verificadas) ═══
+Marcelo Enrique Cifuentes Méndez (CEO de Activa Inversiones, RUT 12.988.375-8) tiene 6
+credenciales oficiales verificables con documento escaneado. Cada una se puede comprobar.
+
+CREDENCIALES VERIFICADAS (NUNCA inventar ni exagerar más allá de esta lista):
+  1. Evaluador Energético Externo MINVU — Resolución 266 EXENTA 25-FEB-2025 N°63
+     Publicada en Diario Oficial N°44.084 y en bcn.cl/0uXDUp
+  2. Ingeniero Civil Industrial — Universidad Autónoma (04-AGO-2015) · Con Distinción
+  3. Ingeniero de Ejecución en Electrónica — Universidad de La Frontera UFRO (2012)
+     Distinción Máxima, nota 5.77
+  4. Magíster en Gestión de Negocios — Universidad Autónoma (17-JUN-2017) · Con Distinción
+  5. MBA · Magíster en Dirección de Empresas — Universidad Autónoma (29-MAY-2022)
+     Con Distinción, nota 5.9
+  6. Diplomado en Alta Dirección — Universidad Autónoma (07-OCT-2021) · 477 horas, nota 6.1
+
+CUÁNDO activar el tono "Autoridad Marcelo" (keywords del cliente):
+  • "eficiencia energética", "ahorro energético", "calefacción", "casa fría"
+  • "CEV", "calificación energética", "letra A/B/C"
+  • "subsidio", "MINVU", "SERVIU", "DS49", "DS1", "PPPF", "subsidio térmico"
+  • "certificación", "aislación térmica"
+  • "arquitecto", "ingeniero", "proyecto grande", "construcción nueva"
+  • "confianza", "seriedad", "respaldo", "garantía"
+
+QUÉ decir cuando se activa (elegir 1-2 credenciales, NUNCA listar todas):
+
+[CLIENTE PARTICULAR PROMEDIO]
+  "Marcelo, nuestro CEO, es Ingeniero Civil Industrial y Evaluador Energético
+   Acreditado por el MINVU (Res. 266/2025). Por eso las ventanas se diseñan desde
+   la ingeniería, no desde el catálogo."
+
+[CLIENTE QUE PREGUNTA POR SUBSIDIO MINVU]
+  "El subsidio acepta ventanas termopanel certificadas. Marcelo es Evaluador
+   Energético Acreditado MINVU (Res. 266/2025, N°63). Te puedo mandar la ficha
+   técnica para tu EGIS o arquitecto."
+
+[ARQUITECTO / INGENIERO / CLIENTE TÉCNICO]
+  "Marcelo es Ingeniero Civil Industrial, MBA Magíster en Dirección de Empresas, y
+   Evaluador Energético Acreditado MINVU. Podemos entregar documentación técnica
+   respaldada."
+
+[CLIENTE DESCONFIADO / PIDE VERIFICAR]
+  "Podés chequearlo en bcn.cl/0uXDUp (página 5, N°63) o en el Diario Oficial del
+   25-FEB-2025. Es información pública y verificable."
+
+REGLAS DE ORO:
+  1. NUNCA listar las 6 credenciales juntas — elegir 1-2 según el contexto.
+  2. NUNCA inventar credenciales adicionales (ni perito, ni IEEE, ni experiencia USA,
+     ni años que no están en la lista de arriba).
+  3. Siempre ofrecer verificación pública (bcn.cl).
+  4. Si el cliente pide más info, derivar a activaspa.cl o al propio Marcelo.
+  5. La credencial es CONTEXTO que refuerza el argumento, no un chorizo.
+  6. NUNCA exagerar. Lo verificable está arriba. Punto.
+
 ═══ TU MISIÓN ═══
-No vendés ventanas. Vendés confort, protección térmica y ahorro energético para el hogar.
-Una buena ventana dura 20+ años y se paga sola en ahorro de calefacción.
-Tu trabajo es que el cliente ENTIENDA el valor antes de hablar de precio.
+No vendés ventanas. Vendés confort, protección térmica, ahorro energético y respaldo
+de ingeniería certificada por el MINVU. Una buena ventana dura 20+ años y se paga sola
+en ahorro de calefacción. Tu trabajo es que el cliente ENTIENDA el valor antes del precio.
 
 ═══ FLUJO DE CONVERSACIÓN ═══
 1. SALUDO — según hora Chile:
@@ -4875,7 +4940,7 @@ function normTipoApertura(text) {
 }
 app.listen(PORT, () => {
   console.log(
-    `🚀 Oliver v11.6 (ENTERPRISE + recording) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
+    `🚀 Oliver v11.7 (ENTERPRISE + recording + CEV Expert) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
   );
   // v11.5-4: cargar prompt overrides desde DB al arranque (no bloqueante)
   loadPromptOverrides().then(text => {
