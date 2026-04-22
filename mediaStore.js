@@ -1,7 +1,12 @@
 /**
  * mediaStore.js — Servicio almacenamiento multimedia para Oliver
- * v5.3 — Guarda imágenes, audios, PDFs, videos en Postgres
- * 
+ * v5.3.1 — Guarda imágenes, audios, PDFs, videos en Postgres
+ *
+ * [v5.3.1 FIX 2026-04-21] El server.js (requireToken) busca el token en
+ * 'x-api-key' / '?token=' / 'Authorization: Bearer'. Antes lo mandábamos como
+ * 'x-operator-token' y siempre daba 401. Ahora lo mandamos en los 3 headers
+ * que sí lee el server para máxima compatibilidad.
+ *
  * USO EN BOT:
  *   const { saveMedia, getMediaByPhone } = require('./mediaStore');
  *   await saveMedia({ phone, type:'image', buffer, mime, filename, transcription, aiDescription });
@@ -10,6 +15,16 @@
 const SALES_OS_URL = process.env.SALES_OS_URL || '';
 const OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || process.env.INTERNAL_OPERATOR_TOKEN || '';
 const MEDIA_ENABLED = !!(SALES_OS_URL && OPERATOR_TOKEN);
+
+// [v5.3.1 FIX] Helper: headers compatibles con requireToken() del server
+function authHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    'x-api-key': OPERATOR_TOKEN,
+    'Authorization': `Bearer ${OPERATOR_TOKEN}`,
+    'x-operator-token': OPERATOR_TOKEN, // compatibilidad, por si en el futuro el server lo lee
+  };
+}
 
 /**
  * Guarda un archivo multimedia en la BD vía Sales-OS API
@@ -29,7 +44,7 @@ async function saveMedia(opts) {
     console.log('[MediaStore] Disabled (no SALES_OS_URL)');
     return null;
   }
-  
+
   try {
     const payload = {
       phone: opts.phone,
@@ -47,10 +62,7 @@ async function saveMedia(opts) {
 
     const resp = await fetch(`${SALES_OS_URL}/api/v5/media/store`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-operator-token': OPERATOR_TOKEN
-      },
+      headers: authHeaders(),
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(10000)
     });
@@ -75,14 +87,11 @@ async function saveMedia(opts) {
  */
 async function logActivity(opts) {
   if (!MEDIA_ENABLED) return null;
-  
+
   try {
     const resp = await fetch(`${SALES_OS_URL}/api/v5/pipeline/activity`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-operator-token': OPERATOR_TOKEN
-      },
+      headers: authHeaders(),
       body: JSON.stringify({
         phone: opts.phone,
         activity_type: opts.type,
@@ -104,14 +113,11 @@ async function logActivity(opts) {
  */
 async function notifyQuoteSent(opts) {
   if (!MEDIA_ENABLED) return null;
-  
+
   try {
     const resp = await fetch(`${SALES_OS_URL}/api/v5/quote-alerts/notify`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-operator-token': OPERATOR_TOKEN
-      },
+      headers: authHeaders(),
       body: JSON.stringify({
         phone: opts.phone,
         client_name: opts.clientName || '',
@@ -121,7 +127,7 @@ async function notifyQuoteSent(opts) {
       }),
       signal: AbortSignal.timeout(10000)
     });
-    
+
     if (resp.ok) {
       console.log(`[MediaStore] ✅ Quote alert sent for ${opts.phone} ($${opts.quoteValue})`);
     }
