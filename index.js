@@ -2015,6 +2015,8 @@ const MAX_HIST = 50;
 
 // Configuración del backend de persistencia
 const SALES_OS_URL = process.env.SALES_OS_URL || "";
+// [v11.6 FIX] SALES_OS_INGEST_TOKEN antes no estaba declarado y tiraba ReferenceError
+const SALES_OS_INGEST_TOKEN = process.env.SALES_OS_INGEST_TOKEN || "";
 const SALES_OS_OPERATOR_TOKEN =
   process.env.SALES_OS_OPERATOR_TOKEN ||
   process.env.INTERNAL_OPERATOR_TOKEN ||
