@@ -997,7 +997,7 @@ async function loadPromptOverrides() {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 4000);
     const r = await fetch(`${SALES_OS_URL}/internal/oliver-prompt-override/active`, {
-      headers: { "x-internal-token": SALES_OS_INGEST_TOKEN },
+      headers: { "x-api-key": SALES_OS_OPERATOR_TOKEN },
       signal: ctrl.signal,
     });
     clearTimeout(timer);
@@ -4059,6 +4059,7 @@ app.post("/webhook", async (req, res) => {
     await loadSessionFromStore(waId);
 
     const ses = getSession(waId);
+    ses.waId = waId;
     await waRead(msgId);
 
     let userText = inc.text || "";
@@ -4899,8 +4900,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     saveSession(waId, ses);
-    saveSession(waId, ses);
-  } catch (e) {
+     } catch (e) {
     logErr("WEBHOOK", e);
   } finally {
     stopType();
@@ -4969,7 +4969,7 @@ function normColor(text) {
   if (t.includes("blanco") || t.includes("white")) return "BLANCO";
   if (t.includes("nogal") || t.includes("roble") || t.includes("madera") || t.includes("dorado")) return "NOGAL";
   if (t.includes("grafito") || t.includes("antracita") || t.includes("gris") || t.includes("plomo")) return "GRAFITO";
-  if (t.includes("negro") || t.includes("black") || t.includes("new black")) return "NEGRO";
+  if (t.includes("negro") || t.includes("black") || t.includes("new black") || t.includes("newblack")) return "NEWBLACK";
 
   return "BLANCO"; // default
 }
