@@ -1,4 +1,4 @@
-// index.js — WhatsApp IA Oliver v11.8 (VENDEDOR CONSULTIVO + Google Reviews dinámicas)
+// index.js — WhatsApp IA Oliver v11.8.1 (FIX template informe_diario 4 params)
 // Railway | Node 18+ | ESM
 // ═══════════════════════════════════════════════════════════════════
 // CAMBIOS v11.8 vs v11.7 — 20 Mayo 2026 (consolidación auditoría 4 IAs):
@@ -1177,12 +1177,25 @@ async function sendTemplateEscalamientoMarcelo(to, nombreCliente = "", motivo = 
     params.length > 0 ? [{ type: "body", parameters: params }] : []
   );
 }
-async function sendTemplateInformeDiario(to, fecha = "", resumen = "") {
-  const params = [];
-  if (fecha) params.push({ type: "text", text: fecha });
-  if (resumen) params.push({ type: "text", text: resumen });
+// FIX 2026-05-23: el template "informe_diario" en Meta Business está configurado
+// con 4 placeholders ({{1}} {{2}} {{3}} {{4}}). Antes esta función enviaba solo 2
+// (fecha + resumen) → Meta rechazaba con "number of localizable_params (2) does
+// not match the expected number of params (4)". Ahora enviamos siempre 4 params,
+// rellenando con un guión bajo "—" si el caller no los provee.
+async function sendTemplateInformeDiario(to, fecha = "", resumen = "", linea3 = "", linea4 = "") {
+  // Meta no acepta strings vacías en params — usar placeholder visible
+  const safe = (s) => {
+    const t = String(s || "—").trim();
+    return t.length > 0 ? t.slice(0, 1024) : "—";
+  };
+  const params = [
+    { type: "text", text: safe(fecha)   },  // {{1}}
+    { type: "text", text: safe(resumen) },  // {{2}}
+    { type: "text", text: safe(linea3)  },  // {{3}}
+    { type: "text", text: safe(linea4)  },  // {{4}}
+  ];
   return _sendMetaTemplate(to, "informe_diario", "es_CL",
-    params.length > 0 ? [{ type: "body", parameters: params }] : []
+    [{ type: "body", parameters: params }]
   );
 }
 
@@ -4410,7 +4423,7 @@ app.post("/admin/send-template", express.json(), async (req, res) => {
     const pin = req.query.pin || req.body?.pin;
     if (pin !== ADMIN_PIN) return res.status(401).json({ ok: false, error: "invalid_pin" });
 
-    const { template, phone, customer_name, quote_num, motivo, fecha, resumen } = req.body || {};
+    const { template, phone, customer_name, quote_num, motivo, fecha, resumen, linea3, linea4 } = req.body || {};
     if (!template || !phone) return res.status(400).json({ ok: false, error: "template_and_phone_required" });
 
     let result;
@@ -4435,7 +4448,8 @@ app.post("/admin/send-template", express.json(), async (req, res) => {
         result = await sendTemplateEscalamientoMarcelo(phone, customer_name, motivo);
         break;
       case "informe_diario":
-        result = await sendTemplateInformeDiario(phone, fecha, resumen);
+        // FIX 2026-05-23: pasar los 4 params requeridos por Meta
+        result = await sendTemplateInformeDiario(phone, fecha, resumen, linea3, linea4);
         break;
       default:
         return res.status(400).json({ ok: false, error: "unknown_template", available: ["recontacto_lead","seguimiento_cotizacion","confirmacion_cotizacion","envio_cotizacion","bienvenida_activa_inversiones","escalamiento_marcelo","informe_diario"] });
@@ -5441,7 +5455,7 @@ function normTipoApertura(text) {
 }
 app.listen(PORT, () => {
   console.log(
-    `🚀 Oliver v11.8 (VENDEDOR CONSULTIVO + Google Reviews dinámicas) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
+    `🚀 Oliver v11.8.1 (FIX template informe_diario 4 params) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
   );
   // v11.5-4: cargar prompt overrides desde DB al arranque (no bloqueante)
   loadPromptOverrides().then(text => {
