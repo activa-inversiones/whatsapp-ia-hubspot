@@ -132,7 +132,9 @@ export const TOOL_DEFS = [
 // Cada función recibe el `input` validado por Claude y el `ctx` de la sesión
 // (teléfono del cliente, hooks de persistencia/notificación inyectables).
 
-const SIMULADOR_BASE = process.env.SIMULADOR_URL || "https://activalabs.ai/simulador";
+// URL base del simulador — HARDCODEADA. NO usar env override ni permitir que
+// el modelo invente la URL. Esta es la única URL válida del simulador.
+const SIMULADOR_BASE = "https://ops.activalabs.ai/simulator";
 
 /**
  * Ejecuta una tool por nombre. Devuelve { ok, data } o { ok:false, error }.
