@@ -4518,6 +4518,8 @@ app.post("/webhook", async (req, res) => {
       const _inc = extractMsg(req.body);
       const from = _inc?.ok ? norm(_inc.waId) : "";
       if (from && v2Numbers.includes(from)) {
+        // Verifica la firma de Meta ANTES de rutear a v2 (misma garantía que v1).
+        if (!verifySig(req)) { res.sendStatus(200); return; }
         const { handleWebhook } = await import("./src/sales-agent/agent.js");
         return handleWebhook(req, res);
       }
