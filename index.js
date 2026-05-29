@@ -4506,6 +4506,28 @@ app.post("/admin/send-template-bulk", express.json({ limit: "1mb" }), async (req
 // [FIX P14] Aumentar límite del body parser del bot para archivos base64 hasta 25MB
 // (ya debería estar configurado, pero forzamos)
 app.post("/webhook", async (req, res) => {
+  // [Oliver v2 pilot] feature-flag routing — falls through to v1 on any error
+  try {
+    const v2Enabled = process.env.OLIVER_V2_ENABLED === "true";
+    if (v2Enabled) {
+      const norm = (s) => (s || "").replace(/\D/g, "");
+      const v2Numbers = (process.env.OLIVER_V2_NUMBERS || "")
+        .split(",")
+        .map(norm)
+        .filter(Boolean);
+      const _inc = extractMsg(req.body);
+      const from = _inc?.ok ? norm(_inc.waId) : "";
+      if (from && v2Numbers.includes(from)) {
+        const { handleWebhook } = await import("./src/sales-agent/agent.js");
+        return handleWebhook(req, res);
+      }
+    }
+  } catch (e) {
+    try {
+      logErr("oliver_v2_flag", e);
+    } catch {}
+    // fall through to v1
+  }
   res.sendStatus(200);
   if (!verifySig(req)) return;
 

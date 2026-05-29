@@ -30,7 +30,7 @@ export const TOOL_DEFS = [
         ancho_mm: { type: "integer", description: "Ancho en milímetros" },
         alto_mm: { type: "integer", description: "Alto en milímetros" },
         color: { type: "string", description: "Color del perfil, ej. blanco, gris, madera" },
-        glass_id: { type: "string", description: "ID del vidrio (de listar_vidrios). Opcional si el cliente no eligió." },
+        glass_id: { type: "integer", description: "ID numérico del vidrio (de listar_vidrios). Opcional si el cliente no eligió." },
         comuna: { type: "string", description: "Comuna de despacho (afecta flete)" },
       },
       required: ["tipo", "ancho_mm", "alto_mm", "color", "comuna"],
@@ -40,16 +40,18 @@ export const TOOL_DEFS = [
     name: "calcular_por_area",
     description:
       "Cotiza por metros cuadrados cuando el cliente NO sabe las medidas exactas. " +
-      "Da un rango orientativo; para precio firme se necesita medición.",
+      "Da un rango orientativo; para precio firme se necesita medición. " +
+      "Requiere un glass_id: si el cliente no eligió vidrio, obtén uno con listar_vidrios primero.",
     input_schema: {
       type: "object",
       properties: {
         tipo: { type: "string", description: "Tipo de ventana" },
-        m2: { type: "number", description: "Metros cuadrados aproximados" },
+        area_m2: { type: "number", description: "Metros cuadrados aproximados" },
         color: { type: "string", description: "Color del perfil" },
         comuna: { type: "string", description: "Comuna de despacho" },
+        glass_id: { type: "integer", description: "ID del vidrio (de listar_vidrios)" },
       },
-      required: ["tipo", "m2", "comuna"],
+      required: ["tipo", "area_m2", "comuna", "glass_id"],
     },
   },
   {
