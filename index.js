@@ -4506,6 +4506,50 @@ app.post("/admin/send-template-bulk", express.json({ limit: "1mb" }), async (req
 // [FIX P14] Aumentar límite del body parser del bot para archivos base64 hasta 25MB
 // (ya debería estar configurado, pero forzamos)
 app.post("/webhook", async (req, res) => {
+  // [Oliver v2 pilot] feature-flag routing — falls through to v1 on any error
+  try {
+    const v2Enabled = process.env.OLIVER_V2_ENABLED === "true";
+    // DIAG TEMP — log de estado del flag v2. Dispara SIEMPRE (aun si enabled=false).
+    // Variables scoped propias (_normD/_numsD/_fromD) para no interferir con la lógica real.
+    // Remover tras confirmar el fix.
+    {
+      const _normD = (s) => (s || "").replace(/\D/g, "");
+      const _numsD = (process.env.OLIVER_V2_NUMBERS || "")
+        .split(",")
+        .map(_normD)
+        .filter(Boolean);
+      const _incD = extractMsg(req.body);
+      const _fromD = _incD?.ok ? _normD(_incD.waId) : "";
+      console.log("[v2-flag-diag]", {
+        enabled: v2Enabled,
+        raw_enabled: JSON.stringify(process.env.OLIVER_V2_ENABLED),
+        raw_numbers: JSON.stringify(process.env.OLIVER_V2_NUMBERS),
+        parsed_numbers: _numsD,
+        from: _fromD,
+        match: _numsD.includes(_fromD),
+      });
+    }
+    if (v2Enabled) {
+      const norm = (s) => (s || "").replace(/\D/g, "");
+      const v2Numbers = (process.env.OLIVER_V2_NUMBERS || "")
+        .split(",")
+        .map(norm)
+        .filter(Boolean);
+      const _inc = extractMsg(req.body);
+      const from = _inc?.ok ? norm(_inc.waId) : "";
+      if (from && v2Numbers.includes(from)) {
+        // Verifica la firma de Meta ANTES de rutear a v2 (misma garantía que v1).
+        if (!verifySig(req)) { res.sendStatus(200); return; }
+        const { handleWebhook } = await import("./src/sales-agent/agent.js");
+        return handleWebhook(req, res);
+      }
+    }
+  } catch (e) {
+    try {
+      logErr("oliver_v2_flag", e);
+    } catch {}
+    // fall through to v1
+  }
   res.sendStatus(200);
   if (!verifySig(req)) return;
 
