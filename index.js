@@ -4509,6 +4509,26 @@ app.post("/webhook", async (req, res) => {
   // [Oliver v2 pilot] feature-flag routing — falls through to v1 on any error
   try {
     const v2Enabled = process.env.OLIVER_V2_ENABLED === "true";
+    // DIAG TEMP — log de estado del flag v2. Dispara SIEMPRE (aun si enabled=false).
+    // Variables scoped propias (_normD/_numsD/_fromD) para no interferir con la lógica real.
+    // Remover tras confirmar el fix.
+    {
+      const _normD = (s) => (s || "").replace(/\D/g, "");
+      const _numsD = (process.env.OLIVER_V2_NUMBERS || "")
+        .split(",")
+        .map(_normD)
+        .filter(Boolean);
+      const _incD = extractMsg(req.body);
+      const _fromD = _incD?.ok ? _normD(_incD.waId) : "";
+      console.log("[v2-flag-diag]", {
+        enabled: v2Enabled,
+        raw_enabled: JSON.stringify(process.env.OLIVER_V2_ENABLED),
+        raw_numbers: JSON.stringify(process.env.OLIVER_V2_NUMBERS),
+        parsed_numbers: _numsD,
+        from: _fromD,
+        match: _numsD.includes(_fromD),
+      });
+    }
     if (v2Enabled) {
       const norm = (s) => (s || "").replace(/\D/g, "");
       const v2Numbers = (process.env.OLIVER_V2_NUMBERS || "")
