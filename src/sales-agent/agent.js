@@ -113,6 +113,38 @@ const CONV_HISTORY = new Map(); // Map<from(string), history[]>
 // razonable para una conversación de ventas corta.
 const MAX_HISTORY_TURNS = 20;
 
+// ── Post-filtro determinista anti-voseo (defensivo) ─────────────────────────
+// Red de seguridad por si el modelo se escapa al voseo argentino pese al system
+// prompt. Se aplica al reply ANTES de enviarlo por WhatsApp.
+const ANTI_VOSEO = {
+  "\\bsos\\b": "eres",
+  "\\bvos\\b": "tú",
+  "\\btenés\\b": "tienes",
+  "\\bquerés\\b": "quieres",
+  "\\bpodés\\b": "puedes",
+  "\\bsabés\\b": "sabes",
+  "\\bdecís\\b": "dices",
+  "\\bvenís\\b": "vienes",
+  "\\bcomés\\b": "comes",
+  "\\bcontás\\b": "cuentas",
+  "\\bcontas\\b": "cuentas",
+  "\\bre\\s+útil\\b": "muy útil",
+  "\\bre\\s+bueno\\b": "muy bueno",
+  "\\bre\\s+rápido\\b": "muy rápido",
+  "\\bche\\b": "",
+  "\\bboludo\\b": "",
+  "\\blaburo\\b": "trabajo",
+};
+
+function sanitizeChilean(text) {
+  let result = text;
+  for (const [pattern, replacement] of Object.entries(ANTI_VOSEO)) {
+    result = result.replace(new RegExp(pattern, "gi"), replacement);
+  }
+  // Colapsa espacios dobles que dejan los reemplazos a "" (che/boludo).
+  return result.replace(/[ \t]{2,}/g, " ").replace(/ +([,.!?])/g, "$1");
+}
+
 /**
  * Entrypoint del webhook de WhatsApp para Oliver v2.
  *
@@ -160,7 +192,8 @@ export async function handleWebhook(req, res) {
         : newHistory;
     CONV_HISTORY.set(from, trimmed);
 
-    await sendWhatsAppText(from, reply);
+    const finalReply = sanitizeChilean(reply);
+    await sendWhatsAppText(from, finalReply);
   } catch (err) {
     // Nunca relanzar: el 200 ya se envió.
     console.error("[handleWebhook] error procesando mensaje:", err?.stack || err);
