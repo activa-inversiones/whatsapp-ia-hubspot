@@ -1270,14 +1270,18 @@ function parseAdminCmd(text) {
   if (s === "ADMIN VER REGLAS") return { type: "admin_list_rules" };
   if (s.startsWith("ADMIN BORRAR REGLA ")) return { type: "admin_del_rule", ruleNum: parseInt(s.slice(19)) };
 
-  // AGENDA HOY / AGENDA — agenda de seguimiento (FASE 1 secretaria WhatsApp)
-  if (/^AGENDA(\s+HOY)?$/i.test(s)) return { type: 'agenda_today' };
+  // AGENDA / AGENDA HOY — agenda de seguimiento (FASE 1). SIN ancla $ (era frágil: cualquier
+  // carácter extra hacía que "AGENDA HOY" no matcheara y cayera al flujo de IA). Específico
+  // para no chocar con frases de clientes ("agenda una visita" NO matchea).
+  if (/^AGENDA\s+HOY\b/i.test(s) || /^AGENDA\s*$/i.test(s)) return { type: 'agenda_today' };
   // LISTO <nombre o telefono> — marca el seguimiento como hecho
-  if (/^LISTO\s+.+/i.test(s)) return { type: 'agenda_done', query: text.trim().replace(/^LISTO\s+/i, '').trim() };
-  // POSPONER <nombre o telefono> <dias> — pospone el seguimiento
-  if (/^POSPONER\s+.+\s+\d+$/i.test(s)) {
-    const mm = text.trim().match(/^POSPONER\s+(.+)\s+(\d+)$/i);
-    return { type: 'agenda_snooze', query: mm[1].trim(), days: parseInt(mm[2], 10) };
+  if (/^LISTO\s+\S+/i.test(s)) return { type: 'agenda_done', query: text.trim().replace(/^LISTO\s+/i, '').replace(/[.!?\s]+$/, '').trim() };
+  // POSPONER <nombre o telefono> <dias> — toma el último número como días (sin ancla $)
+  if (/^POSPONER\s+\S+/i.test(s)) {
+    const rest = text.trim().replace(/^POSPONER\s+/i, '').trim();
+    const mm = rest.match(/^(.*?)\s+(\d+)\b/);
+    if (mm) return { type: 'agenda_snooze', query: mm[1].trim(), days: parseInt(mm[2], 10) };
+    return { type: 'agenda_snooze', query: rest.replace(/[.!?\s]+$/, '').trim(), days: 7 };
   }
 
   return null;
@@ -4715,8 +4719,8 @@ app.post("/webhook", async (req, res) => {
         // [ADMIN] Chequear comando OLIVER IN/OFF o admin
     const adminCmd = parseAdminCmd(userText);
         // [DEBUG] Log del número para ver formato
-    if (userText.includes("OLIVER") || userText.includes("ADMIN")) {
-      logInfo("ADMIN_DEBUG", `waId=${waId}, ADMIN_PHONE=${ADMIN_PHONE}, Match=${waId === ADMIN_PHONE}`);
+    if (/^(OLIVER|ADMIN|AGENDA|LISTO|POSPONER)/i.test((userText || "").trim())) {
+      logInfo("ADMIN_DEBUG", `waId=${waId} adminCmd=${adminCmd ? adminCmd.type : "null"} esCEO=${normalizeWaId(waId) === normalizeAdminPhone(ADMIN_PHONE)} text="${(userText || "").slice(0, 40)}"`);
     }
     if (adminCmd) {
       // Agenda de seguimiento (FASE 1) — SIN PIN, solo el número CEO. Silencioso si no es Marcelo.
