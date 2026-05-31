@@ -404,7 +404,7 @@ const INTERNAL_OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || "";
 
 // Debug temporal agenda (FASE 1) — buffer en memoria consultable por curl, porque
 // Marcelo no ve los logs de Railway. El campo `build` confirma si este código está vivo.
-const AGENDA_BUILD = "2026-05-31-agenda-debug-1";
+const AGENDA_BUILD = "2026-05-31-agenda-intercept-v2";
 const __agendaDebug = [];
 
 const STAGES = {
@@ -1304,6 +1304,36 @@ async function callAgendaApi(method, path, body) {
     });
     return await r.json().catch(() => ({ ok: false, error: `status ${r.status}` }));
   } catch (e) { return { ok: false, error: e.message }; }
+}
+
+// Maneja un comando de agenda del CEO (AGENDA/LISTO/POSPONER) y responde por WhatsApp.
+// Se usa tanto en el interceptor temprano (antes del routing v2) como en el flujo v1.
+async function handleAgendaCommand(waId, adminCmd) {
+  if (adminCmd.type === "agenda_today") {
+    const a = await callAgendaApi('GET', '/internal/agenda/today', null);
+    await waSendH(waId, a.message || "No pude leer la agenda.", true);
+    return;
+  }
+  if (adminCmd.type === "agenda_done") {
+    const a = await callAgendaApi('POST', '/internal/agenda/done', { query: adminCmd.query });
+    let msg;
+    if (a.ok) msg = `✅ Listo: ${a.customer_name}, lo saco de la agenda.`;
+    else if (a.reason === 'ambiguo') msg = `Hay varios con ese nombre: ${(a.options || []).map(o => o.name + ' (' + o.phone + ')').join(', ')}. Responde LISTO con el teléfono.`;
+    else if (a.reason === 'no_encontrado') msg = `No encontré a "${adminCmd.query}" en la agenda.`;
+    else msg = a.error ? `No pude marcar como listo: ${a.error}` : "No pude marcar como listo.";
+    await waSendH(waId, msg, true);
+    return;
+  }
+  if (adminCmd.type === "agenda_snooze") {
+    const a = await callAgendaApi('POST', '/internal/agenda/snooze', { query: adminCmd.query, days: adminCmd.days });
+    let msg;
+    if (a.ok) msg = `⏸️ Pospuse a ${a.customer_name} por ${a.days} días.`;
+    else if (a.reason === 'ambiguo') msg = `Hay varios con ese nombre: ${(a.options || []).map(o => o.name + ' (' + o.phone + ')').join(', ')}. Responde POSPONER con el teléfono.`;
+    else if (a.reason === 'no_encontrado') msg = `No encontré a "${adminCmd.query}" en la agenda.`;
+    else msg = a.error ? `No pude posponer: ${a.error}` : "No pude posponer.";
+    await waSendH(waId, msg, true);
+    return;
+  }
 }
 
 // Dispatcher de cubicación pendiente — revisar cada 15s, enviar a los 60s
@@ -4552,6 +4582,27 @@ app.post("/admin/send-template-bulk", express.json({ limit: "1mb" }), async (req
 // [FIX P14] Aumentar límite del body parser del bot para archivos base64 hasta 25MB
 // (ya debería estar configurado, pero forzamos)
 app.post("/webhook", async (req, res) => {
+  // [AGENDA FASE 1] Interceptar comandos de agenda del CEO (AGENDA/LISTO/POSPONER) ANTES del
+  // routing a Oliver v2. El número CEO está en OLIVER_V2_NUMBERS y v2 NO tiene estos comandos
+  // → sin esto la agenda nunca engancha para Marcelo. Solo aplica al número CEO + texto que
+  // matchea un comando de agenda; cualquier otra cosa cae al flujo normal (v2/v1) intacta.
+  try {
+    const _agInc = extractMsg(req.body);
+    if (_agInc?.ok && _agInc.type === "text" && verifySig(req) &&
+        normalizeWaId(_agInc.waId) === normalizeAdminPhone(ADMIN_PHONE)) {
+      const _agCmd = parseAdminCmd(_agInc.text || "");
+      if (_agCmd && (_agCmd.type === "agenda_today" || _agCmd.type === "agenda_done" || _agCmd.type === "agenda_snooze")) {
+        __agendaDebug.push({ ts: new Date().toISOString(), stage: "early_intercept", waId: _agInc.waId, esCEO: true, adminCmd: _agCmd.type, text: (_agInc.text || "").slice(0, 60), build: AGENDA_BUILD });
+        if (__agendaDebug.length > 20) __agendaDebug.shift();
+        res.sendStatus(200);
+        if (!isDup(_agInc.msgId)) {
+          try { await handleAgendaCommand(_agInc.waId, _agCmd); } catch (e) { try { logErr("agenda_intercept", e); } catch {} }
+        }
+        return;
+      }
+    }
+  } catch (e) { try { logErr("agenda_intercept_outer", e); } catch {} }
+
   // [Oliver v2 pilot] feature-flag routing — falls through to v1 on any error
   try {
     const v2Enabled = process.env.OLIVER_V2_ENABLED === "true";
