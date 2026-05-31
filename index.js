@@ -402,6 +402,11 @@ const AGENT_NAME = process.env.AGENT_NAME || "Marcelo Cifuentes";
 const INTERNAL_OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || "";
 // @patch:sales-os:config:end
 
+// Debug temporal agenda (FASE 1) — buffer en memoria consultable por curl, porque
+// Marcelo no ve los logs de Railway. El campo `build` confirma si este código está vivo.
+const AGENDA_BUILD = "2026-05-31-agenda-debug-1";
+const __agendaDebug = [];
+
 const STAGES = {
   diagnostico: process.env.ZOHO_STAGE_DIAGNOSTICO || "Diagnóstico y Perfilado",
   siembra: process.env.ZOHO_STAGE_SIEMBRA || "Siembra de Confianza + Marco Normativo",
@@ -4416,6 +4421,19 @@ app.post("/internal/operator-send-audio-recording", async (req, res) => {
 
 // [FIX P14] Resolver de catálogo: el Sales OS manda catalog_key (ej "catalogo_pvc")
 // y este endpoint busca la URL en env vars y la envía
+// Debug temporal agenda — devuelve los últimos comandos vistos en runtime.
+app.get("/internal/agenda-debug", (req, res) => {
+  if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
+  res.json({
+    ok: true,
+    build: AGENDA_BUILD,
+    admin_phone: ADMIN_PHONE,
+    norm_admin: normalizeAdminPhone(ADMIN_PHONE),
+    count: __agendaDebug.length,
+    last: __agendaDebug.slice(-20),
+  });
+});
+
 app.post("/internal/operator-send-catalog", async (req, res) => {
   try {
     if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
@@ -4720,7 +4738,19 @@ app.post("/webhook", async (req, res) => {
     const adminCmd = parseAdminCmd(userText);
         // [DEBUG] Log del número para ver formato
     if (/^(OLIVER|ADMIN|AGENDA|LISTO|POSPONER)/i.test((userText || "").trim())) {
-      logInfo("ADMIN_DEBUG", `waId=${waId} adminCmd=${adminCmd ? adminCmd.type : "null"} esCEO=${normalizeWaId(waId) === normalizeAdminPhone(ADMIN_PHONE)} text="${(userText || "").slice(0, 40)}"`);
+      const __dbg = {
+        ts: new Date().toISOString(),
+        waId,
+        norm_waId: normalizeWaId(waId),
+        norm_admin: normalizeAdminPhone(ADMIN_PHONE),
+        esCEO: normalizeWaId(waId) === normalizeAdminPhone(ADMIN_PHONE),
+        adminCmd: adminCmd ? adminCmd.type : null,
+        text: (userText || "").slice(0, 60),
+        build: AGENDA_BUILD,
+      };
+      logInfo("ADMIN_DEBUG", JSON.stringify(__dbg));
+      __agendaDebug.push(__dbg);
+      if (__agendaDebug.length > 20) __agendaDebug.shift();
     }
     if (adminCmd) {
       // Agenda de seguimiento (FASE 1) — SIN PIN, solo el número CEO. Silencioso si no es Marcelo.
