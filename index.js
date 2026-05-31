@@ -1269,8 +1269,32 @@ function parseAdminCmd(text) {
   if (s.startsWith("ADMIN REGLA ")) return { type: "admin_add_rule", rule: text.slice(12).trim() };
   if (s === "ADMIN VER REGLAS") return { type: "admin_list_rules" };
   if (s.startsWith("ADMIN BORRAR REGLA ")) return { type: "admin_del_rule", ruleNum: parseInt(s.slice(19)) };
-  
+
+  // AGENDA HOY / AGENDA — agenda de seguimiento (FASE 1 secretaria WhatsApp)
+  if (/^AGENDA(\s+HOY)?$/i.test(s)) return { type: 'agenda_today' };
+  // LISTO <nombre o telefono> — marca el seguimiento como hecho
+  if (/^LISTO\s+.+/i.test(s)) return { type: 'agenda_done', query: text.trim().replace(/^LISTO\s+/i, '').trim() };
+  // POSPONER <nombre o telefono> <dias> — pospone el seguimiento
+  if (/^POSPONER\s+.+\s+\d+$/i.test(s)) {
+    const mm = text.trim().match(/^POSPONER\s+(.+)\s+(\d+)$/i);
+    return { type: 'agenda_snooze', query: mm[1].trim(), days: parseInt(mm[2], 10) };
+  }
+
   return null;
+}
+
+// Helper para llamar a la agenda de seguimiento en sales-os (FASE 1 secretaria WhatsApp)
+async function callAgendaApi(method, path, body) {
+  if (!SALES_OS_URL || !SALES_OS_OPERATOR_TOKEN) return { ok: false, error: 'sales-os no configurado' };
+  try {
+    const r = await fetch(`${SALES_OS_URL}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'x-api-key': SALES_OS_OPERATOR_TOKEN },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(10000),
+    });
+    return await r.json().catch(() => ({ ok: false, error: `status ${r.status}` }));
+  } catch (e) { return { ok: false, error: e.message }; }
 }
 
 // Dispatcher de cubicación pendiente — revisar cada 15s, enviar a los 60s
@@ -4695,6 +4719,38 @@ app.post("/webhook", async (req, res) => {
       logInfo("ADMIN_DEBUG", `waId=${waId}, ADMIN_PHONE=${ADMIN_PHONE}, Match=${waId === ADMIN_PHONE}`);
     }
     if (adminCmd) {
+      // Agenda de seguimiento (FASE 1) — SIN PIN, solo el número CEO. Silencioso si no es Marcelo.
+      if (adminCmd.type === "agenda_today" || adminCmd.type === "agenda_done" || adminCmd.type === "agenda_snooze") {
+        if (normalizeWaId(waId) !== normalizeAdminPhone(ADMIN_PHONE)) {
+          return; // no autorizado: ignorar silencioso para no filtrar la existencia del comando
+        }
+        if (adminCmd.type === "agenda_today") {
+          const a = await callAgendaApi('GET', '/internal/agenda/today', null);
+          await waSendH(waId, a.message || "No pude leer la agenda.", true);
+          return;
+        }
+        if (adminCmd.type === "agenda_done") {
+          const a = await callAgendaApi('POST', '/internal/agenda/done', { query: adminCmd.query });
+          let msg;
+          if (a.ok) msg = `✅ Listo: ${a.customer_name}, lo saco de la agenda.`;
+          else if (a.reason === 'ambiguo') msg = `Hay varios con ese nombre: ${(a.options || []).map(o => o.name + ' (' + o.phone + ')').join(', ')}. Responde LISTO con el teléfono.`;
+          else if (a.reason === 'no_encontrado') msg = `No encontré a "${adminCmd.query}" en la agenda.`;
+          else msg = a.error ? `No pude marcar como listo: ${a.error}` : "No pude marcar como listo.";
+          await waSendH(waId, msg, true);
+          return;
+        }
+        if (adminCmd.type === "agenda_snooze") {
+          const a = await callAgendaApi('POST', '/internal/agenda/snooze', { query: adminCmd.query, days: adminCmd.days });
+          let msg;
+          if (a.ok) msg = `⏸️ Pospuse a ${a.customer_name} por ${a.days} días.`;
+          else if (a.reason === 'ambiguo') msg = `Hay varios con ese nombre: ${(a.options || []).map(o => o.name + ' (' + o.phone + ')').join(', ')}. Responde POSPONER con el teléfono.`;
+          else if (a.reason === 'no_encontrado') msg = `No encontré a "${adminCmd.query}" en la agenda.`;
+          else msg = a.error ? `No pude posponer: ${a.error}` : "No pude posponer.";
+          await waSendH(waId, msg, true);
+          return;
+        }
+      }
+
       if (adminCmd.type === "admin_in" || adminCmd.type === "admin_off") {
         if (!adminCheckAuth(waId, adminCmd.pin)) {
           await waSendH(waId, "❌ PIN inválido o teléfono no autorizado.", true);
