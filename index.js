@@ -4603,6 +4603,29 @@ app.post("/webhook", async (req, res) => {
     }
   } catch (e) { try { logErr("agenda_intercept_outer", e); } catch {} }
 
+  // [Oliver GPT pilot] routing por feature-flag — handler AISLADO (src/oliver-gpt).
+  // Gated: si OLIVER_GPT_ENABLED!="true" o el número no está en OLIVER_GPT_NUMBERS,
+  // se omite por completo (V1 intacto). Cualquier error cae a v2/v1 (fail-safe).
+  try {
+    if (process.env.OLIVER_GPT_ENABLED === "true") {
+      const normG = (s) => (s || "").replace(/\D/g, "");
+      const gptNumbers = (process.env.OLIVER_GPT_NUMBERS || "")
+        .split(",")
+        .map(normG)
+        .filter(Boolean);
+      const _incG = extractMsg(req.body);
+      const fromG = _incG?.ok ? normG(_incG.waId) : "";
+      if (fromG && gptNumbers.includes(fromG)) {
+        if (!verifySig(req)) { res.sendStatus(200); return; }
+        const { handleWebhook } = await import("./src/oliver-gpt/webhook.js");
+        return handleWebhook(req, res);
+      }
+    }
+  } catch (e) {
+    try { logErr("oliver_gpt_flag", e); } catch {}
+    // fall through to v2/v1
+  }
+
   // [Oliver v2 pilot] feature-flag routing — falls through to v1 on any error
   try {
     const v2Enabled = process.env.OLIVER_V2_ENABLED === "true";
