@@ -3507,6 +3507,11 @@ async function priceAll(d, customer_id = "") {
     return { ok: false, error: "No hay items para cotizar.", escalate: false };
   }
 
+  if (PRICER_MODE === "engine") {
+    const { priceAllEngine } = await import("./services/enginePricer.js");
+    return await priceAllEngine(d, customer_id);
+  }
+
   // Solo WinHouse PVC con cotizador automático
   if (d.supplier !== "WINHOUSE_PVC") {
     return {
