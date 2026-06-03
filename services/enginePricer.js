@@ -268,8 +268,10 @@ export async function priceAllEngine(d, customer_id = "") {
       };
     }
 
-    // 6) Totales: total_con_iva preferido, total_clp como fallback
-    const lineTotal = Number(r.total_con_iva ?? r.total_clp ?? 0);
+    // 6) Totales: usar NETO (total_clp). El flujo del bot (resumen + PDF) AGREGA
+    //    IVA 19% sobre el subtotal, así que los items deben ir SIN IVA. Usar
+    //    total_con_iva acá causaba doble IVA (cobrar ~19% de más). FIX.
+    const lineTotal = Number(r.total_clp ?? r.total_neto_clp ?? r.total_con_iva ?? 0);
     if (!Number.isFinite(lineTotal) || lineTotal <= 0) {
       return {
         ok: false,
