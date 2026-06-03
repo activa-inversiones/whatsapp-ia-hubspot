@@ -5667,7 +5667,7 @@ function normTipoApertura(text) {
 }
 app.listen(PORT, () => {
   console.log(
-    `🚀 Oliver v11.8.1 (FIX template informe_diario 4 params) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
+    `🚀 Oliver v11.8.2 (memoria x-api-key + comuna + engine gated) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
   );
   // v11.5-4: cargar prompt overrides desde DB al arranque (no bloqueante)
   loadPromptOverrides().then(text => {
