@@ -5129,6 +5129,22 @@ app.post("/webhook", async (req, res) => {
     // === LÓGICA INTELIGENTE CON GPT + CONFIRMACIÓN (VERSIÓN FINAL) ===
     const t = userText.toLowerCase().trim();
 
+    // ═══ FIX comuna: parseo determinista (antes no se capturaba → resumen "Pendiente") ═══
+    if (!ses.data.comuna) {
+      const tStrip = strip(t);
+      for (const name of Object.keys(ZONA_COMUNAS)) {
+        if (tStrip.includes(strip(name))) {
+          ses.data.comuna = name.replace(/\b\w/g, (m) => m.toUpperCase());
+          if (!ses.data.zona_termica) {
+            const _z = getZona(name);
+            if (_z) ses.data.zona_termica = _z;
+          }
+          logInfo("comuna_parsed", `tel=${waId} comuna=${ses.data.comuna}`);
+          break;
+        }
+      }
+    }
+
     // ═══ v11.5-5 COMANDO ADMIN STATS por WhatsApp ═══
     // Solo MARCELO_PHONE puede pedir stats. Devuelve métricas en vivo.
     const marceloPhone = String(process.env.MARCELO_PHONE || "").replace(/[^\d]/g, "");
@@ -5193,7 +5209,10 @@ app.post("/webhook", async (req, res) => {
     const isSpecialProduct = specialProductKeywords.some(kw => t.includes(kw));
 
     // 2. Frustración del cliente (v11.2: ampliado con "fiasco" y variantes que faltaban)
-    const frustradoKeywords = ["ya", "chao", "basta", "mal humor", "repetis", "me tiene harto", "no amigo", "ya te dije", "ya envié", "ya mandé", "ya te lo", "perder el tiempo", "pierdo el tiempo", "me voy", "adiós", "adios", "frustrado", "hartó", "me cansé", "olvídelo", "fiasco", "pésimo", "pesimo", "horrible", "inútil", "inutil", "no sirve", "no sirven", "mal hecho", "un asco", "qué mal", "que mal", "mejoren", "no entiendes", "no entiende", "porquería", "porqueria"];
+    // FIX: se quitaron falsos positivos que cortaban ventas — "ya", "ya envié",
+    // "ya te dije", "ya mandé", "ya te lo", "repetis" NO son frustración (el cliente
+    // dice que YA entregó un dato). Eso disparaba escalación prematura y abandono.
+    const frustradoKeywords = ["chao", "basta", "mal humor", "me tiene harto", "no amigo", "perder el tiempo", "pierdo el tiempo", "me voy", "adiós", "adios", "frustrado", "hartó", "me cansé", "olvídelo", "fiasco", "pésimo", "pesimo", "horrible", "inútil", "inutil", "no sirve", "no sirven", "mal hecho", "un asco", "qué mal", "que mal", "mejoren", "no entiendes", "no entiende", "porquería", "porqueria"];
     const isFrustrated = frustradoKeywords.some(word => t.includes(word));
 
     // 3. Escalación inmediata
