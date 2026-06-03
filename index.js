@@ -2249,7 +2249,7 @@ async function loadSessionFromStore(waId) {
     const r = await fetch(
       `${SALES_OS_URL}/internal/wa-sessions/${encodeURIComponent(waId)}`,
       {
-        headers: { "x-internal-token": SALES_OS_OPERATOR_TOKEN },
+        headers: { "x-api-key": SALES_OS_OPERATOR_TOKEN },
         signal: ctrl.signal,
       }
     );
@@ -2296,7 +2296,7 @@ function persistSessionToStore(waId, ses) {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
-      "x-internal-token": SALES_OS_OPERATOR_TOKEN,
+      "x-api-key": SALES_OS_OPERATOR_TOKEN,
     },
     body: JSON.stringify(payload),
     signal: ctrl.signal,
@@ -3505,6 +3505,11 @@ async function priceAll(d, customer_id = "") {
 
   if (!d.items.length) {
     return { ok: false, error: "No hay items para cotizar.", escalate: false };
+  }
+
+  if (PRICER_MODE === "engine") {
+    const { priceAllEngine } = await import("./services/enginePricer.js");
+    return await priceAllEngine(d, customer_id);
   }
 
   // Solo WinHouse PVC con cotizador automático
