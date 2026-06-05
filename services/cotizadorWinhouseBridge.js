@@ -24,6 +24,18 @@
 //                    cotización perdida por glitch de red
 // ═══════════════════════════════════════════════════════════════════
 
+/* ═══════════════════════════════════════════════════════════════════
+ * ⚠️ DEPRECATED / NO OPERATIVO (2026-06-05)
+ * Esta ruta (cotizador-winhouse) es el cotizador LEGACY V1.
+ * El cotizador válido es ACTIVA Engine (ops.activalabs.ai, ~0.02% vs Winart).
+ * Para desconectar: en Railway PRICER_MODE=engine + COTIZADOR_BASE_URL vacío.
+ * Este archivo y el servicio cotizador-winhouse se ELIMINAN cuando todo
+ * el flujo esté 100% en ACTIVA Engine y verificado en producción.
+ * ═══════════════════════════════════════════════════════════════════ */
+if (process.env.PRICER_MODE && process.env.PRICER_MODE !== 'cotizador_winhouse') {
+  console.warn('[cotizadorBridge] DEPRECATED: cotizador-winhouse legacy. Usando ACTIVA Engine (PRICER_MODE=' + process.env.PRICER_MODE + '). Este bridge sera eliminado.');
+}
+
 /* =========================
    ENV — [F8] canónicas con fallback legacy
    ========================= */
