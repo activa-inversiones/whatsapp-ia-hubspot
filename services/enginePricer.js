@@ -205,11 +205,26 @@ export async function priceAllEngine(d, customer_id = "") {
   let grandTotal = 0;
   let escaladas = 0;
 
+  // ── PRE-PASS: orientación GLOBAL de las medidas (regla del dueño 2026-06-06) ──
+  // El cliente manda TODA la lista en el MISMO orden (alto×ancho o ancho×alto), no mezclado.
+  // Regla física: el ALTO de una ventana ≤ ~2400 mm (techo piso-cielo 2,4 m). Si CUALQUIER
+  // item quedó con alto > 2400 mm, TODA la tabla vino alto×ancho → se intercambia ANCHO/ALTO
+  // en TODOS los items (consistente, no solo en algunos). Así "210/270, 150/185, 50/190..."
+  // se corrige completa (V16 50/190 → ancho 1900/alto 500), no solo las grandes.
+  const measured = d.items.map((it) => normMeasuresLocal(it.measures || ""));
+  const tableIsAltoAncho = measured.some((mm) => mm && mm.alto_mm > 2400);
+  if (tableIsAltoAncho) {
+    for (const mm of measured) {
+      if (mm) { const _t = mm.ancho_mm; mm.ancho_mm = mm.alto_mm; mm.alto_mm = _t; }
+    }
+  }
+
   for (let i = 0; i < d.items.length; i++) {
     const item = d.items[i];
 
-    // 1) Medidas
-    const m = normMeasuresLocal(item.measures || "");
+    // 1) Medidas (normalizadas + orientación corregida en el pre-pass)
+    const m = measured[i];
+    if (tableIsAltoAncho && m) item.measures_swapped = true;
     if (!m) {
       item.price_warning = "No pude normalizar medidas para el cotizador.";
       item.source = "activa_engine";
