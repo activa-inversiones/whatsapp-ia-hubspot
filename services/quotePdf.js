@@ -66,8 +66,9 @@ function drawWindow(doc, bx, by, bw, bh, it) {
     doc.rect(px + sf, y + fr + sf, pw - 2 * sf, ih - 2 * sf).fillAndStroke("#BCDCF3", col.e);
     if (tipo === "CORREDERA") {
       const cy = y + dh / 2, cx = px + pw / 2, d = i % 2 === 0 ? 1 : -1;
-      doc.polygon([cx - 8 * d, cy - 3], [cx + 2 * d, cy - 3], [cx + 2 * d, cy - 6],
-                  [cx + 9 * d, cy], [cx + 2 * d, cy + 6], [cx + 2 * d, cy + 3], [cx - 8 * d, cy + 3])
+      const a = Math.min(5, pw * 0.14);   // flecha CHICA, centrada en su hoja (no llega al centro)
+      doc.polygon([cx - a * d, cy - 1.8], [cx + a * 0.25 * d, cy - 1.8], [cx + a * 0.25 * d, cy - 3.6],
+                  [cx + a * 1.05 * d, cy], [cx + a * 0.25 * d, cy + 3.6], [cx + a * 0.25 * d, cy + 1.8], [cx - a * d, cy + 1.8])
          .fillAndStroke("#FFFFFF", DARK);
     }
   }
