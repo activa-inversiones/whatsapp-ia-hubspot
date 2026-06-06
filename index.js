@@ -5247,7 +5247,13 @@ app.post("/webhook", async (req, res) => {
     }
 
     // 5. Cliente ya envió medidas
-    if (t.includes("adjunto") || t.includes("envié") || t.includes("mandé") || t.includes("ya te lo") || t.includes("fb.me") || t.includes("medidas")) {
+    // FIX 2026-06-06: NO interceptar el texto extraído de una IMAGEN. La visión (gpt-4o)
+    // ya leyó la foto y armó "[IMAGEN ANALIZADA — Productos detectados]: ...items... INSTRUCCIÓN: update_quote".
+    // Ese texto contiene la palabra "medidas" y caía aquí → se respondía "Recibí tus medidas" y se DESCARTABAN
+    // los items reales → el LLM luego inventaba la cotización. Con la guarda, el texto de imagen pasa al
+    // orquestador real (update_quote → ACTIVA Engine). NO TOCA el flujo de texto normal.
+    if (!userText.startsWith("[IMAGEN ANALIZADA") &&
+        (t.includes("adjunto") || t.includes("envié") || t.includes("mandé") || t.includes("ya te lo") || t.includes("fb.me") || t.includes("medidas"))) {
       ses.data.medidasEnviadas = true;
       await waSendH(waId, `✅ Recibí tus medidas. Gracias!\n\nAhora dime:\n• Color (blanco, nogal, grafito, negro)\n• Comuna`, true);
       saveSession(waId, ses);
