@@ -3859,10 +3859,12 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
       else if (p.includes("OSCILO")) tipo = "Ventana Oscilobatiente PVC Línea Europea";
       else if (p.includes("ABAT")) tipo = "Ventana Abatible PVC Línea Europea";
       else if (p.includes("MARCO") || p.includes("FIJO")) tipo = "Marco Fijo PVC Línea Europea";
+      // [LABEL 2026-06-06] Nombre REAL del producto (serie + H80/H98 + riel) que entrega el motor.
+      const nombre = it.producto_label ? `${it.producto_label} · PVC WinHouse` : tipo;
       const desc =
-        it.descripcion || `${tipo} | Color: ${color} | Medidas: ${measures}mm | Vidrio: ${glass} | Perfiles certificados IFT Rosenheim | Laminado Renolit | Cumple OGUC 4.1.10 | Instalación profesional incluida | Garantía 5 años estructura + 1 año herrajes`;
+        it.descripcion || `${it.producto_label || tipo} | Color: ${color} | Medidas: ${measures}mm | Vidrio: ${glass} | Perfiles certificados IFT Rosenheim | Laminado Renolit | Cumple OGUC 4.1.10 | Instalación profesional incluida | Garantía 5 años estructura + 1 año herrajes`;
       const lineItem = {
-        name: tipo,
+        name: nombre,
         description: desc,
         rate: Number(it.unit_price) || 1,
         quantity: Number(it.qty || 1),
