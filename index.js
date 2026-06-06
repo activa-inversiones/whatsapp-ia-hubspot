@@ -5367,6 +5367,22 @@ app.post("/webhook", async (req, res) => {
             unit_price: null, total_price: null, price_warning: "", source: null, confidence: null,
           }));
 
+          // ── SWAP GLOBAL ancho/alto (regla del dueño 2026-06-06) ──────────────
+          // El cliente manda TODA la lista en el MISMO orden. El ALTO de una ventana ≤ ~2400mm
+          // (techo piso-cielo 2,4m). Si CUALQUIER item quedó con alto>2400mm (imposible), TODA la
+          // tabla vino ALTO×ANCHO → se corrige item.measures a ANCHO×ALTO en TODOS (no solo algunos).
+          // Va ANTES de validar/escalar: corregido, casi todo cabe en H98 y se cotiza (no escala falso).
+          {
+            const _parsed = d.items.map((it) => normMeasures(it.measures || ""));
+            const _esAltoAncho = _parsed.some((mm) => mm && mm.alto_mm > 2400);
+            if (_esAltoAncho) {
+              d.items.forEach((it, i) => {
+                const mm = _parsed[i];
+                if (mm) it.measures = `${mm.alto_mm}x${mm.ancho_mm}`; // nuevo ancho = alto viejo (el grande)
+              });
+            }
+          }
+
           for (const it of d.items) {
             const m = normMeasures(it.measures);
             if (!m) continue;
