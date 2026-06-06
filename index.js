@@ -5285,6 +5285,7 @@ app.post("/webhook", async (req, res) => {
          t.includes("negro") || t.includes("new black") || t.includes("color"))) {
 
       ses.data.default_color = normColor(userText);
+      ses.data.default_color_locked = true; // [FIX COLOR] cliente eligió color explícito → manda sobre el "blanco" que asume el LLM
 
       // v11.2: SIN JSON crudo. Formato legible humano.
       const resumen = `✅ **Resumen de tu cotización:**\n\n` +
@@ -5368,6 +5369,14 @@ app.post("/webhook", async (req, res) => {
             ambiente: it.ambiente || "",
             unit_price: null, total_price: null, price_warning: "", source: null, confidence: null,
           }));
+
+          // [FIX COLOR 2026-06-06] El color que pidió el cliente (default_color) MANDA sobre el
+          // "blanco" que el LLM asume por defecto. Si lo eligió explícito (locked) → fuerza TODOS los
+          // items; si no, solo rellena los que vinieron SIN color (ej. extraídos de una foto sin color).
+          if (d.default_color) {
+            const dc = String(d.default_color).toLowerCase();
+            d.items.forEach((it) => { if (d.default_color_locked || !it.color) it.color = dc; });
+          }
 
           // ── SWAP GLOBAL ancho/alto (regla del dueño 2026-06-06) ──────────────
           // El cliente manda TODA la lista en el MISMO orden. El ALTO de una ventana ≤ ~2400mm
