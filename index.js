@@ -5276,11 +5276,22 @@ app.post("/webhook", async (req, res) => {
     }
 
     // 6. Normalizar tipo de apertura
-    if (t.includes("normal") || t.includes("normales") || 
-        t.includes("abatible") || t.includes("oscilobatiente") || t.includes("proyectante") || 
-        t.includes("fijo") || t.includes("corredera") || t.includes("sliding") || 
+    if (t.includes("normal") || t.includes("normales") ||
+        t.includes("abatible") || t.includes("oscilobatiente") || t.includes("proyectante") ||
+        t.includes("fijo") || t.includes("corredera") || t.includes("sliding") ||
         t.includes("basculante") || t.includes("plegable")) {
       ses.data.default_tipo = normTipoApertura(userText);
+    }
+
+    // [FIX COTIZA 2026-06-06] Capturar color SIEMPRE que el cliente nombre un color (sin depender de
+    // medidasEnviadas). Sin esto, decir "grafito/nogal" antes o junto a la foto NO quedaba en
+    // default_color → canQuote() fallaba → el bot listaba pero "no cotizaba". Solo setea el dato; no
+    // responde ni corta el flujo. (No incluye la palabra "color" sola para no capturar preguntas.)
+    if (t.includes("blanco") || t.includes("nogal") || t.includes("roble") || t.includes("dorado") ||
+        t.includes("grafito") || t.includes("antracita") || t.includes("gris") || t.includes("plomo") ||
+        t.includes("negro") || t.includes("new black") || t.includes("newblack")) {
+      const _c = normColor(userText);
+      if (_c) { ses.data.default_color = _c; ses.data.default_color_locked = true; }
     }
 
     // 7. AVANCE AUTOMÁTICO + CONFIRMACIÓN (lo más importante)
