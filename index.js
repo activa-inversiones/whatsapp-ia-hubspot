@@ -5121,10 +5121,19 @@ app.post("/webhook", async (req, res) => {
 
        // === RESET ===
     // === RESET ===
-    if (/^reset|nueva cotizaci[oó]n|empezar de nuevo/i.test(userText)) {
+    if (/^reset|nueva cotizaci[oó]n|empezar de nuevo|empecemos de cero/i.test(userText)) {
       ses.data = emptyData();
+      // FIX 2026-06-06: limpiar TAMBIÉN el contexto/acumuladores. Antes solo se limpiaba ses.data,
+      // pero ses.history (memoria de la IA) y pendingTablePages seguían con items/medidas viejas
+      // → la IA los reusaba ("de versiones anteriores"). Reset real = partir de 0.
+      ses.history = [];
+      ses.pendingTablePages = [];
+      ses.recentClientMsgs = [];
       ses.pdfSent = false;
+      ses.pdfGeneratedCount = 0;
       ses.followupEnviado = false;
+      ses.lastWasNegation = false;
+      ses.negationCountdown = 0;
       ses.perfilAcumulado = { tecnico: 0, emocional: 0 };
       await waSendH(waId, "Listo, empecemos de cero.\n¿Qué ventanas o puertas necesita?", true);
       saveSession(waId, ses);
