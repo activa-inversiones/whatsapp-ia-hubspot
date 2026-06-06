@@ -5530,9 +5530,12 @@ app.post("/webhook", async (req, res) => {
           ses.zohoEstimateId = estimate.estimate_id;
           cubicacionPendientes.delete(waId);
           
-          const pdfBuf = await zhBooksDownloadEstimatePdf(estimate.estimate_id);
+          // [PDF PREMIUM 2026-06-06] Enviar NUESTRO PDF con dibujos de cada ventana (serie/H80-H98,
+          // color real, medidas, totales). Zoho queda solo para registro/numeración (estimate creado arriba).
+          const { generatePremiumQuotePdf } = await import("./services/quotePdf.js");
+          const pdfBuf = await generatePremiumQuotePdf({ ...d, phone: normPhone(waId), quote_num: qn }, qn);
           await waSendPdf(waId, pdfBuf, `${qn}.pdf`, `Propuesta ${qn} — Si quiere ajustar algo, me avisa.`);
-          
+
           ses.pdfSent = true;
           markPdfGenerated(ses); // v11.3: rate limit anti-avalancha PDFs
           d.stageKey = "propuesta";
