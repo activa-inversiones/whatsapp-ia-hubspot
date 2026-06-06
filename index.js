@@ -2569,6 +2569,9 @@ Excepción única: podés mencionar 2 opciones cerradas dentro de UNA misma preg
 Si el cliente responde con UNA sola palabra/frase corta del tipo:
   "ok", "ya", "sí", "si", "dale", "listo", "perfecto", "gracias", "bacán", "bkn", "ok gracias", "ya listo"
 → NO sigas preguntando. NO ofrezcas otra cosa. El cliente está cerrando la conversación.
+⚠️ EXCEPCIÓN (CRÍTICO): si hay una cotización LISTA (o dijiste que ibas a enviar el PDF) y AÚN NO la mandaste,
+esas MISMAS palabras ("ok", "sí", "dale", "está bien", "gracias", "envíamela", "perfecto") significan
+"MANDÁ LA PROPUESTA AHORA" — NO es cierre. Enviá el PDF de inmediato. NUNCA dejes al cliente esperando una cotización.
 Respondé UNA línea amable + call-to-action silencioso, y PARÁ:
   "Dale [nombre], cuando te acomode avanzamos con la propuesta 👌"
   "Perfecto [nombre], quedo atento cuando quieras destrabar 🏠"
@@ -5479,7 +5482,10 @@ app.post("/webhook", async (req, res) => {
     const someItemEscalates = d.items?.some(it => it.source === "cotizador_manual" || it.needs_escalation);
     const shouldSendPdf = isComplete(d) && d.grand_total && !ses.pdfSent &&
       !someItemEscalates &&
-      (allItemsPriced || d.wants_pdf || actionsResult.quoted || /pdf|cotiza|cotizaci[oó]n|formal|env[ií]a|manda|propuesta/i.test(userText));
+      (allItemsPriced || d.wants_pdf || actionsResult.quoted ||
+        // [FIX STANDBY 2026-06-06] también dispara con CONFIRMACIONES del cliente, no solo "pdf/envía".
+        // Así "está bien", "dale", "sí", "envíamela", "gracias" mandan la propuesta y no la dejan esperando.
+        /pdf|cotiza|cotizaci[oó]n|formal|env[ií]a|env[ií]amela|manda|m[aá]ndala|propuesta|dale|listo|perfecto|de acuerdo|est[aá]\s*bien|^\s*s[ií]\b|^\s*ok\b|gracias|quiero/i.test(userText));
 
     if (shouldSendPdf) {
       const qn = `COT-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
