@@ -71,7 +71,7 @@ function drawWindow(doc, bx, by, bw, bh, it) {
          .fillAndStroke("#FFFFFF", DARK);
     }
   }
-  doc.fillColor(GRAY).fontSize(6.5).font("Helvetica").text(`${ancho}×${alto} mm`, x, y + dh + 3, { width: dw, align: "center" });
+  doc.fillColor(GRAY).fontSize(6.5).font("Helvetica").text(`${ancho}×${alto} mm`, bx, by + bh - 8, { width: bw, align: "center" });
   doc.restore();
 }
 
@@ -139,7 +139,7 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         doc.fillColor(DARK).fontSize(9).font("Helvetica-Bold").text(`V${idx + 1} · ${label}`, 165, y + 7, { width: 190 });
         doc.fillColor(GRAY).fontSize(7.5).font("Helvetica")
            .text(`${ms.ancho}×${ms.alto} mm · ${m2} m² · ${col.name} · ${vidrio}`, 165, y + 22, { width: 190 });
-        doc.fillColor("#1E96F7").fontSize(7).text("🪟 Ver en 3D / probar en tu pared", 165, y + 36, { width: 190 });
+        doc.fillColor("#1E96F7").fontSize(7).text("Ver en 3D / probar en tu pared", 165, y + 36, { width: 190 });
         // números
         const qty = Number(it.qty) || 1, unit = Number(it.unit_price) || 0, sub = unit * qty;
         neto += sub;
