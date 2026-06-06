@@ -2135,7 +2135,7 @@ async function vision(buf, mime) {
           content: [
             {
               type: "text",
-              text: "Analiza esta imagen y extrae TODOS los productos de ventanas/puertas.\nPara CADA uno indica: tipo, medidas, cantidad, color.",
+              text: "Analiza esta imagen y extrae TODOS los productos de ventanas/puertas.\nPara CADA uno indica: nombre/ambiente del recinto (ej 'Baño 1', 'Comedor', 'Dormitorio 2'), tipo de apertura, medidas, cantidad, color.\nIMPORTANTE: conserva el nombre del recinto tal como aparece (los baños llevan vidrio satén).",
             },
             {
               type: "image_url",
@@ -3288,6 +3288,7 @@ const tools = [
                 },
                 qty: { type: "number" },
                 color: { type: "string", description: "blanco, nogal, roble, grafito, newblack" },
+                ambiente: { type: "string", description: "Nombre del recinto/ambiente si viene en la lista o foto (ej: 'Baño 1', 'Comedor', 'Dormitorio 2', 'W/Closet'). Sirve para elegir el vidrio (baños llevan satén). Si no se sabe, dejar vacío." },
               },
               required: ["product", "measures", "qty"],
             },
@@ -5364,6 +5365,7 @@ app.post("/webhook", async (req, res) => {
             measures: it.measures || "",
             qty: Math.max(1, Number(it.qty) || 1),
             color: it.color || "",
+            ambiente: it.ambiente || "",
             unit_price: null, total_price: null, price_warning: "", source: null, confidence: null,
           }));
 

@@ -20,6 +20,22 @@ import { calcularCotizacion } from "../src/oliver-gpt/engine-client.js";
 // glass_id por defecto (termopanel). Configurable por env.
 const DEFAULT_GLASS_ID = Number(process.env.ACTIVA_ENGINE_DEFAULT_GLASS_ID) || 44;
 
+// ── Selección de vidrio por ÁREA + AMBIENTE (regla del dueño 2026-06-06) ──────
+//   < 2 m²  → 4+12+4 claro (id 34)
+//   ≥ 2 m²  → 5+12+5 claro (id 61)
+//   Baño/WC → 4+12+4 satén (id 38)  [detección por nombre del ambiente]
+// IDs configurables por env por si cambian en el catálogo del motor.
+const GLASS_STD     = Number(process.env.GLASS_ID_STD)            || 34;
+const GLASS_LARGE   = Number(process.env.GLASS_ID_LARGE)          || 61;
+const GLASS_BANO    = Number(process.env.GLASS_ID_BANO)           || 38;
+const GLASS_AREA_M2 = Number(process.env.GLASS_AREA_THRESHOLD_M2) || 2;
+function pickGlassId(ancho_mm, alto_mm, ambiente) {
+  const amb = String(ambiente || '').toLowerCase();
+  if (/ba[ñn]o|wc|w\/c|water/.test(amb)) return GLASS_BANO;   // baño → satén
+  const area = (Number(ancho_mm) / 1000) * (Number(alto_mm) / 1000);
+  return area >= GLASS_AREA_M2 ? GLASS_LARGE : GLASS_STD;
+}
+
 // Aperturas válidas del Engine (enum cerrado). TERMOPANEL NUNCA está aquí.
 const APERTURAS_ENGINE = new Set([
   "CORREDERA",
@@ -248,7 +264,10 @@ export async function priceAllEngine(d, customer_id = "") {
 
     // 4) Color / glass_id / comuna / cantidad
     const color = normColorLocal(item.color || d.default_color || "");
-    const glass_id = DEFAULT_GLASS_ID;
+    const glass_id = pickGlassId(m.ancho_mm, m.alto_mm, item.ambiente); // por área + baño
+    item.glass_label = glass_id === GLASS_BANO ? "4+12+4 satén (baño)"
+                     : glass_id === GLASS_LARGE ? "5+12+5"
+                     : "4+12+4";
     const comuna = d.comuna || "";
     const cantidad = Math.max(1, Number(item.qty) || 1);
 
