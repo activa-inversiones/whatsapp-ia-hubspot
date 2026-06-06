@@ -87,6 +87,30 @@ export function mapAperturaToEngine(product) {
 }
 
 /**
+ * Mapea la apertura del Engine a la SERIE de perfiles.
+ * Corredera = SLIDING (el motor elige hoja H80/H98 por área y riel por nº hojas);
+ * el resto de aperturas = S60. Antes NO se mandaba serie → el motor asumía S60 y la
+ * corredera cotizaba con perfiles equivocados (precio inventado). FIX 2026-06-06.
+ * @param {'CORREDERA'|'PROYECTANTE'|'FIJA'|'BATIENTE'|'OSCILOBATIENTE'} tipoEngine
+ * @returns {'SLIDING'|'S60'}
+ */
+export function mapSerieToEngine(tipoEngine) {
+  return tipoEngine === "CORREDERA" ? "SLIDING" : "S60";
+}
+
+/**
+ * Detecta nº de hojas si el cliente/foto lo indica ("3 hojas", "triple").
+ * Si no se sabe → undefined (el motor usa su default = 2 hojas / doble riel).
+ */
+function detectHojas(product) {
+  const t = String(product || "").toLowerCase();
+  const m = t.match(/(\d)\s*hoja/);
+  if (m) return Math.max(1, Number(m[1]));
+  if (/triple/.test(t)) return 3;
+  return undefined;
+}
+
+/**
  * Réplica local de normColor (index.js) — NO exportada desde index.
  * Catálogo: BLANCO | NOGAL | GRAFITO | NEWBLACK.
  */
@@ -259,8 +283,10 @@ export async function priceAllEngine(d, customer_id = "") {
       continue;
     }
 
-    // 3) Mapeo de apertura (NUNCA TERMOPANEL)
+    // 3) Mapeo de apertura (NUNCA TERMOPANEL) + serie de perfiles + nº hojas
     const tipo = mapAperturaToEngine(item.product);
+    const serie = mapSerieToEngine(tipo);     // CORREDERA→SLIDING, resto→S60
+    const hojas = detectHojas(item.product);  // 3 hojas → triple riel; undefined → motor decide
 
     // 4) Color / glass_id / comuna / cantidad
     const color = normColorLocal(item.color || d.default_color || "");
@@ -276,6 +302,8 @@ export async function priceAllEngine(d, customer_id = "") {
     try {
       r = await calcularCotizacion({
         tipo,
+        serie,
+        hojas,
         ancho_mm: m.ancho_mm,
         alto_mm: m.alto_mm,
         color,
@@ -320,6 +348,10 @@ export async function priceAllEngine(d, customer_id = "") {
     item.total_price = lineTotal;
     item.source = "activa_engine";
     item.confidence = "high";
+    // Persistir especificación para el PDF/etiqueta (antes se perdía): serie + hoja + riel
+    item.serie = serie;
+    if (r.producto_label) item.producto_label = r.producto_label;
+    if (r.corredera) item.corredera = r.corredera;
     if (dim && dim.suggest) {
       item.price_warning = dim.message;
     }

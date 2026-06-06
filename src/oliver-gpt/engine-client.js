@@ -125,7 +125,7 @@ async function httpJson(url, { method = 'GET', body, headers = {}, timeoutMs = D
  * @returns {Promise<{ok:boolean,total?:number,...}>}
  */
 export async function calcularCotizacion(params = {}) {
-  const { tipo, ancho_mm, alto_mm, glass_id, serie, color, comuna, cantidad } = params;
+  const { tipo, ancho_mm, alto_mm, glass_id, serie, color, comuna, cantidad, hojas } = params;
   const apertura = normalizarApertura(tipo);
   const gid = exigirGlassId(glass_id);
 
@@ -143,6 +143,7 @@ export async function calcularCotizacion(params = {}) {
     glass_id: gid,
   };
   if (serie !== undefined) payload.serie = serie;
+  if (hojas !== undefined) payload.hojas = Number(hojas);
   if (color !== undefined) payload.color = color;
   if (comuna !== undefined) payload.comuna = comuna;
   if (cantidad !== undefined) payload.cantidad = Number(cantidad);
