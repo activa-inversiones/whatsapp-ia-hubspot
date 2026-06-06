@@ -15,7 +15,7 @@
 // ESM, fetch nativo (Node 18+).
 
 const BASE_URL = () =>
-  (process.env.ACTIVA_ENGINE_URL || 'https://ops.activalabs.ai').replace(/\/+$/, '');
+  (process.env.ACTIVA_ENGINE_URL || 'https://ops.activalabs.ai').trim().replace(/\/+$/, ''); // .trim(): robusto a espacios/tabs en la var de Railway
 
 const DEFAULT_TIMEOUT_MS = 15000;
 

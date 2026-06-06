@@ -362,7 +362,7 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY || "";
 const AI_MODEL = process.env.AI_MODEL_OPENAI || "gpt-4o-mini";
 const STT_MODEL = process.env.AI_MODEL_STT || "whisper-1";
 
-const PRICER_MODE = (process.env.PRICER_MODE || "winperfil").toLowerCase();
+const PRICER_MODE = (process.env.PRICER_MODE || "winperfil").trim().toLowerCase(); // .trim(): robusto a espacios/tabs pegados al valor en Railway
 const WINPERFIL_API_BASE = (process.env.WINPERFIL_API_BASE || "").replace(/\/$/, "");
 const WINPERFIL_API_KEY = process.env.WINPERFIL_API_KEY || "";
 const QUOTE_API_KEY = process.env.QUOTE_API_KEY || "";
