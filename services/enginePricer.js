@@ -259,7 +259,12 @@ export async function priceAllEngine(d, customer_id = "") {
     }
   }
 
-  for (let i = 0; i < d.items.length; i++) {
+  // [2026-06-10] FIX pedidos grandes (18 ventanas): cotizar cada ítem es INDEPENDIENTE y
+  // TOLERANTE a fallo. ANTES: si UN ítem fallaba (timeout/engine/total inválido) se hacía
+  // `return` y se perdía TODA la cotización. AHORA: un ítem que falla se marca como escalada
+  // y NO mata al resto. Además se cotiza con CONCURRENCIA ACOTADA (lotes) para no encadenar
+  // 18 latencias en serie. La reducción (suma) se hace después, secuencial → sin race.
+  const priceOneItem = async (i) => {
     const item = d.items[i];
 
     // 1) Medidas (normalizadas + orientación corregida en el pre-pass)
@@ -267,20 +272,16 @@ export async function priceAllEngine(d, customer_id = "") {
     if (tableIsAltoAncho && m) item.measures_swapped = true;
     if (!m) {
       item.price_warning = "No pude normalizar medidas para el cotizador.";
-      item.source = "activa_engine";
-      item.confidence = "manual";
-      escaladas++;
-      continue;
+      item.source = "activa_engine"; item.confidence = "manual";
+      return { escalada: true };
     }
 
     // 2) Validación de fabricación (igual que priceAll → marca y escala)
     const dim = validateDimensionsLocal(item.product, m.ancho_mm, m.alto_mm);
     if (dim && dim.escalate) {
       item.price_warning = dim.message;
-      item.source = "activa_engine";
-      item.confidence = "manual";
-      escaladas++;
-      continue;
+      item.source = "activa_engine"; item.confidence = "manual";
+      return { escalada: true };
     }
 
     // 3) Mapeo de apertura (NUNCA TERMOPANEL) + serie de perfiles + nº hojas
@@ -297,37 +298,24 @@ export async function priceAllEngine(d, customer_id = "") {
     const comuna = d.comuna || "";
     const cantidad = Math.max(1, Number(item.qty) || 1);
 
-    // 5) Llamada al Engine
+    // 5) Llamada al Engine — el fallo de ESTE ítem NO mata el resto (se marca y sigue)
     let r;
     try {
       r = await calcularCotizacion({
-        tipo,
-        serie,
-        hojas,
-        ancho_mm: m.ancho_mm,
-        alto_mm: m.alto_mm,
-        color,
-        glass_id,
-        comuna,
-        cantidad,
+        tipo, serie, hojas,
+        ancho_mm: m.ancho_mm, alto_mm: m.alto_mm,
+        color, glass_id, comuna, cantidad,
       });
     } catch (err) {
-      const isTimeout = /abort|timeout|red al llamar/i.test(String(err?.message || ""));
-      return {
-        ok: false,
-        error: err?.message || "ACTIVA Engine no disponible.",
-        escalate: true,
-        reason: isTimeout ? "engine_timeout" : "engine_error",
-      };
+      item.price_warning = "No se pudo cotizar automáticamente (motor); lo revisa un especialista.";
+      item.source = "activa_engine"; item.confidence = "manual";
+      return { escalada: true };
     }
 
     if (!r || r.ok === false) {
-      return {
-        ok: false,
-        error: (r && (r.error || r.message)) || "ACTIVA Engine no disponible.",
-        escalate: true,
-        reason: "engine_error",
-      };
+      item.price_warning = (r && (r.error || r.message)) || "No se pudo cotizar automáticamente; lo revisa un especialista.";
+      item.source = "activa_engine"; item.confidence = "manual";
+      return { escalada: true };
     }
 
     // 6) Totales: usar NETO (total_clp). El flujo del bot (resumen + PDF) AGREGA
@@ -335,12 +323,9 @@ export async function priceAllEngine(d, customer_id = "") {
     //    total_con_iva acá causaba doble IVA (cobrar ~19% de más). FIX.
     const lineTotal = Number(r.total_clp ?? r.total_neto_clp ?? r.total_con_iva ?? 0);
     if (!Number.isFinite(lineTotal) || lineTotal <= 0) {
-      return {
-        ok: false,
-        error: "ACTIVA Engine devolvió un total inválido.",
-        escalate: true,
-        reason: "engine_invalid_total",
-      };
+      item.price_warning = "Total inválido del motor; lo revisa un especialista.";
+      item.source = "activa_engine"; item.confidence = "manual";
+      return { escalada: true };
     }
 
     const unit = Math.round(lineTotal / cantidad);
@@ -352,11 +337,30 @@ export async function priceAllEngine(d, customer_id = "") {
     item.serie = serie;
     if (r.producto_label) item.producto_label = r.producto_label;
     if (r.corredera) item.corredera = r.corredera;
-    if (dim && dim.suggest) {
-      item.price_warning = dim.message;
-    }
+    if (dim && dim.suggest) item.price_warning = dim.message;
 
-    grandTotal += lineTotal;
+    return { lineTotal };
+  };
+
+  // Cotizar en lotes de concurrencia acotada (no 18 en serie, no 18 de golpe)
+  const CONC = 6;
+  const results = new Array(d.items.length);
+  for (let start = 0; start < d.items.length; start += CONC) {
+    const idxs = [];
+    for (let i = start; i < Math.min(start + CONC, d.items.length); i++) idxs.push(i);
+    const settled = await Promise.all(idxs.map((i) =>
+      priceOneItem(i).catch((e) => {
+        console.error("[enginePricer] item", i, "error:", e?.message || e);
+        if (d.items[i]) { d.items[i].source = "activa_engine"; d.items[i].confidence = "manual"; d.items[i].price_warning = "No se pudo cotizar automáticamente; lo revisa un especialista."; }
+        return { escalada: true };
+      })
+    ));
+    settled.forEach((res, k) => { results[idxs[k]] = res; });
+  }
+  // Reducción secuencial (sin race con la concurrencia de arriba)
+  for (const res of results) {
+    if (!res || res.escalada) { escaladas++; continue; }
+    if (Number.isFinite(res.lineTotal)) grandTotal += res.lineTotal;
   }
 
   d.grand_total = grandTotal || null;

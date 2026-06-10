@@ -1942,7 +1942,7 @@ async function orchestratorPass1(session, userText) {
       tool_choice: "auto",
       parallel_tool_calls: false,
       temperature: 0.3,
-      max_tokens: 500,
+      max_tokens: 4096, // [2026-06-10] 500→4096: con 500 el tool_call update_quote se truncaba en pedidos grandes (18 ventanas) → JSON roto → loop sin cotizar
     });
     const msg = r.choices?.[0]?.message;
     return {
@@ -5363,7 +5363,13 @@ app.post("/webhook", async (req, res) => {
         }
 
         let args = {};
-        try { args = JSON.parse(tc.function.arguments || "{}"); } catch { continue; }
+        try { args = JSON.parse(tc.function.arguments || "{}"); }
+        catch (e) {
+          // [2026-06-10] Antes era catch{continue} mudo: un tool_call truncado (pedido grande) se botaba sin rastro.
+          const raw = tc.function?.arguments || "";
+          logErr("update_quote.parse_fail", new Error(`args truncado/inválido len=${raw.length} fn=${tc.function?.name}: ${e.message}`));
+          continue;
+        }
 
         const d = ses.data;
         if (args.supplier && ALLOWED_SUPPLIERS.includes(args.supplier)) d.supplier = args.supplier;
