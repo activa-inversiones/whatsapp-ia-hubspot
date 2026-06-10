@@ -2128,23 +2128,32 @@ async function vision(buf, mime) {
   try {
     const b64 = buf.toString("base64");
     const r = await openai.chat.completions.create({
-      model: AI_MODEL,
+      // [2026-06-10] gpt-4o (no mini) para leer TABLAS largas con filas repetidas con fidelidad.
+      model: process.env.AI_MODEL_VISION || "gpt-4o",
       messages: [
         {
           role: "user",
           content: [
             {
               type: "text",
-              text: "Analiza esta imagen y extrae TODOS los productos de ventanas/puertas.\nPara CADA uno indica: nombre/ambiente del recinto (ej 'Baño 1', 'Comedor', 'Dormitorio 2'), tipo de apertura, medidas, cantidad, color.\nIMPORTANTE: conserva el nombre del recinto tal como aparece (los baños llevan vidrio satén).",
+              text: "Analiza esta imagen y extrae TODOS los productos de ventanas/puertas, fila por fila.\n"
+                + "Devolvé UNA línea por producto, en orden, con este formato exacto:\n"
+                + "N. Recinto | Tipo de apertura | ANCHOxALTO | Cantidad | Color\n\n"
+                + "REGLAS OBLIGATORIAS:\n"
+                + "- Incluí TODAS las filas, AUNQUE se repitan medidas, tipo o nombre. NUNCA fusiones ni omitas filas duplicadas: si hay 3 filas iguales, escribí las 3 por separado.\n"
+                + "- Si la tabla está numerada (V1, V2, V3… o 1, 2, 3…), incluí CADA número sin saltarte ninguno y respetá ese orden.\n"
+                + "- Conservá el nombre del recinto tal cual aparece (los baños llevan vidrio satén).\n"
+                + "- Medidas tal como aparecen (ej '210/270' → 210x270). Si falta un dato, escribí 'NO ESPECIFICADO' en ese campo, pero NO borres la fila.\n"
+                + "- No agregues texto extra antes ni después de la lista.",
             },
             {
               type: "image_url",
-              image_url: { url: `data:${mime};base64,${b64}` },
+              image_url: { url: `data:${mime};base64,${b64}`, detail: "high" },
             },
           ],
         },
       ],
-      max_tokens: 900,
+      max_tokens: 4096, // 900 truncaba la lectura de tablas largas (18 filas) → se perdían ítems
     });
     return (r.choices?.[0]?.message?.content || "").trim();
   } catch (e) {
