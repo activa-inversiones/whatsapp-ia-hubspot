@@ -5716,15 +5716,20 @@ function formatItemsHumano(items) {
 }
 
 function buildEscalationSummary(ses, lastMessage) {
-  let summary = `🚨 ESCALACIÓN - Cliente frustrado\n\n`;
+  // [fix 2026-06-10] Perfil más rico para que Marcelo CIERRE: agrega monto, N° de
+  // cotización, segmento, zona térmica y si hay medidas referenciales.
+  const refs = (ses.data?.items || []).filter(it => it.referencial).map(it => it.measures_original).filter(Boolean);
+  let summary = `🚨 ESCALACIÓN comercial — para cierre\n\n`;
   summary += `📱 Teléfono: ${normPhone ? normPhone(ses.waId || '') : 'Desconocido'}\n`;
   summary += `👤 Nombre: ${ses.data?.name || 'No dijo'}\n`;
-  summary += `🏠 Comuna: ${ses.data?.comuna || 'No dijo'}\n`;
+  summary += `🏠 Comuna: ${ses.data?.comuna || 'No dijo'}${ses.data?.zona_termica ? ' (zona ' + ses.data.zona_termica + ')' : ''}\n`;
+  summary += `🎯 Segmento: ${ses.data?.segmento || 'No definido'}\n`;
   summary += `📏 Medidas: ${formatItemsHumano(ses.data?.items)}\n`;
   summary += `🎨 Color: ${ses.data?.default_color || 'No dijo'}\n`;
-  summary += `🔄 Tipo: ${ses.data?.default_tipo || 'CORREDERA (por defecto)'}\n`;
+  if (ses.data?.grand_total) summary += `💰 Cotización: $${Number(ses.data.grand_total).toLocaleString('es-CL')}${ses.quoteNum ? ' · ' + ses.quoteNum : ''}\n`;
+  if (refs.length) summary += `⚠️ Medidas referenciales (validar): ${refs.join(', ')}\n`;
   summary += `💬 Último mensaje del cliente: "${lastMessage}"\n\n`;
-  summary += `📋 Estado actual: ${ses.data?.medidasEnviadas ? 'Medidas enviadas' : 'Sin medidas'}`;
+  summary += `📋 Estado: ${ses.pdfSent ? 'PDF enviado' : (ses.data?.medidasEnviadas ? 'Medidas enviadas' : 'Sin medidas')}`;
   return summary;
 }
 function normColor(text) {
