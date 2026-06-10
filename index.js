@@ -310,6 +310,9 @@ const pdfParse = require("pdf-parse");
 import { saveMedia, logActivity, notifyQuoteSent, MEDIA_ENABLED } from "./mediaStore.js";
 import { isQuoteIntent } from "./services/oliverIntent.js"; // [2026-06-10 FIX #2/GT-04] confirmación tolera *Si* y sí acentuado
 import { classifyProduct, warmHandoffMessage } from "./services/oliverProduct.js"; // [2026-06-10 FIX #A] handoff cálido productos especiales
+import { detectNoiseLoop, noiseLoopMessage } from "./services/oliverNoise.js"; // [2026-06-10 anti-loop] basura variada (caso 119 msgs)
+import { detectOutOfCatalog, outOfCatalogRetentionMessage } from "./services/oliverOutOfCatalog.js"; // [2026-06-10 GT-05] vidrio shower → ofrecer PVC, no competencia
+import { shouldSkipFollowup } from "./services/oliverFollowup.js"; // [2026-06-10] no enviar follow-up a Marcelo/internos
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
@@ -5229,6 +5232,19 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
+    // ═══ [2026-06-10 anti-loop] DETECTOR DE RUIDO/BASURA acumulada (caso 119 msgs sin escalar) ═══
+    // detectClientLoop compara texto EXACTO; basura VARIADA no acumulaba. Esto detecta mensajes
+    // sin sentido (sin vocales, símbolos, repetición) excluyendo dimensiones (1200x1000). Testeado.
+    if (detectNoiseLoop(ses, userText)) {
+      logInfo("noise_loop_detected", `tel=${waId} text="${userText.substring(0, 50)}"`);
+      fireAndForget("logOliverEvent.noise_loop", logOliverEvent("noise_loop_detected", { phone: waId, sample: userText.substring(0, 100) }));
+      await waSendH(waId, noiseLoopMessage(ses.data?.name || "", process.env.AGENT_NAME || "Marcelo Cifuentes"), true);
+      const summary = buildEscalationSummary(ses, userText);
+      await sendEscalationAlert(summary, normPhone(process.env.ESCALATION_PHONE || process.env.OWNER_NOTIFICATION_PHONE), ses.data);
+      saveSession(waId, ses);
+      return;
+    }
+
     // ═══ v11.5-3 INCREMENTO contador de turnos para resumen consolidado ═══
     ses.turnsSinceConsolidation = (ses.turnsSinceConsolidation || 0) + 1;
     if (ses.turnsSinceConsolidation >= 5) {
@@ -5266,6 +5282,17 @@ app.post("/webhook", async (req, res) => {
 
       const summary = buildEscalationSummary(ses, userText);
       await sendEscalationAlert(summary, normPhone(process.env.ESCALATION_PHONE || process.env.OWNER_NOTIFICATION_PHONE), ses.data);
+      return;
+    }
+
+    // [2026-06-10 GT-05] FUERA DE CATÁLOGO (vidrio shower/ducha/espejo): retener + ofrecer PVC,
+    // NO derivar a la competencia. oliverProduct (#A, arriba) ya capturó mampara templada/terraza.
+    // Excluye menciones de paso ("tengo espejo roto, busco ventanas"). Testeado en oliverOutOfCatalog.test.js.
+    const ooc = detectOutOfCatalog(userText);
+    if (ooc.outOfCatalog) {
+      await waSendH(waId, outOfCatalogRetentionMessage(ses.data?.name || ""), true);
+      fireAndForget("logOliverEvent.out_of_catalog", logOliverEvent("out_of_catalog", { phone: waId, term: ooc.matched }));
+      saveSession(waId, ses);
       return;
     }
 
@@ -5699,6 +5726,9 @@ app.post("/webhook", async (req, res) => {
    ========================= */
 setInterval(async () => {
   for (const [waId, ses] of sessions.entries()) {
+    // [2026-06-10] NO enviar el follow-up de cliente al número de Marcelo/internos
+    // (antes le llegaban hasta 11 msgs en 7 días, algunos de madrugada). Testeado.
+    if (shouldSkipFollowup(waId)) continue;
     const inactMin =
       (Date.now() - (ses.lastActivity || ses.lastAt || Date.now())) / 60000;
     if (
