@@ -314,6 +314,7 @@ import { detectNoiseLoop, noiseLoopMessage } from "./services/oliverNoise.js"; /
 import { detectOutOfCatalog, outOfCatalogRetentionMessage } from "./services/oliverOutOfCatalog.js"; // [2026-06-10 GT-05] vidrio shower → ofrecer PVC, no competencia
 import { shouldSkipFollowup } from "./services/oliverFollowup.js"; // [2026-06-10] no enviar follow-up a Marcelo/internos
 import { persistHandoff, isHandoffActive } from "./services/oliverHandoff.js"; // [2026-06-10 #B/GT-07] handoff persistente (bot no revive)
+import { isSessionStuck, sessionStuckAlertMessage } from "./services/stuckLeadMonitor.js"; // [2026-06-10 #C] aviso lead pegado (no perder Dalias en silencio)
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
@@ -5728,6 +5729,20 @@ app.post("/webhook", async (req, res) => {
       // PDF enviado — no enviar texto adicional, el caption del PDF es suficiente
       ses.history.push({ role: "assistant", content: `[PDF enviado: ${ses.quoteNum}]` });
     }
+
+    // [2026-06-10 #C] MONITOR LEAD PEGADO (tiempo real, solo-aviso, NO pausa el bot).
+    // Si tras varios mensajes el cliente sigue sin cotización (ni PDF, ni total, ni handoff),
+    // avísale a Marcelo UNA vez para que salte él. Es la red que evita otra "Dalia" silenciosa.
+    // Se excluye el propio número de Marcelo/internos. No bloquea el flujo (try/catch).
+    try {
+      if (!ses.stuckAlerted && !shouldSkipFollowup(waId) && isSessionStuck(ses, waId)) {
+        ses.stuckAlerted = true;
+        if (ESCALATION_PHONE) {
+          fireAndForget("stuck.alert", waSend(ESCALATION_PHONE, sessionStuckAlertMessage(ses, waId)));
+          logInfo("stuck_lead", `Aviso lead pegado enviado a Marcelo para ${waId}`);
+        }
+      }
+    } catch (e) { logErr("stuck.monitor", e); }
 
     saveSession(waId, ses);
      } catch (e) {

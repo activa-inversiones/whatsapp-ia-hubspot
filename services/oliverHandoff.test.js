@@ -101,3 +101,21 @@ test('GT-07g: guard local bloquea mensajes posteriores al handoff', async () => 
   const shouldSilence = isHandoffActive(ses);
   assert.equal(shouldSilence, true, 'mensaje post-handoff debe ser silenciado por el guard');
 });
+
+// ── GT-07h: el handoff se persiste en ses.data (sobrevive reinicio de Railway) ─
+// session.data se guarda como jsonb en Postgres y se rehidrata al reiniciar.
+// Si el flag SOLO viviera en ses.handoffActive (RAM), un reinicio lo perdería y
+// el bot revivría la conversación ya derivada. Por eso persistHandoff lo escribe
+// también en ses.data.handoffActive.
+test('GT-07h: persistHandoff escribe el flag en ses.data (capa persistible)', async () => {
+  const ses = { data: { name: 'Dalia' }, history: [] };
+  await persistHandoff('56911112222', ses);
+  assert.equal(ses.data.handoffActive, true, 'el flag debe quedar en ses.data para persistir a Postgres');
+});
+
+test('GT-07h2: tras un reinicio simulado (solo sobrevive ses.data), el guard sigue activo', () => {
+  // Simula la sesión REHIDRATADA desde Postgres: el flag top-level se perdió,
+  // solo quedó lo que estaba en data (jsonb). El guard debe seguir cortando.
+  const sesRehidratada = { data: { name: 'Dalia', handoffActive: true }, history: [] };
+  assert.equal(isHandoffActive(sesRehidratada), true, 'el handoff debe sobrevivir el reinicio vía ses.data');
+});

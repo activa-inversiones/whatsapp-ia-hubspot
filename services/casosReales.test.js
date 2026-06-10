@@ -19,6 +19,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { validateDimensionsLocal } from "./enginePricer.js";
+import { classifyProduct } from "./oliverProduct.js";
+import { isNoise, detectNoiseLoop } from "./oliverNoise.js";
 
 // ── Pedido REAL de Dalia Retama (transcrito de la BD, mm) ─────────────────────
 // "medidas aproximadas" — cliente lo dijo explícitamente. Tipos según el resumen
@@ -75,4 +77,70 @@ test("DALIA: el pedido completo es COTIZABLE — 0 escalaciones, 2 referenciales
   assert.equal(escala, 0, "CERO escalaciones — la cotización nunca debe bloquearse");
   assert.equal(refer, 2, "2 correderas referenciales");
   assert.equal(ok, 5, "5 tipos de ventana cotizan directo");
+});
+
+// ── CASO c7a5 (conv 10618adf, 2026-06-09) ─────────────────────────────────────
+// Mensaje REAL del cliente (transcrito de la BD conversation_messages):
+//   "Buenas tardes.\nNecesito cotizar:\n 4 ventanas 1,50x 1,50\n2 ventanas 1,00x 1,00
+//    Con instalación y retiro de ventanas antiguas de aluminio, es un casa prefabricada"
+//
+// EL BUG: la palabra "aluminio" gatilló "te paso con Marcelo" y el bot NUNCA cotizó
+// las 6 ventanas estándar (4× 1,50x1,50 + 2× 1,00x1,00). Pero el cliente NO pide un
+// producto de aluminio: pide ventanas PVC NUEVAS y, de paso, que le RETIREN las
+// ANTIGUAS de aluminio. Es una MENCIÓN DE PASO ("retiro de ventanas antiguas de
+// aluminio") → specialRequest debe ser false para que el flujo cotice el PVC.
+const MSG_C7A5 =
+  "Buenas tardes.\nNecesito cotizar:\n 4 ventanas 1,50x 1,50\n2 ventanas 1,00x 1,00\n" +
+  "Con instalación y retiro de ventanas antiguas de aluminio, es un casa prefabricada";
+
+test("c7a5: 'retiro de ventanas antiguas de aluminio' es MENCIÓN DE PASO → NO escala, COTIZA", () => {
+  const r = classifyProduct(MSG_C7A5);
+  assert.equal(
+    r.specialRequest, false,
+    "specialRequest debe ser false: el cliente quiere PVC nuevo, 'aluminio' es solo lo que se RETIRA (el bug que perdió el lead)"
+  );
+  assert.equal(r.passing, true, "se detecta el contexto de paso (retiro/antiguas) que neutraliza el match de 'aluminio'");
+});
+
+// ── CASO e0b2a1a5 (la conversación de 119 mensajes basura) ────────────────────
+// EL BUG: el bot respondió "no entendí" 20+ veces y NUNCA escaló, porque comparaba
+// el texto EXACTO de mensaje contra mensaje — y la basura era toda distinta entre sí,
+// así que el contador de repeticiones jamás se disparaba. FIX (oliverNoise.js):
+// detectar que el mensaje ES ruido por forma (sin vocales, puro símbolo, repetición,
+// etc.) y acumular en una ventana rolling hasta superar el umbral → escalar.
+//
+// Nota: el prompt original sugería "asdkj" como string basura, pero esa cadena tiene
+// una vocal legible ('a') y estructura pronunciable, así que isNoise() la trata —
+// correctamente — como NO ruido. Se reemplaza por "wqrtp" (mash de consonantes puro,
+// sin vocales) que sí es basura real. Los otros 4 (????, ...., xqzpt, 11111) se mantienen.
+const JUNK_STRINGS = ["wqrtp", "????", "....", "xqzpt", "11111"];
+
+test("e0b2a1a5: cada string basura representativo es detectado como RUIDO", () => {
+  for (const s of JUNK_STRINGS) {
+    assert.equal(isNoise(s), true, `"${s}" debe clasificarse como ruido/basura`);
+  }
+});
+
+test("e0b2a1a5: respuestas legítimas cortas y dimensiones NO son ruido (no falso-positivo)", () => {
+  const legit = [
+    "Si",                  // confirmación corta legítima
+    "ok",                  // confirmación corta legítima
+    "1200x1000",           // dimensión válida (mm), no es basura
+    "Hola, necesito cotizar dos ventanas para mi living",  // frase real
+  ];
+  for (const s of legit) {
+    assert.equal(isNoise(s), false, `"${s}" es un mensaje legítimo, NO debe marcarse como ruido`);
+  }
+});
+
+test("e0b2a1a5: detectNoiseLoop ESCALA tras ~5 mensajes basura distintos (el bot ya no se queda en bucle)", () => {
+  const ses = {}; // sesión fresca, sin noiseWindow previa
+  let fired = false;
+  for (const s of JUNK_STRINGS) {
+    fired = detectNoiseLoop(ses, s);
+  }
+  assert.equal(
+    fired, true,
+    "tras 5 mensajes basura distintos detectNoiseLoop debe disparar → escalar (el bug e0b2a1a5 no vuelve)"
+  );
 });

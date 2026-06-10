@@ -53,6 +53,13 @@ export async function persistHandoff(phone, session, opts = {}) {
   // ── CAPA 1: local (inmediata, sin red) ──
   if (session && typeof session === 'object') {
     session.handoffActive = true;
+    // [2026-06-10 #B CAPA 2 sin migración] Guardar también en session.data: ese objeto
+    // SÍ se persiste a Postgres como jsonb (persistSessionToStore) y se rehidrata en el
+    // reinicio (loadSessionFromStore). Así el handoff SOBREVIVE reinicios de Railway sin
+    // tocar el esquema de la tabla whatsapp_sessions.
+    if (session.data && typeof session.data === 'object') {
+      session.data.handoffActive = true;
+    }
     result.local = true;
   }
 
@@ -81,5 +88,7 @@ export async function persistHandoff(phone, session, opts = {}) {
  * @returns {boolean}
  */
 export function isHandoffActive(session) {
-  return !!(session?.handoffActive);
+  // Lee ambos: el flag en RAM (session.handoffActive) y el persistido en jsonb
+  // (session.data.handoffActive), que es el que vuelve tras un reinicio de Railway.
+  return !!(session?.handoffActive || session?.data?.handoffActive);
 }
