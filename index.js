@@ -5728,10 +5728,14 @@ function normColor(text) {
   if (!text) return "BLANCO";
   const t = text.toLowerCase().trim();
 
-  if (t.includes("blanco") || t.includes("white")) return "BLANCO";
-  if (t.includes("nogal") || t.includes("roble") || t.includes("madera") || t.includes("dorado")) return "NOGAL";
-  if (t.includes("grafito") || t.includes("antracita") || t.includes("gris") || t.includes("plomo")) return "GRAFITO";
-  if (t.includes("negro") || t.includes("black") || t.includes("new black") || t.includes("newblack")) return "NEWBLACK";
+  // Catálogo real WinHouse: BLANCO | NOGAL | ROBLE | GRAFITO | NEWBLACK
+  // [fix 2026-06-09] ANTES "roble"/"dorado" → NOGAL (ROBLE nunca se elegía, el bot
+  // "no tenía roble"). Ahora cada palabra del cliente se acerca al color del catálogo.
+  if (t.includes("blanco") || t.includes("white") || t.includes("hueso") || t.includes("marfil")) return "BLANCO";
+  if (t.includes("new black") || t.includes("newblack") || t.includes("negro") || t.includes("black") || t.includes("ébano") || t.includes("ebano")) return "NEWBLACK";
+  if (t.includes("grafito") || t.includes("antracita") || t.includes("gris") || t.includes("plomo") || t.includes("plomizo")) return "GRAFITO";
+  if (t.includes("roble") || t.includes("winchester") || t.includes("montaña") || t.includes("montana") || t.includes("dorado")) return "ROBLE";
+  if (t.includes("nogal") || t.includes("madera") || t.includes("café") || t.includes("cafe") || t.includes("marrón") || t.includes("marron") || t.includes("caoba")) return "NOGAL";
 
   return "BLANCO"; // default
 }
