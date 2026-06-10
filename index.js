@@ -768,7 +768,7 @@ function validateDimensions(product, ancho_mm, alto_mm) {
   if (p.includes("CORREDERA")) {
     const lim = FABRICATION_LIMITS.SLIDING.H98;
     if (ancho_mm > lim.maxAncho || alto_mm > lim.maxAlto) {
-      return { message: `Corredera ${ancho_mm}×${alto_mm} excede límite fabricación (máx ${lim.maxAncho}×${lim.maxAlto}).`, escalate: true };
+      return { message: `la corredera de ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${lim.maxAncho}×${lim.maxAlto} mm)`, referencial: true, clampAncho: lim.maxAncho, clampAlto: lim.maxAlto };
     }
     return null; // OK
   }
@@ -777,7 +777,7 @@ function validateDimensions(product, ancho_mm, alto_mm) {
   if (p.includes("PUERTA")) {
     const lim = FABRICATION_LIMITS.S60.puerta;
     if (ancho_mm > lim.maxAncho || alto_mm > lim.maxAlto) {
-      return { message: `Puerta ${ancho_mm}×${alto_mm} excede límite (máx ${lim.maxAncho}×${lim.maxAlto}).`, escalate: true };
+      return { message: `la puerta de ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${lim.maxAncho}×${lim.maxAlto} mm)`, referencial: true, clampAncho: lim.maxAncho, clampAlto: lim.maxAlto };
     }
     return null;
   }
@@ -794,7 +794,7 @@ function validateDimensions(product, ancho_mm, alto_mm) {
         escalate: false,
       };
     }
-    return { message: `Medida ${ancho_mm}×${alto_mm} excede todos los límites de fabricación.`, escalate: true };
+    return { message: `la medida ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${slidingLim.maxAncho}×${slidingLim.maxAlto} mm)`, referencial: true, clampAncho: slidingLim.maxAncho, clampAlto: slidingLim.maxAlto };
   }
   return null; // OK
 }
@@ -5420,6 +5420,14 @@ app.post("/webhook", async (req, res) => {
             if (warn) {
               it.dim_warning = warn.message;
               if (warn.suggest) it.suggested_product = warn.suggest;
+              if (warn.referencial) {
+                // [fix 2026-06-10] El dueño: cotizar igual con precio REFERENCIAL.
+                // Acota la medida al máximo fabricable para estimar el precio; Marcelo
+                // valida la medida exacta. NO se abandona la venta.
+                it.referencial = true;
+                it.measures_original = it.measures;
+                it.measures = `${warn.clampAncho}x${warn.clampAlto}`;
+              }
               if (warn.escalate) it.needs_escalation = true;
             }
           }
@@ -5473,26 +5481,21 @@ app.post("/webhook", async (req, res) => {
           return;
         }
 
-        if (needsEscalation) {
-          // [fix 2026-06-09] ANTES: si UNA medida salía de rango, abandonaba TODA la
-          // cotización y mandaba "le paso con el equipo" + return → LOOP (se repetía en
-          // cada mensaje) y el lead se moría sin propuesta. Ahora: avisa UNA sola vez,
-          // cálido y con valor (Marcelo MINVU valida las grandes), alerta al equipo, y
-          // NO botea la conversación. (Pendiente mayor: cotizar los ítems válidos aparte.)
-          const grandes = d.items.filter(it => it.needs_escalation);
-          const reasons = grandes.map(it => it.dim_warning).join("; ");
-          fireAndForget("escalation.dimensions", sendEscalationAlert(`Medidas fuera de rango: ${reasons}`, normPhone(waId), d));
-          if (!ses.dimsEscalated) {
-            ses.dimsEscalated = true;
-            actionsResult.escalated = true;
-            const nm = ses.data?.name ? " " + ses.data.name : "";
-            const una = grandes.length === 1;
-            await waSendH(waId, `Dale${nm}, ${una ? "una medida es" : "hay medidas"} más grande${una ? "" : "s"} de lo estándar (sobre 2,15 m), así que Marcelo —Evaluador Energético MINVU— la${una ? "" : "s"} revisa personalmente para que quede perfecta. Ya le avisé. ¿Avanzamos con el resto de las medidas para dejarte la propuesta lista?`, false);
-            ses.history.push({ role: "assistant", content: "Medida(s) grande(s): Marcelo valida; sigo con el resto para la propuesta." });
-          }
-          saveSession(waId, ses);
-          try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-escalation", e); }
-          return;
+        // [fix 2026-06-10] Medidas fuera de rango: NO se abandona la venta (antes hacía
+        // return y se perdía el lead). Se cotiza con precio REFERENCIAL (medida acotada al
+        // máximo fabricable) y se avisa UNA sola vez cuál medida excede; Marcelo valida la
+        // medida exacta. La cotización CONTINÚA (sin return) → el cliente recibe su PDF.
+        const referenciales = d.items.filter(it => it.referencial);
+        if (referenciales.length > 0 && !ses.dimsEscalated) {
+          ses.dimsEscalated = true;
+          actionsResult.escalated = true;
+          const reasons = referenciales.map(it => `${it.measures_original || ""} → ${it.dim_warning}`).join("; ");
+          fireAndForget("escalation.dimensions", sendEscalationAlert(`Medidas referenciales (fuera de rango): ${reasons}`, normPhone(waId), d));
+          const nm = ses.data?.name ? " " + ses.data.name : "";
+          const una = referenciales.length === 1;
+          const listaMed = referenciales.map(it => it.measures_original).filter(Boolean).join(", ");
+          await waSendH(waId, `Aviso${nm}: ${una ? "la medida" : "las medidas"} ${listaMed} ${una ? "supera" : "superan"} lo estándar de fabricación, así que ${una ? "va" : "van"} con precio referencial y Marcelo —Evaluador Energético MINVU— valida la medida exacta. Igual te dejo la propuesta completa con el valor estimado 👇`, false);
+          ses.history.push({ role: "assistant", content: "Medida(s) referencial(es): cotizo con valor estimado; Marcelo valida la medida exacta." });
         }
       }
     }
