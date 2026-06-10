@@ -5413,7 +5413,11 @@ app.post("/webhook", async (req, res) => {
           // "blanco" que el LLM asume por defecto. Si lo eligió explícito (locked) → fuerza TODOS los
           // items; si no, solo rellena los que vinieron SIN color (ej. extraídos de una foto sin color).
           if (d.default_color) {
-            const dc = String(d.default_color).toLowerCase();
+            // [GT-08 2026-06-10] usar normColor (no texto crudo): "roble dorado"→ROBLE propagado
+            // normalizado a los items (antes propagaba "roble dorado" crudo). normColor ya mapea
+            // roble/winchester/montaña/dorado→ROBLE y plomo/gris→GRAFITO.
+            const dc = normColor(d.default_color);
+            d.default_color = dc;
             d.items.forEach((it) => { if (d.default_color_locked || !it.color) it.color = dc; });
           }
 
