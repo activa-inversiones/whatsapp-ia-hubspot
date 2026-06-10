@@ -2220,6 +2220,7 @@ function newSession() {
     zohoEstimateId: null,
     perfilAcumulado: { tecnico: 0, emocional: 0 },
     followupEnviado: false,
+    dimsEscalated: false,
   };
 }
 
@@ -5138,6 +5139,7 @@ app.post("/webhook", async (req, res) => {
       ses.pdfSent = false;
       ses.pdfGeneratedCount = 0;
       ses.followupEnviado = false;
+      ses.dimsEscalated = false;
       ses.lastWasNegation = false;
       ses.negationCountdown = 0;
       ses.perfilAcumulado = { tecnico: 0, emocional: 0 };
@@ -5472,11 +5474,22 @@ app.post("/webhook", async (req, res) => {
         }
 
         if (needsEscalation) {
-          actionsResult.escalated = true;
-          const reasons = d.items.filter(it => it.needs_escalation).map(it => it.dim_warning).join("; ");
-          await waSendH(waId, "Algunas medidas necesitan validación técnica. Le paso con nuestro equipo.", false);
+          // [fix 2026-06-09] ANTES: si UNA medida salía de rango, abandonaba TODA la
+          // cotización y mandaba "le paso con el equipo" + return → LOOP (se repetía en
+          // cada mensaje) y el lead se moría sin propuesta. Ahora: avisa UNA sola vez,
+          // cálido y con valor (Marcelo MINVU valida las grandes), alerta al equipo, y
+          // NO botea la conversación. (Pendiente mayor: cotizar los ítems válidos aparte.)
+          const grandes = d.items.filter(it => it.needs_escalation);
+          const reasons = grandes.map(it => it.dim_warning).join("; ");
           fireAndForget("escalation.dimensions", sendEscalationAlert(`Medidas fuera de rango: ${reasons}`, normPhone(waId), d));
-          ses.history.push({ role: "assistant", content: "Medidas necesitan validación técnica." });
+          if (!ses.dimsEscalated) {
+            ses.dimsEscalated = true;
+            actionsResult.escalated = true;
+            const nm = ses.data?.name ? " " + ses.data.name : "";
+            const una = grandes.length === 1;
+            await waSendH(waId, `Dale${nm}, ${una ? "una medida es" : "hay medidas"} más grande${una ? "" : "s"} de lo estándar (sobre 2,15 m), así que Marcelo —Evaluador Energético MINVU— la${una ? "" : "s"} revisa personalmente para que quede perfecta. Ya le avisé. ¿Avanzamos con el resto de las medidas para dejarte la propuesta lista?`, false);
+            ses.history.push({ role: "assistant", content: "Medida(s) grande(s): Marcelo valida; sigo con el resto para la propuesta." });
+          }
           saveSession(waId, ses);
           try { await zhUpsert(ses, waId); } catch (e) { logErr("zhUpsert-escalation", e); }
           return;
