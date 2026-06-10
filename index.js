@@ -5665,9 +5665,14 @@ setInterval(async () => {
       ses.data.stageKey === "propuesta" // [F10] unificado
     ) {
       try {
+        // [fix 2026-06-09] Antes mandaba el copy genérico que la REGLA #25 PROHÍBE
+        // ("¿pudo revisar la propuesta?... ¿tiene dudas?"). Personalizado + con valor real.
+        const _nm = ses.data?.name ? " " + ses.data.name : "";
+        let _prod = "";
+        try { if (ses.data?.items?.length) _prod = " de " + formatItemsHumano(ses.data.items).split(" | ")[0]; } catch {}
         await waSendH(
           waId,
-          `Hola${ses.data?.name ? " " + ses.data.name : ""}, ¿pudo revisar la propuesta que le preparé? Si tiene dudas de medidas o materiales con gusto le ayudo 🏠`,
+          `Hola${_nm} 👋, te quedé debiendo el cierre de tu propuesta${_prod}. ¿La alcanzaste a revisar? Si querés, afinamos precio, medidas o plazo de instalación — y recordá que la firma Marcelo, Evaluador Energético MINVU, por si necesitás informe para subsidio SERVIU o el DOM. ¿Lo vemos hoy?`,
           true
         );
         ses.followupEnviado = true;
