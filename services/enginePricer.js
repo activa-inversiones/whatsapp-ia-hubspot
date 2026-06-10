@@ -186,15 +186,18 @@ const FABRICATION_LIMITS = {
  * Réplica local de validateDimensions (index.js) — NO exportada desde index.
  * Devuelve null si OK, o { message, escalate, suggest? } si excede.
  */
-function validateDimensionsLocal(product, ancho_mm, alto_mm) {
+export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
   const p = String(product || "").toUpperCase();
 
   if (p.includes("CORREDERA")) {
     const lim = FABRICATION_LIMITS.SLIDING.H98;
     if (ancho_mm > lim.maxAncho || alto_mm > lim.maxAlto) {
+      // [2026-06-10 FIX #C/GT-06] ANTES escalate:true → grand_total=null → PDF NUNCA salía aunque
+      // el cliente confirmara (correderas piso-cielo >2150mm son comunísimas; caso Dalia). Ahora
+      // referencial+clamp como index.js:771 (el dueño: "las grandes cotizarlas igual, solo avisar").
       return {
-        message: `Corredera ${ancho_mm}×${alto_mm} excede límite fabricación (máx ${lim.maxAncho}×${lim.maxAlto}).`,
-        escalate: true,
+        message: `La corredera de ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${lim.maxAncho}×${lim.maxAlto} mm); precio referencial acotado.`,
+        referencial: true, clampAncho: lim.maxAncho, clampAlto: lim.maxAlto,
       };
     }
     return null;
@@ -203,9 +206,10 @@ function validateDimensionsLocal(product, ancho_mm, alto_mm) {
   if (p.includes("PUERTA")) {
     const lim = FABRICATION_LIMITS.S60.puerta;
     if (ancho_mm > lim.maxAncho || alto_mm > lim.maxAlto) {
+      // [2026-06-10 FIX #C] alinear con index.js:781 — referencial+clamp en vez de escalate.
       return {
-        message: `Puerta ${ancho_mm}×${alto_mm} excede límite (máx ${lim.maxAncho}×${lim.maxAlto}).`,
-        escalate: true,
+        message: `La puerta de ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${lim.maxAncho}×${lim.maxAlto} mm); precio referencial acotado.`,
+        referencial: true, clampAncho: lim.maxAncho, clampAlto: lim.maxAlto,
       };
     }
     return null;
@@ -282,6 +286,16 @@ export async function priceAllEngine(d, customer_id = "") {
       item.price_warning = dim.message;
       item.source = "activa_engine"; item.confidence = "manual";
       return { escalada: true };
+    }
+    // [2026-06-10 FIX #C/GT-06] Fuera de rango pero REFERENCIAL: acotar al máx y COTIZAR (no escalar)
+    // → grand_total tiene valor → el PDF SÍ sale (antes: escalate → null → sin PDF). Marcelo valida la medida exacta.
+    if (dim && dim.referencial) {
+      item.referencial = true;
+      item.measures_original = `${m.ancho_mm}x${m.alto_mm}`;
+      item.price_warning = dim.message;
+      // Acotar SOLO la dimensión que excede (Math.min) — no sobre-cotizar la que sí cabe.
+      m.ancho_mm = Math.min(m.ancho_mm, dim.clampAncho);
+      m.alto_mm  = Math.min(m.alto_mm,  dim.clampAlto);
     }
 
     // 3) Mapeo de apertura (NUNCA TERMOPANEL) + serie de perfiles + nº hojas
