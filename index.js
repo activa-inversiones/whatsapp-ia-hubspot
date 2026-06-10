@@ -313,6 +313,7 @@ import { classifyProduct, warmHandoffMessage } from "./services/oliverProduct.js
 import { detectNoiseLoop, noiseLoopMessage } from "./services/oliverNoise.js"; // [2026-06-10 anti-loop] basura variada (caso 119 msgs)
 import { detectOutOfCatalog, outOfCatalogRetentionMessage } from "./services/oliverOutOfCatalog.js"; // [2026-06-10 GT-05] vidrio shower → ofrecer PVC, no competencia
 import { shouldSkipFollowup } from "./services/oliverFollowup.js"; // [2026-06-10] no enviar follow-up a Marcelo/internos
+import { persistHandoff, isHandoffActive } from "./services/oliverHandoff.js"; // [2026-06-10 #B/GT-07] handoff persistente (bot no revive)
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
@@ -1421,6 +1422,9 @@ async function sendEscalationAlert(reason, customerPhone, sessionData) {
   const session = sessions.get(customerPhone) || sessions.get(normPhone(customerPhone));
   if (session) {
     await notifyHandoff(waSend, customerPhone, session, reason);
+    // [2026-06-10 #B/GT-07] Persistir handoff: el bot NO revive tras escalar (el aviso a Marcelo
+    // SÍ llega — confirmado por el dueño). CAPA 1 (local/RAM); el guard isHandoffActive lo lee.
+    await persistHandoff(customerPhone, session, { reason });
   }
   try {
     await pushLeadEvent({
@@ -5131,6 +5135,19 @@ app.post("/webhook", async (req, res) => {
         return;
       }
       
+      return;
+    }
+    // [2026-06-10 #B/GT-07] Handoff LOCAL activo: el bot NO reinicia la conversación; tranquiliza
+    // UNA vez ("Marcelo ya está al tanto") y se calla. Arregla la "escalación teatral" (antes revivía).
+    if (isHandoffActive(ses)) {
+      ses.history.push({ role: "user", content: userText });
+      if (!ses.handoffReassured) {
+        ses.handoffReassured = true;
+        const ag = process.env.AGENT_NAME || "Marcelo Cifuentes";
+        await waSendH(waId, `${ag} ya está al tanto de tu caso y te contacta a la brevedad. 🙌`, true);
+      }
+      saveSession(waId, ses);
+      logInfo("handoff_local", `Handoff activo (local) para ${waId}`);
       return;
     }
     if (control?.ai_paused || control?.operator_status === "human") {
