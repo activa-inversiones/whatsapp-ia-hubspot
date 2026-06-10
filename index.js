@@ -308,6 +308,7 @@ dotenv.config();
 const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
 import { saveMedia, logActivity, notifyQuoteSent, MEDIA_ENABLED } from "./mediaStore.js";
+import { isQuoteIntent } from "./services/oliverIntent.js"; // [2026-06-10 FIX #2/GT-04] confirmación tolera *Si* y sí acentuado
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
@@ -5526,8 +5527,9 @@ app.post("/webhook", async (req, res) => {
       !someItemEscalates &&
       (allItemsPriced || d.wants_pdf || actionsResult.quoted ||
         // [FIX STANDBY 2026-06-06] también dispara con CONFIRMACIONES del cliente, no solo "pdf/envía".
-        // Así "está bien", "dale", "sí", "envíamela", "gracias" mandan la propuesta y no la dejan esperando.
-        /pdf|cotiza|cotizaci[oó]n|formal|env[ií]a|env[ií]amela|manda|m[aá]ndala|propuesta|dale|listo|perfecto|de acuerdo|est[aá]\s*bien|^\s*s[ií]\b|^\s*ok\b|gracias|quiero/i.test(userText));
+        // [2026-06-10 FIX #2/GT-04] vía isQuoteIntent(): normaliza marcado WhatsApp (*Si* / _Si_) y
+        // corrige "sí" acentuado, que ANTES nunca matcheaba (\b no funciona con la í). Testeado en oliverIntent.test.js.
+        isQuoteIntent(userText));
 
     if (shouldSendPdf) {
       const qn = `COT-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
