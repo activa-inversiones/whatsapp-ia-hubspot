@@ -309,6 +309,7 @@ const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
 import { saveMedia, logActivity, notifyQuoteSent, MEDIA_ENABLED } from "./mediaStore.js";
 import { isQuoteIntent } from "./services/oliverIntent.js"; // [2026-06-10 FIX #2/GT-04] confirmación tolera *Si* y sí acentuado
+import { classifyProduct, warmHandoffMessage } from "./services/oliverProduct.js"; // [2026-06-10 FIX #A] handoff cálido productos especiales
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
@@ -5236,9 +5237,11 @@ app.post("/webhook", async (req, res) => {
       ses.turnsSinceConsolidation = 0;
     }
 
-    // 1. Productos especiales que SIEMPRE se escalan
-    const specialProductKeywords = ["templado", "vidrio templado", "mampara", "cierre de terraza", "cierre terraza", "celosia", "celosía", "aluminio", "cortina", "reja"];
-    const isSpecialProduct = specialProductKeywords.some(kw => t.includes(kw));
+    // 1. [2026-06-10 FIX #A] Producto especial que Activa FABRICA pero el cotizador aún no precia
+    //    → handoff CÁLIDO (no corte ciego). Menciones de paso ("retiro de aluminio") NO escalan: fluyen
+    //    a cotizar PVC. Lógica testeada en services/oliverProduct.test.js (GT-02). NO inventa precio.
+    const prodClass = classifyProduct(userText);
+    const isSpecialProduct = prodClass.specialRequest;
 
     // 2. Frustración del cliente (v11.2: ampliado con "fiasco" y variantes que faltaban)
     // FIX: se quitaron falsos positivos que cortaban ventas — "ya", "ya envié",
@@ -5256,7 +5259,9 @@ app.post("/webhook", async (req, res) => {
         const nombre = ses.data?.name ? `, ${ses.data.name}` : "";
         await waSendH(waId, `Lamento haberte hecho perder tiempo${nombre}. Te paso directo con ${agente} ahora — él lo resuelve en una llamada de 5 minutos. ¿A qué hora te queda bien que te llame hoy?`, true);
       } else {
-        await waSendH(waId, `✅ Entendido. Te voy a pasar directamente con nuestro ingeniero especialista ${agente} ahora mismo.`, true);
+        // [2026-06-10 FIX #A] handoff CÁLIDO: afirma que SÍ se fabrica + captura (pide hora),
+        // en vez del corte frío "te paso con el ingeniero". El lead no se pierde.
+        await waSendH(waId, warmHandoffMessage(prodClass.matched, agente, ses.data?.name || ""), true);
       }
 
       const summary = buildEscalationSummary(ses, userText);
