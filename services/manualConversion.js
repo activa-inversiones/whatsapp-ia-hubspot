@@ -96,34 +96,72 @@ export function extractName(text) {
   if (pm) t = t.replace(pm[0], ' ');
   // quitar montos y palabras de moneda
   t = t.replace(/\$?\s*\d[\d.]*\d|\$?\s*\d+/g, ' ')
-       .replace(/\b(millones?|mill?|mil|clp|pesos?|por|de|monto|cliente|nombre|tel[eé]fono|fono)\b/gi, ' ');
+       .replace(/\b(millones?|mill?|mil|clp|pesos?|por|de|monto|cliente|nombre|tel[eé]fono|fono)\b/gi, ' ')
+       // [canal] no es parte del nombre
+       .replace(/\b(tik\s*tok|tiktok|instagram|insta|facebook|google|maps|youtube|whats\s*app|whatsapp|wsp|recomendad[oa]|referid[oa]|web)\b/gi, ' ');
   const name = t.replace(/[^\p{L}\s'.-]/gu, ' ').replace(/\s+/g, ' ').trim();
   return name || null;
 }
 
+// ── CANALES (activador: atribución DECLARADA cuando no hay click id) ──────────
+// El dueño declara por qué canal lo conoció el cliente ("me vio en TikTok y me llamó").
+export const CHANNELS = ['tiktok', 'instagram', 'facebook', 'google', 'maps', 'youtube', 'whatsapp', 'referido', 'web', 'otro'];
+const CHANNEL_ALIASES = [
+  [/tik\s*tok|tiktok/i, 'tiktok'],
+  [/instagram|insta\b/i, 'instagram'],
+  [/facebook|\bface\b|\bfb\b/i, 'facebook'],
+  [/google\s*maps|\bmaps\b|mapa/i, 'maps'],
+  [/youtube|you\s*tube|\byt\b/i, 'youtube'],
+  [/google|buscador|search/i, 'google'],
+  [/whats\s*app|whatsapp|\bwsp\b/i, 'whatsapp'],
+  [/recomend|referid|boca a boca|conocid|amig/i, 'referido'],
+  [/\bweb\b|sitio|p[aá]gina|landing/i, 'web'],
+  [/\botro\b|\botra\b|no s[eé]/i, 'otro'],
+];
+
+// Texto → canal canónico (o null si no reconoce).
+export function normalizeChannel(text) {
+  const t = String(text || '').toLowerCase().trim();
+  if (!t) return null;
+  for (const [re, canon] of CHANNEL_ALIASES) if (re.test(t)) return canon;
+  return null;
+}
+
+// A qué plataforma de ads se reporta la conversión declarada (la regla anti-cross-inject):
+// meta-familia → 'meta'; google-familia → 'google'; tiktok → 'tiktok'; referido/web/otro → null.
+export function channelToPlatform(channel) {
+  const c = String(channel || '').toLowerCase();
+  if (['facebook', 'instagram', 'meta', 'whatsapp'].includes(c)) return 'meta';
+  if (['google', 'maps', 'youtube'].includes(c)) return 'google';
+  if (c === 'tiktok') return 'tiktok';
+  return null;
+}
+
 /**
  * Parsea una LÍNEA RÁPIDA completa.
- * @returns {{ kind, name, phone, amount, complete }}
- *   complete = tiene kind + name + amount (phone opcional pero recomendado).
+ * @returns {{ kind, name, phone, amount, channel, complete }}
+ *   complete = tiene kind + name + amount (phone y channel se preguntan si faltan).
  */
 export function parseManualConversion(text) {
   const kind = detectKind(text);
   const phone = extractPhone(text);
   const amount = extractAmount(text);
+  const channel = normalizeChannel(text);
   const name = extractName(text);
   const complete = !!(kind && name && amount);
-  return { kind, name, phone, amount, complete };
+  return { kind, name, phone, amount, channel, complete };
 }
 
 // ── MODO GUIADO (máquina de pasos) ───────────────────────────────────────────
-// state: { kind, step:'name'|'phone'|'amount', name, phone, amount }
-const STEP_ORDER = ['name', 'phone', 'amount'];
+// state: { kind, step:'name'|'phone'|'amount'|'channel', name, phone, amount, channel }
+const STEP_ORDER = ['name', 'phone', 'amount', 'channel'];
 
 export function askForStep(step, kind) {
   const k = kind === 'venta' ? 'la venta' : 'la cotización';
   if (step === 'name')  return `Registrar ${k} 📝 — ¿nombre del cliente?`;
-  if (step === 'phone') return `¿Teléfono del cliente? (así Meta lo atribuye bien). Si no lo tienes, escribe *no*.`;
+  if (step === 'phone') return `¿Teléfono del cliente? (así se atribuye bien). Si no lo tienes, escribe *no*.`;
   if (step === 'amount')return `¿Monto en pesos? (ej: 1.500.000)`;
+  if (step === 'channel')return `¿Por qué canal te conoció? (TikTok · Instagram · Facebook · Google · Maps · YouTube · WhatsApp · Recomendado · Otro)`;
   return '';
 }
 
@@ -147,23 +185,52 @@ export function advanceGuided(state, answer) {
   if (s.step === 'amount') {
     s.amount = extractAmount(a);
     if (!s.amount) return { state: s, ask: `No entendí el monto 😅. Escríbelo en pesos, ej: 1500000` };
-    return { state: s, done: true, data: { kind: s.kind, name: s.name, phone: s.phone, amount: s.amount } };
+    s.step = 'channel';
+    return { state: s, ask: askForStep('channel', s.kind) };
+  }
+  if (s.step === 'channel') {
+    s.channel = normalizeChannel(a) || 'otro';
+    return { state: s, done: true, data: { kind: s.kind, name: s.name, phone: s.phone, amount: s.amount, channel: s.channel } };
   }
   return { state: s };
 }
 
 export function startGuided(kind) {
-  return { kind, step: 'name', name: null, phone: null, amount: null };
+  return { kind, step: 'name', name: null, phone: null, amount: null, channel: null };
+}
+
+// Arranca el guiado YA en el paso de canal (para línea rápida completa sin canal).
+export function startGuidedAtChannel({ kind, name, phone, amount }) {
+  return { kind, step: 'channel', name, phone, amount, channel: null };
+}
+
+// [2026-06-11 abogado-del-diablo FIX #2] Monto sospechoso (probable typo / venta falsa) → pedir
+// confirmación antes de disparar a Meta. Para un trabajo de ventanas, < $50.000 o > $30.000.000 es
+// raro. A 2-4 ventas/mes, una venta falsa/typo domina la señal y el MER → confirmar evita basura.
+export const MONTO_MIN_RAZONABLE = 50000;
+export const MONTO_MAX_RAZONABLE = 30000000;
+export function isAmountSuspicious(amount) {
+  const n = Number(amount) || 0;
+  return n < MONTO_MIN_RAZONABLE || n > MONTO_MAX_RAZONABLE;
+}
+export function confirmAmountMessage({ kind, amount }) {
+  const t = kind === 'venta' ? 'VENTA' : 'COTIZACIÓN';
+  return `⚠️ Confirma: ${t} por *$${Number(amount || 0).toLocaleString('es-CL')}* — ¿es correcto? (responde *sí* o *no*)`;
 }
 
 // ── Mensaje de confirmación ──────────────────────────────────────────────────
-export function confirmMessage({ kind, name, phone, amount }, meta = {}) {
+export function confirmMessage({ kind, name, phone, amount, channel }, meta = {}) {
   const tipo = kind === 'venta' ? 'VENTA' : 'COTIZACIÓN';
   const montoFmt = '$' + Number(amount || 0).toLocaleString('es-CL');
-  const metaLine = meta.ok
-    ? 'reportado a Meta ✓'
-    : meta.skipped
-      ? '(sin teléfono → Meta no atribuible, igual guardado)'
-      : 'guardado (Meta reintenta luego)';
-  return `✅ Recibido: ${tipo} · ${name || 's/ nombre'} · ${montoFmt}${phone ? ' · ' + phone : ''} — ${metaLine} y guardado en el pipeline.`;
+  const plat = channelToPlatform(channel);
+  const platName = plat === 'meta' ? 'Meta' : plat || '';
+  let rep;
+  if (meta.ok) rep = `reportado a ${platName} ✓`;
+  else if (meta.skipped === 'no_phone') rep = '(sin teléfono → no atribuible, igual guardado)';
+  else if (meta.skipped === 'channel_pending') rep = `canal ${channel}: guardado (envío a ${platName} se activa en Fase 2)`;
+  else if (meta.skipped === 'no_paid_channel') rep = 'guardado en el pipeline (canal no pagado)';
+  else if (meta.skipped) rep = 'guardado';
+  else rep = 'guardado (se reintenta)';
+  const canalTxt = channel ? ` · canal: ${channel}` : '';
+  return `✅ Recibido: ${tipo} · ${name || 's/ nombre'} · ${montoFmt}${phone ? ' · ' + phone : ''}${canalTxt} — ${rep} y en el pipeline.`;
 }
