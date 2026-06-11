@@ -320,6 +320,8 @@ import { colorChosen, isColorQuestion, colorOptionsMessage, askColorMessage } fr
 import { needsName, extractName, isLikelyName, askNameMessage } from "./services/oliverName.js"; // [2026-06-11 G5] capturar el nombre (no "Hola Cliente")
 import { isMeasureSuspicious, looksLikeUnitAmbiguous, askUnitsMessage } from "./services/oliverUnits.js"; // [2026-06-11 G6] confirmar unidades cm/mm
 import { itemTypeLabel } from "./services/oliverLabel.js"; // [2026-06-11 G4] label de tipo correcto (Puerta≠Ventana)
+import { detectHumanRequest } from "./services/oliverHumanRequest.js"; // [2026-06-11 G7] pedir humano ("vendedor"/"asesor") → escalar
+import { isPriceQuestionWithoutMeasures, priceAnchorMessage } from "./services/oliverPriceAnchor.js"; // [2026-06-11 G11] ancla de valor sin inventar precio
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
@@ -3438,7 +3440,9 @@ const ESCALADA_KW = [
   "mal servicio",
 ];
 function necesitaHumano(text) {
-  return ESCALADA_KW.some((k) => text.toLowerCase().includes(k));
+  // [2026-06-11 G7] + detectHumanRequest: "vendedor"/"asesor"/"ejecutivo"/"pásame con Marcelo"
+  // ahora también escalan (antes solo las frases de ESCALADA_KW). Testeado en oliverHumanRequest.test.js.
+  return ESCALADA_KW.some((k) => text.toLowerCase().includes(k)) || detectHumanRequest(text);
 }
 
 /* =========================
@@ -4734,7 +4738,10 @@ app.post("/webhook", async (req, res) => {
         ses.spamAudioCount = (ses.spamAudioCount || 0) + 1;
         logInfo("spam_audio_detected", `tel=${waId} count=${ses.spamAudioCount} text="${t || "vacío"}"`);
         // Si lleva 3+ audios espurios, pedir texto y NO procesar como input válido
-        if (ses.spamAudioCount >= 3) {
+        // [2026-06-11 G12] PERO si la conversación ya está en handoff, NO responder (el guard
+        // isHandoffActive corre después; sin esto, el early-return de abajo lo saltaba y el bot
+        // le hablaba a un cliente ya derivado a Marcelo). Con handoff activo → audio se silencia.
+        if (ses.spamAudioCount >= 3 && !isHandoffActive(ses)) {
           if (!ses.spamAudioReplied) {
             await waSendH(waId, "Disculpá, me llegan audios cortados o reenviados. ¿Me podés escribir tu consulta? Así te ayudo más rápido 🙏", true);
             ses.spamAudioReplied = true;
@@ -5348,6 +5355,16 @@ app.post("/webhook", async (req, res) => {
       ses.unitsAsked = true;
       await waSendH(waId, askUnitsMessage(), false);
       ses.history.push({ role: "assistant", content: "Pregunté si las medidas son cm o mm (eran ambiguas)." });
+      saveSession(waId, ses);
+      return;
+    }
+
+    // [2026-06-11 G11] Pregunta de precio SIN medidas y sin pedido aún → anclar en VALOR y pedir
+    // la medida (NUNCA inventar un número — CLAUDE.md). Una vez por sesión. Caso 47bc6a3c.
+    if (isPriceQuestionWithoutMeasures(userText) && !(ses.data.items?.length) && !ses.priceAnchored) {
+      ses.priceAnchored = true;
+      await waSendH(waId, priceAnchorMessage(ses.data?.name || ""), true);
+      ses.history.push({ role: "assistant", content: "Anclé valor y pedí medidas (preguntó precio sin darlas)." });
       saveSession(waId, ses);
       return;
     }
