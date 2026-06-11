@@ -316,6 +316,7 @@ import { shouldSkipFollowup } from "./services/oliverFollowup.js"; // [2026-06-1
 import { persistHandoff, isHandoffActive } from "./services/oliverHandoff.js"; // [2026-06-10 #B/GT-07] handoff persistente (bot no revive)
 import { isSessionStuck, sessionStuckAlertMessage } from "./services/stuckLeadMonitor.js"; // [2026-06-10 #C] aviso lead pegado (no perder Dalias en silencio)
 import { isVisionUnreadable, imageUnreadableMessage } from "./services/oliverVision.js"; // [2026-06-10 G2] imagen ilegible → no mentir "recibí tus medidas"
+import { colorChosen, isColorQuestion, colorOptionsMessage, askColorMessage } from "./services/oliverColor.js"; // [2026-06-11 G1] no asumir el color
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
@@ -5379,6 +5380,16 @@ app.post("/webhook", async (req, res) => {
       if (_c) { ses.data.default_color = _c; ses.data.default_color_locked = true; }
     }
 
+    // [2026-06-11 G1] El cliente PREGUNTA por los colores → responder con las opciones reales
+    // (antes lo ignoraba y asumía blanco; además "¿qué COLORes?" disparaba el resumen de abajo
+    // por t.includes("color")). Va ANTES del bloque de avance. Solo si aún no eligió. Testeado.
+    if (isColorQuestion(userText) && !ses.data.default_color_locked) {
+      await waSendH(waId, colorOptionsMessage(ses.data?.name || ""), true);
+      ses.history.push({ role: "assistant", content: "Le mostré las opciones de color (el cliente preguntó)." });
+      saveSession(waId, ses);
+      return;
+    }
+
     // 7. AVANCE AUTOMÁTICO + CONFIRMACIÓN (lo más importante)
     if (ses.data.medidasEnviadas && 
         (t.includes("blanco") || t.includes("nogal") || t.includes("roble") || t.includes("dorado") ||
@@ -5607,6 +5618,18 @@ app.post("/webhook", async (req, res) => {
         // [2026-06-10 FIX #2/GT-04] vía isQuoteIntent(): normaliza marcado WhatsApp (*Si* / _Si_) y
         // corrige "sí" acentuado, que ANTES nunca matcheaba (\b no funciona con la í). Testeado en oliverIntent.test.js.
         isQuoteIntent(userText));
+
+    // [2026-06-11 G1] NO asumir el color: si el cliente nunca eligió color explícito y estamos
+    // por mandar el PDF → preguntar UNA vez (no mandar "blanco" que asume el LLM). Casos reales
+    // Alejandro/Claudio/Dalia. Se pregunta una sola vez (ses.colorAsked); si el cliente difiere,
+    // el PDF sigue después. Testeado en oliverColor.test.js.
+    if (shouldSendPdf && !colorChosen(d) && !ses.colorAsked) {
+      ses.colorAsked = true;
+      await waSendH(waId, askColorMessage(d?.name || ""), false);
+      ses.history.push({ role: "assistant", content: "Pregunté el color antes de cotizar (el cliente no lo había elegido)." });
+      saveSession(waId, ses);
+      return;
+    }
 
     if (shouldSendPdf) {
       const qn = `COT-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
