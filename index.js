@@ -323,7 +323,7 @@ import { itemTypeLabel } from "./services/oliverLabel.js"; // [2026-06-11 G4] la
 import { detectHumanRequest } from "./services/oliverHumanRequest.js"; // [2026-06-11 G7] pedir humano ("vendedor"/"asesor") → escalar
 import { isPriceQuestionWithoutMeasures, priceAnchorMessage } from "./services/oliverPriceAnchor.js"; // [2026-06-11 G11] ancla de valor sin inventar precio
 import { parseReferral, buildCtwaLeadPayload } from "./services/ctwaReferral.js"; // [2026-06-11 CTWA] atribución anuncios Click-to-WhatsApp
-import { isManualConvTrigger, parseManualConversion, startGuided, advanceGuided, askForStep, confirmMessage } from "./services/manualConversion.js"; // [2026-06-11] registro manual cotización/venta del dueño
+import { isManualConvTrigger, parseManualConversion, startGuided, startGuidedAtChannel, advanceGuided, askForStep, confirmMessage } from "./services/manualConversion.js"; // [2026-06-11] registro manual cotización/venta del dueño + canal
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
@@ -1292,11 +1292,11 @@ async function ingestManualConversion(payload) {
 
 // Dispara el registro (POST a Sales OS) + confirma al dueño con "✅ recibido".
 async function fireManualConversion(waId, data, ses) {
-  const meta = await ingestManualConversion({ kind: data.kind, name: data.name, phone: data.phone, amount: data.amount });
+  const meta = await ingestManualConversion({ kind: data.kind, name: data.name, phone: data.phone, amount: data.amount, channel: data.channel || null });
   ses.manualConv = null;
   await waSendH(waId, confirmMessage(data, meta), true);
   saveSession(waId, ses);
-  fireAndForget("logOliverEvent.manual_conversion", logOliverEvent("manual_conversion", { kind: data.kind, amount: data.amount, hasPhone: !!data.phone, metaOk: !!meta.ok }));
+  fireAndForget("logOliverEvent.manual_conversion", logOliverEvent("manual_conversion", { kind: data.kind, amount: data.amount, hasPhone: !!data.phone, channel: data.channel || null, metaOk: !!meta.ok }));
 }
 
 // Maneja un mensaje del dueño en el flujo de registro manual (línea rápida, guiado o mid-flow).
@@ -1323,9 +1323,16 @@ async function handleManualConversion(waId, text, ses) {
   }
   // Disparador nuevo: línea rápida completa o solo la palabra (→ guiado)
   const parsed = parseManualConversion(t);
-  if (parsed.complete) {
+  if (parsed.complete && parsed.channel) {
+    // Línea rápida con canal → registrar directo.
     await fireManualConversion(waId, parsed, ses);
+  } else if (parsed.complete) {
+    // Línea rápida con todo MENOS el canal → preguntar SOLO el canal (activador CANALES).
+    ses.manualConv = startGuidedAtChannel(parsed);
+    await waSendH(waId, askForStep("channel", parsed.kind), true);
+    saveSession(waId, ses);
   } else if (parsed.kind) {
+    // Solo la palabra (VENTA/COTIZÓ) → guiado completo desde el nombre.
     ses.manualConv = startGuided(parsed.kind);
     await waSendH(waId, askForStep("name", parsed.kind), true);
     saveSession(waId, ses);

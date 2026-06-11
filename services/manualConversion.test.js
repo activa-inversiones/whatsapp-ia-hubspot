@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   detectKind, isManualConvTrigger, extractPhone, extractAmount, extractName,
-  parseManualConversion, advanceGuided, startGuided, confirmMessage,
+  parseManualConversion, advanceGuided, startGuided, startGuidedAtChannel, confirmMessage,
+  normalizeChannel, channelToPlatform,
 } from './manualConversion.js';
 
 test('detectKind: VENTA / COTIZÓ y sinónimos', () => {
@@ -58,7 +59,7 @@ test('parseManualConversion: solo keyword → NO completa (dispara guiado)', () 
   assert.equal(isManualConvTrigger('VENTA'), true);
 });
 
-test('flujo GUIADO: nombre → teléfono → monto → done', () => {
+test('flujo GUIADO: nombre → teléfono → monto → CANAL → done', () => {
   let st = startGuided('venta');
   let r = advanceGuided(st, 'Juan Pérez');
   assert.equal(r.state.name, 'Juan Pérez');
@@ -67,28 +68,73 @@ test('flujo GUIADO: nombre → teléfono → monto → done', () => {
   assert.equal(r.state.phone, '56912345678');
   assert.match(r.ask, /monto/i);
   r = advanceGuided(r.state, '1.500.000');
+  assert.match(r.ask, /canal/i, 'tras el monto debe preguntar el canal');
+  r = advanceGuided(r.state, 'me vio en tiktok');
   assert.equal(r.done, true);
   assert.equal(r.data.amount, 1500000);
   assert.equal(r.data.name, 'Juan Pérez');
+  assert.equal(r.data.channel, 'tiktok');
 });
 
-test('flujo GUIADO: "no" en teléfono → phone null, sigue', () => {
+test('flujo GUIADO: "no" en teléfono → phone null, sigue hasta canal', () => {
   let st = startGuided('cotizacion');
   let r = advanceGuided(st, 'Ana');
   r = advanceGuided(r.state, 'no');
   assert.equal(r.state.phone, null);
   r = advanceGuided(r.state, '500000');
+  assert.match(r.ask, /canal/i);
+  r = advanceGuided(r.state, 'instagram');
   assert.equal(r.done, true);
   assert.equal(r.data.phone, null);
+  assert.equal(r.data.channel, 'instagram');
 });
 
-test('confirmMessage: incluye tipo, nombre, monto formateado y estado Meta', () => {
-  const msg = confirmMessage({ kind: 'venta', name: 'Juan', phone: '56912345678', amount: 1500000 }, { ok: true });
+test('CANALES: normalizeChannel reconoce sinónimos', () => {
+  assert.equal(normalizeChannel('me vio en TikTok'), 'tiktok');
+  assert.equal(normalizeChannel('instagram'), 'instagram');
+  assert.equal(normalizeChannel('por face'), 'facebook');
+  assert.equal(normalizeChannel('google maps'), 'maps');
+  assert.equal(normalizeChannel('lo buscó en google'), 'google');
+  assert.equal(normalizeChannel('me recomendó un amigo'), 'referido');
+  assert.equal(normalizeChannel('xyz'), null);
+});
+
+test('CANALES: channelToPlatform aplica la regla anti-cross-inject', () => {
+  assert.equal(channelToPlatform('facebook'), 'meta');
+  assert.equal(channelToPlatform('instagram'), 'meta');
+  assert.equal(channelToPlatform('google'), 'google');
+  assert.equal(channelToPlatform('maps'), 'google');
+  assert.equal(channelToPlatform('tiktok'), 'tiktok');
+  assert.equal(channelToPlatform('referido'), null);
+  assert.equal(channelToPlatform('web'), null);
+});
+
+test('CANALES: línea rápida con canal lo detecta y NO lo mete en el nombre', () => {
+  const r = parseManualConversion('VENTA Juan Pérez +56912345678 1500000 tiktok');
+  assert.equal(r.channel, 'tiktok');
+  assert.equal(r.name, 'Juan Pérez', 'el canal no debe quedar en el nombre');
+  assert.equal(r.complete, true);
+});
+
+test('CANALES: startGuidedAtChannel para línea rápida sin canal', () => {
+  const st = startGuidedAtChannel({ kind: 'venta', name: 'Luis', phone: '56911112222', amount: 800000 });
+  assert.equal(st.step, 'channel');
+  const r = advanceGuided(st, 'facebook');
+  assert.equal(r.done, true);
+  assert.equal(r.data.channel, 'facebook');
+  assert.equal(r.data.name, 'Luis');
+});
+
+test('confirmMessage: incluye tipo, nombre, monto, canal y estado de reporte', () => {
+  const msg = confirmMessage({ kind: 'venta', name: 'Juan', phone: '56912345678', amount: 1500000, channel: 'facebook' }, { ok: true });
   assert.match(msg, /VENTA/);
   assert.match(msg, /Juan/);
   assert.match(msg, /1\.500\.000/);
-  assert.match(msg, /Meta ✓/);
-  const msg2 = confirmMessage({ kind: 'cotizacion', name: 'Ana', phone: null, amount: 500000 }, { skipped: true });
+  assert.match(msg, /Meta ✓/, 'canal facebook → reportado a Meta');
+  assert.match(msg, /facebook/);
+  const msg2 = confirmMessage({ kind: 'cotizacion', name: 'Ana', phone: null, amount: 500000, channel: 'instagram' }, { skipped: 'no_phone' });
   assert.match(msg2, /COTIZACIÓN/);
   assert.match(msg2, /no atribuible/i);
+  const msg3 = confirmMessage({ kind: 'venta', name: 'Leo', phone: '569', amount: 700000, channel: 'tiktok' }, { skipped: 'channel_pending' });
+  assert.match(msg3, /Fase 2/i, 'tiktok aún sin enviador → se avisa que se activa después');
 });
