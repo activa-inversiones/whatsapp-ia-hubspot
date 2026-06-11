@@ -4077,6 +4077,13 @@ async function waSendPdf(to, pdfBuffer, filename, caption) {
     type: "document",
     document: { id: mediaId, filename, caption: caption || "" },
   });
+  // [2026-06-11] GUARDAR el PDF saliente para que Marcelo pueda ABRIR la cotización desde el
+  // panel. Antes solo quedaba la nota "📄 PDF enviado" sin archivo (el media_id de WhatsApp es
+  // temporal) → no se podía revisar. saveMedia lo persiste en Postgres; el inbox ya resuelve el
+  // documento por teléfono+dirección+tiempo y muestra "Abrir / Descargar". Fire-and-forget.
+  if (MEDIA_ENABLED && pdfBuffer) {
+    saveMedia({ phone: to, direction: "outbound", mediaType: "document", mimeType: "application/pdf", filename, buffer: pdfBuffer, waMediaId: mediaId, aiDescription: caption || "" }).catch(() => {});
+  }
   // [FIX P13] Trackear envío en CRM
   fireAndForget("trackConversationEvent.outbound_pdf", trackConversationEvent({
     channel: "whatsapp", external_id: to, direction: "outbound",
