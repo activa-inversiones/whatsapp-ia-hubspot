@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   detectKind, isManualConvTrigger, extractPhone, extractAmount, extractName,
   parseManualConversion, advanceGuided, startGuided, startGuidedAtChannel, confirmMessage,
-  normalizeChannel, channelToPlatform,
+  normalizeChannel, channelToPlatform, isAmountSuspicious, confirmAmountMessage,
 } from './manualConversion.js';
 
 test('detectKind: VENTA / COTIZÓ y sinónimos', () => {
@@ -123,6 +123,16 @@ test('CANALES: startGuidedAtChannel para línea rápida sin canal', () => {
   assert.equal(r.done, true);
   assert.equal(r.data.channel, 'facebook');
   assert.equal(r.data.name, 'Luis');
+});
+
+test('FIX#2: isAmountSuspicious — montos absurdos para ventanas piden confirmación', () => {
+  assert.equal(isAmountSuspicious(1500000), false, '$1.5M es normal');
+  assert.equal(isAmountSuspicious(850000), false, '$850k es normal');
+  assert.equal(isAmountSuspicious(15000000000), true, 'typo gigante (un cero de más) → sospechoso');
+  assert.equal(isAmountSuspicious(5000), true, '$5.000 es muy bajo → sospechoso');
+  assert.equal(isAmountSuspicious(50000000), true, '$50M para una venta es raro → confirmar');
+  assert.match(confirmAmountMessage({ kind: 'venta', amount: 15000000000 }), /confirma/i);
+  assert.match(confirmAmountMessage({ kind: 'venta', amount: 15000000000 }), /s[ií]/i);
 });
 
 test('confirmMessage: incluye tipo, nombre, monto, canal y estado de reporte', () => {

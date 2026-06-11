@@ -204,6 +204,20 @@ export function startGuidedAtChannel({ kind, name, phone, amount }) {
   return { kind, step: 'channel', name, phone, amount, channel: null };
 }
 
+// [2026-06-11 abogado-del-diablo FIX #2] Monto sospechoso (probable typo / venta falsa) → pedir
+// confirmación antes de disparar a Meta. Para un trabajo de ventanas, < $50.000 o > $30.000.000 es
+// raro. A 2-4 ventas/mes, una venta falsa/typo domina la señal y el MER → confirmar evita basura.
+export const MONTO_MIN_RAZONABLE = 50000;
+export const MONTO_MAX_RAZONABLE = 30000000;
+export function isAmountSuspicious(amount) {
+  const n = Number(amount) || 0;
+  return n < MONTO_MIN_RAZONABLE || n > MONTO_MAX_RAZONABLE;
+}
+export function confirmAmountMessage({ kind, amount }) {
+  const t = kind === 'venta' ? 'VENTA' : 'COTIZACIÓN';
+  return `⚠️ Confirma: ${t} por *$${Number(amount || 0).toLocaleString('es-CL')}* — ¿es correcto? (responde *sí* o *no*)`;
+}
+
 // ── Mensaje de confirmación ──────────────────────────────────────────────────
 export function confirmMessage({ kind, name, phone, amount, channel }, meta = {}) {
   const tipo = kind === 'venta' ? 'VENTA' : 'COTIZACIÓN';

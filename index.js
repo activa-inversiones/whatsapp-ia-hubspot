@@ -323,7 +323,7 @@ import { itemTypeLabel } from "./services/oliverLabel.js"; // [2026-06-11 G4] la
 import { detectHumanRequest } from "./services/oliverHumanRequest.js"; // [2026-06-11 G7] pedir humano ("vendedor"/"asesor") → escalar
 import { isPriceQuestionWithoutMeasures, priceAnchorMessage } from "./services/oliverPriceAnchor.js"; // [2026-06-11 G11] ancla de valor sin inventar precio
 import { parseReferral, buildCtwaLeadPayload } from "./services/ctwaReferral.js"; // [2026-06-11 CTWA] atribución anuncios Click-to-WhatsApp
-import { isManualConvTrigger, parseManualConversion, startGuided, startGuidedAtChannel, advanceGuided, askForStep, confirmMessage } from "./services/manualConversion.js"; // [2026-06-11] registro manual cotización/venta del dueño + canal
+import { isManualConvTrigger, parseManualConversion, startGuided, startGuidedAtChannel, advanceGuided, askForStep, confirmMessage, isAmountSuspicious, confirmAmountMessage } from "./services/manualConversion.js"; // [2026-06-11] registro manual cotización/venta del dueño + canal + sanity monto
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
@@ -1292,6 +1292,16 @@ async function ingestManualConversion(payload) {
 
 // Dispara el registro (POST a Sales OS) + confirma al dueño con "✅ recibido".
 async function fireManualConversion(waId, data, ses) {
+  // [2026-06-11 abogado-del-diablo FIX #2] Monto sospechoso (typo/venta falsa) → confirmar ANTES de
+  // disparar a Meta. A 2-4 ventas/mes una venta falsa domina la señal/MER. Todas las vías pasan por aquí.
+  if (isAmountSuspicious(data.amount) && !data._amountConfirmed) {
+    ses.manualConv = null;
+    ses.manualConvPending = data;
+    await waSendH(waId, confirmAmountMessage(data), true);
+    saveSession(waId, ses);
+    return;
+  }
+  ses.manualConvPending = null;
   const meta = await ingestManualConversion({ kind: data.kind, name: data.name, phone: data.phone, amount: data.amount, channel: data.channel || null });
   ses.manualConv = null;
   await waSendH(waId, confirmMessage(data, meta), true);
@@ -1302,11 +1312,23 @@ async function fireManualConversion(waId, data, ses) {
 // Maneja un mensaje del dueño en el flujo de registro manual (línea rápida, guiado o mid-flow).
 async function handleManualConversion(waId, text, ses) {
   const t = String(text || "").trim();
-  // Cancelar en cualquier punto
-  if (/^(cancela(r)?|salir|olv[ií]dalo|d[eé]jalo)$/i.test(t) && ses.manualConv) {
-    ses.manualConv = null;
+  // Cancelar en cualquier punto (incluye una confirmación de monto pendiente)
+  if (/^(cancela(r)?|salir|olv[ií]dalo|d[eé]jalo)$/i.test(t) && (ses.manualConv || ses.manualConvPending)) {
+    ses.manualConv = null; ses.manualConvPending = null;
     await waSendH(waId, "Cancelado 👍. No registré nada.", true);
     saveSession(waId, ses);
+    return;
+  }
+  // Confirmación de MONTO sospechoso pendiente (sí → registrar; no → descartar)
+  if (ses.manualConvPending) {
+    const pend = ses.manualConvPending;
+    ses.manualConvPending = null;
+    if (/^(s[ií]|correcto|confirmo|dale|ok|exacto)\b/i.test(t)) {
+      await fireManualConversion(waId, { ...pend, _amountConfirmed: true }, ses);
+    } else {
+      await waSendH(waId, "Ok, no lo registré. Revisá el monto y vuelve a escribirlo. 👍", true);
+      saveSession(waId, ses);
+    }
     return;
   }
   // Mid-flow guiado
@@ -4754,7 +4776,7 @@ app.post("/webhook", async (req, res) => {
         normalizeWaId(_mcInc.waId) === normalizeAdminPhone(ADMIN_PHONE)) {
       const _mcSes = getSession(_mcInc.waId);
       const _mcTxt = _mcInc.text || "";
-      const _inFlow = !!(_mcSes.manualConv && _mcSes.manualConv.step);
+      const _inFlow = !!((_mcSes.manualConv && _mcSes.manualConv.step) || _mcSes.manualConvPending);
       if (_inFlow || isManualConvTrigger(_mcTxt)) {
         res.sendStatus(200);
         if (!isDup(_mcInc.msgId)) {
