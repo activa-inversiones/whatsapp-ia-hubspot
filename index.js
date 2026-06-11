@@ -317,6 +317,9 @@ import { persistHandoff, isHandoffActive } from "./services/oliverHandoff.js"; /
 import { isSessionStuck, sessionStuckAlertMessage } from "./services/stuckLeadMonitor.js"; // [2026-06-10 #C] aviso lead pegado (no perder Dalias en silencio)
 import { isVisionUnreadable, imageUnreadableMessage } from "./services/oliverVision.js"; // [2026-06-10 G2] imagen ilegible → no mentir "recibí tus medidas"
 import { colorChosen, isColorQuestion, colorOptionsMessage, askColorMessage } from "./services/oliverColor.js"; // [2026-06-11 G1] no asumir el color
+import { needsName, extractName, isLikelyName, askNameMessage } from "./services/oliverName.js"; // [2026-06-11 G5] capturar el nombre (no "Hola Cliente")
+import { isMeasureSuspicious, looksLikeUnitAmbiguous, askUnitsMessage } from "./services/oliverUnits.js"; // [2026-06-11 G6] confirmar unidades cm/mm
+import { itemTypeLabel } from "./services/oliverLabel.js"; // [2026-06-11 G4] label de tipo correcto (Puerta≠Ventana)
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
@@ -4324,7 +4327,7 @@ app.post("/internal/operator-send", async (req, res) => {
       actor_name: operatorName,
       customer_name: ses.data?.name || "",
       metadata: { source: "sales_os_operator" },
-      quote_status: ses.data?.stageKey || undefined,
+      quote_status: ses.pdfSent ? "formal_sent" : (ses.data?.stageKey || undefined), // [2026-06-11 G8] el PDF enviado → 'formal_sent' (antes quedaba 'propuesta')
       track: false,
     });
     res.json({ ok: true, sent: true, phone });
@@ -4846,7 +4849,7 @@ app.post("/webhook", async (req, res) => {
         // [FIX P12] En CRM guardamos displayText (limpio), no el prompt interno a la IA
         body: displayText || userText,
         metadata: { source: "whatsapp_webhook", msg_id: msgId, raw_type: type },
-        quote_status: ses.data?.stageKey || undefined,
+        quote_status: ses.pdfSent ? "formal_sent" : (ses.data?.stageKey || undefined), // [2026-06-11 G8] el PDF enviado → 'formal_sent' (antes quedaba 'propuesta')
         unread_count: 1,
       })
     );
@@ -5338,6 +5341,17 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
+    // [2026-06-11 G6] Medida AMBIGUA (ej "150x150" sin unidad, números chicos donde cm y mm se
+    // confunden) → preguntar UNA vez si son cm o mm antes de cotizar mal (riesgo error 10×). NO
+    // intercepta pedidos claros (1200x1000), con unidad explícita ni decimales. Testeado en oliverUnits.test.js.
+    if (looksLikeUnitAmbiguous(userText) && !ses.unitsAsked) {
+      ses.unitsAsked = true;
+      await waSendH(waId, askUnitsMessage(), false);
+      ses.history.push({ role: "assistant", content: "Pregunté si las medidas son cm o mm (eran ambiguas)." });
+      saveSession(waId, ses);
+      return;
+    }
+
     // 4. Corrección de medidas por el cliente
     if (t.includes("no decia") || t.includes("no era") || t.includes("no 3000") || t.includes("300x300") || t.includes("300 × 300")) {
       delete ses.data.items;
@@ -5367,6 +5381,16 @@ app.post("/webhook", async (req, res) => {
         t.includes("fijo") || t.includes("corredera") || t.includes("sliding") ||
         t.includes("basculante") || t.includes("plegable")) {
       ses.data.default_tipo = normTipoApertura(userText);
+    }
+
+    // [2026-06-11 G5] Capturar el NOMBRE del cliente. Solo cuando aún no lo tenemos Y el mensaje
+    // se presenta ("soy/me llamo X") o es respuesta a que se lo preguntamos (ses.nameAsked). Evita
+    // capturar comunas/colores sueltos como nombre. Sin esto quedaba "Cliente" → "Hola Cliente".
+    if (needsName(ses.data) &&
+        (ses.nameAsked || /\b(soy|me llamo|mi nombre(?: es)?|me dicen)\b/i.test(userText)) &&
+        isLikelyName(userText)) {
+      const _nm = extractName(userText);
+      if (_nm) { ses.data.name = _nm; ses.nameAsked = false; }
     }
 
     // [FIX COTIZA 2026-06-06] Capturar color SIEMPRE que el cliente nombre un color (sin depender de
@@ -5400,8 +5424,14 @@ app.post("/webhook", async (req, res) => {
       ses.data.default_color_locked = true; // [FIX COLOR] cliente eligió color explícito → manda sobre el "blanco" que asume el LLM
 
       // v11.2: SIN JSON crudo. Formato legible humano.
+      // [2026-06-11 G4] el "Tipo" global se DERIVA de los items (antes asumía "CORREDERA"
+      // aunque fueran fijas/puertas). Si hay tipos mezclados → "Varios (ver detalle)".
+      const _tiposResumen = [...new Set((ses.data.items || []).map((it) => itemTypeLabel(it)).filter(Boolean))];
+      const _tipoResumen = _tiposResumen.length === 1 ? _tiposResumen[0]
+        : _tiposResumen.length > 1 ? "Varios (ver detalle)"
+        : (ses.data.default_tipo || "—");
       const resumen = `✅ **Resumen de tu cotización:**\n\n` +
-        `• Tipo: ${ses.data.default_tipo || "CORREDERA"}\n` +
+        `• Tipo: ${_tipoResumen}\n` +
         `• Color: ${ses.data.default_color}\n` +
         `• Medidas: ${formatItemsHumano(ses.data.items)}\n` +
         `• Comuna: ${ses.data.comuna || "Pendiente"}\n\n` +
@@ -5618,6 +5648,16 @@ app.post("/webhook", async (req, res) => {
         // [2026-06-10 FIX #2/GT-04] vía isQuoteIntent(): normaliza marcado WhatsApp (*Si* / _Si_) y
         // corrige "sí" acentuado, que ANTES nunca matcheaba (\b no funciona con la í). Testeado en oliverIntent.test.js.
         isQuoteIntent(userText));
+
+    // [2026-06-11 G5] Capturar NOMBRE antes del PDF: si vamos a cotizar y no tenemos nombre real
+    // (queda "Cliente" en BD y "Hola Cliente" en los follow-up) → pedirlo UNA vez. Casos 74bb24ee/4ed83aa2.
+    if (shouldSendPdf && needsName(d) && !ses.nameAsked) {
+      ses.nameAsked = true;
+      await waSendH(waId, askNameMessage(), false);
+      ses.history.push({ role: "assistant", content: "Pregunté el nombre antes de cotizar (no lo teníamos)." });
+      saveSession(waId, ses);
+      return;
+    }
 
     // [2026-06-11 G1] NO asumir el color: si el cliente nunca eligió color explícito y estamos
     // por mandar el PDF → preguntar UNA vez (no mandar "blanco" que asume el LLM). Casos reales
@@ -5841,11 +5881,13 @@ setInterval(async () => {
 function formatItemsHumano(items) {
   if (!items || !Array.isArray(items) || items.length === 0) return "Las que mencionaste";
   return items.map((it) => {
-    const tipo = (it.product || it.tipo || "ventana").toLowerCase();
+    // [2026-06-11 G4] etiqueta correcta por ítem (Puerta≠Ventana, no asume corredera).
+    // [G1] no asumir "blanco": si no hay color, no lo mostramos (no inventar).
+    const label = itemTypeLabel(it) || "Ventana";
     const med = it.measures || it.medidas || "?";
-    const color = (it.color || "blanco").toLowerCase();
+    const color = (it.color || "").toLowerCase();
     const qty = it.qty || it.cantidad || 1;
-    return `${qty}× ${tipo} ${med} ${color}`;
+    return `${qty}× ${label} ${med}${color ? " " + color : ""}`.trim();
   }).join(" | ");
 }
 
