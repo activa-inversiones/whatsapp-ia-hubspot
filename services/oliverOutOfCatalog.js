@@ -40,6 +40,11 @@ const OUT_OF_CATALOG_TERMS = [
   'mampara de baño',
   'cancela de ducha',
   'cancela de baño',
+  // [2026-06-11 G10] Decisión del dueño: biombo / separador de ambiente NO se fabrica.
+  'biombo',
+  'separador de ambiente',
+  'separador de ambientes',
+  'panel separador',
 ];
 
 // Contexto de MENCIÓN DE PASO: el cliente habla de lo viejo, no de pedir eso.
@@ -78,5 +83,7 @@ export function detectOutOfCatalog(text) {
  */
 export function outOfCatalogRetentionMessage(nombre = '') {
   const saludo = nombre ? `, ${nombre}` : '';
-  return `Ese tipo de vidrio no lo fabricamos nosotros${saludo} — nos especializamos en ventanas y puertas de PVC termopanel y cierres de terraza. 😊 Pero cuéntame: ¿hay ventanas o mamparas en tu proyecto que quieras cambiar o mejorar? Muchas veces los clientes llegan por el vidrio y terminan renovando toda la ventanería — y ahí sí te puedo cotizar algo concreto hoy.`;
+  // [2026-06-11 G10] Generalizado: antes decía "ese tipo de vidrio", que no calzaba con
+  // biombo/separador. "Eso" sirve para vidrio, espejo, ducha, biombo, etc. sin derivar a competencia.
+  return `Eso no lo fabricamos nosotros${saludo} — nos especializamos en ventanas y puertas de PVC termopanel, mamparas templadas y cierres de terraza. 😊 Pero cuéntame: ¿hay ventanas o mamparas en tu proyecto que quieras cambiar o mejorar? Muchas veces los clientes llegan por otra cosa y terminan renovando toda la ventanería — y ahí sí te puedo cotizar algo concreto hoy.`;
 }

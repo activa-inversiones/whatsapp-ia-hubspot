@@ -47,6 +47,21 @@ test('detecta variantes: ducha, espejo, vidrio suelto, mampara de ducha', () => 
   }
 });
 
+// ── G10 (2026-06-11, decisión del dueño): biombo / separador NO se fabrica ──
+test('G10: "biombo" y "separador de ambiente" → fuera de catálogo (caso 096cd370)', () => {
+  for (const t of ['quiero cotizar un biombo', 'necesito un separador de ambiente', 'hacen biombos?', 'un panel separador para la oficina']) {
+    const r = detectOutOfCatalog(t);
+    assert.equal(r.outOfCatalog, true, `"${t}" debe detectarse fuera de catálogo (no fabricamos biombo)`);
+  }
+});
+
+test('G10: el mensaje generalizado ya NO dice "ese tipo de vidrio" (sirve para biombo)', () => {
+  const msg = outOfCatalogRetentionMessage('Ana');
+  assert.doesNotMatch(msg, /ese tipo de vidrio/i, 'el mensaje no debe hardcodear "vidrio" (no calza con biombo)');
+  assert.match(msg, /no lo fabricamos/i, 'debe decir honestamente que no se fabrica');
+  assert.match(msg, /ventana|mampara/i, 'debe reconducir a lo que Activa sí hace');
+});
+
 test('lámina de vidrio con contexto de rotura → mención de paso (quiere repararla, no comprarla)', () => {
   // "rota" es contexto de paso: el cliente describe lo que tiene roto, probablemente quiere ventanas PVC
   const r = detectOutOfCatalog('una lámina de vidrio para la ventana rota');
