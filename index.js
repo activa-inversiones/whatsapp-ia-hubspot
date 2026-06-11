@@ -315,6 +315,7 @@ import { detectOutOfCatalog, outOfCatalogRetentionMessage } from "./services/oli
 import { shouldSkipFollowup } from "./services/oliverFollowup.js"; // [2026-06-10] no enviar follow-up a Marcelo/internos
 import { persistHandoff, isHandoffActive } from "./services/oliverHandoff.js"; // [2026-06-10 #B/GT-07] handoff persistente (bot no revive)
 import { isSessionStuck, sessionStuckAlertMessage } from "./services/stuckLeadMonitor.js"; // [2026-06-10 #C] aviso lead pegado (no perder Dalias en silencio)
+import { isVisionUnreadable, imageUnreadableMessage } from "./services/oliverVision.js"; // [2026-06-10 G2] imagen ilegible → no mentir "recibí tus medidas"
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
@@ -4790,11 +4791,15 @@ app.post("/webhook", async (req, res) => {
       }
 
       const ext = await vision(buffer, mime);
+      // [2026-06-10 G2] La visión a veces devuelve un RECHAZO no-vacío ("Lo siento, no
+      // puedo identificar…") que ANTES se enmarcaba como "productos detectados" → Oliver
+      // confirmaba "recibí tus medidas" en falso. isVisionUnreadable detecta ese fracaso.
+      const visionOk = !isVisionUnreadable(ext);
       // [FIX P12] Separamos: userText = prompt interno a la IA | displayText = lo que se guarda en CRM
-      userText = ext
+      userText = visionOk
         ? `[IMAGEN ANALIZADA — Productos detectados]:\n${ext}\n\nINSTRUCCIÓN: extrae TODOS los items y envíalos con update_quote en UNA sola llamada.`
         : "[Imagen no legible]";
-      displayText = ext
+      displayText = visionOk
         ? `📷 Imagen enviada — ${ext.length > 120 ? ext.slice(0,120).replace(/\n/g, ' ') + '…' : ext.replace(/\n/g, ' ')}`
         : "📷 Imagen enviada (no legible)";
       // v5.3: Guardar imagen en BD
@@ -5310,6 +5315,17 @@ app.post("/webhook", async (req, res) => {
     if (ooc.outOfCatalog) {
       await waSendH(waId, outOfCatalogRetentionMessage(ses.data?.name || ""), true);
       fireAndForget("logOliverEvent.out_of_catalog", logOliverEvent("out_of_catalog", { phone: waId, term: ooc.matched }));
+      saveSession(waId, ses);
+      return;
+    }
+
+    // [2026-06-10 G2] IMAGEN ILEGIBLE: la visión NO logró leer productos → NO confirmar
+    // "recibí tus medidas" (era mentira y se perdían los datos reales). Pedir que las
+    // escriba. Casos reales 096cd370 / b01170ca. Testeado en oliverVision.test.js.
+    if (userText === "[Imagen no legible]") {
+      ses.data.medidasEnviadas = false;
+      await waSendH(waId, imageUnreadableMessage(ses.data?.name || ""), true);
+      fireAndForget("logOliverEvent.image_unreadable", logOliverEvent("image_unreadable", { phone: waId }));
       saveSession(waId, ses);
       return;
     }
