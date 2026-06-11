@@ -322,6 +322,7 @@ import { isMeasureSuspicious, looksLikeUnitAmbiguous, askUnitsMessage } from "./
 import { itemTypeLabel } from "./services/oliverLabel.js"; // [2026-06-11 G4] label de tipo correcto (Puerta≠Ventana)
 import { detectHumanRequest } from "./services/oliverHumanRequest.js"; // [2026-06-11 G7] pedir humano ("vendedor"/"asesor") → escalar
 import { isPriceQuestionWithoutMeasures, priceAnchorMessage } from "./services/oliverPriceAnchor.js"; // [2026-06-11 G11] ancla de valor sin inventar precio
+import { parseReferral, buildCtwaLeadPayload } from "./services/ctwaReferral.js"; // [2026-06-11 CTWA] atribución anuncios Click-to-WhatsApp
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
@@ -1242,6 +1243,28 @@ async function logOliverEvent(eventType, payload = {}) {
     clearTimeout(timer);
   } catch {
     // silencioso, no bloqueamos flujo del bot por logging
+  }
+}
+
+// [2026-06-11 CTWA] Ingesta del lead con atribución de anuncio Click-to-WhatsApp a Sales OS
+// (POST /api/ingest/lead → upsertLead, dedupe por teléfono → adjunta ctwa_clid/ad_id al lead).
+// Fire-and-forget: no bloquea el flujo del bot. Inofensivo hasta que el anuncio Meta apunte a Oliver.
+async function ingestCtwaLead(payload) {
+  if (!SALES_OS_URL || !SALES_OS_INGEST_TOKEN) return;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 2500);
+    await fetch(`${SALES_OS_URL}/api/ingest/lead`, {
+      method: "POST",
+      // x-internal-token: mismo header probado que usa logOliverEvent contra el mismo env.ingestToken.
+      // x-api-key como respaldo (requireToken lee ambos). Sin esto el ingest daría 401.
+      headers: { "Content-Type": "application/json", "x-internal-token": SALES_OS_INGEST_TOKEN, "x-api-key": SALES_OS_INGEST_TOKEN },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+  } catch {
+    // silencioso — la atribución no debe afectar la conversación
   }
 }
 
@@ -2457,6 +2480,7 @@ function extractMsg(body) {
     imageId: msg.image?.id || null,
     docId: msg.document?.id || null,
     docMime: msg.document?.mime_type || null,
+    referral: msg.referral || null, // [2026-06-11 CTWA] atribución de anuncio Click-to-WhatsApp
   };
 }
 
@@ -4720,6 +4744,20 @@ app.post("/webhook", async (req, res) => {
     const ses = getSession(waId);
     ses.waId = waId;
     await waRead(msgId);
+
+    // [2026-06-11 CTWA] Capturar atribución del anuncio Click-to-WhatsApp en el PRIMER mensaje con
+    // referral → persiste ctwa_clid/ad_id en el lead (Sales OS) para cerrar el loop de ROAS de Meta.
+    // Una vez por sesión, fire-and-forget. Inofensivo hasta que el anuncio Meta apunte a Oliver.
+    try {
+      const _ref = parseReferral(inc);
+      if (_ref.isCtwaAd && !ses.ctwaCaptured) {
+        ses.ctwaCaptured = true;
+        ses.data.ctwa_clid = _ref.ctwaClid || null;
+        ses.data.ad_id = _ref.adId || null;
+        fireAndForget("ctwa.ingest", ingestCtwaLead(buildCtwaLeadPayload(waId, _ref, { name: ses.data?.name || "" })));
+        logInfo("ctwa_attribution", `Lead CTWA capturado tel=${waId} ad=${_ref.adId || "?"} clid=${_ref.ctwaClid ? "sí" : "no"}`);
+      }
+    } catch (e) { logErr("ctwa.capture", e); }
 
     let userText = inc.text || "";
     // [FIX P12] displayText = lo que se muestra en el CRM. userText = prompt interno a la IA
