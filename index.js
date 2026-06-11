@@ -323,6 +323,7 @@ import { itemTypeLabel } from "./services/oliverLabel.js"; // [2026-06-11 G4] la
 import { detectHumanRequest } from "./services/oliverHumanRequest.js"; // [2026-06-11 G7] pedir humano ("vendedor"/"asesor") → escalar
 import { isPriceQuestionWithoutMeasures, priceAnchorMessage } from "./services/oliverPriceAnchor.js"; // [2026-06-11 G11] ancla de valor sin inventar precio
 import { parseReferral, buildCtwaLeadPayload } from "./services/ctwaReferral.js"; // [2026-06-11 CTWA] atribución anuncios Click-to-WhatsApp
+import { isManualConvTrigger, parseManualConversion, startGuided, advanceGuided, askForStep, confirmMessage } from "./services/manualConversion.js"; // [2026-06-11] registro manual cotización/venta del dueño
 if (MEDIA_ENABLED) console.log("[Oliver] MediaStore v5.3 enabled ✅");
 
 /* =========================
@@ -1265,6 +1266,69 @@ async function ingestCtwaLead(payload) {
     clearTimeout(timer);
   } catch {
     // silencioso — la atribución no debe afectar la conversación
+  }
+}
+
+// [2026-06-11] Registro MANUAL de cotización/venta del dueño → Sales OS (/api/manual-conversion).
+// Devuelve el resultado de Meta { ok, eventsReceived, error, skipped } para el mensaje de confirmación.
+async function ingestManualConversion(payload) {
+  if (!SALES_OS_URL || !SALES_OS_INGEST_TOKEN) return { ok: false, error: "sales_os_no_config" };
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    const r = await fetch(`${SALES_OS_URL}/api/manual-conversion`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-token": SALES_OS_INGEST_TOKEN, "x-api-key": SALES_OS_INGEST_TOKEN },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    const j = await r.json().catch(() => ({}));
+    return j?.meta || { ok: r.ok };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// Dispara el registro (POST a Sales OS) + confirma al dueño con "✅ recibido".
+async function fireManualConversion(waId, data, ses) {
+  const meta = await ingestManualConversion({ kind: data.kind, name: data.name, phone: data.phone, amount: data.amount });
+  ses.manualConv = null;
+  await waSendH(waId, confirmMessage(data, meta), true);
+  saveSession(waId, ses);
+  fireAndForget("logOliverEvent.manual_conversion", logOliverEvent("manual_conversion", { kind: data.kind, amount: data.amount, hasPhone: !!data.phone, metaOk: !!meta.ok }));
+}
+
+// Maneja un mensaje del dueño en el flujo de registro manual (línea rápida, guiado o mid-flow).
+async function handleManualConversion(waId, text, ses) {
+  const t = String(text || "").trim();
+  // Cancelar en cualquier punto
+  if (/^(cancela(r)?|salir|olv[ií]dalo|d[eé]jalo)$/i.test(t) && ses.manualConv) {
+    ses.manualConv = null;
+    await waSendH(waId, "Cancelado 👍. No registré nada.", true);
+    saveSession(waId, ses);
+    return;
+  }
+  // Mid-flow guiado
+  if (ses.manualConv && ses.manualConv.step) {
+    const r = advanceGuided(ses.manualConv, t);
+    if (r.done) {
+      await fireManualConversion(waId, r.data, ses);
+    } else {
+      ses.manualConv = r.state;
+      await waSendH(waId, r.ask, true);
+      saveSession(waId, ses);
+    }
+    return;
+  }
+  // Disparador nuevo: línea rápida completa o solo la palabra (→ guiado)
+  const parsed = parseManualConversion(t);
+  if (parsed.complete) {
+    await fireManualConversion(waId, parsed, ses);
+  } else if (parsed.kind) {
+    ses.manualConv = startGuided(parsed.kind);
+    await waSendH(waId, askForStep("name", parsed.kind), true);
+    saveSession(waId, ses);
   }
 }
 
@@ -4673,6 +4737,26 @@ app.post("/webhook", async (req, res) => {
       }
     }
   } catch (e) { try { logErr("agenda_intercept_outer", e); } catch {} }
+
+  // [2026-06-11] Registro MANUAL de cotización/venta del dueño (VENTA/COTIZÓ) — intercept admin
+  // temprano (antes del routing a Oliver v2/v1, que no tiene este comando). Solo número admin +
+  // texto que es disparador (venta/cotizó) o respuesta a un flujo guiado en curso (ses.manualConv).
+  try {
+    const _mcInc = extractMsg(req.body);
+    if (_mcInc?.ok && _mcInc.type === "text" && verifySig(req) &&
+        normalizeWaId(_mcInc.waId) === normalizeAdminPhone(ADMIN_PHONE)) {
+      const _mcSes = getSession(_mcInc.waId);
+      const _mcTxt = _mcInc.text || "";
+      const _inFlow = !!(_mcSes.manualConv && _mcSes.manualConv.step);
+      if (_inFlow || isManualConvTrigger(_mcTxt)) {
+        res.sendStatus(200);
+        if (!isDup(_mcInc.msgId)) {
+          try { await handleManualConversion(_mcInc.waId, _mcTxt, _mcSes); } catch (e) { try { logErr("manual_conv", e); } catch {} }
+        }
+        return;
+      }
+    }
+  } catch (e) { try { logErr("manual_conv_outer", e); } catch {} }
 
   // [Oliver GPT pilot] routing por feature-flag — handler AISLADO (src/oliver-gpt).
   // Gated: si OLIVER_GPT_ENABLED!="true" o el número no está en OLIVER_GPT_NUMBERS,
