@@ -1410,7 +1410,13 @@ function parseAdminCmd(text) {
   // para no chocar con frases de clientes ("agenda una visita" NO matchea).
   if (/^AGENDA\s+HOY\b/i.test(s) || /^AGENDA\s*$/i.test(s)) return { type: 'agenda_today' };
   // LISTO <nombre o telefono> — marca el seguimiento como hecho
-  if (/^LISTO\s+\S+/i.test(s)) return { type: 'agenda_done', query: text.trim().replace(/^LISTO\s+/i, '').replace(/[.!?\s]+$/, '').trim() };
+  // LISTO <nombre|tel>[: | - ]<nota libre>. Delimitador ":" o " - ". Sin delimitador = solo identificador (igual que antes).
+  if (/^LISTO\s+\S+/i.test(s)) {
+    const rest = text.trim().replace(/^LISTO\s+/i, '').trim();
+    const delimMatch = rest.match(/^(.+?)\s*:\s*(.+)$/) || rest.match(/^(.+?)\s+-\s+(.+)$/);
+    if (delimMatch) return { type: 'agenda_done', query: delimMatch[1].trim(), note: delimMatch[2].trim() };
+    return { type: 'agenda_done', query: rest.replace(/[.!?\s]+$/, '').trim() };
+  }
   // POSPONER <nombre o telefono> <dias> — toma el último número como días (sin ancla $)
   if (/^POSPONER\s+\S+/i.test(s)) {
     const rest = text.trim().replace(/^POSPONER\s+/i, '').trim();
@@ -1445,9 +1451,11 @@ async function handleAgendaCommand(waId, adminCmd) {
     return;
   }
   if (adminCmd.type === "agenda_done") {
-    const a = await callAgendaApi('POST', '/internal/agenda/done', { query: adminCmd.query });
+    const a = await callAgendaApi('POST', '/internal/agenda/done', { query: adminCmd.query, note: adminCmd.note || null });
     let msg;
-    if (a.ok) msg = `✅ Listo: ${a.customer_name}, lo saco de la agenda.`;
+    if (a.ok) msg = adminCmd.note
+      ? `✅ Listo: ${a.customer_name}. Nota guardada: "${adminCmd.note}"`
+      : `✅ Listo: ${a.customer_name}, lo saco de la agenda.`;
     else if (a.reason === 'ambiguo') msg = `Hay varios con ese nombre: ${(a.options || []).map(o => o.name + ' (' + o.phone + ')').join(', ')}. Responde LISTO con el teléfono.`;
     else if (a.reason === 'no_encontrado') msg = `No encontré a "${adminCmd.query}" en la agenda.`;
     else msg = a.error ? `No pude marcar como listo: ${a.error}` : "No pude marcar como listo.";
@@ -2164,8 +2172,18 @@ async function convertToOggOpus(mp3Buffer) {
   return oggBuf;
 }
 
-async function sendVoiceOrAudio(to, text, incomingType = "text") {
-  if (!shouldSendVoice(incomingType)) return false;
+// forceOperator=true: bypass del switch VOICE_ENABLED (es acción explícita del operador,
+// NO la voz automática de Oliver con clientes). Si faltan credenciales o el TTS falla,
+// lanza error real en vez de retornar false en silencio, para que el panel lo muestre.
+async function sendVoiceOrAudio(to, text, incomingType = "text", forceOperator = false) {
+  if (!forceOperator && !shouldSendVoice(incomingType)) return false;
+
+  if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) {
+    const msg = "sendVoiceOrAudio: ELEVENLABS_API_KEY o ELEVENLABS_VOICE_ID no configuradas en Railway";
+    if (forceOperator) throw new Error(msg);
+    logErr("TTS", new Error(msg));
+    return false;
+  }
 
   try {
     await waTyping(to);
@@ -2194,6 +2212,7 @@ async function sendVoiceOrAudio(to, text, incomingType = "text") {
     return true;
   } catch (e) {
     logErr("sendVoiceOrAudio", e);
+    if (forceOperator) throw e; // relanzar para que el endpoint devuelva error real al panel
     return false;
   }
 }
@@ -4516,7 +4535,8 @@ app.post("/internal/operator-send-voice", async (req, res) => {
     const phone = normPhone(req.body?.phone || "");
     const text = String(req.body?.text || "").trim();
     if (!phone || !text) return res.status(400).json({ ok: false, error: "phone_and_text_required" });
-    await sendVoiceOrAudio(phone, text, "audio");
+    // forceOperator=true: ignora VOICE_ENABLED (acción explícita del operador) y lanza si el TTS falla de verdad
+    await sendVoiceOrAudio(phone, text, "audio", true);
     fireAndForget("trackConversationEvent.operator_voice", trackConversationEvent({
       channel: "whatsapp", external_id: phone, direction: "outbound",
       actor_type: "operator", actor_name: req.body?.operator_name || "Operador",
@@ -5043,9 +5063,11 @@ app.post("/webhook", async (req, res) => {
           return;
         }
         if (adminCmd.type === "agenda_done") {
-          const a = await callAgendaApi('POST', '/internal/agenda/done', { query: adminCmd.query });
+          const a = await callAgendaApi('POST', '/internal/agenda/done', { query: adminCmd.query, note: adminCmd.note || null });
           let msg;
-          if (a.ok) msg = `✅ Listo: ${a.customer_name}, lo saco de la agenda.`;
+          if (a.ok) msg = adminCmd.note
+            ? `✅ Listo: ${a.customer_name}. Nota guardada: "${adminCmd.note}"`
+            : `✅ Listo: ${a.customer_name}, lo saco de la agenda.`;
           else if (a.reason === 'ambiguo') msg = `Hay varios con ese nombre: ${(a.options || []).map(o => o.name + ' (' + o.phone + ')').join(', ')}. Responde LISTO con el teléfono.`;
           else if (a.reason === 'no_encontrado') msg = `No encontré a "${adminCmd.query}" en la agenda.`;
           else msg = a.error ? `No pude marcar como listo: ${a.error}` : "No pude marcar como listo.";
