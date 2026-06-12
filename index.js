@@ -4592,16 +4592,36 @@ app.post("/internal/operator-send-audio-recording", async (req, res) => {
     if (!audio_base64) return res.status(400).json({ ok: false, error: "audio_base64_required" });
 
     const cleanPhone = normPhone(phone);
-    const buffer = Buffer.from(audio_base64, "base64");
-    const mime = mime_type || "audio/ogg";
-    // WhatsApp acepta: audio/aac, audio/mp4, audio/mpeg, audio/amr, audio/ogg (codecs=opus)
+    let buffer = Buffer.from(audio_base64, "base64");
+    let mime = mime_type || "audio/ogg";
+    // WhatsApp acepta: audio/aac, audio/mp4, audio/mpeg, audio/amr, audio/ogg (codecs=opus).
+    // Chrome (MediaRecorder) graba en audio/webm → WhatsApp lo RECHAZA. Si hay ffmpeg, convertir a ogg/opus.
+    if (mime.includes("webm")) {
+      try {
+        if (await checkFfmpeg()) {
+          buffer = await convertToOggOpus(buffer); // ffmpeg auto-detecta el contenedor de entrada
+          mime = "audio/ogg; codecs=opus";
+          logInfo("operator-recording", "convertido webm→ogg/opus para WhatsApp");
+        } else {
+          logErr("operator-recording", new Error("ffmpeg no disponible: webm no convertido, WhatsApp puede rechazarlo"));
+        }
+      } catch (e) { logErr("operator-send-audio-recording.convert", e); }
+    }
     const ext = mime.includes("webm") ? "webm" : mime.includes("mp4") ? "m4a" : mime.includes("mpeg") ? "mp3" : "ogg";
     const filename = `rec_${Date.now()}.${ext}`;
 
     let mediaId;
     try {
       mediaId = await waUploadAudio(buffer, mime, filename);
-      await waSendAudio(cleanPhone, mediaId);
+      // ogg/opus → enviar como NOTA DE VOZ real (waveform) con voice:true, igual que el TTS.
+      // Otros formatos → audio adjunto normal.
+      const isOgg = mime.includes("ogg");
+      await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+        messaging_product: "whatsapp",
+        to: cleanPhone,
+        type: "audio",
+        audio: isOgg ? { id: mediaId, voice: true } : { id: mediaId },
+      });
     } catch (e) {
       logErr("operator-send-audio-recording.upload", e);
       return res.status(502).json({ ok: false, error: "whatsapp_upload_failed", detail: e.message });
