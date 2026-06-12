@@ -170,6 +170,47 @@ export const TOOL_DEFS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'notificar_marcelo',
+      description:
+        'Escala la conversación actual al dueño (Marcelo). ' +
+        'Úsala cuando el cliente muestre señales de alto valor, urgencia real, ' +
+        'o pida hablar con una persona. ' +
+        'Solo invocarla cuando tengas evidencia clara; no spamear. ' +
+        'La plataforma aplica un cooldown de 2 horas por cliente para evitar duplicados.',
+      parameters: {
+        type: 'object',
+        properties: {
+          motivo: {
+            type: 'string',
+            description:
+              'Razón breve de la escalación (ej: "cliente pide hablar con humano", ' +
+              '"proyecto grande: 20 ventanas"). Obligatorio.',
+          },
+          resumen_lead: {
+            type: 'string',
+            description:
+              'Resumen corto del lead: nombre, comuna, lo que necesita, ' +
+              'monto aproximado si se sabe. Opcional pero recomendado.',
+          },
+          telefono_cliente: {
+            type: 'string',
+            description:
+              'Teléfono del cliente (con código de país, ej: 56912345678). ' +
+              'Si no lo sabes, déjalo vacío; el sistema usa el número de la conversación.',
+          },
+          nombre: {
+            type: 'string',
+            description: 'Nombre del cliente si ya se lo preguntaste. Opcional.',
+          },
+        },
+        required: ['motivo'],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 /**
@@ -211,6 +252,30 @@ export async function runTool(name, input = {}, ctx = {}) {
 
     case 'generar_link_aprobacion':
       return generarLinkAprobacion(input.quote_id, input.quote_payload);
+
+    case 'notificar_marcelo': {
+      // ctx.notifyMarcelo es inyectado por webhook.js (apunta a highValueNotifier.notifyHighValue
+      // con el telefono real del cliente como customerPhone).
+      // Si no hay notifyMarcelo (ej: simulador local) devolvemos un ok:false silencioso.
+      if (typeof ctx.notifyMarcelo !== 'function') {
+        console.warn('[tools] notificar_marcelo: ctx.notifyMarcelo no cableado (simulador/test?)');
+        return { ok: false, reason: 'notifyMarcelo_not_wired' };
+      }
+      // La razón empieza con 'oliver_gpt:' para que highValueNotifier
+      // NO la bloquee por filtro de tier STANDARD (el filtro solo aplica a reason==='auto').
+      const reason = `oliver_gpt:${(input.motivo || 'escalacion').substring(0, 80)}`;
+      const result = await ctx.notifyMarcelo({
+        reason,
+        data: {
+          name: input.nombre || '',
+          resumen: input.resumen_lead || '',
+          // telefono_cliente es informativo para el mensaje; el numero real
+          // del cliente ya lo tiene ctx.notifyMarcelo vía webhook.js (from).
+          telefono_llm: input.telefono_cliente || '',
+        },
+      });
+      return { ok: true, enviado: result?.sent ?? false, tier: result?.tier, reason };
+    }
 
     default:
       throw new Error(`Tool desconocida: '${name}'.`);

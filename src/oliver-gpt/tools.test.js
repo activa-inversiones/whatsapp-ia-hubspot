@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { TOOL_DEFS } from './tools.js';
+import { TOOL_DEFS, runTool } from './tools.js';
 import { calcularCotizacion, calcularPorArea, APERTURAS } from './engine-client.js';
 
 const APERTURAS_ESPERADAS = ['CORREDERA', 'PROYECTANTE', 'FIJA', 'BATIENTE', 'OSCILOBATIENTE'];
@@ -110,4 +110,69 @@ test('(b) GOLDEN EN VIVO: CORREDERA 1500x1200 glass_id=44 Temuco => ok:true, tot
 
   assert.ok(typeof total === 'number' && total > 0, `total debe ser > 0 (recibido: ${total})`);
   t.diagnostic(`GOLDEN total devuelto = ${total}`);
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Tests herméticos de notificar_marcelo (sin red, sin WA real). runTool ya importado arriba.
+// ──────────────────────────────────────────────────────────────────────────────
+
+// (n-a) LLM invoca notificar_marcelo → ctx.notifyMarcelo se llama 1 vez con datos correctos.
+test('(n-a) notificar_marcelo: llama ctx.notifyMarcelo 1 vez con payload correcto', async () => {
+  let callCount = 0;
+  let capturedPayload = null;
+  const mockCtx = {
+    telefono: '56912345678',
+    notifyMarcelo: async (payload) => {
+      callCount++;
+      capturedPayload = payload;
+      return { sent: true, tier: 'HIGH' };
+    },
+  };
+  const result = await runTool(
+    'notificar_marcelo',
+    { motivo: 'cliente quiere 20 ventanas para proyecto', resumen_lead: 'Juan Perez, Temuco', telefono_cliente: '56912345678', nombre: 'Juan' },
+    mockCtx
+  );
+  assert.equal(callCount, 1, 'notifyMarcelo debe llamarse exactamente 1 vez');
+  assert.ok(result.ok === true, 'runTool debe devolver ok:true');
+  assert.ok(result.enviado === true, 'enviado debe ser true');
+  assert.ok(
+    typeof capturedPayload.reason === 'string' && capturedPayload.reason.startsWith('oliver_gpt:'),
+    `reason debe empezar con 'oliver_gpt:' (recibido: ${capturedPayload?.reason})`
+  );
+  assert.equal(capturedPayload.data?.name, 'Juan', 'data.name debe ser el nombre del cliente');
+});
+
+// (n-b) Cooldown simulado: la 2da llamada inmediata devuelve enviado:false (no error).
+test('(n-b) notificar_marcelo: cooldown simulado no produce doble aviso', async () => {
+  let callCount = 0;
+  const mockCtx = {
+    telefono: '56987654321',
+    notifyMarcelo: async (_payload) => {
+      callCount++;
+      if (callCount === 1) return { sent: true, tier: 'MEDIUM' };
+      return { sent: false, reason: 'cooldown' };
+    },
+  };
+  const r1 = await runTool('notificar_marcelo', { motivo: 'primer aviso' }, mockCtx);
+  const r2 = await runTool('notificar_marcelo', { motivo: 'segundo aviso inmediato' }, mockCtx);
+  assert.equal(callCount, 2, 'notifyMarcelo se llama 2 veces pero el 2do esta en cooldown');
+  assert.equal(r1.enviado, true, '1ra llamada: enviado:true');
+  assert.equal(r2.ok, true, '2da llamada: runTool sigue siendo ok:true (no es error)');
+  assert.equal(r2.enviado, false, '2da llamada: enviado:false (cooldown)');
+});
+
+// (n-c) El reason con prefijo 'oliver_gpt:' hace que el filtro tier STANDARD NO bloquee.
+test('(n-c) notificar_marcelo: reason oliver_gpt evita bloqueo tier STANDARD', async () => {
+  const filterFn = (tier, reason) => {
+    const isExplicit = reason && reason.startsWith('oliver_gpt:');
+    return tier === 'STANDARD' && reason === 'auto' && !isExplicit;
+  };
+  let capturedReason = null;
+  const mockCtx = {
+    notifyMarcelo: async (payload) => { capturedReason = payload.reason; return { sent: true, tier: 'STANDARD' }; },
+  };
+  await runTool('notificar_marcelo', { motivo: 'tier standard pero pide humano' }, mockCtx);
+  assert.ok(capturedReason && capturedReason.startsWith('oliver_gpt:'), `reason debe empezar con 'oliver_gpt:' (recibido: '${capturedReason}')`);
+  assert.equal(filterFn('STANDARD', capturedReason), false, 'el filtro NO debe bloquear una escalacion explicita STANDARD');
 });

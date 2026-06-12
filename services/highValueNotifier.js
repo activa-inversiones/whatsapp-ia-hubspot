@@ -172,8 +172,11 @@ async function notifyHighValue(waSendFn, customerPhone, session, reason = "auto"
 
   const score = evaluateLeadValue(session);
   
-  // Solo alertar si es HIGH o MEDIUM
-  if (score.tier === "STANDARD" && reason === "auto") {
+  // Solo bloquear si es STANDARD y es un chequeo automático ('auto').
+  // Las escalaciones explícitas del LLM llegan con reason que empieza con
+  // 'oliver_gpt:' — NUNCA deben bloquearse aquí, sin importar el tier (sí respetan el cooldown de arriba).
+  const isExplicitEscalation = reason && reason.startsWith('oliver_gpt:');
+  if (score.tier === "STANDARD" && reason === "auto" && !isExplicitEscalation) {
     return { sent: false, reason: "standard_lead", score };
   }
 
