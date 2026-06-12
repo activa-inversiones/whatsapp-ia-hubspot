@@ -13,6 +13,45 @@ import {
   APERTURAS,
   FAMILIAS_VIDRIO,
 } from './engine-client.js';
+import { normMeasures } from './normalizers.js';
+
+// Rango plausible de una ventana/puerta en mm. Fuera de esto = dato dudoso (no cotizar a ciegas).
+const MEDIDA_MIN_MM = 150;
+const MEDIDA_MAX_MM = 6000;
+
+/**
+ * Resuelve las medidas finales en mm para cotizar, de forma DETERMINISTA.
+ * - Si hay medidas_texto (lo que escribió el cliente), normMeasures (heurística mm/cm/m)
+ *   MANDA sobre la conversión del LLM, que tiende a manglear (auditoría real).
+ * - Aplica guard de rango: fuera de [150, 6000] mm → no cotizar, pedir confirmación.
+ * @returns {{ ok: true, ancho_mm, alto_mm, corregido: boolean } | { ok: false, error, message, ancho_mm, alto_mm }}
+ */
+export function resolverMedidasMm({ ancho_mm, alto_mm, medidas_texto } = {}) {
+  let a = Number(ancho_mm);
+  let b = Number(alto_mm);
+  let corregido = false;
+  if (medidas_texto) {
+    const norm = normMeasures(medidas_texto);
+    if (norm && norm.ancho_mm && norm.alto_mm) {
+      if (norm.ancho_mm !== a || norm.alto_mm !== b) corregido = true;
+      a = norm.ancho_mm;
+      b = norm.alto_mm;
+    }
+  }
+  const enRango = (v) => Number.isFinite(v) && v >= MEDIDA_MIN_MM && v <= MEDIDA_MAX_MM;
+  if (!enRango(a) || !enRango(b)) {
+    return {
+      ok: false,
+      error: 'medidas_fuera_de_rango',
+      ancho_mm: a,
+      alto_mm: b,
+      message:
+        `Las medidas ${a}×${b} mm están fuera del rango plausible (${MEDIDA_MIN_MM}–${MEDIDA_MAX_MM} mm). ` +
+        `NO cotices: pídele al cliente que confirme las medidas y la unidad (¿centímetros o milímetros?).`,
+    };
+  }
+  return { ok: true, ancho_mm: a, alto_mm: b, corregido };
+}
 
 // URL base del simulador (frontend hardcodeado a proposito, sin llamada al Engine).
 const SIMULADOR_BASE =
@@ -63,8 +102,16 @@ export const TOOL_DEFS = [
               'Apertura de la ventana. Uno de: CORREDERA, PROYECTANTE, FIJA, BATIENTE, ' +
               'OSCILOBATIENTE. NUNCA TERMOPANEL (eso es un vidrio, va por glass_id).',
           },
-          ancho_mm: { type: 'number', description: 'Ancho en milimetros. Obligatorio.' },
-          alto_mm: { type: 'number', description: 'Alto en milimetros. Obligatorio.' },
+          ancho_mm: { type: 'number', description: 'Ancho en milimetros (tu mejor estimación). El sistema RE-CONVIERTE desde medidas_texto si lo incluyes, así que prioriza enviar medidas_texto.' },
+          alto_mm: { type: 'number', description: 'Alto en milimetros (tu mejor estimación). El sistema RE-CONVIERTE desde medidas_texto si lo incluyes.' },
+          medidas_texto: {
+            type: 'string',
+            description:
+              'EL TEXTO LITERAL que el cliente escribió sobre las medidas, con su unidad si la dio. ' +
+              'Ej: "140x220 cm", "1,5 x 1,2 metros", "70 x 30", "1500x1200 mm". ' +
+              'INCLÚYELO SIEMPRE: el sistema lo convierte a milímetros de forma determinista (NO confíes en tu propia conversión). ' +
+              'No inventes números: copia lo que dijo el cliente.',
+          },
           glass_id: {
             type: 'integer',
             description:
@@ -225,17 +272,23 @@ export async function runTool(name, input = {}, ctx = {}) {
     case 'listar_vidrios':
       return listarVidrios(input.tipo);
 
-    case 'calcular_cotizacion':
+    case 'calcular_cotizacion': {
+      const med = resolverMedidasMm(input);
+      if (!med.ok) return med; // medidas fuera de rango → el LLM pide confirmación, no cotiza
+      if (med.corregido) {
+        console.warn(`[tools] medidas corregidas por normMeasures desde "${input.medidas_texto}" → ${med.ancho_mm}x${med.alto_mm} (LLM había pasado ${input.ancho_mm}x${input.alto_mm})`);
+      }
       return calcularCotizacion({
         tipo: input.tipo,
-        ancho_mm: input.ancho_mm,
-        alto_mm: input.alto_mm,
+        ancho_mm: med.ancho_mm,
+        alto_mm: med.alto_mm,
         glass_id: input.glass_id,
         serie: input.serie,
         color: input.color,
         comuna: input.comuna,
         cantidad: input.cantidad,
       });
+    }
 
     case 'calcular_por_area':
       return calcularPorArea({

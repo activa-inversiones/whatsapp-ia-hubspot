@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { TOOL_DEFS, runTool } from './tools.js';
+import { TOOL_DEFS, runTool, resolverMedidasMm } from './tools.js';
 import { calcularCotizacion, calcularPorArea, APERTURAS } from './engine-client.js';
 
 const APERTURAS_ESPERADAS = ['CORREDERA', 'PROYECTANTE', 'FIJA', 'BATIENTE', 'OSCILOBATIENTE'];
@@ -110,6 +110,62 @@ test('(b) GOLDEN EN VIVO: CORREDERA 1500x1200 glass_id=44 Temuco => ok:true, tot
 
   assert.ok(typeof total === 'number' && total > 0, `total debe ser > 0 (recibido: ${total})`);
   t.diagnostic(`GOLDEN total devuelto = ${total}`);
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// resolverMedidasMm — conversión DETERMINISTA a mm (casos REALES de la auditoría).
+// El cliente manda medidas "de todo"; SIEMPRE deben terminar en mm como cotiza Activa.
+// ──────────────────────────────────────────────────────────────────────────────
+
+test('(m-1) cm explícito: "140x220 cm" → 1400x2200 mm (corrige el manglado del LLM)', () => {
+  // El LLM había mangleado a 2930x2150 (caso real Diego). El texto manda.
+  const r = resolverMedidasMm({ ancho_mm: 2930, alto_mm: 2150, medidas_texto: '140x220 cm' });
+  assert.equal(r.ok, true);
+  assert.equal(r.ancho_mm, 1400, 'ancho 140cm → 1400mm');
+  assert.equal(r.alto_mm, 2200, 'alto 220cm → 2200mm');
+  assert.equal(r.corregido, true, 'debe marcar que corrigió al LLM');
+});
+
+test('(m-2) "70 x 30" (ventana baño) → 700x300 mm (no 600x600)', () => {
+  const r = resolverMedidasMm({ ancho_mm: 600, alto_mm: 600, medidas_texto: '70 x 30' });
+  assert.equal(r.ok, true);
+  assert.equal(r.ancho_mm, 700);
+  assert.equal(r.alto_mm, 300);
+});
+
+test('(m-3) metros: "1,5 x 1,2 metros" → 1500x1200 mm', () => {
+  const r = resolverMedidasMm({ ancho_mm: 0, alto_mm: 0, medidas_texto: '1,5 x 1,2 metros' });
+  assert.equal(r.ok, true);
+  assert.equal(r.ancho_mm, 1500);
+  assert.equal(r.alto_mm, 1200);
+});
+
+test('(m-4) ya en mm: "1500x1200 mm" → 1500x1200 (sin tocar)', () => {
+  const r = resolverMedidasMm({ ancho_mm: 1500, alto_mm: 1200, medidas_texto: '1500x1200 mm' });
+  assert.equal(r.ok, true);
+  assert.equal(r.ancho_mm, 1500);
+  assert.equal(r.alto_mm, 1200);
+  assert.equal(r.corregido, false, 'no corrige si ya coincide');
+});
+
+test('(m-5) vidrio chico "27cm x 32cm" → 270x320 mm (no 2700x320)', () => {
+  const r = resolverMedidasMm({ ancho_mm: 2700, alto_mm: 320, medidas_texto: '27cm x 32cm' });
+  assert.equal(r.ok, true);
+  assert.equal(r.ancho_mm, 270);
+  assert.equal(r.alto_mm, 320);
+});
+
+test('(m-6) GUARD: medida absurda sin texto (ancho 50mm) → fuera de rango, NO cotiza', () => {
+  const r = resolverMedidasMm({ ancho_mm: 50, alto_mm: 1200 });
+  assert.equal(r.ok, false);
+  assert.equal(r.error, 'medidas_fuera_de_rango');
+  assert.ok(/confirme/i.test(r.message), 'pide confirmar al cliente');
+});
+
+test('(m-7) GUARD: runTool calcular_cotizacion con medida absurda devuelve error sin tocar el Engine', async () => {
+  const r = await runTool('calcular_cotizacion', { tipo: 'CORREDERA', ancho_mm: 10, alto_mm: 10, glass_id: 44, medidas_texto: '10x10' });
+  assert.equal(r.ok, false, 'no debe cotizar medidas absurdas');
+  assert.equal(r.error, 'medidas_fuera_de_rango');
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
