@@ -32,6 +32,10 @@ const COMPANY = {
     'https://www.google.com/maps/place/ACTIVA+Inversiones/@-38.7202747,-72.645712,942m/data=!3m2!1e3!4b1!4m6!3m5!1s0x9614d5646f17a655:0x980991a065c5737a!8m2!3d-38.7202747!4d-72.6431317',
   GOOGLE_REVIEWS_COUNT: process.env.GOOGLE_REVIEWS_COUNT || '24',
   GOOGLE_REVIEWS_RATING: process.env.GOOGLE_REVIEWS_RATING || '5.0',
+  // Página de reservas de Microsoft Bookings de Marcelo (cae en su Outlook). Override por env.
+  BOOKINGS_URL:
+    process.env.MARCELO_BOOKINGS_URL ||
+    'https://outlook.office.com/bookwithme/user/35f7b8685a9041ae951cdb858eea458b@activaspa.cl/meetingtype/oi8VUtFlrEOffOOfJQCRiw2?anonymous&ismsaljsauthenabled&ep=mlink',
 };
 
 /* =========================================================================
@@ -304,6 +308,9 @@ T6 Insistencia en descuento: 2+ menciones de "descuento", "rebaja", "más barato
 T7 Cliente molesto: reclamo, queja, "pésimo servicio", "estoy enojado".
 Mensaje de escalación (adaptando el nombre): "Lo va a contactar el Ing. Marcelo Cifuentes, Gerente de Ingeniería de Activa
 y Evaluador Energético Acreditado por el Ministerio de Vivienda y Urbanismo (MINVU, Res. 266/2025). ¿A qué hora le acomoda?".
+OPCIÓN DE AGENDA (úsala en cierres o alto valor, cuando el cliente quiere elegir él la hora): ofrécele reservar
+directo en la agenda de Marcelo: "Si prefiere, puede agendar una hora directa con el Ing. Marcelo aquí: ${COMPANY.BOOKINGS_URL}".
+Tras escalar, SIEMPRE dispara también la tool notificar_marcelo para que Marcelo se entere del lead.
 Si la pregunta es técnica simple (medidas, colores, garantía), responda usted primero; no escale por defecto.
 
 REGLA #7 — CLASIFICACIÓN AUTOMÁTICA DE TIER (INTERNO, NO DECIR AL CLIENTE)
