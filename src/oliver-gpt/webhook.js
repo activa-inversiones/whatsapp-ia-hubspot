@@ -42,6 +42,11 @@ import {
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
 import { toFile as realToFile } from 'openai/uploads';
+import {
+  loadSession as realLoadSession,
+  persistSession as realPersistSession,
+  resetIfInactive,
+} from './session-store.js';
 
 /* =========================================================================
  * CONFIG
@@ -69,6 +74,57 @@ const SEEN = new Set();
 // de larga vida. Al superar el tope se vacía (riesgo aceptable en piloto:
 // a lo sumo se reprocesaría un id muy viejo, improbable de reaparecer).
 const SEEN_MAX = 5000;
+
+/* =========================================================================
+ * RATE-LIMIT — 18 mensajes por minuto por waId.
+ * Porteado de index.js rateOk (~L2525). Map<waId, { n, resetAt }>.
+ * ========================================================================= */
+const RATE_MAP = new Map();
+
+/**
+ * Comprueba si el waId está dentro del límite de 18 msg/min.
+ * @param {string} waId
+ * @param {Map} [rateMap] — inyectable para tests.
+ * @returns {{ ok: boolean, msg?: string }}
+ */
+function rateOk(waId, rateMap = RATE_MAP) {
+  const now = Date.now();
+  if (!rateMap.has(waId)) rateMap.set(waId, { n: 0, resetAt: now + 60_000 });
+  const r = rateMap.get(waId);
+  if (now >= r.resetAt) {
+    r.n = 0;
+    r.resetAt = now + 60_000;
+  }
+  r.n++;
+  return r.n > 18
+    ? { ok: false, msg: 'Escribes muy rápido 😅 Dame 10 seg.' }
+    : { ok: true };
+}
+
+/* =========================================================================
+ * MUTEX — serializa mensajes concurrentes del mismo waId (doble-tap).
+ * Porteado de index.js acquireLock (~L2558).
+ * Map<waId, Promise> — la promesa encadenada actúa como cola FIFO de 1.
+ * ========================================================================= */
+const LOCKS = new Map();
+
+/**
+ * Adquiere el lock para waId. Retorna una función release().
+ * @param {string} waId
+ * @param {Map} [locks] — inyectable para tests.
+ * @returns {Promise<Function>}
+ */
+async function acquireLock(waId, locks = LOCKS) {
+  const prev = locks.get(waId) || Promise.resolve();
+  let release;
+  const next = new Promise((r) => (release = r));
+  locks.set(waId, next);
+  await prev;
+  return () => {
+    release();
+    if (locks.get(waId) === next) locks.delete(waId);
+  };
+}
 
 /* =========================================================================
  * MEDIA — Resolución de imagen/audio entrantes a userText útil.
@@ -249,7 +305,8 @@ function extractQuote(toolCalls = []) {
  *   una cae a la implementación real si no se provee:
  *   { parseInbound, sendWhatsAppText, handleTurn, bridge, notifyHighValue,
  *     getClient, describeImage, transcribeAudio, toFile, fetchFn,
- *     conv (Map), seen (Set) }.
+ *     loadSession, persistSession,
+ *     conv (Map), seen (Set), rateMap (Map), locks (Map) }.
  */
 export async function handleWebhook(req, res, deps = {}) {
   // ── (1) ACK INMEDIATO a Meta. Nada antes de esto puede lanzar. ──────────
@@ -261,14 +318,21 @@ export async function handleWebhook(req, res, deps = {}) {
   }
 
   // ── (2..9) Todo el procesamiento envuelto: NUNCA relanza tras el 200. ───
+  // releaseLock declarado AQUÍ (fuera del try) para que el finally lo libere
+  // SIEMPRE, ante cualquier return intermedio o excepción (ajuste abogado).
+  let releaseLock = null;
   try {
-    const parseInbound = deps.parseInbound || realParseInbound;
+    const parseInbound    = deps.parseInbound    || realParseInbound;
     const sendWhatsAppText = deps.sendWhatsAppText || realSendWhatsAppText;
-    const handleTurn = deps.handleTurn || realHandleTurn;
-    const bridge = deps.bridge || realBridge;
-    const notifyHighValue = deps.notifyHighValue || realNotifyHighValue;
-    const conv = deps.conv || CONV;
-    const seen = deps.seen || SEEN;
+    const handleTurn      = deps.handleTurn      || realHandleTurn;
+    const bridge          = deps.bridge          || realBridge;
+    const notifyHighValue = deps.notifyHighValue  || realNotifyHighValue;
+    const loadSession     = deps.loadSession     || realLoadSession;
+    const persistSessionFn = deps.persistSession  || realPersistSession;
+    const conv  = deps.conv  || CONV;
+    const seen  = deps.seen  || SEEN;
+    const rateMap = deps.rateMap || RATE_MAP;
+    const locks   = deps.locks   || LOCKS;
 
     // ── (2) Parse + validación + idempotencia ───────────────────────────
     const inbound = parseInbound(req.body);
@@ -283,6 +347,20 @@ export async function handleWebhook(req, res, deps = {}) {
       }
       if (seen.size >= SEEN_MAX) seen.clear();
       seen.add(msgId);
+    }
+
+    // ── (2b) MUTEX — adquirir lock antes de cualquier I/O. Serializa ─────
+    // mensajes concurrentes del mismo número (doble-tap). El release se llama
+    // siempre en el bloque finally al final del handler.
+    releaseLock = await acquireLock(from, locks);
+
+    // ── (2c) RATE-LIMIT — 18 msg/min por waId ───────────────────────────
+    const rate = rateOk(from, rateMap);
+    if (!rate.ok) {
+      log('info', 'rate_limit', `Rate exceeded para ${from}`);
+      // Aviso amigable al cliente; no procesa el turno.
+      await safe('rate.send', () => sendWhatsAppText(from, rate.msg));
+      return; // el finally libera el lock
     }
 
     // ── (3) Conversation control — respetar takeover humano ──────────────
@@ -314,12 +392,31 @@ export async function handleWebhook(req, res, deps = {}) {
       return;
     }
 
-    // ── (4) Historial in-memory (piloto). Contexto frío arranca vacío.
-    // TODO F5: hidratar history/state desde conversation_messages al no
-    // existir en cache (reconstrucción del contexto largo).
-    const cached = conv.get(from) || { history: [], state: {} };
-    const history = Array.isArray(cached.history) ? cached.history : [];
-    const baseState = cached.state && typeof cached.state === 'object' ? cached.state : {};
+    // ── (4) HIDRATACIÓN DE SESIÓN — cache in-memory o Postgres ──────────
+    //
+    // Orden de prioridad:
+    //   1) Cache caliente (conv.get(from)) si existe y tiene historial.
+    //   2) Postgres vía GET /internal/wa-sessions/{from} (loadSession).
+    //   3) Estado vacío si ambos fallan (fail-safe).
+    //
+    // Después de hidratar se aplica resetIfInactive: si el último mensaje
+    // tiene >7 días, se limpia lockedData para evitar contaminación de
+    // cotizaciones anteriores (F2-2).
+    let cached = conv.get(from);
+    if (!cached || !Array.isArray(cached.history) || cached.history.length === 0) {
+      // Cache frío — intentar hidratar desde Postgres.
+      const remote = await loadSession(from, deps);
+      if (remote) {
+        cached = remote;
+        conv.set(from, cached); // poblar cache para el siguiente turno
+        log('info', 'session.hydrated', `Sesión hidratada desde Postgres para ${from}`);
+      }
+    }
+    const safeCache = cached || { history: [], state: {} };
+    const history   = Array.isArray(safeCache.history) ? safeCache.history : [];
+    const rawState  = safeCache.state && typeof safeCache.state === 'object' ? safeCache.state : {};
+    // Reset por inactividad: limpia lockedData si >7 días sin actividad.
+    const baseState  = resetIfInactive({ ...rawState, lastMessageAt: rawState.lastMessageAt || 0 });
     const state = { ...baseState, telefono: from, fecha: new Date().toISOString() };
 
     // ── (5) MEDIA → userText útil (vision / STT). Resuelve la ceguera V2. ─
@@ -360,10 +457,10 @@ export async function handleWebhook(req, res, deps = {}) {
           )
         ),
 
-      // persistSession → placeholder hacia whatsapp_sessions.
-      // TODO F5: PUT real a /internal/wa-sessions/{from} (ver index.js ~2281).
+      // persistSession → PUT real a /internal/wa-sessions/{from} (F2).
+      // fire-and-forget: no bloquea el turno. Si falla → se traga el error.
       persistSession: (sessState) => {
-        log('info', 'persistSession.todo', `F5 pendiente: persistir whatsapp_sessions para ${from}`);
+        persistSessionFn(from, sessState || { history, state }, deps);
         return Promise.resolve();
       },
 
@@ -475,13 +572,23 @@ export async function handleWebhook(req, res, deps = {}) {
       );
     }
 
-    // ── (9) Guardar el cache actualizado ─────────────────────────────────
+    // ── (9) Guardar el cache actualizado + persistir en Postgres ─────────
     const trimmed =
       newHistory.length > MAX_HISTORY ? newHistory.slice(-MAX_HISTORY) : newHistory;
-    conv.set(from, { history: trimmed, state: newState });
+    const sessionToSave = {
+      history: trimmed,
+      state: { ...newState, lastMessageAt: Date.now() },
+    };
+    conv.set(from, sessionToSave);
+    // Persistencia remota fire-and-forget (F2-1): no bloquea el turno.
+    persistSessionFn(from, sessionToSave, deps);
   } catch (err) {
     // Fail-safe absoluto: el 200 ya se envió; jamás relanzamos.
     log('error', 'handleWebhook', err);
+  } finally {
+    // Liberar SIEMPRE el lock: cubre returns intermedios (rate-limit, takeover,
+    // sin userText) y excepciones. Sin esto un takeover dejaba el lock colgado.
+    if (releaseLock) { try { releaseLock(); } catch { /* ya liberado */ } }
   }
 }
 
