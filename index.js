@@ -5627,7 +5627,26 @@ app.post("/webhook", async (req, res) => {
     }
 
     if (shouldSendPdf) {
-      const qn = `COT-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+      // [2026-06-13] Correlativo ISO en V1: pedirlo al endpoint vivo (/internal/quotes/next-number,
+      // el MISMO que usa el cerebro) → CM-FR-004-AAAA-NNNN, trazable ISO 9001 §7.5. FALLBACK
+      // no-bloqueante al formato viejo COT- si el endpoint falla (NUNCA bloquea la cotización). // NO TOCA.
+      let qn = null;
+      try {
+        const _sosUrl = (process.env.SALES_OS_URL || "").replace(/\/$/, "");
+        const _sosTok = process.env.SALES_OS_OPERATOR_TOKEN || "";
+        if (_sosUrl && _sosTok) {
+          const _cr = await fetch(`${_sosUrl}/internal/quotes/next-number`, {
+            method: "POST",
+            headers: { "x-api-key": _sosTok, "Content-Type": "application/json" },
+            body: JSON.stringify({ tenant_id: "activa" }),
+            signal: AbortSignal.timeout(8000),
+          });
+          if (_cr.ok) { const _cj = await _cr.json(); qn = _cj.quote_number || null; }
+        }
+      } catch (e) { logErr("correlativo_iso_v1", e); }
+      if (!qn) {
+        qn = `COT-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+      }
       ses.quoteNum = qn;
       d.quote_num = qn;
 
