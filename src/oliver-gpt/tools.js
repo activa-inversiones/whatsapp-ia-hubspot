@@ -19,6 +19,7 @@ import {
   sendWhatsAppVideoUrl,
   sendWhatsAppDocumentUrl,
 } from '../sales-agent/whatsapp-adapter.js';
+import { generatePremiumQuotePdf } from '../../services/quotePdf.js';
 
 // Rango plausible de una ventana/puerta en mm. Fuera de esto = dato dudoso (no cotizar a ciegas).
 const MEDIDA_MIN_MM = 150;
@@ -328,6 +329,49 @@ export const TOOL_DEFS = [
       },
     },
   },
+  // ── generar_pdf_cotizacion ────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'generar_pdf_cotizacion',
+      description:
+        'Genera el PDF de cotización OFICIAL (ISO CM-FR-004) y lo envía al cliente por WhatsApp. ' +
+        'Invocar SOLO cuando ya se calculó la cotización con calcular_cotizacion (los precios deben ' +
+        'venir del motor, nunca inventados). Registra el Deal/Note en Zoho CRM y dispara la ' +
+        'conversión «cotizacion» al canal de origen del lead (Meta/Google/TikTok).',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Nombre del cliente.' },
+          phone: { type: 'string', description: 'Teléfono del cliente (se usa el waId si se omite).' },
+          comuna: { type: 'string', description: 'Comuna del cliente.' },
+          items: {
+            type: 'array',
+            description:
+              'Lista de ítems cotizados. Cada ítem DEBE incluir unit_price tal cual lo devolvió ' +
+              'calcular_cotizacion (NO inventar precios). ' +
+              'Campos: producto_label, measures, color, qty, unit_price, glass_label, ambiente.',
+            items: {
+              type: 'object',
+              properties: {
+                producto_label: { type: 'string' },
+                measures:       { type: 'string', description: 'Ej: "1500x1200 mm"' },
+                color:          { type: 'string' },
+                qty:            { type: 'integer' },
+                unit_price:     { type: 'number', description: 'Precio unitario en CLP. DEBE venir de calcular_cotizacion.' },
+                glass_label:    { type: 'string', description: 'Ej: "Termopanel DVH"' },
+                ambiente:       { type: 'string', description: 'Ej: "Dormitorio". Opcional.' },
+              },
+              required: ['producto_label', 'measures', 'qty', 'unit_price'],
+            },
+          },
+          grand_total: { type: 'number', description: 'Total calculado en CLP (suma de unit_price * qty). Debe venir de calcular_cotizacion.' },
+        },
+        required: ['items'],
+        additionalProperties: false,
+      },
+    },
+  },
   // ── guardar_lead ──────────────────────────────────────────────────────────
   {
     type: 'function',
@@ -463,6 +507,19 @@ export async function runTool(name, input = {}, ctx = {}) {
         return { ok: false, reason: 'saveLead_not_wired' };
       }
       return ctx.saveLead(input);
+    }
+
+    case 'generar_pdf_cotizacion': {
+      // ctx.generarPdf es inyectado por webhook.js (los 6 pasos: correlativo ISO,
+      // PDF premium, envío WA, CRM, WorkDrive inerte, conversión multicanal).
+      if (typeof ctx.generarPdf !== 'function') {
+        console.warn('[tools] generar_pdf_cotizacion: ctx.generarPdf no cableado (simulador/test?)');
+        return { ok: false, reason: 'generarPdf_not_wired' };
+      }
+      // CRÍTICO: los unit_price de los items deben venir del motor (calcular_cotizacion),
+      // nunca inventados por el LLM. El webhook.js pasa el name/phone/comuna desde el state
+      // si el LLM no los pasó explícitamente.
+      return ctx.generarPdf(input);
     }
 
     default:

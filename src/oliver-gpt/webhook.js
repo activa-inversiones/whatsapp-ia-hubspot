@@ -40,7 +40,11 @@ import {
   sendWhatsAppDocumentUrl as realSendDocumentUrl,
   uploadWaAudio as realUploadWaAudio,
   sendWaAudio as realSendWaAudio,
+  uploadWaDocument as realUploadWaDocument,
+  sendWaDocument as realSendWaDocument,
 } from '../sales-agent/whatsapp-adapter.js';
+import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
+import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote } from '../../services/zohoCommercial.js';
 import {
   shouldSendVoice as realShouldSendVoice,
   synthesizeVoiceBuffer as realSynthesizeVoiceBuffer,
@@ -340,6 +344,11 @@ export async function handleWebhook(req, res, deps = {}) {
     const sendWhatsAppText = deps.sendWhatsAppText || realSendWhatsAppText;
     const uploadWaAudio   = deps.uploadWaAudio   || realUploadWaAudio;
     const sendWaAudio     = deps.sendWaAudio     || realSendWaAudio;
+    const uploadWaDocument = deps.uploadWaDocument || realUploadWaDocument;
+    const sendWaDocument   = deps.sendWaDocument   || realSendWaDocument;
+    const generatePdf      = deps.generatePdf      || realGeneratePdf;
+    const upsertZohoDeal   = deps.upsertZohoDeal   || realUpsertZohoDeal;
+    const addZohoNote      = deps.addZohoNote      || realAddZohoNote;
     const shouldSendVoice = deps.shouldSendVoice || realShouldSendVoice;
     const synthesizeVoiceBuffer = deps.synthesizeVoiceBuffer || realSynthesizeVoiceBuffer;
     const handleTurn      = deps.handleTurn      || realHandleTurn;
@@ -541,6 +550,159 @@ export async function handleWebhook(req, res, deps = {}) {
             return sendDocumentUrl(from, url, `${catalog_key}.pdf`, caption);
           }
           return { ok: false, error: `media_type_invalido: ${media_type}` };
+        }),
+
+      // generarPdf → orquesta los 6 pasos del PDF ISO:
+      //   1) correlativo ISO (POST sales-os /internal/quotes/next-number)
+      //   2) generar PDF premium (quotePdf.js)
+      //   3) enviar al cliente vía WA (uploadWaDocument + sendWaDocument)
+      //   4) registrar Deal/Note en Zoho CRM (zohoCommercial.js)
+      //   5) archivar en WorkDrive (NO-BLOQUEANTE, inerte hasta re-autorización OAuth)
+      //   6) disparar conversión multicanal (bridge.pushQuoteEvent → server fireConversion → CXM)
+      //
+      // ANTI-CROSS-INJECT: solo se envía al canal del click_id capturado en F3b.
+      // Los unit_price de input.items DEBEN venir de calcular_cotizacion (nunca del LLM).
+      generarPdf: (input = {}) =>
+        safe('generarPdf', async () => {
+          // ── GUARDIA ANTI-ALUCINACIÓN DE PRECIOS (regla del dueño: marcar/pedir, NUNCA rellenar) ──
+          // Si algún ítem no trae unit_price>0 (que DEBE venir de calcular_cotizacion), NO se genera
+          // el PDF ni se quema un correlativo ISO. Convierte la defensa de "solo prompt" a "prompt+código".
+          const itemsBad = (input.items || []).filter((it) => !(Number(it.unit_price) > 0));
+          if (!input.items?.length || itemsBad.length) {
+            log('error', 'generarPdf.guard',
+              `PDF abortado: ${itemsBad.length}/${input.items?.length || 0} ítems sin unit_price>0 (posible alucinación de precios)`);
+            return { ok: false, reason: 'precios_no_validados', detail: 'unit_price debe venir de calcular_cotizacion, no inventado' };
+          }
+          // ── Paso 1: Correlativo ISO ──────────────────────────────────────────
+          const SALES_OS_URL = (process.env.SALES_OS_URL || '').replace(/\/$/, '');
+          const OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || '';
+          let quoteNumber = null;
+          try {
+            const correlativoRes = await fetch(
+              `${SALES_OS_URL}/internal/quotes/next-number`,
+              {
+                method: 'POST',
+                headers: { 'x-api-key': OPERATOR_TOKEN, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tenant_id: 'activa' }),
+                signal: AbortSignal.timeout(8000),
+              }
+            );
+            if (correlativoRes.ok) {
+              const cj = await correlativoRes.json();
+              quoteNumber = cj.quote_number || cj.number || null;
+            }
+          } catch (err) {
+            log('error', 'generarPdf.correlativo', err);
+          }
+          if (!quoteNumber) {
+            // Fallback local si sales-os no responde (NO-bloqueante, pero se loguea para revisión).
+            const yr = new Date().getFullYear();
+            const seq = String(Date.now()).slice(-4);
+            quoteNumber = `CM-FR-004-${yr}-FALLBACK-${seq}`;
+            log('error', 'generarPdf.correlativo', `Usando correlativo fallback: ${quoteNumber}`);
+          }
+
+          // ── Paso 2: Generar PDF premium ──────────────────────────────────────
+          const clientName  = input.name  || state.name  || 'Cliente';
+          const clientPhone = input.phone || state.telefono || from;
+          const clientComuna = input.comuna || state.comuna || '';
+          const pdfData = {
+            name:    clientName,
+            phone:   clientPhone,
+            comuna:  clientComuna,
+            address: state.address || '',
+            default_color: (input.items?.[0]?.color) || state.default_color || '',
+            items:   (input.items || []).map((it) => ({
+              product:        it.producto_label || it.product || 'Ventana',
+              producto_label: it.producto_label || it.product || 'Ventana',
+              measures:       it.measures || '',
+              color:          it.color || '',
+              qty:            Number(it.qty) || 1,
+              unit_price:     Number(it.unit_price) || 0,  // NUNCA inventado: viene del motor
+              glass_label:    it.glass_label || 'Termopanel DVH',
+              ambiente:       it.ambiente || '',
+            })),
+            quote_num: quoteNumber,
+          };
+          const pdfBuffer = await generatePdf(pdfData, quoteNumber);
+
+          // ── Paso 3: Enviar al cliente vía WhatsApp ───────────────────────────
+          const filename = `${quoteNumber}.pdf`;
+          const caption  = `Cotización ISO N° ${quoteNumber} · Activa Inversiones`;
+          let waDocMediaId = null;
+          try {
+            waDocMediaId = await uploadWaDocument(pdfBuffer, filename);
+            await sendWaDocument(from, waDocMediaId, filename, caption);
+            log('info', 'generarPdf.wa', `PDF enviado a ${from} media_id=${waDocMediaId}`);
+          } catch (err) {
+            log('error', 'generarPdf.wa', err);
+            // No bloqueamos: el CRM/conversión se disparan igualmente.
+          }
+
+          // ── Paso 4: Zoho CRM (Deal upsert + Note) ───────────────────────────
+          // Fire-and-forget: si Zoho falla no bloquea el resto del flujo.
+          const grandTotal = Number(input.grand_total) ||
+            (input.items || []).reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0);
+          safe('generarPdf.zoho', async () => {
+            const dealId = await upsertZohoDeal({
+              phone:      clientPhone,
+              name:       clientName,
+              comuna:     clientComuna,
+              items:      input.items || [],
+              grand_total: grandTotal,
+              stageKey:   'propuesta',
+              quote_number: quoteNumber,
+            });
+            if (dealId) {
+              await addZohoNote(dealId, `Cotización enviada: ${quoteNumber}`,
+                `PDF enviado al cliente por WhatsApp.\nTotal: $${grandTotal.toLocaleString('es-CL')} CLP (IVA incl.)`);
+            }
+          });
+
+          // ── Paso 5: WorkDrive (INERTE — no-bloqueante) ───────────────────────
+          // El dueño debe re-autorizar OAuth con scope WorkDrive.files.CREATE antes de activar.
+          // El código queda preparado y falla suave.
+          safe('generarPdf.workdrive', async () => {
+            await archivarEnWorkDrive(pdfBuffer, filename);
+          });
+
+          // ── Paso 6: Conversión multicanal (anti-cross-inject) ────────────────
+          // REGLA: solo se envía AL CANAL QUE TRAJO AL LEAD (skill activa-atribucion-multicanal).
+          // La atribución se basó en el click_id capturado en F3b (state.ctwa_clid / gclid / ttclid).
+          // Se llama bridge.pushQuoteEvent con status 'sent'; el server.js (sales-os) llama
+          // fireConversion → CXM /api/conversions/track con el canal correcto.
+          safe('generarPdf.conversion', () =>
+            bridge.pushQuoteEvent({
+              phone:           clientPhone,
+              channel:         'whatsapp',
+              customer_name:   clientName,
+              amount_total:    grandTotal,
+              currency:        'CLP',
+              status:          'sent',       // server.js lo mapea a 'quote_sent'
+              quote_number:    quoteNumber,
+              // [ajuste abogado] click-ids a NIVEL RAÍZ: fireConversion (sales-os) los lee de
+              // body.fbclid/body.gclid de raíz, NO de payload. Anti-cross-inject: un lead → un canal.
+              fbclid:    state.fbclid    || null,
+              gclid:     state.gclid     || null,
+              ttclid:    state.ttclid    || null,
+              ctwa_clid: state.ctwa_clid || null,
+              payload: {
+                comuna:   clientComuna,
+                // Click ids — anti-cross-inject: solo el canal del lead.
+                ctwa_clid: state.ctwa_clid || null,
+                fbclid:    state.fbclid    || null,
+                gclid:     state.gclid     || null,
+                ttclid:    state.ttclid    || null,
+              },
+            })
+          );
+
+          return {
+            ok: true,
+            quote_number: quoteNumber,
+            pdf_sent:     !!waDocMediaId,
+            media_id:     waDocMediaId,
+          };
         }),
     };
 

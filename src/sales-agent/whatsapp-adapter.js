@@ -220,3 +220,60 @@ export async function sendWaAudio(to, mediaId, asVoice = true) {
   }
   await axiosWA.post(`/${META.PHONE_ID}/messages`, payload);
 }
+
+/**
+ * Sube un buffer de documento (PDF u otro) a WhatsApp Media y devuelve el media_id.
+ * Espeja waSendPdf de index.js ~L4203 (paso 1 de 2).
+ *
+ * @param {Buffer} docBuffer
+ * @param {string} filename   p.ej. 'CM-FR-004-2026-0001.pdf'
+ * @returns {Promise<string>} media_id
+ */
+export async function uploadWaDocument(docBuffer, filename) {
+  if (!META.TOKEN || !META.PHONE_ID) {
+    throw new Error('[wa-adapter] uploadWaDocument: meta_credentials_missing');
+  }
+  const FormData = (await import('form-data')).default;
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', 'document');
+  form.append('file', docBuffer, { filename, contentType: 'application/pdf' });
+  const resp = await axiosWA.post(`/${META.PHONE_ID}/media`, form, {
+    headers: form.getHeaders(),
+    timeout: 30000,
+  });
+  const mediaId = resp.data?.id;
+  if (!mediaId) throw new Error('[wa-adapter] uploadWaDocument: no se obtuvo media_id de WhatsApp');
+  return mediaId;
+}
+
+/**
+ * Envía un documento PDF ya subido como adjunto de WhatsApp.
+ * Espeja waSendPdf de index.js ~L4218 (paso 2 de 2).
+ *
+ * @param {string} to        waId destino (sin '+')
+ * @param {string} mediaId   id devuelto por uploadWaDocument
+ * @param {string} filename  nombre de archivo que verá el receptor
+ * @param {string} [caption] texto que acompaña al documento (opcional)
+ * @returns {Promise<{ ok: boolean, msgId?: string, error?: string }>}
+ */
+export async function sendWaDocument(to, mediaId, filename, caption = '') {
+  if (!META.TOKEN || !META.PHONE_ID) {
+    throw new Error('[wa-adapter] sendWaDocument: meta_credentials_missing');
+  }
+  try {
+    const r = await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to: String(to).replace(/^\+/, ''),
+      type: 'document',
+      document: { id: mediaId, filename, caption: caption || '' },
+    });
+    const msgId = r.data?.messages?.[0]?.id;
+    console.log(`[wa-adapter] document_sent to=${to} file=${filename} msgId=${msgId || '?'}`);
+    return { ok: true, msgId };
+  } catch (err) {
+    const e = err.response?.data || err.message;
+    console.error('[wa-adapter] document_send_failed:', typeof e === 'string' ? e : JSON.stringify(e));
+    return { ok: false, error: typeof e === 'string' ? e : JSON.stringify(e) };
+  }
+}
