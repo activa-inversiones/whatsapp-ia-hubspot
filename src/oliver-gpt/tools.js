@@ -118,7 +118,10 @@ export const TOOL_DEFS = [
         'Calcula el precio de una ventana puntual. IMPORTANTE: el campo "tipo" es la ' +
         'APERTURA de la ventana (corredera, proyectante, fija, batiente, oscilobatiente), ' +
         'NO el tipo de vidrio. El termopanel es un vidrio: para usarlo, primero llama ' +
-        'listar_vidrios y pasa su glass_id. Nunca pongas tipo:"TERMOPANEL".',
+        'listar_vidrios y pasa su glass_id. Nunca pongas tipo:"TERMOPANEL". ' +
+        'DEVUELVE el campo "unit_price" (precio unitario NETO, sin IVA): es EXACTAMENTE el ' +
+        'valor que debes pasar como unit_price a generar_pdf_cotizacion. NO uses total_con_iva ' +
+        'ni precio_por_m2.',
       parameters: {
         type: 'object',
         properties: {
@@ -358,7 +361,7 @@ export const TOOL_DEFS = [
                 measures:       { type: 'string', description: 'Ej: "1500x1200 mm"' },
                 color:          { type: 'string' },
                 qty:            { type: 'integer' },
-                unit_price:     { type: 'number', description: 'Precio unitario en CLP. DEBE venir de calcular_cotizacion.' },
+                unit_price:     { type: 'number', description: 'Precio unitario NETO en CLP (sin IVA). DEBE ser el campo "unit_price" que devolvió calcular_cotizacion, copiado tal cual. El PDF agrega el 19% de IVA. NUNCA total_con_iva ni precio_por_m2.' },
                 glass_label:    { type: 'string', description: 'Ej: "Termopanel DVH"' },
                 ambiente:       { type: 'string', description: 'Ej: "Dormitorio". Opcional.' },
               },
@@ -414,6 +417,30 @@ export const TOOL_DEFS = [
 ];
 
 /**
+ * [2026-06-13] Normaliza la respuesta del motor a un unit_price DETERMINISTA (NETO).
+ * El motor devuelve varios campos de precio (total_clp neto, total_con_iva, precio_por_m2,
+ * subtotal). El PDF (services/quotePdf.js) AGREGA 19% IVA sobre la suma de unit_price, así
+ * que unit_price DEBE ser NETO (total_clp), igual que enginePricer.js (V1). Antes el LLM
+ * elegía el campo a ojo → riesgo de DOBLE IVA (~19% de más) o precio/m². Esto lo elimina:
+ * el LLM recibe un unit_price ya resuelto y solo lo copia a generar_pdf_cotizacion.
+ * @param {object} r - Respuesta cruda del motor.
+ * @param {number} [cantidad=1] - Cantidad cotizada (total_clp es el total de línea).
+ * @returns {object} r + { unit_price, total_neto } o { ok:false, precio_invalido } si el total no sirve.
+ */
+export function conUnitPrice(r, cantidad = 1) {
+  if (!r || r.ok === false) return r;
+  const qty = Math.max(1, Number(cantidad) || 1);
+  const lineTotal = Number(r.total_clp ?? r.total_neto_clp ?? r.total_con_iva ?? 0);
+  if (!Number.isFinite(lineTotal) || lineTotal <= 0) {
+    return { ...r, ok: false, precio_invalido: true,
+      error: r.error || 'Total inválido del motor; requiere revisión de especialista (no cotizar a ciegas).' };
+  }
+  const unit_price = Math.round(lineTotal / qty);
+  return { ...r, unit_price, total_neto: lineTotal,
+    _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses total_con_iva ni precio_por_m2.' };
+}
+
+/**
  * Ejecuta una tool por nombre contra el engine-client.
  * @param {string} name - Nombre de la tool (debe estar en TOOL_DEFS).
  * @param {object} input - Argumentos de la tool.
@@ -431,7 +458,7 @@ export async function runTool(name, input = {}, ctx = {}) {
       if (med.corregido) {
         console.warn(`[tools] medidas corregidas por normMeasures desde "${input.medidas_texto}" → ${med.ancho_mm}x${med.alto_mm} (LLM había pasado ${input.ancho_mm}x${input.alto_mm})`);
       }
-      return calcularCotizacion({
+      const _rc = await calcularCotizacion({
         tipo: input.tipo,
         ancho_mm: med.ancho_mm,
         alto_mm: med.alto_mm,
@@ -441,10 +468,11 @@ export async function runTool(name, input = {}, ctx = {}) {
         comuna: input.comuna,
         cantidad: input.cantidad,
       });
+      return conUnitPrice(_rc, input.cantidad); // unit_price NETO determinista (anti doble-IVA)
     }
 
-    case 'calcular_por_area':
-      return calcularPorArea({
+    case 'calcular_por_area': {
+      const _ra = await calcularPorArea({
         tipo: input.tipo,
         area_m2: input.area_m2,
         glass_id: input.glass_id,
@@ -452,6 +480,8 @@ export async function runTool(name, input = {}, ctx = {}) {
         color: input.color,
         comuna: input.comuna,
       });
+      return conUnitPrice(_ra, 1); // por área = un ítem; unit_price NETO determinista
+    }
 
     case 'generar_link_simulador':
       return generarLinkSimulador(input);

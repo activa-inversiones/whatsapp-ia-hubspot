@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { TOOL_DEFS, runTool, resolverMedidasMm } from './tools.js';
+import { TOOL_DEFS, runTool, resolverMedidasMm, conUnitPrice } from './tools.js';
 import { calcularCotizacion, calcularPorArea, APERTURAS } from './engine-client.js';
 
 const APERTURAS_ESPERADAS = ['CORREDERA', 'PROYECTANTE', 'FIJA', 'BATIENTE', 'OSCILOBATIENTE'];
@@ -318,4 +318,42 @@ test('(gl-c) guardar_lead: llama ctx.saveLead 1 vez con input correcto', async (
   assert.equal(capturedInput.name, 'María');
   assert.equal(capturedInput.comuna, 'Pucón');
   assert.equal(capturedInput.grand_total, 320000);
+});
+
+// ── conUnitPrice: unit_price NETO determinista (anti doble-IVA) [2026-06-13] ──
+test('(p1) conUnitPrice usa total_clp (NETO), NO total_con_iva — cantidad 1', () => {
+  const r = conUnitPrice({ ok: true, total_clp: 130963, total_con_iva: 155846, precio_por_m2: 109136 }, 1);
+  assert.equal(r.unit_price, 130963, 'unit_price debe ser el NETO total_clp, no el con IVA');
+  assert.equal(r.total_neto, 130963);
+  assert.notEqual(r.unit_price, 155846, 'NUNCA debe usar total_con_iva (causaría doble IVA)');
+});
+
+test('(p2) conUnitPrice divide total_clp por cantidad → unit_price por unidad', () => {
+  const r = conUnitPrice({ ok: true, total_clp: 261926, total_con_iva: 311692 }, 2);
+  assert.equal(r.unit_price, 130963, '261926 / 2 = 130963 (NETO por unidad)');
+});
+
+test('(p3) conUnitPrice fallback a total_neto_clp si no hay total_clp', () => {
+  const r = conUnitPrice({ ok: true, total_neto_clp: 99000 }, 1);
+  assert.equal(r.unit_price, 99000);
+});
+
+test('(p4) conUnitPrice marca precio_invalido si el total no sirve (no cotizar a ciegas)', () => {
+  const r0 = conUnitPrice({ ok: true, total_clp: 0 }, 1);
+  assert.equal(r0.ok, false);
+  assert.equal(r0.precio_invalido, true);
+  const rNaN = conUnitPrice({ ok: true }, 1); // sin ningún campo de total
+  assert.equal(rNaN.ok, false);
+  assert.equal(rNaN.precio_invalido, true);
+});
+
+test('(p5) conUnitPrice respeta respuestas de error del motor (ok:false pasa tal cual)', () => {
+  const err = { ok: false, error: 'motor caído' };
+  assert.deepEqual(conUnitPrice(err, 1), err);
+  assert.equal(conUnitPrice(null, 1), null);
+});
+
+test('(p6) cantidad inválida (0/undefined) se trata como 1 (no divide por cero)', () => {
+  const r = conUnitPrice({ ok: true, total_clp: 130963 }, 0);
+  assert.equal(r.unit_price, 130963);
 });
