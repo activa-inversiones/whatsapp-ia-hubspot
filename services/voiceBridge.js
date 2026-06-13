@@ -1,6 +1,6 @@
 // services/voiceBridge.js
 // Node 18+ (ESM). Usa fetch global.
-// ✅ LIMPIO: Solo TTS/voz. Sin pricing (usa cotizadorWinhouseBridge para precios).
+// ✅ LIMPIO: Solo TTS/voz. Sin pricing (el pricer es ACTIVA Engine vía priceAll).
 
 const VOICE_ENABLED = String(process.env.VOICE_ENABLED || "false") === "true";
 const VOICE_SEND_MODE = String(process.env.VOICE_SEND_MODE || "text_only"); // text_only | text_and_audio | audio_if_inbound_audio

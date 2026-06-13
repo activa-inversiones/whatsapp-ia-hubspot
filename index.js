@@ -298,11 +298,7 @@ import {
   buildLeadPayload as buildMultiChannelPayload,
   registerMultiChannelRoutes,
 } from "./services/multiChannelHandler.js";
-import {
-  cotizadorWinhouseConfigured,
-  cotizadorWinhouseHealth,
-  cotizarWinhouse,
-} from "./services/cotizadorWinhouseBridge.js";
+// [2026-06-13] import de cotizadorWinhouseBridge.js ELIMINADO (pricer cotizador_winhouse muerto). Archivo borrado.
 
 dotenv.config();
 const require = createRequire(import.meta.url);
@@ -378,9 +374,7 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY || "";
 const AI_MODEL = process.env.AI_MODEL_OPENAI || "gpt-4o-mini";
 const STT_MODEL = process.env.AI_MODEL_STT || "whisper-1";
 
-const PRICER_MODE = (process.env.PRICER_MODE || "winperfil").trim().toLowerCase(); // .trim(): robusto a espacios/tabs pegados al valor en Railway
-const WINPERFIL_API_BASE = (process.env.WINPERFIL_API_BASE || "").replace(/\/$/, "");
-const WINPERFIL_API_KEY = process.env.WINPERFIL_API_KEY || "";
+const PRICER_MODE = "engine"; // [2026-06-13] HARDCODE: ACTIVA Engine (espejo Winart) es el UNICO pricer. winperfil + cotizador_winhouse eliminados (nunca calibrados). Imposible caer a pricer muerto aunque Railway pierda la env. // NO TOCA.
 const QUOTE_API_KEY = process.env.QUOTE_API_KEY || "";
 const REQUIRE_ZOHO = String(process.env.REQUIRE_ZOHO || "true") === "true";
 const ZOHO = {
@@ -459,7 +453,6 @@ const VOICE_TTS_VOICE_ID = process.env.VOICE_TTS_VOICE_ID || "";
   if (!OPENAI_KEY) m.push("OPENAI_API_KEY");
   if (META.TOKEN && META.TOKEN.length < 20) m.push("WHATSAPP_TOKEN (formato inválido — muy corto)");
   if (OPENAI_KEY && !OPENAI_KEY.startsWith("sk-")) m.push("OPENAI_API_KEY (formato inválido — debe iniciar con sk-)");
-  if (PRICER_MODE === "winperfil" && !WINPERFIL_API_BASE) m.push("WINPERFIL_API_BASE");
   if (REQUIRE_ZOHO && (!ZOHO.CLIENT_ID || !ZOHO.REFRESH_TOKEN)) m.push("ZOHO credentials");
   if (REQUIRE_ZOHO && ZOHO.REFRESH_TOKEN && ZOHO.REFRESH_TOKEN.length < 10) m.push("ZOHO_REFRESH_TOKEN (formato inválido)");
   if (m.length) {
@@ -603,106 +596,9 @@ function sortItemsForCotizador(items = []) {
   });
 }
 
-function mapQuoteItemToCotizador(item, fallbackColor = "") {
-  const m = normMeasures(item.measures || "");
-  if (!m) {
-    return { unsupported: true, reason: "No pude normalizar medidas para el cotizador.", raw: item };
-  }
-
-  const p = String(item.product || "").toUpperCase();
-  const color = String(normColor(item.color || fallbackColor || "BLANCO") || "BLANCO").toLowerCase();
-
-  let tipo = "ventana";
-  let serie = "SLIDING";
-  let apertura = "corredera";
-  let hoja = "98";
-
-  if (p.includes("PUERTA_DOBLE")) {
-    return { unsupported: true, reason: "Puerta doble requiere validación manual.", raw: item };
-  }
-
-  if (p.includes("PUERTA")) {
-    tipo = "puerta";
-    serie = "S60";
-    apertura = "abatir";
-  } else if (p.includes("MARCO_FIJO")) {
-    tipo = "ventana";
-    serie = "S60";
-    apertura = "fijo";
-  } else if (p.includes("OSCILO")) {
-    tipo = "ventana";
-    serie = "S60";
-    apertura = "abatir";
-  } else if (p.includes("ABAT")) {
-    tipo = "ventana";
-    serie = "S60";
-    apertura = "abatir";
-  } else if (p.includes("CORREDERA_98")) {
-    tipo = "ventana";
-    serie = "SLIDING";
-    apertura = "corredera";
-    hoja = "98";
-  } else if (p.includes("CORREDERA")) {
-    tipo = "ventana";
-    serie = "SLIDING";
-    apertura = "corredera";
-    hoja = "98";
-  } else if (p.includes("PROYECT")) {
-    tipo = "ventana";
-    serie = "S60";
-    apertura = "proyectante";
-  }
-
-  return {
-    unsupported: false,
-    payload: {
-      tipo,
-      serie,
-      apertura,
-      color,
-      ancho: m.ancho_mm,
-      alto: m.alto_mm,
-      cantidad: Math.max(1, Number(item.qty) || 1),
-      hoja,
-      vidrio: process.env.DEFAULT_GLASS || "DVH 4+12+4 CL",
-    },
-  };
-}
-
-function applyCotizadorResultToSessionItems(sessionItems, apiResult) {
-  const resultItems = apiResult?.items || [];
-  let total = 0;
-  let escaladas = 0;
-
-  for (let i = 0; i < sessionItems.length; i++) {
-    const src = resultItems[i];
-    if (!src) {
-      sessionItems[i].price_warning = "Sin respuesta del cotizador para este ítem.";
-      sessionItems[i].source = "cotizador_missing";
-      continue;
-    }
-    if (src.escalado) {
-      sessionItems[i].price_warning = src.razon_escalacion || "Requiere validación manual.";
-      sessionItems[i].source = "cotizador_manual";
-      sessionItems[i].confidence = "manual";
-      escaladas++;
-      continue;
-    }
-    const qty = Math.max(1, Number(sessionItems[i].qty) || 1);
-    const unit = Number(src.precio_unitario || 0);
-    const lineTotal = Number(src.total || 0);
-    sessionItems[i].unit_price = unit || (lineTotal > 0 ? Math.round(lineTotal / qty) : 0);
-    sessionItems[i].total_price = lineTotal || sessionItems[i].unit_price * qty;
-    sessionItems[i].descripcion = src.descripcion || "";
-    sessionItems[i].source = "cotizador_winhouse";
-    sessionItems[i].confidence = "high";
-    if (src.split) {
-      sessionItems[i].price_warning = "Ítem dividido automáticamente por regla de fabricación.";
-    }
-    total += sessionItems[i].total_price;
-  }
-  return { total, escaladas };
-}
+// [2026-06-13] mapQuoteItemToCotizador + applyCotizadorResultToSessionItems ELIMINADOS:
+// helpers exclusivos del pricer cotizador_winhouse (muerto). Ruta viva = ACTIVA Engine
+// (priceAll -> priceAllEngine). normMeasures/normColor que usaban son compartidos (intactos). // NO TOCA.
 
 /* =========================
    6) ZONAS TÉRMICAS (OGUC) — [F7] ampliado Araucanía
@@ -1395,7 +1291,6 @@ function parseAdminCmd(text) {
   if (s === "ADMIN STATUS") return { type: "admin_status" };
   if (s === "ADMIN LAST CUBICACION") return { type: "admin_last_cubi" };
   if (s === "ADMIN FORCE PDF") return { type: "admin_force_pdf" };
-  if (s.startsWith("ADMIN PRECIO ")) return { type: "admin_precio", query: text.slice(13).trim() };
   if (s === "ADMIN TABLAS") return { type: "admin_tablas" };
   if (s === "ADMIN VOICE CONFIG") return { type: "admin_voice_config" };
   if (s === "ADMIN TABLA LISTA") return { type: "admin_table_ready" };
@@ -1660,24 +1555,9 @@ function normMeasures(raw) {
    ────────────────────────────────────────────────────────────── */
 
 /* =========================
-   8) MOTOR DE PRECIOS
+   8) MOTOR DE PRECIOS — ACTIVA Engine (ver priceAll / services/enginePricer.js)
+   quoteByWinperfil ELIMINADO [2026-06-13]: pricer winperfil muerto (nunca calibrado).
    ========================= */
-async function quoteByWinperfil(payload) {
-  try {
-    const headers = { "Content-Type": "application/json" };
-    if (WINPERFIL_API_KEY) headers["X-API-Key"] = WINPERFIL_API_KEY;
-    const { data } = await axios.post(`${WINPERFIL_API_BASE}/quote`, payload, {
-      headers,
-      timeout: 30000,
-      httpAgent,
-      httpsAgent,
-    });
-    return data;
-  } catch (e) {
-    logErr("quoteByWinperfil", e);
-    return { ok: false, error: "No pude conectar con Winperfil (bridge/túnel)" };
-  }
-}
 
 /* =========================
    9) WHATSAPP API
@@ -3681,88 +3561,11 @@ async function priceAll(d, customer_id = "") {
     return await priceAllEngine(d, customer_id);
   }
 
-  // Solo WinHouse PVC con cotizador automático
-  if (d.supplier !== "WINHOUSE_PVC") {
-    return {
-      ok: false,
-      error: "La línea de aluminio requiere validación manual.",
-      escalate: true,
-      reason: "supplier_manual",
-    };
-  }
-
-  // Si no está configurado el cotizador → escalar
-  if (!cotizadorWinhouseConfigured()) {
-    return {
-      ok: false,
-      error: "El cotizador automático no está disponible en este momento.",
-      escalate: true,
-      reason: "cotizador_not_configured",
-    };
-  }
-
-  const mapped = d.items.map((it) =>
-    mapQuoteItemToCotizador(it, d.default_color || "")
-  );
-
-  const unsupported = mapped.filter((x) => x.unsupported);
-  if (unsupported.length > 0) {
-    for (const u of unsupported) {
-      const target = d.items.find((it) => it === u.raw);
-      if (target) {
-        target.price_warning = u.reason;
-        target.source = "cotizador_manual";
-        target.confidence = "manual";
-      }
-    }
-    return {
-      ok: false,
-      error: "Uno o más ítems requieren validación manual.",
-      escalate: true,
-      reason: "unsupported_items",
-    };
-  }
-
-  const payload = {
-    items: mapped.map((x) => x.payload),
-    cliente: {
-      nombre: d.name || "Cliente WhatsApp",
-      telefono: customer_id || "",
-    },
-  };
-
-  const r = await cotizarWinhouse(payload);
-
-  // Si el cotizador no respondió o falló → escalar
-  if (!r.ok || !r.json) {
-    return {
-      ok: false,
-      error: r.json?.error || r.error || "Cotizador WinHouse no disponible.",
-      escalate: true,
-      reason: r.isTimeout ? "cotizador_timeout" : "cotizador_error",
-    };
-  }
-
-  const applied = applyCotizadorResultToSessionItems(d.items, r.json);
-  d.grand_total = Number(r.json?.resumen?.subtotal_neto || applied.total || 0) || null;
-
-  if (applied.escaladas > 0) {
-    return {
-      ok: false,
-      error: "La cotización requiere revisión de especialista.",
-      partial: true,
-      total: d.grand_total,
-      escalate: true,
-      reason: "partial_cotization",
-    };
-  }
-
-  return {
-    ok: true,
-    total: d.grand_total,
-    source: "cotizador_winhouse",
-    escalate: false,
-  };
+  // [2026-06-13] Pricer cotizador_winhouse ELIMINADO (muerto, nunca calibrado).
+  // ACTIVA Engine (rama de arriba) es el UNICO pricer y PRICER_MODE='engine' esta
+  // hardcodeado, por lo que priceAll SIEMPRE retorna en priceAllEngine. Lo de abajo
+  // es un fallback defensivo inalcanzable (garantiza que nunca retorne undefined). // NO TOCA.
+  return { ok: false, error: "Cotizador no disponible.", escalate: true, reason: "pricer_unavailable" };
 }
 
 /* =========================
@@ -4342,8 +4145,7 @@ app.get("/health", async (_req, res) => {
     v: "10.2.2-prod",
     agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
-    winperfil_api: WINPERFIL_API_BASE ? "set" : "missing",
-    cotizador_winhouse: cotizadorWinhouseConfigured() ? "configured" : "disabled",
+    engine_pricer: "activa_engine",
     zoho_books: ZOHO.ORG_ID ? "enabled" : "disabled",
     sales_os_bridge: salesOsConfigured() ? "enabled" : "disabled",
     internal_operator_bridge: INTERNAL_OPERATOR_TOKEN ? "enabled" : "missing",
@@ -4416,37 +4218,10 @@ app.get("/webhook", (req, res) => {
   res.sendStatus(403);
 });
 
-app.post("/quote", async (req, res) => {
-  try {
-        const key = req.get("x-api-key") || req.get("X-API-Key") || "";
-
-    if (!QUOTE_API_KEY) {
-      return res.status(500).json({ ok: false, error: "QUOTE_API_KEY missing" });
-    }
-    if (key !== QUOTE_API_KEY) {
-      return res.status(401).json({ ok: false, error: "unauthorized" });
-    }
-    const message = String(req.body?.message || "").trim();
-    const supplier = req.body?.supplier || detectSupplier(message);
-    const items = Array.isArray(req.body?.items) ? req.body.items : null;
-    if (!ALLOWED_SUPPLIERS.includes(supplier))
-      return res.status(400).json({ ok: false, error: "Proveedor no permitido" });
-    const payload = {
-      supplier,
-      message,
-      items: items || [],
-      customer_id: String(req.body?.customer_id || ""),
-      meta: req.body?.meta || {},
-    };
-    if ((!payload.items || payload.items.length === 0) && !payload.message)
-      return res.status(400).json({ ok: false, error: "Falta message o items" });
-    const r = await quoteByWinperfil(payload);
-    res.json(r);
-  } catch (e) {
-    logErr("/quote", e);
-    res.status(500).json({ ok: false, error: "Error interno /quote" });
-  }
-});
+// [2026-06-13] Endpoint legacy POST /quote ELIMINADO: era el unico caller de
+// quoteByWinperfil (pricer winperfil muerto). No lo consume el cockpit ni el bot
+// (el flujo usa priceAll -> ACTIVA Engine). QUOTE_API_KEY/detectSupplier/ALLOWED_SUPPLIERS
+// se conservan (compartidos por otras rutas). // NO TOCA.
 
 // @patch:sales-os:operator-route:start
 app.post("/internal/operator-send", async (req, res) => {
@@ -5189,47 +4964,12 @@ app.post("/webhook", async (req, res) => {
       }
 
       if (adminCmd.type === "admin_tablas") {
-        await waSendH(waId, `📊 Cotizador: ${cotizadorWinhouseConfigured() ? "✅ Online" : "❌ Offline"}\n\nPara actualizar precios:\n1. Envíe imagen de tabla\n2. El sistema analiza con IA\n3. Escriba ADMIN TABLA LISTA\n4. Confirme con ADMIN APLICAR TABLA`, true);
+        await waSendH(waId, `📊 Motor de precios: ⚙️ ACTIVA Engine\n\nPara actualizar precios:\n1. Envíe imagen de tabla\n2. El sistema analiza con IA\n3. Escriba ADMIN TABLA LISTA\n4. Confirme con ADMIN APLICAR TABLA`, true);
         return;
       }
 
-      if (adminCmd.type === "admin_precio") {
-        const q = adminCmd.query;
-        const m = normMeasures(q);
-        const colorMatch = q.match(/\b(blanco|nogal|roble|grafito|newblack|negro)\b/i);
-        const tipoMatch = q.match(/\b(corredera|proyectante|abatible|puerta|fijo)\b/i);
-        if (!m) {
-          await waSendH(waId, "❌ Formato: ADMIN PRECIO corredera 1500x1200 blanco", true);
-          return;
-        }
-        const testItem = {
-          tipo: "ventana",
-          serie: (tipoMatch?.[1] || "").toLowerCase().includes("corredera") ? "SLIDING" : "S60",
-          apertura: (tipoMatch?.[1] || "proyectante").toLowerCase(),
-          color: normColor(colorMatch?.[1] || "blanco").toLowerCase(),
-          ancho: m.ancho_mm,
-          alto: m.alto_mm,
-          cantidad: 1,
-          hoja: "98",
-          vidrio: process.env.DEFAULT_GLASS || "DVH 4+12+4 CL",
-        };
-        try {
-          const r = await cotizarWinhouse({ items: [testItem], cliente: { nombre: "Test Admin" } });
-          if (r.ok && r.json?.items?.[0]) {
-            const it = r.json.items[0];
-            const precio = it.precio_unitario || it.total || "N/A";
-            const metodo = it.metodo || "desconocido";
-            const tabla = it.tabla_usada || "?";
-            const notas = (it.notas || []).join("\n") || "Sin notas";
-            await waSendH(waId, `💰 PRECIO TEST\n\n${testItem.apertura} ${m.ancho_mm}×${m.alto_mm} ${testItem.color}\n\nPrecio: $${Number(precio).toLocaleString("es-CL")}\nMétodo: ${metodo}\nTabla: ${tabla}\n\n${notas}`, true);
-          } else {
-            await waSendH(waId, `⚠️ ${r.json?.escalaciones?.[0]?.razon || r.error || "No cotizable"}`, true);
-          }
-        } catch (e) {
-          await waSendH(waId, `❌ Error: ${e.message}`, true);
-        }
-        return;
-      }
+      // [2026-06-13] Comando ADMIN PRECIO ELIMINADO: probaba precios contra cotizarWinhouse
+      // (pricer cotizador_winhouse muerto). El motor real es ACTIVA Engine (flujo normal). // NO TOCA.
 
       if (adminCmd.type === "admin_voice_config") {
         const vc = {
@@ -5304,7 +5044,7 @@ app.post("/webhook", async (req, res) => {
           if (r.ok) {
             ses.pendingTableUpdate = null;
             saveSession(waId, ses);
-            await waSendH(waId, `✅ Tabla "${tableId}" aplicada.\n\nPruebe: ADMIN PRECIO corredera 1500x1200 blanco`, true);
+            await waSendH(waId, `✅ Tabla "${tableId}" aplicada.`, true);
           } else {
             const err = await r.text();
             await waSendH(waId, `❌ Error: ${err.slice(0, 200)}`, true);
@@ -6152,7 +5892,7 @@ function normTipoApertura(text) {
 }
 app.listen(PORT, () => {
   console.log(
-    `🚀 Oliver v11.8.2 (memoria x-api-key + comuna + engine gated) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} cotizador=${cotizadorWinhouseConfigured() ? "OK" : "NO"} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
+    `🚀 Oliver v11.8.2 (memoria x-api-key + comuna + engine gated) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
   );
   // v11.5-4: cargar prompt overrides desde DB al arranque (no bloqueante)
   loadPromptOverrides().then(text => {
