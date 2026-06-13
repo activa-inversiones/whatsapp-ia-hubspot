@@ -167,3 +167,56 @@ export async function sendWhatsAppDocumentUrl(to, docUrl, filename = 'documento.
 }
 
 export { META };
+
+/**
+ * Sube un buffer de audio a WhatsApp Media (2-pasos) y devuelve el media_id.
+ * Espeja waUploadAudio del V1 (index.js ~L1949).
+ *
+ * @param {Buffer} audioBuffer
+ * @param {string} mimeType   p.ej. 'audio/ogg; codecs=opus'
+ * @param {string} filename   p.ej. 'reply.ogg'
+ * @returns {Promise<string>} media_id
+ */
+export async function uploadWaAudio(audioBuffer, mimeType, filename) {
+  if (!META.TOKEN || !META.PHONE_ID) {
+    throw new Error('[wa-adapter] uploadWaAudio: meta_credentials_missing');
+  }
+  // form-data: importación dinámica igual que el V1 para compatibilidad CJS/ESM
+  const FormData = (await import('form-data')).default;
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', 'audio');
+  form.append('file', audioBuffer, { filename, contentType: mimeType });
+  const resp = await axiosWA.post(`/${META.PHONE_ID}/media`, form, {
+    headers: form.getHeaders(),
+    timeout: 30000,
+  });
+  const mediaId = resp.data?.id;
+  if (!mediaId) throw new Error('[wa-adapter] uploadWaAudio: no se obtuvo media_id de WhatsApp');
+  return mediaId;
+}
+
+/**
+ * Envía un audio ya subido como nota de voz (voice:true = icono de micrófono).
+ * Espeja waSendAudio+voice del V1 (index.js ~L2196-2208).
+ *
+ * @param {string} to       waId destino
+ * @param {string} mediaId  id devuelto por uploadWaAudio
+ * @param {boolean} [asVoice=true]  true → pttAudio (nota de voz); false → adjunto de audio
+ */
+export async function sendWaAudio(to, mediaId, asVoice = true) {
+  if (!META.TOKEN || !META.PHONE_ID) {
+    throw new Error('[wa-adapter] sendWaAudio: meta_credentials_missing');
+  }
+  const payload = {
+    messaging_product: 'whatsapp',
+    to: String(to).replace(/^\+/, ''),
+    type: 'audio',
+    audio: { id: mediaId },
+  };
+  if (asVoice) {
+    // voice:true hace que WhatsApp lo muestre como nota de voz (PTT)
+    payload.audio.voice = true;
+  }
+  await axiosWA.post(`/${META.PHONE_ID}/messages`, payload);
+}

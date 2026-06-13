@@ -38,7 +38,13 @@ import {
   sendWhatsAppImageUrl as realSendImageUrl,
   sendWhatsAppVideoUrl as realSendVideoUrl,
   sendWhatsAppDocumentUrl as realSendDocumentUrl,
+  uploadWaAudio as realUploadWaAudio,
+  sendWaAudio as realSendWaAudio,
 } from '../sales-agent/whatsapp-adapter.js';
+import {
+  shouldSendVoice as realShouldSendVoice,
+  synthesizeVoiceBuffer as realSynthesizeVoiceBuffer,
+} from '../../services/voiceBridge.js'; // [F4] voz saliente
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
 import { toFile as realToFile } from 'openai/uploads';
@@ -332,6 +338,10 @@ export async function handleWebhook(req, res, deps = {}) {
   try {
     const parseInbound    = deps.parseInbound    || realParseInbound;
     const sendWhatsAppText = deps.sendWhatsAppText || realSendWhatsAppText;
+    const uploadWaAudio   = deps.uploadWaAudio   || realUploadWaAudio;
+    const sendWaAudio     = deps.sendWaAudio     || realSendWaAudio;
+    const shouldSendVoice = deps.shouldSendVoice || realShouldSendVoice;
+    const synthesizeVoiceBuffer = deps.synthesizeVoiceBuffer || realSynthesizeVoiceBuffer;
     const handleTurn      = deps.handleTurn      || realHandleTurn;
     const bridge          = deps.bridge          || realBridge;
     const notifyHighValue = deps.notifyHighValue  || realNotifyHighValue;
@@ -543,8 +553,32 @@ export async function handleWebhook(req, res, deps = {}) {
     const toolCalls = Array.isArray(turn?.toolCalls) ? turn.toolCalls : [];
 
     // ── (7) Enviar respuesta por WhatsApp ───────────────────────────────
+    // (7a) Texto: siempre se envía (canal garantizado).
     if (reply) {
       await safe('sendWhatsAppText', () => sendWhatsAppText(from, reply));
+    }
+
+    // (7b) Voz saliente (F4): si el inbound fue audio Y VOICE_ENABLED, sintetizar
+    // y enviar nota de voz ADEMÁS del texto. Fail-safe: si TTS/upload falla, el
+    // cliente ya tiene el texto → no se pierde la respuesta.
+    if (reply && shouldSendVoice(userText, null, { incomingType: inbound.type })) {
+      await safe('voice.send', async () => {
+        const audioResult = await synthesizeVoiceBuffer({ text: reply, waId: from });
+        if (!audioResult || !audioResult.buffer) {
+          log('info', 'voice.send', `TTS no devolvió audio para ${from}; se omite nota de voz`);
+          return;
+        }
+        const mediaId = await uploadWaAudio(
+          audioResult.buffer,
+          audioResult.mime || 'audio/ogg',
+          audioResult.filename || `reply_${Date.now()}.ogg`
+        );
+        // voice:true (PTT, ícono micrófono) SOLO si es ogg/opus; otros formatos
+        // van como audio adjunto normal (ajuste del abogado del diablo).
+        const asVoice = (audioResult.mime || '').toLowerCase().includes('ogg');
+        await sendWaAudio(from, mediaId, asVoice);
+        log('info', 'voice.sent', `nota de voz enviada a ${from} (${audioResult.buffer.length} bytes, voice=${asVoice})`);
+      });
     }
 
     // ── (8) Persistencia POST del turno (inbound + outbound) ────────────
@@ -563,6 +597,10 @@ export async function handleWebhook(req, res, deps = {}) {
     );
 
     if (reply) {
+      // message_type refleja si se entregó también como nota de voz (F4).
+      const outboundType = shouldSendVoice(userText, null, { incomingType: inbound.type })
+        ? 'text+voice'
+        : 'text';
       await safe('persist.outbound', () =>
         bridge.pushConversationEvent({
           channel: 'whatsapp',
@@ -571,7 +609,7 @@ export async function handleWebhook(req, res, deps = {}) {
           direction: 'outbound',
           actor_type: 'ai',
           actor_name: 'Oliver',
-          message_type: 'text',
+          message_type: outboundType,
           body: reply,
           metadata: { source: 'oliver_gpt_webhook' },
         })
