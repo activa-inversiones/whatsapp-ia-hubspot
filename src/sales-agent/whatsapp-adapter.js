@@ -100,4 +100,70 @@ export async function sendWhatsAppText(to, body) {
   }
 }
 
+/**
+ * Envía una imagen desde URL pública por WhatsApp.
+ * Espeja waSendImageUrl de index.js ~L4270.
+ */
+export async function sendWhatsAppImageUrl(to, imageUrl, caption = '') {
+  if (!META.TOKEN || !META.PHONE_ID) return { ok: false, error: 'meta_credentials_missing' };
+  if (!to || !imageUrl) return { ok: false, error: 'missing_to_or_url' };
+  try {
+    const r = await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to: String(to).replace(/^\+/, ''),
+      type: 'image',
+      image: { link: imageUrl, caption: caption || '' },
+    });
+    return { ok: true, msgId: r.data?.messages?.[0]?.id };
+  } catch (err) {
+    const e = err.response?.data || err.message;
+    console.error('[wa-adapter] image_send_failed:', typeof e === 'string' ? e : JSON.stringify(e));
+    return { ok: false, error: typeof e === 'string' ? e : JSON.stringify(e) };
+  }
+}
+
+/**
+ * Envía un video desde URL pública por WhatsApp.
+ * Espeja waSendVideoUrl de index.js ~L4312.
+ */
+export async function sendWhatsAppVideoUrl(to, videoUrl, caption = '') {
+  if (!META.TOKEN || !META.PHONE_ID) return { ok: false, error: 'meta_credentials_missing' };
+  if (!to || !videoUrl) return { ok: false, error: 'missing_to_or_url' };
+  try {
+    const r = await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to: String(to).replace(/^\+/, ''),
+      type: 'video',
+      video: { link: videoUrl, caption: caption || '' },
+    });
+    return { ok: true, msgId: r.data?.messages?.[0]?.id };
+  } catch (err) {
+    const e = err.response?.data || err.message;
+    console.error('[wa-adapter] video_send_failed:', typeof e === 'string' ? e : JSON.stringify(e));
+    return { ok: false, error: typeof e === 'string' ? e : JSON.stringify(e) };
+  }
+}
+
+/**
+ * Envía un documento PDF desde URL pública por WhatsApp.
+ * Espeja waSendDocumentUrl de index.js ~L4326.
+ */
+export async function sendWhatsAppDocumentUrl(to, docUrl, filename = 'documento.pdf', caption = '') {
+  if (!META.TOKEN || !META.PHONE_ID) return { ok: false, error: 'meta_credentials_missing' };
+  if (!to || !docUrl) return { ok: false, error: 'missing_to_or_url' };
+  try {
+    const r = await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to: String(to).replace(/^\+/, ''),
+      type: 'document',
+      document: { link: docUrl, filename, caption: caption || '' },
+    });
+    return { ok: true, msgId: r.data?.messages?.[0]?.id };
+  } catch (err) {
+    const e = err.response?.data || err.message;
+    console.error('[wa-adapter] doc_send_failed:', typeof e === 'string' ? e : JSON.stringify(e));
+    return { ok: false, error: typeof e === 'string' ? e : JSON.stringify(e) };
+  }
+}
+
 export { META };

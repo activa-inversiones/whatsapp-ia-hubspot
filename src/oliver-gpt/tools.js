@@ -14,6 +14,11 @@ import {
   FAMILIAS_VIDRIO,
 } from './engine-client.js';
 import { normMeasures } from './normalizers.js';
+import {
+  sendWhatsAppImageUrl,
+  sendWhatsAppVideoUrl,
+  sendWhatsAppDocumentUrl,
+} from '../sales-agent/whatsapp-adapter.js';
 
 // Rango plausible de una ventana/puerta en mm. Fuera de esto = dato dudoso (no cotizar a ciegas).
 const MEDIDA_MIN_MM = 150;
@@ -56,6 +61,27 @@ export function resolverMedidasMm({ ancho_mm, alto_mm, medidas_texto } = {}) {
 // URL base del simulador (frontend hardcodeado a proposito, sin llamada al Engine).
 const SIMULADOR_BASE =
   process.env.ACTIVA_SIMULADOR_URL || 'https://activaspa.cl/simulador';
+
+/**
+ * Resuelve la URL del catálogo/media a partir de una catalog_key.
+ * Espeja resolveCatalogUrl de index.js ~L3497.
+ * Retorna null si la env var no está configurada (no lanza).
+ */
+function resolveCatalogUrl(key) {
+  const map = {
+    catalogo_pvc: process.env.CATALOGO_PVC_URL,
+    catalogo_colores: process.env.CATALOGO_COLORES_URL,
+    ficha_tecnica_s60: process.env.FICHA_S60_URL,
+    ficha_tecnica_sliding: process.env.FICHA_SLIDING_URL,
+    video_planta: process.env.VIDEO_PLANTA,
+    video_oficina: process.env.VIDEO_OFICINA,
+    video_instalaciones: process.env.VIDEO_INSTALACIONES,
+    foto_proyecto_1: process.env.FOTO_PROYECTO_1_URL,
+    foto_proyecto_2: process.env.FOTO_PROYECTO_2_URL,
+    certificacion_tse: process.env.CERTIFICACION_TSE_URL,
+  };
+  return map[key] || null;
+}
 
 export const TOOL_DEFS = [
   {
@@ -258,6 +284,89 @@ export const TOOL_DEFS = [
       },
     },
   },
+  // ── send_media ────────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'send_media',
+      description:
+        'Envía una imagen, video o documento al cliente vía WhatsApp. ' +
+        'Usar cuando el cliente pida: ver catálogo, fotos de ventanas, videos de la planta, ' +
+        'video de instalación, ficha técnica, folleto, o cuando quieras mostrarle visualmente un producto.',
+      parameters: {
+        type: 'object',
+        properties: {
+          media_type: {
+            type: 'string',
+            enum: ['image', 'video', 'document'],
+            description: 'Tipo de archivo a enviar.',
+          },
+          catalog_key: {
+            type: 'string',
+            enum: [
+              'catalogo_pvc',
+              'catalogo_colores',
+              'ficha_tecnica_s60',
+              'ficha_tecnica_sliding',
+              'video_planta',
+              'video_oficina',
+              'video_instalaciones',
+              'foto_proyecto_1',
+              'foto_proyecto_2',
+              'certificacion_tse',
+            ],
+            description:
+              'Clave del catálogo/media predefinido. Se resuelve desde env vars en el servidor.',
+          },
+          caption: {
+            type: 'string',
+            description: 'Mensaje que acompaña al archivo (máx 200 chars). Opcional.',
+          },
+        },
+        required: ['media_type', 'catalog_key'],
+        additionalProperties: false,
+      },
+    },
+  },
+  // ── guardar_lead ──────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'guardar_lead',
+      description:
+        'Registra el lead calificado (nombre, comuna, lo que necesita, monto estimado). ' +
+        'Ejecutar cuando ya se tienen los datos mínimos del cliente y se ha enviado o está ' +
+        'por enviarse la propuesta. Persiste en el CRM/BD de la plataforma.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Nombre del cliente (si se conoce).',
+          },
+          comuna: {
+            type: 'string',
+            description: 'Comuna del cliente (si se conoce).',
+          },
+          items: {
+            type: 'array',
+            description: 'Productos cotizados (si se calcularon). Opcional.',
+            items: { type: 'object' },
+          },
+          grand_total: {
+            type: 'number',
+            description: 'Monto total estimado en CLP (si se calculó). Opcional.',
+          },
+          stageKey: {
+            type: 'string',
+            description: 'Etapa del lead (p.ej. \'cotizado\', \'interesado\'). Opcional.',
+          },
+        },
+        required: [],
+        additionalProperties: true,
+      },
+    },
+  },
 ];
 
 /**
@@ -328,6 +437,32 @@ export async function runTool(name, input = {}, ctx = {}) {
         },
       });
       return { ok: true, enviado: result?.sent ?? false, tier: result?.tier, reason };
+    }
+
+    case 'send_media': {
+      // ctx.sendMedia es inyectado por webhook.js (to, mediaType, catalogKey, caption).
+      // Si no está cableado (test local sin ctx) devolvemos ok:false silencioso.
+      if (typeof ctx.sendMedia !== 'function') {
+        console.warn('[tools] send_media: ctx.sendMedia no cableado (simulador/test?)');
+        return { ok: false, reason: 'sendMedia_not_wired' };
+      }
+      // safe() de webhook.js puede devolver null si traga una excepción → normalizamos a ok:false
+      // para que el LLM reciba un objeto, no null literal (ajuste del abogado del diablo).
+      const _rMedia = await ctx.sendMedia({
+        media_type: input.media_type,
+        catalog_key: input.catalog_key,
+        caption: input.caption || '',
+      });
+      return _rMedia ?? { ok: false, error: 'sendMedia_null' };
+    }
+
+    case 'guardar_lead': {
+      // ctx.saveLead es inyectado por webhook.js ~L330-343 (pushLeadEvent real).
+      if (typeof ctx.saveLead !== 'function') {
+        console.warn('[tools] guardar_lead: ctx.saveLead no cableado (simulador/test?)');
+        return { ok: false, reason: 'saveLead_not_wired' };
+      }
+      return ctx.saveLead(input);
     }
 
     default:

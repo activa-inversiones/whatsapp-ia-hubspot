@@ -232,3 +232,90 @@ test('(n-c) notificar_marcelo: reason oliver_gpt evita bloqueo tier STANDARD', a
   assert.ok(capturedReason && capturedReason.startsWith('oliver_gpt:'), `reason debe empezar con 'oliver_gpt:' (recibido: '${capturedReason}')`);
   assert.equal(filterFn('STANDARD', capturedReason), false, 'el filtro NO debe bloquear una escalacion explicita STANDARD');
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Tests herméticos F1 — send_media y guardar_lead (sin red, sin WA real).
+// ──────────────────────────────────────────────────────────────────────────────
+
+// (sm-a) send_media está en TOOL_DEFS con los campos correctos.
+test('(sm-a) send_media: existe en TOOL_DEFS con media_type, catalog_key (required) y caption', () => {
+  const def = getToolDef('send_media');
+  const props = def.function.parameters.properties;
+  assert.ok(props.media_type, 'debe tener media_type');
+  assert.ok(props.catalog_key, 'debe tener catalog_key');
+  assert.ok(props.caption, 'debe tener caption');
+  assert.ok(
+    Array.isArray(props.media_type.enum) && props.media_type.enum.includes('image'),
+    "media_type.enum debe incluir 'image'"
+  );
+  assert.ok(
+    Array.isArray(props.catalog_key.enum) && props.catalog_key.enum.includes('catalogo_pvc'),
+    "catalog_key.enum debe incluir 'catalogo_pvc'"
+  );
+  const req = def.function.parameters.required;
+  assert.ok(req.includes('media_type') && req.includes('catalog_key'), 'media_type y catalog_key son required');
+});
+
+// (sm-b) runTool send_media sin ctx.sendMedia devuelve ok:false (no lanza).
+test('(sm-b) send_media: sin ctx.sendMedia devuelve ok:false, no lanza', async () => {
+  const r = await runTool('send_media', { media_type: 'image', catalog_key: 'catalogo_pvc' }, {});
+  assert.equal(r.ok, false, 'debe devolver ok:false cuando sendMedia no está cableado');
+  assert.equal(r.reason, 'sendMedia_not_wired');
+});
+
+// (sm-c) runTool send_media llama ctx.sendMedia 1 vez con el payload correcto.
+test('(sm-c) send_media: llama ctx.sendMedia 1 vez con payload correcto', async () => {
+  let callCount = 0;
+  let captured = null;
+  const mockCtx = {
+    sendMedia: async (payload) => {
+      callCount++;
+      captured = payload;
+      return { ok: true, sent: true };
+    },
+  };
+  const r = await runTool(
+    'send_media',
+    { media_type: 'document', catalog_key: 'ficha_tecnica_s60', caption: 'Ficha S60' },
+    mockCtx
+  );
+  assert.equal(callCount, 1, 'sendMedia debe llamarse exactamente 1 vez');
+  assert.equal(r.ok, true, 'runTool debe devolver ok:true');
+  assert.equal(captured.media_type, 'document');
+  assert.equal(captured.catalog_key, 'ficha_tecnica_s60');
+  assert.equal(captured.caption, 'Ficha S60');
+});
+
+// (gl-a) guardar_lead está en TOOL_DEFS.
+test('(gl-a) guardar_lead: existe en TOOL_DEFS', () => {
+  const def = getToolDef('guardar_lead');
+  assert.ok(def.function.parameters.properties.name, 'debe tener campo name');
+  assert.ok(def.function.parameters.properties.comuna, 'debe tener campo comuna');
+});
+
+// (gl-b) runTool guardar_lead sin ctx.saveLead devuelve ok:false (no lanza).
+test('(gl-b) guardar_lead: sin ctx.saveLead devuelve ok:false, no lanza', async () => {
+  const r = await runTool('guardar_lead', { name: 'Juan', comuna: 'Temuco' }, {});
+  assert.equal(r.ok, false, 'debe devolver ok:false cuando saveLead no está cableado');
+  assert.equal(r.reason, 'saveLead_not_wired');
+});
+
+// (gl-c) runTool guardar_lead llama ctx.saveLead con el input completo.
+test('(gl-c) guardar_lead: llama ctx.saveLead 1 vez con input correcto', async () => {
+  let callCount = 0;
+  let capturedInput = null;
+  const mockCtx = {
+    saveLead: async (input) => {
+      callCount++;
+      capturedInput = input;
+      return { ok: true };
+    },
+  };
+  const input = { name: 'María', comuna: 'Pucón', grand_total: 320000, stageKey: 'cotizado' };
+  const r = await runTool('guardar_lead', input, mockCtx);
+  assert.equal(callCount, 1, 'saveLead debe llamarse exactamente 1 vez');
+  // runTool devuelve lo que retorna saveLead (puede ser null si safe() lo traga; en test directo retorna el mock)
+  assert.equal(capturedInput.name, 'María');
+  assert.equal(capturedInput.comuna, 'Pucón');
+  assert.equal(capturedInput.grand_total, 320000);
+});

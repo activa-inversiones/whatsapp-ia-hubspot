@@ -35,6 +35,9 @@ import { getClient as realGetClient } from './engine.js';
 import {
   parseInbound as realParseInbound,
   sendWhatsAppText as realSendWhatsAppText,
+  sendWhatsAppImageUrl as realSendImageUrl,
+  sendWhatsAppVideoUrl as realSendVideoUrl,
+  sendWhatsAppDocumentUrl as realSendDocumentUrl,
 } from '../sales-agent/whatsapp-adapter.js';
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
@@ -119,11 +122,11 @@ async function describeImage(buffer, mime, deps) {
               'Para CADA uno indica: tipo de apertura, medidas (ancho x alto), cantidad y color. ' +
               'Si hay un plano o cotización, transcribe los datos relevantes. Responde en español.',
           },
-          { type: 'image_url', image_url: { url: `data:${mime};base64,${b64}` } },
+          { type: 'image_url', image_url: { url: `data:${mime};base64,${b64}`, detail: 'high' } },
         ],
       },
     ],
-    max_tokens: 900,
+    max_tokens: 4096,
   });
   return (r.choices?.[0]?.message?.content || '').trim();
 }
@@ -363,6 +366,42 @@ export async function handleWebhook(req, res, deps = {}) {
         log('info', 'persistSession.todo', `F5 pendiente: persistir whatsapp_sessions para ${from}`);
         return Promise.resolve();
       },
+
+      // sendMedia → envío REAL de catálogos/fotos/videos por WhatsApp.
+      // Resuelve la catalog_key a URL desde env vars y despacha con el helper correcto.
+      sendMedia: ({ media_type, catalog_key, caption = '' } = {}) =>
+        safe('sendMedia', async () => {
+          const sendImageUrl = deps.sendImageUrl || realSendImageUrl;
+          const sendVideoUrl = deps.sendVideoUrl || realSendVideoUrl;
+          const sendDocumentUrl = deps.sendDocumentUrl || realSendDocumentUrl;
+          // resolveCatalogUrl vive en tools.js; la replicamos aquí inline para no
+          // crear una dependencia circular. Misma fuente de verdad: env vars.
+          const CATALOG_MAP = {
+            catalogo_pvc: process.env.CATALOGO_PVC_URL,
+            catalogo_colores: process.env.CATALOGO_COLORES_URL,
+            ficha_tecnica_s60: process.env.FICHA_S60_URL,
+            ficha_tecnica_sliding: process.env.FICHA_SLIDING_URL,
+            video_planta: process.env.VIDEO_PLANTA,
+            video_oficina: process.env.VIDEO_OFICINA,
+            video_instalaciones: process.env.VIDEO_INSTALACIONES,
+            foto_proyecto_1: process.env.FOTO_PROYECTO_1_URL,
+            foto_proyecto_2: process.env.FOTO_PROYECTO_2_URL,
+            certificacion_tse: process.env.CERTIFICACION_TSE_URL,
+          };
+          const url = CATALOG_MAP[catalog_key] || null;
+          if (!url) {
+            log('error', 'sendMedia', `catalog_key '${catalog_key}' sin URL configurada`);
+            return { ok: false, error: `catalog_not_configured: ${catalog_key}` };
+          }
+          if (media_type === 'image') {
+            return sendImageUrl(from, url, caption);
+          } else if (media_type === 'video') {
+            return sendVideoUrl(from, url, caption);
+          } else if (media_type === 'document') {
+            return sendDocumentUrl(from, url, `${catalog_key}.pdf`, caption);
+          }
+          return { ok: false, error: `media_type_invalido: ${media_type}` };
+        }),
     };
 
     // ── Llamada al cerebro probado ──────────────────────────────────────
