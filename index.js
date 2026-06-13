@@ -4833,13 +4833,18 @@ app.post("/webhook", async (req, res) => {
   try {
     if (process.env.OLIVER_GPT_ENABLED === "true") {
       const normG = (s) => (s || "").replace(/\D/g, "");
+      // SWITCH TOTAL (Oliver único): OLIVER_GPT_ALL=true enruta TODOS los clientes
+      // al cerebro unificado. Apagado (default) => solo la lista OLIVER_GPT_NUMBERS
+      // (comportamiento intacto, cero cambio). Rollback instantáneo: poner =false.
+      // V1 sigue de fallback ante cualquier excepción (catch de abajo). // NO TOCA sin OK + E2E.
+      const gptAll = process.env.OLIVER_GPT_ALL === "true";
       const gptNumbers = (process.env.OLIVER_GPT_NUMBERS || "")
         .split(",")
         .map(normG)
         .filter(Boolean);
       const _incG = extractMsg(req.body);
       const fromG = _incG?.ok ? normG(_incG.waId) : "";
-      if (fromG && gptNumbers.includes(fromG)) {
+      if (fromG && (gptAll || gptNumbers.includes(fromG))) {
         if (!verifySig(req)) { res.sendStatus(200); return; }
         const { handleWebhook } = await import("./src/oliver-gpt/webhook.js");
         return handleWebhook(req, res);
