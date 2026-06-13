@@ -47,6 +47,8 @@ import {
   persistSession as realPersistSession,
   resetIfInactive,
 } from './session-store.js';
+import { parseReferral, buildCtwaLeadPayload } from '../../services/ctwaReferral.js'; // [F3b] CTWA
+import { isVisionUnreadable } from '../../services/oliverVision.js'; // [F3b] detector imagen ilegible
 
 /* =========================================================================
  * CONFIG
@@ -184,7 +186,11 @@ async function describeImage(buffer, mime, deps) {
     ],
     max_tokens: 4096,
   });
-  return (r.choices?.[0]?.message?.content || '').trim();
+  const raw = (r.choices?.[0]?.message?.content || '').trim();
+  // [F3b] Si la visión devolvió rechazo / vacío / sin medidas → marcar ilegible.
+  // Evita que el orquestador confirme medidas que nunca llegaron (anti-alucinación).
+  if (isVisionUnreadable(raw)) return '[Imagen no legible]';
+  return raw;
 }
 
 // STT: transcribe el audio → userText. Espeja index.js ~2112.
@@ -216,7 +222,9 @@ async function resolveUserText(inbound, body, deps) {
     try {
       const { buffer, mime } = await downloadWaMedia(mediaId, deps);
       const desc = await (deps.describeImage || describeImage)(buffer, mime, deps);
-      if (desc) {
+      // [F3b] '[Imagen no legible]' NO es contenido válido → cae al fallback que pide
+      // describir por texto (evita pasar una no-descripción como medidas reales).
+      if (desc && desc !== '[Imagen no legible]') {
         return {
           userText: `[El cliente envió una imagen. Contenido detectado]: ${desc}`,
           mediaResolved: true,
@@ -418,6 +426,31 @@ export async function handleWebhook(req, res, deps = {}) {
     // Reset por inactividad: limpia lockedData si >7 días sin actividad.
     const baseState  = resetIfInactive({ ...rawState, lastMessageAt: rawState.lastMessageAt || 0 });
     const state = { ...baseState, telefono: from, fecha: new Date().toISOString() };
+
+    // ── (4b) CTWA — Captura atribución Meta Ads (Click-to-WhatsApp). ────────
+    // Solo en el primer mensaje con referral de la sesión (flag ctwaCaptured,
+    // ya hidratado en state). Fire-and-forget vía safe(): no bloquea ni tumba.
+    // Espeja index.js ~L4901-4913 usando el bridge probado (pushLeadEvent).
+    try {
+      const _rawMsg = rawMessage(req.body);
+      if (_rawMsg) {
+        const _ref = (deps.parseReferral || parseReferral)(_rawMsg);
+        if (_ref && _ref.isCtwaAd && !state.ctwaCaptured) {
+          state.ctwaCaptured = true;
+          state.ctwa_clid = _ref.ctwaClid || null;
+          state.ad_id = _ref.adId || null;
+          const _bridge = deps.bridge || realBridge;
+          const _payload = (deps.buildCtwaLeadPayload || buildCtwaLeadPayload)(
+            from, _ref, { name: state.name || '' }
+          );
+          safe('ctwa.ingest', () => _bridge.pushLeadEvent(_payload));
+          log('info', 'ctwa_attribution',
+            `Lead CTWA capturado tel=${from} ad=${_ref.adId || '?'} clid=${_ref.ctwaClid ? 'sí' : 'no'}`);
+        }
+      }
+    } catch (e) {
+      log('error', 'ctwa.capture', e);
+    }
 
     // ── (5) MEDIA → userText útil (vision / STT). Resuelve la ceguera V2. ─
     const { userText } = await resolveUserText(inbound, req.body, deps);
