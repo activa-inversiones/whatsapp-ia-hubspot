@@ -100,4 +100,180 @@ export async function sendWhatsAppText(to, body) {
   }
 }
 
+/**
+ * Envía una imagen desde URL pública por WhatsApp.
+ * Espeja waSendImageUrl de index.js ~L4270.
+ */
+export async function sendWhatsAppImageUrl(to, imageUrl, caption = '') {
+  if (!META.TOKEN || !META.PHONE_ID) return { ok: false, error: 'meta_credentials_missing' };
+  if (!to || !imageUrl) return { ok: false, error: 'missing_to_or_url' };
+  try {
+    const r = await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to: String(to).replace(/^\+/, ''),
+      type: 'image',
+      image: { link: imageUrl, caption: caption || '' },
+    });
+    return { ok: true, msgId: r.data?.messages?.[0]?.id };
+  } catch (err) {
+    const e = err.response?.data || err.message;
+    console.error('[wa-adapter] image_send_failed:', typeof e === 'string' ? e : JSON.stringify(e));
+    return { ok: false, error: typeof e === 'string' ? e : JSON.stringify(e) };
+  }
+}
+
+/**
+ * Envía un video desde URL pública por WhatsApp.
+ * Espeja waSendVideoUrl de index.js ~L4312.
+ */
+export async function sendWhatsAppVideoUrl(to, videoUrl, caption = '') {
+  if (!META.TOKEN || !META.PHONE_ID) return { ok: false, error: 'meta_credentials_missing' };
+  if (!to || !videoUrl) return { ok: false, error: 'missing_to_or_url' };
+  try {
+    const r = await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to: String(to).replace(/^\+/, ''),
+      type: 'video',
+      video: { link: videoUrl, caption: caption || '' },
+    });
+    return { ok: true, msgId: r.data?.messages?.[0]?.id };
+  } catch (err) {
+    const e = err.response?.data || err.message;
+    console.error('[wa-adapter] video_send_failed:', typeof e === 'string' ? e : JSON.stringify(e));
+    return { ok: false, error: typeof e === 'string' ? e : JSON.stringify(e) };
+  }
+}
+
+/**
+ * Envía un documento PDF desde URL pública por WhatsApp.
+ * Espeja waSendDocumentUrl de index.js ~L4326.
+ */
+export async function sendWhatsAppDocumentUrl(to, docUrl, filename = 'documento.pdf', caption = '') {
+  if (!META.TOKEN || !META.PHONE_ID) return { ok: false, error: 'meta_credentials_missing' };
+  if (!to || !docUrl) return { ok: false, error: 'missing_to_or_url' };
+  try {
+    const r = await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to: String(to).replace(/^\+/, ''),
+      type: 'document',
+      document: { link: docUrl, filename, caption: caption || '' },
+    });
+    return { ok: true, msgId: r.data?.messages?.[0]?.id };
+  } catch (err) {
+    const e = err.response?.data || err.message;
+    console.error('[wa-adapter] doc_send_failed:', typeof e === 'string' ? e : JSON.stringify(e));
+    return { ok: false, error: typeof e === 'string' ? e : JSON.stringify(e) };
+  }
+}
+
 export { META };
+
+/**
+ * Sube un buffer de audio a WhatsApp Media (2-pasos) y devuelve el media_id.
+ * Espeja waUploadAudio del V1 (index.js ~L1949).
+ *
+ * @param {Buffer} audioBuffer
+ * @param {string} mimeType   p.ej. 'audio/ogg; codecs=opus'
+ * @param {string} filename   p.ej. 'reply.ogg'
+ * @returns {Promise<string>} media_id
+ */
+export async function uploadWaAudio(audioBuffer, mimeType, filename) {
+  if (!META.TOKEN || !META.PHONE_ID) {
+    throw new Error('[wa-adapter] uploadWaAudio: meta_credentials_missing');
+  }
+  // form-data: importación dinámica igual que el V1 para compatibilidad CJS/ESM
+  const FormData = (await import('form-data')).default;
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', 'audio');
+  form.append('file', audioBuffer, { filename, contentType: mimeType });
+  const resp = await axiosWA.post(`/${META.PHONE_ID}/media`, form, {
+    headers: form.getHeaders(),
+    timeout: 30000,
+  });
+  const mediaId = resp.data?.id;
+  if (!mediaId) throw new Error('[wa-adapter] uploadWaAudio: no se obtuvo media_id de WhatsApp');
+  return mediaId;
+}
+
+/**
+ * Envía un audio ya subido como nota de voz (voice:true = icono de micrófono).
+ * Espeja waSendAudio+voice del V1 (index.js ~L2196-2208).
+ *
+ * @param {string} to       waId destino
+ * @param {string} mediaId  id devuelto por uploadWaAudio
+ * @param {boolean} [asVoice=true]  true → pttAudio (nota de voz); false → adjunto de audio
+ */
+export async function sendWaAudio(to, mediaId, asVoice = true) {
+  if (!META.TOKEN || !META.PHONE_ID) {
+    throw new Error('[wa-adapter] sendWaAudio: meta_credentials_missing');
+  }
+  const payload = {
+    messaging_product: 'whatsapp',
+    to: String(to).replace(/^\+/, ''),
+    type: 'audio',
+    audio: { id: mediaId },
+  };
+  if (asVoice) {
+    // voice:true hace que WhatsApp lo muestre como nota de voz (PTT)
+    payload.audio.voice = true;
+  }
+  await axiosWA.post(`/${META.PHONE_ID}/messages`, payload);
+}
+
+/**
+ * Sube un buffer de documento (PDF u otro) a WhatsApp Media y devuelve el media_id.
+ * Espeja waSendPdf de index.js ~L4203 (paso 1 de 2).
+ *
+ * @param {Buffer} docBuffer
+ * @param {string} filename   p.ej. 'CM-FR-004-2026-0001.pdf'
+ * @returns {Promise<string>} media_id
+ */
+export async function uploadWaDocument(docBuffer, filename) {
+  if (!META.TOKEN || !META.PHONE_ID) {
+    throw new Error('[wa-adapter] uploadWaDocument: meta_credentials_missing');
+  }
+  const FormData = (await import('form-data')).default;
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', 'document');
+  form.append('file', docBuffer, { filename, contentType: 'application/pdf' });
+  const resp = await axiosWA.post(`/${META.PHONE_ID}/media`, form, {
+    headers: form.getHeaders(),
+    timeout: 30000,
+  });
+  const mediaId = resp.data?.id;
+  if (!mediaId) throw new Error('[wa-adapter] uploadWaDocument: no se obtuvo media_id de WhatsApp');
+  return mediaId;
+}
+
+/**
+ * Envía un documento PDF ya subido como adjunto de WhatsApp.
+ * Espeja waSendPdf de index.js ~L4218 (paso 2 de 2).
+ *
+ * @param {string} to        waId destino (sin '+')
+ * @param {string} mediaId   id devuelto por uploadWaDocument
+ * @param {string} filename  nombre de archivo que verá el receptor
+ * @param {string} [caption] texto que acompaña al documento (opcional)
+ * @returns {Promise<{ ok: boolean, msgId?: string, error?: string }>}
+ */
+export async function sendWaDocument(to, mediaId, filename, caption = '') {
+  if (!META.TOKEN || !META.PHONE_ID) {
+    throw new Error('[wa-adapter] sendWaDocument: meta_credentials_missing');
+  }
+  try {
+    const r = await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to: String(to).replace(/^\+/, ''),
+      type: 'document',
+      document: { id: mediaId, filename, caption: caption || '' },
+    });
+    const msgId = r.data?.messages?.[0]?.id;
+    console.log(`[wa-adapter] document_sent to=${to} file=${filename} msgId=${msgId || '?'}`);
+    return { ok: true, msgId };
+  } catch (err) {
+    const e = err.response?.data || err.message;
+    console.error('[wa-adapter] document_send_failed:', typeof e === 'string' ? e : JSON.stringify(e));
+    return { ok: false, error: typeof e === 'string' ? e : JSON.stringify(e) };
+  }
+}
