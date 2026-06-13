@@ -655,7 +655,8 @@ export function buildSessionContext(state = {}) {
     `Comuna: ${comuna}`,
     `Segmento: ${segmento}`,
     `Dolor / necesidad detectada: ${dolor}`,
-    `Datos confirmados (lockedData, NO volver a preguntar): ${lockedStr}`,
+    `Datos CONFIRMADOS por el cliente (lockedData) — son DEFINITIVOS: NO volver a preguntar y NUNCA cambiarlos`,
+    `  ni reemplazarlos por valores por defecto (ej. si la comuna es Vilcún, jamás la pongas como Temuco): ${lockedStr}`,
   ];
   if (consolidacion) lineas.push(`Resumen consolidado: ${consolidacion}`);
 
