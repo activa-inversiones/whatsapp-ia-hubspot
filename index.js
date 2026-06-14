@@ -4205,12 +4205,29 @@ app.post("/internal/operator-send", async (req, res) => {
   try {
     if (!validInternalOperatorToken(req))
       return res.status(401).json({ ok: false, error: "unauthorized" });
-    const phone = normPhone(req.body?.phone || "");
     const text = String(req.body?.text || "").trim();
     const operatorName =
       String(req.body?.operator_name || "Operador").trim() || "Operador";
-    if (!phone) return res.status(400).json({ ok: false, error: "phone_required" });
     if (!text) return res.status(400).json({ ok: false, error: "text_required" });
+
+    // [2026-06-14] MULTICANAL: si el operador responde a un chat de Instagram/Facebook
+    // DESDE el dashboard, enviar por la API del canal (graph.instagram.com / messenger),
+    // NO por WhatsApp. WhatsApp queda 100% intacto (es el default si no viene channel).
+    const channel = String(req.body?.channel || "whatsapp").toLowerCase();
+    if (channel === "instagram" || channel === "facebook") {
+      const recipientId = String(req.body?.recipient_id || req.body?.phone || "").trim();
+      if (!recipientId) return res.status(400).json({ ok: false, error: "recipient_required" });
+      const r = await multiSend(channel, recipientId, text);
+      if (!r || r.ok === false) {
+        logErr("/internal/operator-send", new Error(`channel_send_failed: ${r && r.error}`));
+        return res.status(502).json({ ok: false, error: (r && r.error) || "channel_send_failed" });
+      }
+      return res.json({ ok: true, sent: true, channel, recipient: recipientId });
+    }
+
+    // WhatsApp (comportamiento original, intacto)
+    const phone = normPhone(req.body?.phone || "");
+    if (!phone) return res.status(400).json({ ok: false, error: "phone_required" });
     const ses = getSession(phone);
     ses.history.push({ role: "assistant", content: text });
     saveSession(phone, ses);

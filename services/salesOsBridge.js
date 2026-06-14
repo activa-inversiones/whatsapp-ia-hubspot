@@ -260,14 +260,17 @@ export async function pushQuoteEvent(payload) {
  * [F2] Timeout 3s — NO puede bloquear el bot
  * Si falla → retorna default seguro (ai sigue respondiendo)
  */
-export async function getConversationControl(externalId) {
+export async function getConversationControl(externalId, channel = null) {
   // Sin config o sin ID → default seguro
   if (!operatorEnabled() || !externalId) {
     return { ai_paused: false, operator_status: "ai" };
   }
 
+  // [2026-06-14] Pasar canal: para IG/FB el control vive en la fila de ese canal.
+  // Sin canal, el lado sales-os podía leer una fila fantasma whatsapp con el mismo id.
+  const qs = channel ? `?channel=${encodeURIComponent(channel)}` : "";
   const res = await request(
-    `/internal/conversation-control/${encodeURIComponent(externalId)}`,
+    `/internal/conversation-control/${encodeURIComponent(externalId)}${qs}`,
     {
       method: "GET",
       token: SALES_OS_OPERATOR_TOKEN,

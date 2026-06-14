@@ -103,7 +103,8 @@ export async function handleChannelTurn(
     const convKey = `${channel}:${senderId}`;
 
     // ── Conversation control — respetar takeover humano (fail-safe a 'ai') ─
-    const control = await safe('control', () => bridge.getConversationControl(senderId));
+    // Pasamos el canal: el control del chat IG/FB vive en la fila de ESE canal.
+    const control = await safe('control', () => bridge.getConversationControl(senderId, channel));
     const aiPaused =
       !!control &&
       (control.ai_paused === true ||
