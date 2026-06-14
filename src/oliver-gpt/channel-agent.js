@@ -51,6 +51,10 @@ const MAX_HISTORY = 40;
  * se perdía contexto (ej: la medida o "proyectante"). Porteado de webhook.js.
  * ========================================================================= */
 const LOCKS = new Map();
+// [2026-06-14] Cache del último control conocido por convKey. Si la lectura de control
+// FALLA (sales-os caído) mientras un operador tenía el takeover, usamos esto para NO pisar
+// al operador (fail-closed hacia el humano SOLO en IG/FB; WhatsApp mantiene su fail-open).
+const CONTROL_CACHE = new Map();
 async function acquireLock(key, locks = LOCKS) {
   const prev = locks.get(key) || Promise.resolve();
   let release;
@@ -129,10 +133,24 @@ export async function handleChannelTurn(
     // ── Conversation control — respetar takeover humano (fail-safe a 'ai') ─
     // Pasamos el canal: el control del chat IG/FB vive en la fila de ESE canal.
     const control = await safe('control', () => bridge.getConversationControl(senderId, channel));
+    // [2026-06-14] Fail-CLOSED hacia el operador: si la lectura falló (null por excepción o
+    // _error del bridge) y la última vez vimos takeover humano, NO dejamos que el bot responda
+    // encima del operador. Si la lectura fue exitosa, cacheamos el estado.
+    let effectiveControl = control;
+    if (!control || control._error) {
+      const cached = CONTROL_CACHE.get(convKey);
+      if (cached && (cached.ai_paused === true || (cached.operator_status && cached.operator_status !== 'ai'))) {
+        effectiveControl = { ai_paused: true, operator_status: cached.operator_status || 'human', _fromCache: true };
+        log('info', 'control.failclosed', `control no disponible; respeto takeover cacheado para ${convKey}`);
+      }
+    } else {
+      CONTROL_CACHE.set(convKey, { ai_paused: control.ai_paused === true, operator_status: control.operator_status || 'ai' });
+      if (CONTROL_CACHE.size > 5000) CONTROL_CACHE.clear();
+    }
     const aiPaused =
-      !!control &&
-      (control.ai_paused === true ||
-        (control.operator_status && control.operator_status !== 'ai'));
+      !!effectiveControl &&
+      (effectiveControl.ai_paused === true ||
+        (effectiveControl.operator_status && effectiveControl.operator_status !== 'ai'));
     if (aiPaused) {
       await safe('control.persistInbound', () =>
         bridge.pushConversationEvent({
@@ -233,8 +251,14 @@ export async function handleChannelTurn(
         }),
     };
 
-    // ── Llamada al cerebro probado ──────────────────────────────────────
-    const turn = await handleTurn({ history, userText: text, state, toolCtx });
+    // ── Llamada al cerebro probado (con presupuesto de latencia por turno) ──
+    // [2026-06-14] Si el turno se cuelga (ej: 429 acumulados de OpenAI), no dejamos al
+    // cliente esperando minutos: a los TURN_TIMEOUT_MS lanzamos → catch → fallback amable.
+    const TURN_TIMEOUT_MS = Number(process.env.CHANNEL_TURN_TIMEOUT_MS) || 50000;
+    const turn = await Promise.race([
+      handleTurn({ history, userText: text, state, toolCtx }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('turn_timeout')), TURN_TIMEOUT_MS)),
+    ]);
     const reply = turn?.reply || '';
     const newHistory = Array.isArray(turn?.history) ? turn.history : history;
     const newState = turn?.state && typeof turn.state === 'object' ? turn.state : state;

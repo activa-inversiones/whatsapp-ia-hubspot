@@ -278,9 +278,12 @@ export async function getConversationControl(externalId, channel = null) {
     }
   );
 
-  // Cualquier error → default seguro (bot sigue)
+  // Cualquier error → default seguro (bot sigue). [2026-06-14] Marcamos _error:true para
+  // que el caller PUEDA distinguir "control desconocido por fallo" de "control = ai real".
+  // En WhatsApp el caller lo ignora (fail-open por diseño, no bloquear el canal que cobra);
+  // en IG/FB el channel-agent lo usa para no pisar a un operador humano durante una caída.
   if (!res.ok) {
-    return { ai_paused: false, operator_status: "ai" };
+    return { ai_paused: false, operator_status: "ai", _error: true };
   }
 
   return res.json?.control || { ai_paused: false, operator_status: "ai" };
