@@ -298,6 +298,8 @@ import {
   buildLeadPayload as buildMultiChannelPayload,
   registerMultiChannelRoutes,
 } from "./services/multiChannelHandler.js";
+// [2026-06-14] Cerebro de Oliver para IG/FB (mismo handleTurn que WhatsApp, toolCtx adaptado).
+import { handleChannelTurn } from "./src/oliver-gpt/channel-agent.js";
 // [2026-06-13] import de cotizadorWinhouseBridge.js ELIMINADO (pricer cotizador_winhouse muerto). Archivo borrado.
 
 dotenv.config();
@@ -4165,48 +4167,23 @@ app.get("/health", async (_req, res) => {
 // Multi-channel routes (Instagram DM + Facebook Messenger)
 registerMultiChannelRoutes(app, {
   processMessage: async ({ channel, senderId, senderName, text, msgId, sendFn }) => {
-    // Enviar el mensaje al pipeline de Sales-OS para tracking
+    // [2026-06-14] IG/FB ahora pasan por el CEREBRO de Oliver (mismo handleTurn que
+    // WhatsApp) — cotiza CORRECTO vía priceAllEngine. Reemplaza al mini gpt-4o-mini
+    // que solo saludaba y redirigía a WhatsApp (no cotizaba).
+    //
+    // Lead entrante: lo registramos aquí (fire-and-forget) para visibilidad en el
+    // dashboard; el cerebro maneja el resto de persistencia (pushConversationEvent)
+    // y la escalación/lead comercial vía sus tools.
     try {
       const payload = buildMultiChannelPayload(channel, senderId, senderName, text, "inbound", "customer");
-      await pushLeadEvent(payload);
+      pushLeadEvent(payload);
     } catch (e) {
       logErr("multiChannel.push", e);
     }
- 
-    // Respuesta automática del bot (mismo flujo que WhatsApp)
-    // Para IG/FB usamos una respuesta simplificada con IA
-    try {
-      const systemPrompt = `Eres el asistente de Activa Inversiones, fábrica de ventanas PVC termopanel en Temuco.
-Servicios: ventanas, puertas, cierres de terraza, cortinas de cristal, muros cortina, tabiques.
-Comunas: Temuco, Villarrica, Pucón, Padre Las Casas.
-Responde brevemente y amable. Si el cliente quiere cotizar, pídele que nos escriba por WhatsApp al +56 9 8441 2961 para una cotización detallada con nuestro sistema automatizado.
-Si es una consulta simple, responde directamente.`;
- 
-      const aiResp = await openai.chat.completions.create({
-        model: process.env.AI_MODEL || "gpt-4o-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: text },
-        ],
-        max_tokens: 300,
-      });
- 
-      const reply = aiResp.choices?.[0]?.message?.content || "Gracias por contactarnos. Escríbenos al +56 9 8441 2961 por WhatsApp para una atención personalizada.";
- 
-      await sendFn(senderId, reply);
- 
-      // Trackear respuesta del bot
-      const outPayload = buildMultiChannelPayload(channel, senderId, senderName, reply, "outbound", "assistant");
-      await pushLeadEvent(outPayload);
-    } catch (e) {
-      logErr("multiChannel.aiReply", e);
-      // Fallback: respuesta genérica
-      try {
-        await sendFn(senderId, "¡Hola! Gracias por contactarnos. Para una cotización personalizada, escríbenos por WhatsApp al +56 9 8441 2961. ¡Te esperamos!");
-      } catch (e2) {
-        logErr("multiChannel.fallback", e2);
-      }
-    }
+
+    // El cerebro es fail-safe: ante cualquier error responde un fallback amable y
+    // nunca lanza. multiChannelHandler ya envió el 200 a Meta antes de llamar acá.
+    await handleChannelTurn({ channel, senderId, senderName, text, msgId, sendFn });
   },
   waSend,
   logInfo,

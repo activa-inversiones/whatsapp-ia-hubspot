@@ -19,8 +19,13 @@
 const PAGE_TOKEN = process.env.META_PAGE_ACCESS_TOKEN || process.env.WHATSAPP_TOKEN || "";
 const PAGE_ID = process.env.META_PAGE_ID || "";
 const IG_ID = process.env.META_IG_BUSINESS_ID || "";
+// [2026-06-14] API NUEVA de Instagram (graph.instagram.com) con su propio token de larga duración.
+// Antes IG se enviaba por el modelo viejo (graph.facebook.com/{PAGE_ID}) — eso requería vincular
+// la cuenta IG a una Página de FB. El modelo nuevo manda directo con META_IG_ACCESS_TOKEN.
+const IG_TOKEN = process.env.META_IG_ACCESS_TOKEN || PAGE_TOKEN;
 const GRAPH_VER = process.env.META_GRAPH_VERSION || "v22.0";
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VER}`;
+const IG_GRAPH_BASE = `https://graph.instagram.com/${GRAPH_VER}`;
 
 // ═══════════════════════════════════════════════════════════════════
 // 1. DETECTAR CANAL DEL WEBHOOK
@@ -137,11 +142,19 @@ export async function sendMessage(channel, recipientId, text, waSend) {
 
   if (channel === "instagram" || channel === "facebook") {
     try {
-      const resp = await fetch(`${GRAPH_BASE}/${PAGE_ID}/messages`, {
+      // [2026-06-14] Instagram usa la API NUEVA (graph.instagram.com/{ver}/me/messages con IG_TOKEN).
+      // Facebook Messenger sigue con la API vieja (graph.facebook.com/{PAGE_ID}/messages con PAGE_TOKEN).
+      const isIG = channel === "instagram";
+      const url = isIG
+        ? `${IG_GRAPH_BASE}/me/messages`
+        : `${GRAPH_BASE}/${PAGE_ID}/messages`;
+      const token = isIG ? IG_TOKEN : PAGE_TOKEN;
+
+      const resp = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${PAGE_TOKEN}`,
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           recipient: { id: recipientId },
@@ -389,7 +402,7 @@ export function registerMultiChannelRoutes(app, { processMessage, waSend, logInf
       ok: true,
       channels: {
         whatsapp: { active: true, configured: !!process.env.WHATSAPP_TOKEN },
-        instagram: { active: !!IG_ID, configured: !!IG_ID && !!PAGE_TOKEN },
+        instagram: { active: !!IG_ID, configured: !!IG_ID && !!IG_TOKEN },
         facebook: { active: !!PAGE_ID, configured: !!PAGE_ID && !!PAGE_TOKEN },
         web: { active: true, configured: true },
         phone: { active: true, configured: !!process.env.ESCALATION_PHONE },
