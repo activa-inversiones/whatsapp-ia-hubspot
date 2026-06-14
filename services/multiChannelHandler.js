@@ -165,8 +165,13 @@ export async function sendMessage(channel, recipientId, text, waSend) {
 
       const data = await resp.json();
       if (data.error) {
-        console.error(`[multiChannel] Error enviando a ${channel}:`, data.error.message);
-        return { ok: false, error: data.error.message };
+        // [2026-06-14] Ventana de 24h de Meta: code 10 / subcode 2018278 (fuera de la sesión de
+        // mensajería estándar). Lo distinguimos para que el cerebro/operador NO crea que entregó.
+        const code = data.error.code;
+        const sub = data.error.error_subcode;
+        const outsideWindow = code === 10 || sub === 2018278 || sub === 2022;
+        console.error(`[multiChannel] Error enviando a ${channel}:`, data.error.message, outsideWindow ? "(fuera de ventana 24h)" : "");
+        return { ok: false, error: data.error.message, code, error_subcode: sub, outsideWindow };
       }
       return { ok: true, messageId: data.message_id };
     } catch (e) {
@@ -197,10 +202,17 @@ export async function getUserProfile(channel, userId) {
   }
 
   try {
-    const resp = await fetch(`${GRAPH_BASE}/${userId}?fields=name,profile_pic&access_token=${PAGE_TOKEN}`);
+    // [2026-06-14] Instagram usa la API NUEVA (graph.instagram.com + IG_TOKEN). Con el modelo
+    // viejo (graph.facebook.com + PAGE_TOKEN) el IGSID no resolvía → el nombre quedaba vacío
+    // y el lead salía como "IG_<id>". Facebook sigue con la API vieja.
+    const isIG = channel === "instagram";
+    const url = isIG
+      ? `${IG_GRAPH_BASE}/${userId}?fields=name,username&access_token=${IG_TOKEN}`
+      : `${GRAPH_BASE}/${userId}?fields=name,profile_pic&access_token=${PAGE_TOKEN}`;
+    const resp = await fetch(url);
     const data = await resp.json();
     const profile = {
-      name: data.name || "",
+      name: data.name || data.username || "",
       profilePic: data.profile_pic || "",
       channel,
     };
@@ -296,7 +308,7 @@ export function buildLeadPayload(channel, senderId, senderName, text, direction 
  * pero separamos para claridad. Si prefieres unificar, usa detectChannel()
  * dentro del handler /webhook existente.
  */
-export function registerMultiChannelRoutes(app, { processMessage, waSend, logInfo, logErr }) {
+export function registerMultiChannelRoutes(app, { processMessage, waSend, logInfo, logErr, verifySig }) {
   // Verificación de webhook (Meta usa GET para verificar)
   app.get("/webhook/instagram", (req, res) => {
     const VERIFY = process.env.VERIFY_TOKEN;
@@ -317,6 +329,13 @@ export function registerMultiChannelRoutes(app, { processMessage, waSend, logInf
   // Instagram DM webhook
   app.post("/webhook/instagram", async (req, res) => {
     res.sendStatus(200);
+
+    // [2026-06-14 sec] Validar firma de Meta (X-Hub-Signature-256), igual que WhatsApp.
+    // Sin esto, cualquiera con la URL podía inyectar mensajes falsos (gasta IA, ensucia CRM, spamea).
+    if (typeof verifySig === "function" && !verifySig(req)) {
+      logErr("instagram.webhook", new Error("firma_invalida"));
+      return;
+    }
 
     try {
       const normalized = normalizeIncoming(req.body);
@@ -348,6 +367,12 @@ export function registerMultiChannelRoutes(app, { processMessage, waSend, logInf
   // Facebook Messenger webhook
   app.post("/webhook/facebook", async (req, res) => {
     res.sendStatus(200);
+
+    // [2026-06-14 sec] Validar firma de Meta (X-Hub-Signature-256), igual que WhatsApp.
+    if (typeof verifySig === "function" && !verifySig(req)) {
+      logErr("facebook.webhook", new Error("firma_invalida"));
+      return;
+    }
 
     try {
       const normalized = normalizeIncoming(req.body);

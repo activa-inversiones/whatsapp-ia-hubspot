@@ -44,6 +44,25 @@ const SEEN = new Set();
 const SEEN_MAX = 5000;
 const MAX_HISTORY = 40;
 
+/* =========================================================================
+ * MUTEX por canal:sender — serializa turnos concurrentes del mismo cliente
+ * (doble-tap: 2 mensajes seguidos con mid distinto). Sin esto, ambos turnos
+ * leían el MISMO cache y el último conv.set() pisaba el historial del otro →
+ * se perdía contexto (ej: la medida o "proyectante"). Porteado de webhook.js.
+ * ========================================================================= */
+const LOCKS = new Map();
+async function acquireLock(key, locks = LOCKS) {
+  const prev = locks.get(key) || Promise.resolve();
+  let release;
+  const next = new Promise((r) => (release = r));
+  locks.set(key, next);
+  await prev;
+  return () => {
+    release();
+    if (locks.get(key) === next) locks.delete(key);
+  };
+}
+
 function log(level, ctx, msg) {
   const fn = level === 'error' ? console.error : console.log;
   const detail = msg && msg.stack ? msg.stack : msg;
@@ -84,7 +103,9 @@ export async function handleChannelTurn(
   const sendWhatsAppText = deps.sendWhatsAppText || realSendWhatsAppText;
   const conv = deps.conv || CONV;
   const seen = deps.seen || SEEN;
+  const locks = deps.locks || LOCKS;
 
+  let release = null;
   try {
     if (!senderId || !text || !sendFn) {
       return { ok: false, reason: 'inbound_invalido' };
@@ -101,6 +122,9 @@ export async function handleChannelTurn(
     }
 
     const convKey = `${channel}:${senderId}`;
+
+    // ── MUTEX: serializar turnos del mismo sender (doble-tap) antes de leer/escribir cache.
+    release = await acquireLock(convKey, locks);
 
     // ── Conversation control — respetar takeover humano (fail-safe a 'ai') ─
     // Pasamos el canal: el control del chat IG/FB vive en la fila de ESE canal.
@@ -217,8 +241,25 @@ export async function handleChannelTurn(
     const toolCalls = Array.isArray(turn?.toolCalls) ? turn.toolCalls : [];
 
     // ── Enviar respuesta por el canal ───────────────────────────────────
+    // [2026-06-14] Capturamos el resultado: si el envío falla (ej: fuera de la ventana de
+    // 24h de Meta), NO marcamos el outbound como entregado y escalamos a Marcelo para que
+    // atienda al cliente desde el inbox (no se pierde en silencio).
+    let sendResult = null;
     if (reply) {
-      await safe('send', () => sendFn(senderId, reply));
+      sendResult = await safe('send', () => sendFn(senderId, reply));
+    }
+    const delivered = !reply || (sendResult && sendResult.ok !== false);
+    if (reply && !delivered) {
+      const outsideWindow = sendResult && sendResult.outsideWindow;
+      log('error', 'send.failed', `No se entregó a ${convKey}${outsideWindow ? ' (fuera de ventana 24h)' : ''}: ${sendResult && sendResult.error}`);
+      await safe('send.escalate', () =>
+        notifyHighValue(
+          sendWhatsAppText,
+          senderId,
+          { data: { ...newState, canal: channel }, history: newHistory },
+          `[${channel}] ${outsideWindow ? 'fuera de ventana 24h' : 'fallo de envío'} — responder al cliente desde el inbox (ops.activalabs.ai)`
+        )
+      );
     }
 
     // ── Persistencia (inbound + outbound) ───────────────────────────────
@@ -246,7 +287,7 @@ export async function handleChannelTurn(
           actor_name: 'Oliver',
           message_type: 'text',
           body: reply,
-          metadata: { source: 'oliver_gpt_channel' },
+          metadata: { source: 'oliver_gpt_channel', delivered, ...(delivered ? {} : { delivery_error: (sendResult && sendResult.error) || 'send_failed', outside_window: !!(sendResult && sendResult.outsideWindow) }) },
         })
       );
     }
@@ -280,7 +321,11 @@ export async function handleChannelTurn(
       const k = `${channel}:${senderId}`;
       const prev = conv.get(k) || { history: [], state: {} };
       const hist = Array.isArray(prev.history) ? prev.history.slice() : [];
-      if (text) hist.push({ role: 'user', content: text });
+      // Dedupe: no anexar si el último ya es el mismo mensaje del cliente (evita
+      // user-messages duplicados/colgados que rompen la alternancia user/assistant).
+      const last = hist[hist.length - 1];
+      const alreadyThere = last && last.role === 'user' && last.content === text;
+      if (text && !alreadyThere) hist.push({ role: 'user', content: text });
       conv.set(k, {
         history: hist.length > MAX_HISTORY ? hist.slice(-MAX_HISTORY) : hist,
         state: { ...(prev.state || {}), lastMessageAt: Date.now() },
@@ -295,6 +340,9 @@ export async function handleChannelTurn(
       )
     );
     return { ok: false, reason: 'error' };
+  } finally {
+    // Liberar SIEMPRE el candado (cubre returns intermedios y excepciones).
+    if (release) { try { release(); } catch { /* ya liberado */ } }
   }
 }
 

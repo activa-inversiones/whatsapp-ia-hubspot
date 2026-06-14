@@ -183,11 +183,25 @@ async function notifyHighValue(waSendFn, customerPhone, session, reason = "auto"
   const d = session.data || {};
   const emoji = score.tier === "HIGH" ? "🔴" : "🟡";
   const tierLabel = score.tier === "HIGH" ? "ALTO VALOR" : "VALOR MEDIO";
-  
+
+  // [2026-06-14] Canal del lead: para IG/FB el customerPhone es un id de Instagram/Facebook
+  // (16-17 dígitos), NO un teléfono. El channel-agent prefija el motivo con [instagram]/[facebook].
+  // En ese caso NO le decimos a Marcelo "responde directo al <número>" (iría a la nada/a un tercero):
+  // lo mandamos al inbox del canal correcto.
+  const _chMatch = typeof reason === "string" && reason.match(/^\[(instagram|facebook)\]/i);
+  const altChannel = _chMatch ? _chMatch[1].toLowerCase() : null;
+  const chIcon = altChannel === "instagram" ? "📸" : altChannel === "facebook" ? "💬" : "📞";
+  const clienteLine = altChannel
+    ? `${chIcon} Cliente ${altChannel.toUpperCase()} (id ${customerPhone})`
+    : `📞 Cliente: ${customerPhone}`;
+  const responderLine = altChannel
+    ? `📱 Responde desde el inbox: ops.activalabs.ai → Conversaciones → filtro ${altChannel.toUpperCase()}`
+    : `📱 O responde directo al ${customerPhone}`;
+
   const alertMsg = [
     `${emoji} LEAD ${tierLabel} ${emoji}`,
     ``,
-    `📞 Cliente: ${customerPhone}`,
+    clienteLine,
     d.name ? `👤 Nombre: ${d.name}` : "",
     d.comuna ? `📍 Comuna: ${d.comuna}` : "",
     d.grand_total ? `💰 Cotización: $${Number(d.grand_total).toLocaleString("es-CL")} + IVA` : "",
@@ -200,7 +214,7 @@ async function notifyHighValue(waSendFn, customerPhone, session, reason = "auto"
     reason !== "auto" ? `⚡ Motivo: ${reason}` : "",
     ``,
     `👉 Tomar control: ops.activalabs.ai → Conversaciones → TOMAR`,
-    `📱 O responde directo al ${customerPhone}`,
+    responderLine,
   ].filter(Boolean).join("\n");
 
   try {

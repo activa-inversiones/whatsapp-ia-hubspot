@@ -4188,6 +4188,7 @@ registerMultiChannelRoutes(app, {
   waSend,
   logInfo,
   logErr,
+  verifySig, // [2026-06-14 sec] validar firma X-Hub-Signature-256 en IG/FB (paridad con WhatsApp)
 });
 app.get("/webhook", (req, res) => {
   if (req.query["hub.verify_token"] === META.VERIFY)
@@ -4826,7 +4827,7 @@ app.post("/webhook", async (req, res) => {
       })
     );
 
-    const control = await getConversationControl(waId);
+    const control = await getConversationControl(waId, 'whatsapp');
         // [ADMIN] Chequear comando OLIVER IN/OFF o admin
     const adminCmd = parseAdminCmd(userText);
         // [DEBUG] Log del número para ver formato

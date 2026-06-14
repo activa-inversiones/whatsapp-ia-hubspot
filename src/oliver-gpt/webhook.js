@@ -399,7 +399,7 @@ export async function handleWebhook(req, res, deps = {}) {
     // Default seguro: ante fallo del control, getConversationControl ya
     // devuelve { ai_paused:false } (no bloquea). Solo pausamos si lo dice
     // explícitamente.
-    const control = await safe('control', () => bridge.getConversationControl(from));
+    const control = await safe('control', () => bridge.getConversationControl(from, 'whatsapp'));
     const aiPaused =
       !!control &&
       (control.ai_paused === true ||
