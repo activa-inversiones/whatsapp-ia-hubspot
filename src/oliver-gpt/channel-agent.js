@@ -271,6 +271,20 @@ export async function handleChannelTurn(
     return { ok: true, reply };
   } catch (err) {
     log('error', 'handleChannelTurn', err);
+    // [2026-06-14] PRESERVAR CONTEXTO: aunque el turno falló (ej: 429 de OpenAI),
+    // guardamos el mensaje del cliente en la sesión para que el SIGUIENTE turno NO
+    // pierda lo que dijo (ej: "proyectantes"). Sin esto, un turno caído borraba el dato
+    // → Oliver cotizaba el producto equivocado en el turno siguiente.
+    try {
+      const k = `${channel}:${senderId}`;
+      const prev = conv.get(k) || { history: [], state: {} };
+      const hist = Array.isArray(prev.history) ? prev.history.slice() : [];
+      if (text) hist.push({ role: 'user', content: text });
+      conv.set(k, {
+        history: hist.length > MAX_HISTORY ? hist.slice(-MAX_HISTORY) : hist,
+        state: { ...(prev.state || {}), lastMessageAt: Date.now() },
+      });
+    } catch { /* no-op: el preservar contexto nunca debe romper el fallback */ }
     // Fallback amable: el cliente no se queda sin respuesta.
     await safe('send.fallback', () =>
       sendFn(

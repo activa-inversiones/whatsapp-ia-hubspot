@@ -41,6 +41,49 @@ export function getClient() {
   return _client;
 }
 
+/* =========================================================================
+ * RETRY/BACKOFF ante rate-limit (429) y errores transitorios (5xx).
+ * [2026-06-14] En chat asíncrono (IG/WhatsApp) esperar unos segundos y reintentar
+ * es MUCHO mejor que cortar el turno y mandar el fallback genérico (que pierde la
+ * cotización y el contexto). OpenAI dice "try again in Xs"; lo respetamos.
+ * OJO: esto es paliativo — el fix de raíz es subir el tier de OpenAI (TPM 30k es muy
+ * bajo); bajo carga sostenida el retry no alcanza.
+ * ========================================================================= */
+const RETRY_TRIES = Number(process.env.OPENAI_RETRY_TRIES) || 2;        // intento inicial + (tries-1) reintentos
+const RETRY_MAX_WAIT_MS = Number(process.env.OPENAI_RETRY_MAX_WAIT_MS) || 35000;
+
+// Extrae cuánto esperar: header retry-after (seg) o el "try again in 28.958s" del mensaje.
+export function parseRetryAfterMs(err) {
+  const ra = err?.headers?.['retry-after'] || err?.response?.headers?.['retry-after'];
+  if (ra && Number(ra) > 0) return Number(ra) * 1000;
+  const m = String(err?.message || '').match(/try again in ([\d.]+)\s*(ms|s)\b/i);
+  if (m) {
+    const n = parseFloat(m[1]);
+    return m[2].toLowerCase() === 'ms' ? n : n * 1000;
+  }
+  return 0;
+}
+
+export async function withRetry(fn, label = 'openai') {
+  let lastErr;
+  for (let attempt = 1; attempt <= RETRY_TRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const status = err?.status || err?.response?.status;
+      const retriable = status === 429 || status === 500 || status === 502 || status === 503;
+      if (!retriable || attempt === RETRY_TRIES) throw err;
+      let waitMs = parseRetryAfterMs(err);
+      if (!(waitMs > 0)) waitMs = 1000 * 2 ** (attempt - 1); // backoff exponencial si no hay sugerencia
+      waitMs = Math.min(waitMs + 600, RETRY_MAX_WAIT_MS);    // +600ms de colchón para limpiar la ventana
+      console.warn(`[engine] ${label} ${status} — reintento ${attempt}/${RETRY_TRIES - 1} en ${Math.round(waitMs / 1000)}s`);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+  throw lastErr;
+}
+
 /**
  * orchestratorPass1 — Decisión de acciones (tool calling).
  * @param {object} args
@@ -51,7 +94,7 @@ export function getClient() {
  */
 export async function orchestratorPass1({ system, messages = [], tools = [] }) {
   const client = getClient();
-  const r = await client.chat.completions.create({
+  const r = await withRetry(() => client.chat.completions.create({
     model: MODEL(),
     messages: [{ role: 'system', content: system }, ...messages],
     tools,
@@ -59,7 +102,7 @@ export async function orchestratorPass1({ system, messages = [], tools = [] }) {
     parallel_tool_calls: false,
     temperature: 0.3,
     max_tokens: 500,
-  });
+  }), 'pass1');
   const msg = r.choices?.[0]?.message || {};
   return {
     tool_calls: msg.tool_calls || [],
@@ -77,12 +120,12 @@ export async function orchestratorPass1({ system, messages = [], tools = [] }) {
  */
 export async function orchestratorPass2({ system, messages = [] }) {
   const client = getClient();
-  const r = await client.chat.completions.create({
+  const r = await withRetry(() => client.chat.completions.create({
     model: MODEL(),
     messages: [{ role: 'system', content: system }, ...messages],
     temperature: 0.4,
     max_tokens: 350,
-  });
+  }), 'pass2');
   return (r.choices?.[0]?.message?.content || '').trim();
 }
 
