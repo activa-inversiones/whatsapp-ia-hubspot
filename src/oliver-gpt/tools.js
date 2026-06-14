@@ -488,15 +488,55 @@ export async function runTool(name, input = {}, ctx = {}) {
     }
 
     case 'calcular_por_area': {
-      const _ra = await calcularPorArea({
-        tipo: input.tipo,
-        area_m2: input.area_m2,
-        glass_id: input.glass_id,
-        proporcion: input.proporcion,
-        color: input.color,
-        comuna: input.comuna,
-      });
-      return conUnitPrice(_ra, 1); // por área = un ítem; unit_price NETO determinista
+      // [2026-06-14 FIX] Mismo criterio que calcular_cotizacion. El endpoint by-area del
+      // motor cotiza con serie S60 (llamada incompleta, sin serie) → SUB-cotiza ~40%
+      // (VERIFICADO en vivo: corredera 1.5m² da $207k vs $352k correcto). Por eso usamos
+      // calcularPorArea SOLO para DERIVAR ancho×alto desde area+proporcion, y el PRECIO
+      // sale de priceAllEngine (serie SLIDING + hojas + vidrio auto). El LLM no elige vidrio/serie.
+      let _ra;
+      try {
+        _ra = await calcularPorArea({
+          tipo: input.tipo,
+          area_m2: input.area_m2,
+          glass_id: input.glass_id || 34, // vidrio dummy permitido: solo derivamos medidas; el precio se recalcula con priceAllEngine
+          proporcion: input.proporcion,
+          color: input.color,
+          comuna: input.comuna,
+        });
+      } catch (e) {
+        return { ok: false, precio_invalido: true, requiere_revision: true,
+          error: (e && e.message) || 'No se pudo derivar medidas por área; lo revisa un especialista.' };
+      }
+      const dims = _ra?.derived_dimensions || {};
+      const ancho = Number(dims.ancho_mm), alto = Number(dims.alto_mm);
+      if (!_ra?.ok || !(ancho > 0) || !(alto > 0)) {
+        return { ok: false, precio_invalido: true, requiere_revision: true,
+          error: _ra?.error || 'No se pudo derivar medidas por área; lo revisa un especialista.' };
+      }
+      const d = {
+        items: [{ measures: `${ancho}x${alto}`, product: input.tipo, qty: 1, color: input.color || '', ambiente: input.ambiente || '' }],
+        comuna: input.comuna || '',
+        default_color: input.color || '',
+      };
+      const r = await priceAllEngine(d);
+      const it = d.items[0] || {};
+      if (!r.ok || !(Number(it.unit_price) > 0)) {
+        return { ok: false, precio_invalido: true, requiere_revision: true,
+          error: it.price_warning || r.error || 'No se pudo cotizar; lo revisa un especialista.' };
+      }
+      return {
+        ok: true,
+        unit_price: it.unit_price,            // NETO (sin IVA) — camino V1, idéntico a calcular_cotizacion
+        total_neto: it.total_price,
+        cantidad: 1,
+        area_m2: Number(input.area_m2) || _ra.area_m2,
+        medidas_derivadas: `${ancho}x${alto}`,
+        glass_label: it.glass_label,
+        producto_label: it.producto_label,
+        serie: it.serie,
+        referencial: it.referencial || false,
+        _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses precio_por_m2 ni otro campo.',
+      };
     }
 
     case 'generar_link_simulador':
