@@ -246,9 +246,12 @@ export function normalizeIncoming(body) {
   }
 
   const text = extractText(channel, message);
+  // [2026-06-14] Si Meta no manda mid (eventos raros), derivar un id ESTABLE del
+  // timestamp del evento + el texto — NO de Date.now() (que cambiaba en cada reintrega
+  // de Meta y burlaba el dedupe → respuestas duplicadas).
   const msgId = channel === "whatsapp"
     ? message.id
-    : message.mid || `${channel}_${senderId}_${Date.now()}`;
+    : (message.mid || `${channel}_${senderId}_${detected.timestamp || 0}_${(text || "").slice(0, 40)}`);
 
   return {
     ok: true,
