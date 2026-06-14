@@ -20,6 +20,7 @@ import {
   sendWhatsAppDocumentUrl,
 } from '../sales-agent/whatsapp-adapter.js';
 import { generatePremiumQuotePdf } from '../../services/quotePdf.js';
+import { priceAllEngine } from '../../services/enginePricer.js'; // [2026-06-14] pricer completo de V1 (serie SLIDING+hojas+vidrio auto)
 
 // Rango plausible de una ventana/puerta en mm. Fuera de esto = dato dudoso (no cotizar a ciegas).
 const MEDIDA_MIN_MM = 150;
@@ -121,7 +122,8 @@ export const TOOL_DEFS = [
         'listar_vidrios y pasa su glass_id. Nunca pongas tipo:"TERMOPANEL". ' +
         'DEVUELVE el campo "unit_price" (precio unitario NETO, sin IVA): es EXACTAMENTE el ' +
         'valor que debes pasar como unit_price a generar_pdf_cotizacion. NO uses total_con_iva ' +
-        'ni precio_por_m2.',
+        'ni precio_por_m2. EL VIDRIO Y LA SERIE SE ELIGEN SOLOS (por tamaño y ambiente) — NO ' +
+        'pases glass_id ni serie; NO uses listar_vidrios. Solo manda tipo + medidas_texto + (si es baño) ambiente.',
       parameters: {
         type: 'object',
         properties: {
@@ -144,19 +146,18 @@ export const TOOL_DEFS = [
           },
           glass_id: {
             type: 'integer',
-            description:
-              'Id del vidrio (obtenido de listar_vidrios). Obligatorio. ' +
-              'Para termopanel, use el glass_id de un vidrio con is_termopanel=true.',
+            description: 'IGNORADO — el vidrio se elige AUTOMÁTICAMENTE por tamaño/ambiente. No lo pases.',
           },
           serie: {
             type: 'string',
-            description: 'Serie del perfil, p. ej. S60 o SLIDING. Opcional.',
+            description: 'IGNORADO — la serie se elige AUTOMÁTICAMENTE. No la pases.',
           },
           color: { type: 'string', description: 'Color del perfil. Opcional.' },
           comuna: { type: 'string', description: 'Comuna de despacho/instalacion. Opcional.' },
           cantidad: { type: 'integer', description: 'Cantidad de ventanas. Opcional.' },
+          ambiente: { type: 'string', description: 'Recinto de la ventana (ej. "baño", "living"). Opcional pero ÚTIL: si es baño se usa vidrio satén automáticamente.' },
         },
-        required: ['tipo', 'ancho_mm', 'alto_mm', 'glass_id'],
+        required: ['tipo', 'medidas_texto'],
         additionalProperties: false,
       },
     },
@@ -453,22 +454,37 @@ export async function runTool(name, input = {}, ctx = {}) {
       return listarVidrios(input.tipo);
 
     case 'calcular_cotizacion': {
+      // [2026-06-14 FIX RAÍZ] Cotizar vía priceAllEngine (pricer COMPLETO de V1): arma la
+      // llamada CORRECTA al motor — serie SLIDING + hojas + vidrio por área/ambiente + clamp
+      // de medidas. ANTES el cerebro mandaba la llamada incompleta (sin serie) → el motor
+      // cotizaba "Corredera S60" a MITAD de precio ($184k vs $352k correcto). El LLM ya NO
+      // elige vidrio ni serie: lo decide el código battle-tested de V1.
+      // Guard de medidas del cerebro INTACTO (cm/mm determinista + rechaza absurdas/fuera de rango).
       const med = resolverMedidasMm(input);
       if (!med.ok) return med; // medidas fuera de rango → el LLM pide confirmación, no cotiza
-      if (med.corregido) {
-        console.warn(`[tools] medidas corregidas por normMeasures desde "${input.medidas_texto}" → ${med.ancho_mm}x${med.alto_mm} (LLM había pasado ${input.ancho_mm}x${input.alto_mm})`);
+      const qty = Math.max(1, Number(input.cantidad) || 1);
+      const d = {
+        items: [{ measures: `${med.ancho_mm}x${med.alto_mm}`, product: input.tipo, qty, color: input.color || '', ambiente: input.ambiente || '' }],
+        comuna: input.comuna || '',
+        default_color: input.color || '',
+      };
+      const r = await priceAllEngine(d);
+      const it = d.items[0] || {};
+      if (!r.ok || !(Number(it.unit_price) > 0)) {
+        return { ok: false, precio_invalido: true, requiere_revision: true,
+          error: it.price_warning || r.error || 'No se pudo cotizar; lo revisa un especialista.' };
       }
-      const _rc = await calcularCotizacion({
-        tipo: input.tipo,
-        ancho_mm: med.ancho_mm,
-        alto_mm: med.alto_mm,
-        glass_id: input.glass_id,
-        serie: input.serie,
-        color: input.color,
-        comuna: input.comuna,
-        cantidad: input.cantidad,
-      });
-      return conUnitPrice(_rc, input.cantidad); // unit_price NETO determinista (anti doble-IVA)
+      return {
+        ok: true,
+        unit_price: it.unit_price,            // NETO (sin IVA) — camino V1
+        total_neto: it.total_price,
+        cantidad: it.qty || qty,
+        glass_label: it.glass_label,
+        producto_label: it.producto_label,
+        serie: it.serie,
+        referencial: it.referencial || false,
+        _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses otro campo.',
+      };
     }
 
     case 'calcular_por_area': {

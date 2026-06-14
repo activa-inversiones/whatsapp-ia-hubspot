@@ -32,10 +32,15 @@ test("(a) calcular_cotizacion: enum 'tipo' = 5 aperturas, SIN TERMOPANEL", () =>
     [...APERTURAS_ESPERADAS].sort(),
     "el enum debe ser exactamente las 5 aperturas"
   );
-  // glass_id debe ser obligatorio.
+  // [2026-06-14] glass_id YA NO es obligatorio: el vidrio y la serie se eligen SOLOS
+  // (priceAllEngine via area/ambiente). Lo obligatorio ahora es medidas_texto.
   assert.ok(
-    def.function.parameters.required.includes('glass_id'),
-    'glass_id debe ser obligatorio en calcular_cotizacion'
+    def.function.parameters.required.includes('medidas_texto'),
+    'medidas_texto debe ser obligatorio en calcular_cotizacion'
+  );
+  assert.ok(
+    !def.function.parameters.required.includes('glass_id'),
+    'glass_id NO debe ser obligatorio (vidrio automatico)'
   );
 });
 
