@@ -32,6 +32,15 @@ export const APERTURAS = Object.freeze([
 // Familias de vidrio validas para listarVidrios.
 export const FAMILIAS_VIDRIO = Object.freeze(['TERMOPANEL', 'MONOLITICO']);
 
+// [2026-06-14] ALLOWLIST DE VIDRIOS — Oliver SOLO cotiza estos 3 termopaneles DVH
+// (separador Thermoflex), que son los que Activa tiene configurados y vende:
+//   34 = TP-M-4+12+4   (DVH 4+12+4)        $42.679/m2
+//   38 = TP-M-4+12+4S  (DVH 4+12+4 saten)  $50.000/m2
+//   61 = TP-M-5+12+5   (DVH 5+12+5)        $54.306/m2
+// Guard DURO en exigirGlassId(): cualquier otro glass_id se rechaza → el LLM jamas
+// cotiza con un vidrio fuera de catalogo, aunque alucine un id. Editar aqui para cambiar.
+export const ALLOWED_GLASS_IDS = Object.freeze([34, 38, 61]);
+
 class EngineError extends Error {
   constructor(message, { status, body } = {}) {
     super(message);
@@ -69,6 +78,13 @@ function exigirGlassId(glass_id) {
   const n = Number(glass_id);
   if (!Number.isFinite(n) || n <= 0) {
     throw new EngineError(`glass_id invalido: '${glass_id}'.`);
+  }
+  // [2026-06-14] Guard duro: solo los 3 termopaneles DVH configurados.
+  if (!ALLOWED_GLASS_IDS.includes(n)) {
+    throw new EngineError(
+      `glass_id ${n} no permitido. Activa solo cotiza 3 termopaneles DVH: ` +
+      `34 (4+12+4), 38 (4+12+4 saten), 61 (5+12+5).`
+    );
   }
   return n;
 }

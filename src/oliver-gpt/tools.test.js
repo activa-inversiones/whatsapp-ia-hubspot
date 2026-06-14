@@ -66,7 +66,7 @@ test("calcularCotizacion rechaza tipo:'TERMOPANEL' sin tocar la red", async () =
         tipo: 'TERMOPANEL',
         ancho_mm: 1500,
         alto_mm: 1200,
-        glass_id: 44,
+        glass_id: 34,
       }),
     /TERMOPANEL/i
   );
@@ -82,7 +82,7 @@ test('(c) calcularPorArea sin glass_id rechaza', async () => {
 
 // (b) TEST GOLDEN EN VIVO. Si el Engine esta caido, NO falla el suite:
 //     se registra un blocker y el test pasa (no-red), dejando intactos los de enum.
-test('(b) GOLDEN EN VIVO: CORREDERA 1500x1200 glass_id=44 Temuco => ok:true, total>0', async (t) => {
+test('(b) GOLDEN EN VIVO: CORREDERA 1500x1200 glass_id=34 Temuco => ok:true, total>0', async (t) => {
   let res;
   try {
     res = await calcularCotizacion({
