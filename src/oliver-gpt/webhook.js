@@ -92,6 +92,11 @@ const SEEN_MAX = 5000;
  * Porteado de index.js rateOk (~L2525). Map<waId, { n, resetAt }>.
  * ========================================================================= */
 const RATE_MAP = new Map();
+// [2026-06-14] Anti-duplicado de cotización: phone → { quote_number, at }.
+// Evita quemar un correlativo ISO nuevo por doble "confirmo", reintentos o
+// re-cálculo por pérdida de estado (el bug que generó 0003 y 0004 en el mismo chat).
+const RECENT_QUOTES = new Map();
+const QUOTE_DEDUP_MS = 120000; // 2 min
 
 /**
  * Comprueba si el waId está dentro del límite de 18 msg/min.
@@ -573,6 +578,18 @@ export async function handleWebhook(req, res, deps = {}) {
               `PDF abortado: ${itemsBad.length}/${input.items?.length || 0} ítems sin unit_price>0 (posible alucinación de precios)`);
             return { ok: false, reason: 'precios_no_validados', detail: 'unit_price debe venir de calcular_cotizacion, no inventado' };
           }
+
+          // ── GUARD ANTI-DUPLICADO (2026-06-14) ─────────────────────────────
+          // Si ya se generó una cotización para este número en los últimos 2 min,
+          // NO quemar otro correlativo ISO: devolver la existente. Cubre doble
+          // "confirmo", reintentos y re-cálculo por pérdida de estado.
+          const _prevQuote = RECENT_QUOTES.get(from);
+          if (_prevQuote && (Date.now() - _prevQuote.at) < QUOTE_DEDUP_MS) {
+            log('info', 'generarPdf.dedup',
+              `Cotización duplicada evitada para ${from}; reusando ${_prevQuote.quote_number}`);
+            return { ok: true, quote_number: _prevQuote.quote_number, pdf_sent: false, deduped: true };
+          }
+
           // ── Paso 1: Correlativo ISO ──────────────────────────────────────────
           const SALES_OS_URL = (process.env.SALES_OS_URL || '').replace(/\/$/, '');
           const OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || '';
@@ -601,6 +618,10 @@ export async function handleWebhook(req, res, deps = {}) {
             quoteNumber = `CM-FR-004-${yr}-FALLBACK-${seq}`;
             log('error', 'generarPdf.correlativo', `Usando correlativo fallback: ${quoteNumber}`);
           }
+
+          // Correlativo quemado → registrar para el guard anti-duplicado (ver arriba).
+          RECENT_QUOTES.set(from, { quote_number: quoteNumber, at: Date.now() });
+          if (RECENT_QUOTES.size > 500) RECENT_QUOTES.clear(); // backstop de memoria
 
           // ── Paso 2: Generar PDF premium ──────────────────────────────────────
           const clientName  = input.name  || state.name  || 'Cliente';

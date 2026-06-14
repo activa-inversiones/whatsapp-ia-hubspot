@@ -16,7 +16,12 @@ import assert from 'node:assert/strict';
 // Importar los helpers a probar.
 // rateOk y acquireLock viven en webhook.js; los re-exportamos en este test
 // instanciando Maps propios para aislar estado.
-import { resetIfInactive, loadSession, persistSession } from './session-store.js';
+// [2026-06-14] Seteamos env ANTES del import dinámico para que WA_PERSISTENCE_ENABLED
+// evalúe true → los tests de loadSession/persistSession corren hermético (con mock),
+// en vez de saltarse siempre en local (antes nunca cazaban regresiones del contrato).
+process.env.SALES_OS_URL = process.env.SALES_OS_URL || 'http://test.local';
+process.env.SALES_OS_OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || 'test-token';
+const { resetIfInactive, loadSession, persistSession } = await import('./session-store.js');
 
 // ── rateOk — reimplementado inline para testear la lógica pura sin depender
 // del módulo completo webhook.js (que importa openai y otros). Copia exacta
@@ -135,38 +140,26 @@ test('(b) resetIfInactive — maneja state null/undefined sin lanzar', () => {
 test('(c) loadSession — retorna { history, state } al recibir 200 con datos', async () => {
   const stored = {
     history: [{ role: 'user', content: 'hola' }],
-    state:   { name: 'Pedro', comuna: 'Temuco' },
+    // [2026-06-14] El estado del cerebro se persiste en la columna `data` (no `state`).
+    data:    { name: 'Pedro', comuna: 'Temuco' },
   };
   const mockFetch = async () => ({
     ok: true,
     json: async () => ({ session: stored }),
   });
-  // Forzar WA_PERSISTENCE_ENABLED interno: las env vars no están en test.
-  // loadSession revisa el módulo-level WA_PERSISTENCE_ENABLED que evalúa a
-  // false en tests. Lo saltamos inyectando deps.fetchFn y parches de env.
-  // Para probar el parser sin depender de env, llamamos directamente al
-  // helper interno con un WA_PERSISTENCE_ENABLED truthy simulado.
-  // NOTA: en CI con SALES_OS_URL y SALES_OS_OPERATOR_TOKEN seteados, este
-  // test funciona nativamente. En local sin esas vars, se omite limpiamente.
-  if (!process.env.SALES_OS_URL || !process.env.SALES_OS_OPERATOR_TOKEN) {
-    // Saltar sin error si no hay vars de entorno (piloto local sin Postgres).
-    return;
-  }
   const result = await loadSession('56966666666', { fetchFn: mockFetch });
   assert.ok(result, 'debe devolver un objeto (no null)');
   assert.deepEqual(result.history, stored.history);
-  assert.deepEqual(result.state,   stored.state);
+  assert.deepEqual(result.state,   stored.data); // loadSession mapea data → state
 });
 
 test('(c) loadSession — retorna null en 404 (sesión nueva)', async () => {
-  if (!process.env.SALES_OS_URL || !process.env.SALES_OS_OPERATOR_TOKEN) return;
   const mockFetch = async () => ({ ok: false, status: 404 });
   const result = await loadSession('56977777777', { fetchFn: mockFetch });
   assert.equal(result, null, 'debe retornar null en 404');
 });
 
 test('(c) loadSession — retorna null si fetch lanza (red caída)', async () => {
-  if (!process.env.SALES_OS_URL || !process.env.SALES_OS_OPERATOR_TOKEN) return;
   const mockFetch = async () => { throw new Error('Network error'); };
   const result = await loadSession('56988888888', { fetchFn: mockFetch });
   assert.equal(result, null, 'error de red → null (fail-safe)');
@@ -177,7 +170,6 @@ test('(c) loadSession — retorna null si fetch lanza (red caída)', async () =>
  * ========================================================================= */
 
 test('(d) persistSession — invoca PUT con payload correcto', async () => {
-  if (!process.env.SALES_OS_URL || !process.env.SALES_OS_OPERATOR_TOKEN) return;
   const calls = [];
   const mockFetch = async (url, opts) => {
     calls.push({ url, opts });
@@ -195,5 +187,5 @@ test('(d) persistSession — invoca PUT con payload correcto', async () => {
   assert.equal(calls[0].opts.method, 'PUT', 'debe usar método PUT');
   const body = JSON.parse(calls[0].opts.body);
   assert.deepEqual(body.history, session.history);
-  assert.deepEqual(body.state,   session.state);
+  assert.deepEqual(body.data,    session.state); // persistSession envía state como `data`
 });

@@ -48,7 +48,11 @@ export async function loadSession(waId, deps = {}) {
     if (!stored) return null;
     return {
       history: Array.isArray(stored.history) ? stored.history : [],
-      state:   (stored.state && typeof stored.state === 'object') ? stored.state : {},
+      // [2026-06-14 FIX] El estado del cerebro se persiste en la columna `data`.
+      // saveSession (sales-os) solo acepta data+history; NO existe columna `state`.
+      // Antes leíamos stored.state (inexistente) → el state SIEMPRE volvía vacío
+      // (comuna/items/stage se perdían entre turnos → re-saludo y cotización duplicada).
+      state:   (stored.data && typeof stored.data === 'object') ? stored.data : {},
     };
   } catch {
     // Timeout, red caída, sales-os caído → fail-safe, estado vacío
@@ -71,7 +75,10 @@ export function persistSession(waId, session, deps = {}) {
   const fetchFn = deps.fetchFn || fetch;
   const payload = {
     history: session.history || [],
-    state:   session.state   || {},
+    // [2026-06-14 FIX] Mandar el state como `data` → saveSession lo guarda en la
+    // columna `data`. Antes iba como `state`, que saveSession ignoraba (el estado
+    // del cerebro nunca persistía). Espejado en loadSession (lee stored.data).
+    data:    session.state   || {},
   };
   const ctrl  = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), WA_PERSIST_TIMEOUT_MS);
