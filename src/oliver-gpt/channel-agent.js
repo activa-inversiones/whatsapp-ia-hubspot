@@ -181,6 +181,23 @@ export async function handleChannelTurn(
       return { ok: false, reason: 'ai_paused' };
     }
 
+    // ── Comando RESET — el cliente pide empezar de cero. Limpia la sesión (in-memory +
+    //    Postgres) → la próxima conversación arranca con historial vacío (sin re-saludo
+    //    heredado). [2026-06-15] Antes "reset" no limpiaba nada → caía al cerebro y re-saludaba.
+    if (/^\s*reset(ear)?\s*$/i.test(text)) {
+      conv.delete(convKey);
+      persistSession(convKey, { history: [], state: {} });
+      await safe('reset.send', () => sendFn(senderId, 'Listo, partimos de cero 🙌 ¿En qué te ayudo con tus ventanas?'));
+      await safe('reset.persistInbound', () =>
+        bridge.pushConversationEvent({
+          channel, external_id: senderId, direction: 'inbound', actor_type: 'customer',
+          actor_name: senderName || 'Cliente', message_type: 'text', body: text,
+          metadata: { source: 'oliver_gpt_channel', msg_id: msgId, command: 'reset' },
+        }));
+      log('info', 'reset', `sesión ${convKey} reiniciada por comando del cliente`);
+      return { ok: true, reply: 'reset' };
+    }
+
     // ── Hidratar sesión: cache caliente in-memory; si está FRÍA (redeploy de Railway),
     //    se reconstruye desde Postgres (session-store) → Oliver NO pierde el hilo ni
     //    re-saluda a mitad de conversación. [2026-06-14] Cierra el gap in-memory de IG/FB.
