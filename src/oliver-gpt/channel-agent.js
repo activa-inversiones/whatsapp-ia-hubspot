@@ -73,6 +73,28 @@ function isEscalationRequest(text) {
   return false;
 }
 
+// [2026-06-15] Aviso GARANTIZADO al dueño por PLANTILLA de WhatsApp — bypasa la ventana 24h
+// (el mensaje libre solo llega si Marcelo escribió al bot en 24h; la plantilla llega SIEMPRE).
+// Self-call al endpoint /admin/send-template del propio bot (ya usado por el windowOpener; ADMIN_PIN seteado).
+async function sendEscalationTemplate(name, motivo, deps = {}) {
+  const fetchFn = deps.fetchFn || fetch;
+  const PIN = process.env.ADMIN_PIN || process.env.OLIVER_ADMIN_PIN || '';
+  const owner = process.env.OWNER_NOTIFICATION_PHONE || process.env.ESCALATION_PHONE || process.env.MARCELO_PHONE || '56957296035';
+  if (!PIN) return { ok: false, error: 'ADMIN_PIN_missing' };
+  const base = (process.env.SELF_URL || `http://127.0.0.1:${process.env.PORT || 8080}`).replace(/\/$/, '');
+  try {
+    const r = await fetchFn(`${base}/admin/send-template?pin=${encodeURIComponent(PIN)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ template: 'escalamiento_marcelo', phone: owner, customer_name: name || 'Cliente', motivo: (motivo || 'cliente pide hablar con humano').slice(0, 120) }),
+      signal: AbortSignal.timeout(10000),
+    });
+    return await r.json().catch(() => ({ ok: r.ok }));
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 /* =========================================================================
  * MUTEX por canal:sender — serializa turnos concurrentes del mismo cliente
  * (doble-tap: 2 mensajes seguidos con mid distinto). Sin esto, ambos turnos
@@ -247,6 +269,9 @@ export async function handleChannelTurn(
       await safe('escalate.notify', () =>
         notifyHighValue(sendWhatsAppText, senderId, { data: { ...state }, history },
           `[${channel}] cliente pidió hablar con un humano / molesto`));
+      // Aviso GARANTIZADO por plantilla (bypasa ventana 24h → te llega aunque no hayas escrito al bot).
+      await safe('escalate.template', () =>
+        (deps.sendEscalationTemplate || sendEscalationTemplate)(state.name || senderName, `[${channel}] cliente pide hablar con humano`));
       const msg = escalationMessage();
       await safe('escalate.send', () => sendFn(senderId, msg));
       await safe('escalate.persistIn', () => bridge.pushConversationEvent({
