@@ -184,6 +184,82 @@ export async function sendMessage(channel, recipientId, text, waSend) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// 3b. ENTREGAR DOCUMENTO (PDF) POR CANAL — SUBIDA BINARIA  [2026-06-14]
+//     El PDF se sube DIRECTO a Meta (multipart, como WhatsApp) → NUNCA queda en una
+//     URL pública: la competencia no puede ver precios. FB siempre; IG si la cuenta
+//     está ligada a una Página de FB (IG Business). Si falla → el llamador hace fallback
+//     (escala / WhatsApp). PDF ≤ 25 MB, filename ASCII (Meta rechaza no-ASCII).
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Sube un archivo binario a Meta (Attachment Upload API) → attachment_id.
+ * Upload SIEMPRE por graph.facebook.com/{PAGE_ID}/message_attachments con PAGE_TOKEN
+ * (para IG se agrega platform=instagram; requiere la cuenta IG ligada a la Página).
+ * @returns {Promise<{ok:boolean, attachmentId?:string, error?:string}>}
+ */
+export async function uploadChannelMedia(channel, buffer, filename = "documento.pdf", mimeType = "application/pdf") {
+  if (channel !== "instagram" && channel !== "facebook") return { ok: false, error: `canal no soportado: ${channel}` };
+  if (!PAGE_ID || !PAGE_TOKEN) return { ok: false, error: "META_PAGE_ID/META_PAGE_ACCESS_TOKEN no configurados (requeridos para subir adjuntos)" };
+  try {
+    const safeName = String(filename).replace(/[^\x20-\x7E]/g, "_"); // Meta rechaza nombres no-ASCII
+    const form = new FormData();
+    form.append("message", JSON.stringify({ attachment: { type: "file", payload: { is_reusable: false } } }));
+    if (channel === "instagram") form.append("platform", "instagram");
+    form.append("filedata", new Blob([buffer], { type: mimeType }), safeName);
+    const url = `${GRAPH_BASE}/${PAGE_ID}/message_attachments?access_token=${encodeURIComponent(PAGE_TOKEN)}`;
+    const resp = await fetch(url, { method: "POST", body: form });
+    const data = await resp.json();
+    if (data.error || !data.attachment_id) {
+      console.error(`[multiChannel] upload adjunto ${channel}:`, data.error?.message || "sin attachment_id");
+      return { ok: false, error: data.error?.message || "sin attachment_id" };
+    }
+    return { ok: true, attachmentId: data.attachment_id };
+  } catch (e) {
+    console.error(`[multiChannel] upload adjunto ${channel}:`, e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+/**
+ * Entrega un PDF (buffer) por IG/FB: lo sube binario a Meta y lo envía por attachment_id.
+ * NUNCA usa una URL pública. Body IG (graph.instagram.com, SIN messaging_type — IG lo rechaza
+ * con #100) vs FB (graph.facebook.com, con messaging_type:RESPONSE). El caption va como texto aparte.
+ * @returns {Promise<{ok:boolean, messageId?:string, error?:string, outsideWindow?:boolean}>}
+ */
+export async function sendChannelDocument(channel, recipientId, buffer, filename = "cotizacion.pdf", caption = "") {
+  if (channel !== "instagram" && channel !== "facebook") return { ok: false, error: `canal no soportado: ${channel}` };
+  const up = await uploadChannelMedia(channel, buffer, filename, "application/pdf");
+  if (!up.ok) return { ok: false, error: up.error };
+  try {
+    const isIG = channel === "instagram";
+    const url = isIG ? `${IG_GRAPH_BASE}/me/messages` : `${GRAPH_BASE}/${PAGE_ID}/messages`;
+    const token = isIG ? IG_TOKEN : PAGE_TOKEN;
+    const body = {
+      recipient: { id: recipientId },
+      message: { attachment: { type: "file", payload: { attachment_id: up.attachmentId } } },
+    };
+    if (!isIG) body.messaging_type = "RESPONSE"; // solo FB; IG rechaza messaging_type (#100)
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      const code = data.error.code, sub = data.error.error_subcode;
+      const outsideWindow = code === 10 || sub === 2018278 || sub === 2022;
+      console.error(`[multiChannel] Error enviar doc ${channel}:`, data.error.message, outsideWindow ? "(fuera de ventana 24h)" : "");
+      return { ok: false, error: data.error.message, code, error_subcode: sub, outsideWindow };
+    }
+    if (caption) await sendMessage(channel, recipientId, caption, null).catch(() => {});
+    return { ok: true, messageId: data.message_id };
+  } catch (e) {
+    console.error(`[multiChannel] Error enviar doc ${channel}:`, e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // 4. OBTENER PERFIL DEL USUARIO
 // ═══════════════════════════════════════════════════════════════════
 
@@ -445,6 +521,8 @@ export default {
   detectChannel,
   extractText,
   sendMessage,
+  sendChannelDocument,
+  uploadChannelMedia,
   getUserProfile,
   normalizeIncoming,
   buildLeadPayload,

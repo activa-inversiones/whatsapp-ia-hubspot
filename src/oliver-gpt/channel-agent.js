@@ -17,14 +17,14 @@
 //     IG con la API nueva; graph.facebook.com para FB).
 //
 // DEUDA TÉCNICA (paridad con WhatsApp — ver claude-mem obs 2158):
-//   · Sesión in-memory por sender (no persiste entre redeploys). TODO: Postgres.
-//   · Sin media saliente (catálogos/fotos) en IG/FB: Oliver describe por texto u
-//     ofrece WhatsApp. TODO: enviar attachment por la API nueva de IG.
-//   · Sin voz, sin visión/STT de adjuntos entrantes (IG/FB mandan adjuntos como
-//     [attachment]; el cerebro pide describir por texto).
-//   · PDF formal (correlativo ISO) NO se emite por IG/FB: se ofrece por WhatsApp
-//     y se escala a Marcelo (decisión del dueño 2026-06-14: el flujo ISO/PDF vive
-//     en WhatsApp, que es el que funciona; no arriesgar el camino que cobra).
+//   · [2026-06-14] Sesión: cache in-memory + persistencia en Postgres (session-store) →
+//     sobrevive redeploys. ✔ resuelto.
+//   · [2026-06-14] PDF formal (folio ISO CM-FR-004) SÍ se emite y entrega por IG/FB:
+//     subida BINARIA a Meta (sin URL pública → los precios NO quedan expuestos). FB siempre;
+//     IG si la cuenta está ligada a una Página de FB. Si el envío del archivo falla → se escala
+//     a Marcelo (no se pierde el lead, no se expone nada). ✔ resuelto.
+//   · Sin media SALIENTE rica (catálogos/fotos) en IG/FB ni voz/visión/STT de adjuntos
+//     ENTRANTES: el cerebro describe por texto o pide reescribir. TODO.
 //
 // ESM, Node 18+.
 
@@ -32,7 +32,10 @@ import { handleTurn as realHandleTurn } from './agent.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
 import * as realBridge from '../../services/salesOsBridge.js';
 import { sendWhatsAppText as realSendWhatsAppText } from '../sales-agent/whatsapp-adapter.js';
-import { resetIfInactive } from './session-store.js';
+import { loadSession as realLoadSession, persistSession as realPersistSession, resetIfInactive } from './session-store.js';
+import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
+import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote } from '../../services/zohoCommercial.js';
+import { sendChannelDocument as realSendChannelDocument } from '../../services/multiChannelHandler.js';
 
 /* =========================================================================
  * ESTADO IN-MEMORY (piloto) — por canal+sender.
@@ -43,6 +46,10 @@ const CONV = new Map();
 const SEEN = new Set();
 const SEEN_MAX = 5000;
 const MAX_HISTORY = 40;
+// [2026-06-14] Guard anti-doble-folio por canal:sender — un lead NO quema 2 correlativos ISO
+// en la misma ventana (doble "confirmo", reintentos, re-cálculo). Mismo patrón que webhook.js.
+const RECENT_QUOTES = new Map();
+const QUOTE_DEDUP_MS = Number(process.env.QUOTE_DEDUP_MS) || 120000; // 2 min
 
 /* =========================================================================
  * MUTEX por canal:sender — serializa turnos concurrentes del mismo cliente
@@ -105,6 +112,12 @@ export async function handleChannelTurn(
   const bridge          = deps.bridge          || realBridge;
   const notifyHighValue = deps.notifyHighValue || realNotifyHighValue;
   const sendWhatsAppText = deps.sendWhatsAppText || realSendWhatsAppText;
+  const generatePdf           = deps.generatePdf           || realGeneratePdf;
+  const upsertZohoDeal        = deps.upsertZohoDeal         || realUpsertZohoDeal;
+  const addZohoNote           = deps.addZohoNote            || realAddZohoNote;
+  const sendChannelDocument   = deps.sendChannelDocument   || realSendChannelDocument;
+  const loadSession           = deps.loadSession            || realLoadSession;
+  const persistSession        = deps.persistSession         || realPersistSession;
   const conv = deps.conv || CONV;
   const seen = deps.seen || SEEN;
   const locks = deps.locks || LOCKS;
@@ -168,8 +181,14 @@ export async function handleChannelTurn(
       return { ok: false, reason: 'ai_paused' };
     }
 
-    // ── Hidratar sesión (cache caliente in-memory) ──────────────────────
-    const cached = conv.get(convKey) || { history: [], state: {} };
+    // ── Hidratar sesión: cache caliente in-memory; si está FRÍA (redeploy de Railway),
+    //    se reconstruye desde Postgres (session-store) → Oliver NO pierde el hilo ni
+    //    re-saluda a mitad de conversación. [2026-06-14] Cierra el gap in-memory de IG/FB.
+    let cached = conv.get(convKey);
+    if (!cached) {
+      const fromStore = await safe('loadSession', () => loadSession(convKey));
+      cached = fromStore || { history: [], state: {} };
+    }
     const history = Array.isArray(cached.history) ? cached.history : [];
     const rawState = cached.state && typeof cached.state === 'object' ? cached.state : {};
     const baseState = resetIfInactive({ ...rawState, lastMessageAt: rawState.lastMessageAt || 0 });
@@ -227,27 +246,130 @@ export async function handleChannelTurn(
         });
       },
 
-      // generarPdf → en IG/FB NO se emite el PDF ISO (el cliente no está en
-      // WhatsApp). Se ESCALA a Marcelo (lead caliente que pidió cotización formal)
-      // y se le indica al cerebro que ofrezca enviar el PDF por WhatsApp.
+      // generarPdf → ENTREGA del PDF ISO en IG/FB (2026-06-14). Reúsa el MISMO flujo que
+      // WhatsApp (folio único CM-FR-004, PDF premium, Zoho CRM, conversión multicanal); solo
+      // cambia el ENVÍO: el PDF se hostea en sales-os (URL pública tokenizada) y se manda por
+      // la API oficial de Meta (type:file). Anti-doble-folio por canal:sender. Si no se puede
+      // entregar (sin URL / fuera de ventana 24h) → escala a Marcelo para que lo mande del inbox.
       generarPdf: (input = {}) =>
         safe('generarPdf', async () => {
-          await safe('generarPdf.notify', () =>
-            notifyHighValue(
-              sendWhatsAppText,
-              senderId,
-              { data: { ...state, ...input }, history },
-              `[${channel}] cliente pidió cotización formal (PDF) — atender por WhatsApp`
-            )
-          );
-          return {
-            ok: false,
-            reason: 'pdf_solo_whatsapp',
-            message:
-              'La cotización formal en PDF te la envío por WhatsApp. ' +
-              '¿Me confirmas tu número de WhatsApp para mandártela? ' +
-              'Mientras, ya te dejo el valor estimado por aquí.',
+          // GUARDIA anti-alucinación: sin unit_price>0 (que viene del motor) NO se genera PDF
+          // ni se quema correlativo. Igual que WhatsApp (webhook.js).
+          const itemsBad = (input.items || []).filter((it) => !(Number(it.unit_price) > 0));
+          if (!input.items?.length || itemsBad.length) {
+            log('error', 'generarPdf.guard', `PDF abortado: ${itemsBad.length}/${input.items?.length || 0} ítems sin unit_price>0`);
+            return { ok: false, reason: 'precios_no_validados',
+              message: 'Necesito calcular bien el precio antes de emitir el PDF formal. Dame un momento.' };
+          }
+
+          // Dedup por TELÉFONO real si lo hay (un lead = un folio aunque pase de IG a WhatsApp);
+          // si no hay teléfono (IG/FB sin número), por canal:sender. [2026-06-14 review]
+          const dedupKey = (input.phone && String(input.phone).replace(/\D/g, '').length >= 8)
+            ? `tel:${String(input.phone).replace(/\D/g, '')}` : convKey;
+          // GUARD anti-doble-folio: un lead = un folio en la ventana de 2 min.
+          const prevQ = RECENT_QUOTES.get(dedupKey);
+          if (prevQ && (Date.now() - prevQ.at) < QUOTE_DEDUP_MS) {
+            log('info', 'generarPdf.dedup', `Cotización duplicada evitada para ${dedupKey}; reusando ${prevQ.quote_number}`);
+            return { ok: true, quote_number: prevQ.quote_number, pdf_sent: false, deduped: true,
+              message: `Ya te emití tu cotización N° ${prevQ.quote_number}.` };
+          }
+
+          const SALES_OS_URL = (process.env.SALES_OS_URL || '').replace(/\/$/, '');
+          const OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || '';
+
+          // Paso 1: correlativo ISO — MISMA fuente única que WhatsApp (un solo folio).
+          let quoteNumber = null;
+          try {
+            const cr = await fetch(`${SALES_OS_URL}/internal/quotes/next-number`, {
+              method: 'POST',
+              headers: { 'x-api-key': OPERATOR_TOKEN, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ tenant_id: 'activa' }),
+              signal: AbortSignal.timeout(8000),
+            });
+            if (cr.ok) { const cj = await cr.json(); quoteNumber = cj.quote_number || cj.number || null; }
+          } catch (err) { log('error', 'generarPdf.correlativo', err); }
+          if (!quoteNumber) {
+            // [2026-06-14 review] El fallback NO inventa un folio fantasma (rompía la trazabilidad
+            // ISO y podía colisionar). Si el contador no responde: NO se emite PDF, se pide reintento
+            // y se escala a Marcelo. Mejor demorar el PDF que quemar un folio no-trazable.
+            log('error', 'generarPdf.correlativo', 'next-number no disponible → no se emite PDF (sin folio fantasma)');
+            await safe('generarPdf.correlativo.escalate', () =>
+              notifyHighValue(sendWhatsAppText, senderId,
+                { data: { ...state, name: input.name || state.name || senderName }, history },
+                `[${channel}] cliente pidió cotización formal pero el correlativo ISO no respondió — atender desde el inbox`));
+            return { ok: false, reason: 'correlativo_no_disponible',
+              message: 'Dame un momentito para emitir tu cotización formal con su folio; si se demora, Marcelo te la hace llegar enseguida.' };
+          }
+          RECENT_QUOTES.set(dedupKey, { quote_number: quoteNumber, at: Date.now() });
+          // Evicción por antigüedad (no clear() ciego, que abría ventana de doble-folio en carga).
+          if (RECENT_QUOTES.size > 500) {
+            const cutoff = Date.now() - QUOTE_DEDUP_MS;
+            for (const [k, v] of RECENT_QUOTES) if (!v || v.at < cutoff) RECENT_QUOTES.delete(k);
+          }
+
+          // Paso 2: PDF premium (mismo generador → folio ISO impreso en el documento).
+          const clientName = input.name || state.name || senderName || 'Cliente';
+          const clientPhone = input.phone || '';
+          const clientComuna = input.comuna || state.comuna || '';
+          const pdfData = {
+            name: clientName, phone: clientPhone, comuna: clientComuna,
+            address: state.address || '',
+            default_color: (input.items?.[0]?.color) || state.default_color || '',
+            items: (input.items || []).map((it) => ({
+              product: it.producto_label || it.product || 'Ventana',
+              producto_label: it.producto_label || it.product || 'Ventana',
+              measures: it.measures || '', color: it.color || '',
+              qty: Number(it.qty) || 1, unit_price: Number(it.unit_price) || 0,
+              glass_label: it.glass_label || 'Termopanel DVH', ambiente: it.ambiente || '',
+            })),
+            quote_num: quoteNumber,
           };
+          const pdfBuffer = await generatePdf(pdfData, quoteNumber);
+
+          // Paso 3: ENTREGAR el PDF por el canal con SUBIDA BINARIA a Meta (sin URL pública →
+          // los precios NUNCA quedan expuestos). FB siempre; IG si la cuenta está ligada a la Página.
+          const filename = `${quoteNumber}.pdf`;
+          const sr = await safe('generarPdf.send', () =>
+            sendChannelDocument(channel, senderId, pdfBuffer, filename, `Cotización ISO N° ${quoteNumber} · Activa Inversiones`));
+          const pdfSent = !!(sr && sr.ok !== false);
+          const outsideWindow = !!(sr && sr.outsideWindow);
+
+          // Paso 4: Zoho CRM (fire-and-forget, channel-agnostic).
+          const grandTotal = Number(input.grand_total) ||
+            (input.items || []).reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0);
+          safe('generarPdf.zoho', async () => {
+            const dealId = await upsertZohoDeal({
+              phone: clientPhone || senderId, name: clientName, comuna: clientComuna,
+              items: input.items || [], grand_total: grandTotal, stageKey: 'propuesta', quote_number: quoteNumber,
+            });
+            if (dealId) await addZohoNote(dealId, `Cotización enviada: ${quoteNumber}`,
+              `PDF enviado al cliente por ${channel}.\nTotal: $${grandTotal.toLocaleString('es-CL')} CLP (IVA incl.)`);
+          });
+
+          // Paso 5: conversión multicanal (anti-cross-inject: canal del lead = el real IG/FB).
+          safe('generarPdf.conversion', () =>
+            bridge.pushQuoteEvent({
+              phone: clientPhone || senderId, channel, customer_name: clientName,
+              amount_total: grandTotal, currency: 'CLP', status: 'sent', quote_number: quoteNumber,
+              fbclid: state.fbclid || null, gclid: state.gclid || null,
+              ttclid: state.ttclid || null, ctwa_clid: state.ctwa_clid || null,
+              payload: { comuna: clientComuna, ctwa_clid: state.ctwa_clid || null,
+                fbclid: state.fbclid || null, gclid: state.gclid || null, ttclid: state.ttclid || null },
+            })
+          );
+
+          // Si NO se entregó el PDF por el canal → escalar a Marcelo (no se pierde en silencio).
+          if (!pdfSent) {
+            await safe('generarPdf.escalate', () =>
+              notifyHighValue(sendWhatsAppText, senderId,
+                { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
+                `[${channel}] PDF ${quoteNumber} no se pudo entregar${outsideWindow ? ' (fuera de ventana 24h)' : ''} — enviarlo desde el inbox (ops.activalabs.ai)`));
+            return { ok: true, quote_number: quoteNumber, pdf_sent: false,
+              message: `Te preparé tu cotización formal N° ${quoteNumber}. Si no la ves acá en un momento, Marcelo te la hace llegar enseguida.` };
+          }
+
+          return { ok: true, quote_number: quoteNumber, pdf_sent: true,
+            message: `Listo ✅ Te envié tu cotización formal N° ${quoteNumber} acá mismo (PDF). Cualquier duda la vemos.` };
         }),
     };
 
@@ -327,12 +449,11 @@ export async function handleChannelTurn(
       );
     }
 
-    // ── Guardar cache actualizado ───────────────────────────────────────
+    // ── Guardar cache actualizado (hot in-memory + Postgres para sobrevivir redeploys) ──
     const trimmed = newHistory.length > MAX_HISTORY ? newHistory.slice(-MAX_HISTORY) : newHistory;
-    conv.set(convKey, {
-      history: trimmed,
-      state: { ...newState, lastMessageAt: Date.now() },
-    });
+    const toStore = { history: trimmed, state: { ...newState, lastMessageAt: Date.now() } };
+    conv.set(convKey, toStore);
+    persistSession(convKey, toStore); // fire-and-forget; no-op si no hay SALES_OS_URL/token
 
     return { ok: true, reply };
   } catch (err) {
@@ -350,10 +471,12 @@ export async function handleChannelTurn(
       const last = hist[hist.length - 1];
       const alreadyThere = last && last.role === 'user' && last.content === text;
       if (text && !alreadyThere) hist.push({ role: 'user', content: text });
-      conv.set(k, {
+      const errStore = {
         history: hist.length > MAX_HISTORY ? hist.slice(-MAX_HISTORY) : hist,
         state: { ...(prev.state || {}), lastMessageAt: Date.now() },
-      });
+      };
+      conv.set(k, errStore);
+      persistSession(k, errStore); // preserva contexto entre redeploys aun en error
     } catch { /* no-op: el preservar contexto nunca debe romper el fallback */ }
     // Fallback amable: el cliente no se queda sin respuesta.
     await safe('send.fallback', () =>
