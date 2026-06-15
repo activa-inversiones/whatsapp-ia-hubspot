@@ -107,6 +107,42 @@ async function sendEscalationTemplate(name, motivo, deps = {}) {
   }
 }
 
+// [2026-06-15] ENTREGA DETERMINISTA DEL PDF — el PDF es la FORMALIDAD (dar solo el precio en texto = perder
+// al cliente por informalidad). No puede depender de que el LLM llame generar_pdf_cotizacion (en prod a veces
+// escribía "[Enlace a la cotización]" sin llamarla → el PDF no llegaba). Capturamos los ítems con precio REAL
+// del motor (de calcular_cotizacion) y, al confirmar, disparamos el PDF en código.
+function isPdfAffirmative(text) {
+  const t = String(text || '').trim().toLowerCase();
+  if (/\b(env[ií]a(mela|melo|la|lo)?|m[aá]nda(mela|melo|la|lo)?|quiero (el|la|mi) (pdf|cotiza|propuesta)|el pdf|la propuesta formal)\b/.test(t)) return true;
+  // afirmación corta — solo cuenta si el bot venía OFRECIENDO el PDF (ver lastAssistantOfferedPdf).
+  return /^(s[ií]|ok(ey)?|dale|ya|perfecto|listo|de acuerdo|claro|por ?fa(vor)?|bueno|obvio|as[ií] es|s[ií]\s*por ?favor)[\s.!👍🙌✅]*$/.test(t);
+}
+function lastAssistantOfferedPdf(history) {
+  for (let i = (history || []).length - 1; i >= 0; i--) {
+    const m = history[i];
+    if (m && m.role === 'assistant') {
+      return /\bpdf\b|propuesta formal|cotizaci[oó]n formal|te (la |lo )?env[ií]o|enviar(te)? (la|el)|¿te (gustar[ií]a|env[ií]o)|mando la propuesta/i.test(String(m.content || ''));
+    }
+  }
+  return false;
+}
+function itemsFromQuoteCalls(toolCalls, defaultColor) {
+  return (toolCalls || [])
+    .filter(t => (t.name === 'calcular_cotizacion' || t.name === 'calcular_por_area') && t.result && t.result.ok && Number(t.result.unit_price) > 0)
+    .map(t => ({
+      product: t.result.producto_label || t.input?.tipo || 'Ventana',
+      producto_label: t.result.producto_label || t.input?.tipo || 'Ventana',
+      measures: t.input?.medidas_texto || t.input?.measures || t.result?.medidas_derivadas ||
+        ((t.input?.ancho_mm && t.input?.alto_mm) ? `${t.input.ancho_mm}x${t.input.alto_mm}` : ''),
+      color: t.input?.color || defaultColor || '',
+      qty: Number(t.result.cantidad) || Number(t.input?.cantidad) || 1,
+      unit_price: Number(t.result.unit_price) || 0,
+      glass_label: t.result.glass_label || 'Termopanel DVH',
+      ambiente: t.input?.ambiente || '',
+    }))
+    .filter(it => Number(it.unit_price) > 0);
+}
+
 /* =========================================================================
  * MUTEX por canal:sender — serializa turnos concurrentes del mismo cliente
  * (doble-tap: 2 mensajes seguidos con mid distinto). Sin esto, ambos turnos
@@ -478,6 +514,39 @@ export async function handleChannelTurn(
         }),
     };
 
+    // ── ENTREGA DETERMINISTA DEL PDF (crítica, NO depende del LLM) ───────
+    // [2026-06-15] Si el cliente CONFIRMA tras una cotización ya lista (state.pending_quote, capturada
+    // del turno anterior), mandamos el PDF en CÓDIGO. El PDF es la formalidad: dar solo el precio en texto
+    // pierde al cliente. En prod el LLM a veces escribía "[Enlace a la cotización]" sin llamar la tool.
+    if (state.pending_quote && Array.isArray(state.pending_quote.items) && state.pending_quote.items.length
+        && isPdfAffirmative(text) && lastAssistantOfferedPdf(history)) {
+      const pq = state.pending_quote;
+      const pdfRes = await safe('pdf.deterministic', () => toolCtx.generarPdf({
+        name: state.name || senderName, phone: state.telefono || '', comuna: state.comuna || '',
+        items: pq.items, grand_total: pq.grand_total,
+      }));
+      const replyMsg = (pdfRes && pdfRes.message) ||
+        `Listo ✅ Te envié tu cotización formal${pdfRes?.quote_number ? ` N° ${pdfRes.quote_number}` : ''} acá mismo (PDF).`;
+      await safe('pdf.send', () => sendFn(senderId, replyMsg));
+      await safe('pdf.persistIn', () => bridge.pushConversationEvent({
+        channel, external_id: senderId, direction: 'inbound', actor_type: 'customer',
+        actor_name: senderName || 'Cliente', message_type: 'text', body: text,
+        metadata: { source: 'oliver_gpt_channel', msg_id: msgId, pdf_confirm: true },
+      }));
+      await safe('pdf.persistOut', () => bridge.pushConversationEvent({
+        channel, external_id: senderId, direction: 'outbound', actor_type: 'ai',
+        actor_name: 'Oliver', message_type: 'text', body: replyMsg,
+        metadata: { source: 'oliver_gpt_channel', pdf_deterministic: true, quote_number: pdfRes?.quote_number },
+      }));
+      const histPdf = [...history, { role: 'user', content: text }, { role: 'assistant', content: replyMsg }];
+      const toStorePdf = { history: histPdf.length > MAX_HISTORY ? histPdf.slice(-MAX_HISTORY) : histPdf,
+                           state: { ...state, pending_quote: null, lastMessageAt: Date.now() } };
+      conv.set(convKey, toStorePdf);
+      persistSession(convKey, toStorePdf);
+      log('info', 'pdf.deterministic', `PDF determinista para ${convKey} (${pdfRes?.quote_number || 'sin folio'})`);
+      return { ok: true, reply: replyMsg };
+    }
+
     // ── Llamada al cerebro probado (con presupuesto de latencia por turno) ──
     // [2026-06-14] Si el turno se cuelga (ej: 429 acumulados de OpenAI), no dejamos al
     // cliente esperando minutos: a los TURN_TIMEOUT_MS lanzamos → catch → fallback amable.
@@ -490,6 +559,17 @@ export async function handleChannelTurn(
     const newHistory = Array.isArray(turn?.history) ? turn.history : history;
     const newState = turn?.state && typeof turn.state === 'object' ? turn.state : state;
     const toolCalls = Array.isArray(turn?.toolCalls) ? turn.toolCalls : [];
+
+    // Capturar la cotización (ítems con precio REAL del motor) para la ENTREGA DETERMINISTA del PDF al
+    // confirmar (ver arriba). Solo se actualiza si este turno cotizó; si no, se conserva la anterior.
+    const _quoteItems = itemsFromQuoteCalls(toolCalls, newState.default_color || state.default_color);
+    if (_quoteItems.length) {
+      newState.pending_quote = {
+        items: _quoteItems,
+        grand_total: _quoteItems.reduce((s, it) => s + it.unit_price * (Number(it.qty) || 1), 0),
+        at: Date.now(),
+      };
+    }
 
     // ── Enviar respuesta por el canal ───────────────────────────────────
     // [2026-06-14] Capturamos el resultado: si el envío falla (ej: fuera de la ventana de

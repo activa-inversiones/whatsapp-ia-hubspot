@@ -183,3 +183,28 @@ test('NO escala una cotización normal (sin falsos positivos)', async () => {
   assert.equal(llmCalled, 1, 'una cotización normal SÍ pasa por el cerebro');
   assert.equal(log.escalations, 0);
 });
+
+test('PDF DETERMINISTA: cotiza → "ok envíamela" entrega el PDF en código (sin que el LLM lo llame)', async () => {
+  stubFetch('CM-FR-004-2026-0030');
+  const conv = new Map();
+  // Turno 1: el cerebro cotiza (calcular_cotizacion) y OFRECE el PDF.
+  const htCotiza = async () => ({
+    reply: '¿Te gustaría que te envíe la propuesta formal en PDF?',
+    history: [{ role: 'user', content: 'cotiza' }, { role: 'assistant', content: '¿Te gustaría que te envíe la propuesta formal en PDF?' }],
+    state: {},
+    toolCalls: [{ name: 'calcular_cotizacion',
+      input: { tipo: 'corredera', medidas_texto: '1200x1000', cantidad: 4, color: 'blanco' },
+      result: { ok: true, unit_price: 324573, cantidad: 4, glass_label: '4+12+4', producto_label: 'Corredera SLIDING H80' } }],
+  });
+  const { deps: d1, log: log1 } = mkDeps({ handleTurn: htCotiza, conv });
+  await handleChannelTurn({ channel: 'instagram', senderId: 'IG_pdf', text: 'cotiza corredera 1.2x1.0 4 unidades', msgId: 'q1', sendFn: async () => ({ ok: true }) }, d1);
+  assert.equal(log1.attachments.length, 0, 'turno 1 (cotización) NO manda PDF todavía');
+
+  // Turno 2: el cliente CONFIRMA → el PDF se entrega DETERMINISTA, sin pasar por el LLM.
+  let llm2 = 0;
+  const { deps: d2, log: log2 } = mkDeps({ handleTurn: async () => { llm2++; return { reply: 'NO_DEBERIA', history: [], state: {}, toolCalls: [] }; }, conv });
+  const out2 = await handleChannelTurn({ channel: 'instagram', senderId: 'IG_pdf', text: 'ok envíamela', msgId: 'q2', sendFn: async () => ({ ok: true }) }, d2);
+  assert.equal(llm2, 0, 'la entrega del PDF NO pasa por el LLM');
+  assert.equal(log2.attachments.length, 1, 'el PDF SE entrega al confirmar');
+  assert.match(out2.reply, /CM-FR-004-2026-0030/, 'con el folio ISO real');
+});
