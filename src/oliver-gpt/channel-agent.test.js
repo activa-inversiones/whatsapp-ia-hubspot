@@ -155,3 +155,31 @@ test('sesión fría (redeploy): hidrata desde Postgres → recibe historial prev
   assert.equal(loaded, 1);
   assert.ok(captured[0].length >= 2);
 });
+
+test('ESCALACIÓN DETERMINISTA: "quiero hablar con marcelo" → avisa + mensaje fijo, SIN pasar por el LLM', async () => {
+  let llmCalled = 0;
+  const { deps, log } = mkDeps({ handleTurn: async () => { llmCalled++; return { reply: 'NO_DEBERIA', history: [], state: {}, toolCalls: [] }; } });
+  const out = await handleChannelTurn({ channel: 'instagram', senderId: 'IG_esc', text: 'Quiero hablar con Marcelo', msgId: 'esc1', sendFn: async () => ({ ok: true }) }, deps);
+  assert.equal(llmCalled, 0, 'la escalación NO pasa por el LLM');
+  assert.ok(log.escalations >= 1, 'avisa a Marcelo SIEMPRE');
+  assert.match(out.reply, /\+56 9 5729 6035/, 'incluye el número directo');
+  assert.match(out.reply, /Marcelo Cifuentes/);
+  assert.doesNotMatch(out.reply, /notificar_marcelo/, 'NUNCA filtra el nombre de la tool');
+});
+
+test('ESCALACIÓN: "Escala estoy enojado" también dispara escalación determinista', async () => {
+  let llmCalled = 0;
+  const { deps, log } = mkDeps({ handleTurn: async () => { llmCalled++; return { reply: 'x', history: [], state: {}, toolCalls: [] }; } });
+  const out = await handleChannelTurn({ channel: 'facebook', senderId: 'FB_ang', text: 'Escala estoy enojado', msgId: 'esc2', sendFn: async () => ({ ok: true }) }, deps);
+  assert.equal(llmCalled, 0);
+  assert.ok(log.escalations >= 1);
+  assert.match(out.reply, /\+56 9 5729 6035/);
+});
+
+test('NO escala una cotización normal (sin falsos positivos)', async () => {
+  let llmCalled = 0;
+  const { deps, log } = mkDeps({ handleTurn: async () => { llmCalled++; return { reply: 'cotizando', history: [], state: {}, toolCalls: [] }; } });
+  await handleChannelTurn({ channel: 'instagram', senderId: 'IG_norm', text: 'quiero cotizar una corredera 1.2x1.0 en temuco', msgId: 'n1', sendFn: async () => ({ ok: true }) }, deps);
+  assert.equal(llmCalled, 1, 'una cotización normal SÍ pasa por el cerebro');
+  assert.equal(log.escalations, 0);
+});

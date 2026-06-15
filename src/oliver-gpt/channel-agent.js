@@ -51,6 +51,28 @@ const MAX_HISTORY = 40;
 const RECENT_QUOTES = new Map();
 const QUOTE_DEDUP_MS = Number(process.env.QUOTE_DEDUP_MS) || 120000; // 2 min
 
+// [2026-06-15] ESCALACIÓN DETERMINISTA — no depende del LLM (que en prod a veces respondía el
+// nombre de la tool 'notificar_marcelo' como texto, o no avisaba). La escalación es plata/reputación:
+// se detecta el pedido de humano/molestia en CÓDIGO y se maneja siempre igual (aviso + mensaje fijo).
+const BOOKINGS_URL = () => process.env.MARCELO_BOOKINGS_URL ||
+  'https://outlook.office.com/bookwithme/user/35f7b8685a9041ae951cdb858eea458b@activaspa.cl/meetingtype/oi8VUtFlrEOffOOfJQCRiw2?anonymous&ismsaljsauthenabled&ep=mlink';
+function escalationMessage() {
+  return 'Te entiendo 🙌 Prefiero que te atienda directamente un experto.\n' +
+    'Le avisé al Ing. Marcelo Cifuentes Méndez — Gerente de Ingeniería de Activa, Consultor Externo del ' +
+    'Ministerio de Vivienda y Urbanismo y Evaluador Energético acreditado MINVU (Res. 266/2025). Te contacta personalmente.\n' +
+    '📲 WhatsApp directo: +56 9 5729 6035\n' +
+    '📅 O agenda tú mismo una hora: ' + BOOKINGS_URL();
+}
+function isEscalationRequest(text) {
+  const t = String(text || '').toLowerCase();
+  if (/hablar con (marcelo|un? (humano|persona|asesor|vendedor|ejecutivo)|el? (due[ñn]o|jefe|gerente))/.test(t)) return true;
+  if (/(p[aá]same|comun[ií]came|conect[aá]me) .{0,15}(marcelo|humano|persona|asesor|vendedor|due[ñn]o)/.test(t)) return true;
+  if (/\bescal(a|ar|en|o|ame)\b/.test(t) && /(marcelo|humano|persona|alguien)/.test(t)) return true;
+  if (/(estoy|muy|tan|s[uú]per) (enojad|molest|furios|indignad|frustrad)/.test(t)) return true;
+  if (/\b(reclamo|p[eé]simo servicio|p[eé]sima atenci|estafa)\b/.test(t)) return true;
+  return false;
+}
+
 /* =========================================================================
  * MUTEX por canal:sender — serializa turnos concurrentes del mismo cliente
  * (doble-tap: 2 mensajes seguidos con mid distinto). Sin esto, ambos turnos
@@ -216,6 +238,35 @@ export async function handleChannelTurn(
       name: baseState.name || senderName || '',
       fecha: new Date().toISOString(),
     };
+
+    // ── ESCALACIÓN DETERMINISTA (crítica, NO depende del LLM) ────────────
+    // [2026-06-15] Si el cliente pide humano/Marcelo o está molesto: avisamos SIEMPRE +
+    // mensaje FIJO correcto (nombre+cargo+número+agenda). En prod el LLM a veces respondía
+    // 'notificar_marcelo' como texto o no avisaba → la escalación NO puede depender de eso.
+    if (isEscalationRequest(text)) {
+      await safe('escalate.notify', () =>
+        notifyHighValue(sendWhatsAppText, senderId, { data: { ...state }, history },
+          `[${channel}] cliente pidió hablar con un humano / molesto`));
+      const msg = escalationMessage();
+      await safe('escalate.send', () => sendFn(senderId, msg));
+      await safe('escalate.persistIn', () => bridge.pushConversationEvent({
+        channel, external_id: senderId, direction: 'inbound', actor_type: 'customer',
+        actor_name: senderName || 'Cliente', message_type: 'text', body: text,
+        metadata: { source: 'oliver_gpt_channel', msg_id: msgId, escalation: true },
+      }));
+      await safe('escalate.persistOut', () => bridge.pushConversationEvent({
+        channel, external_id: senderId, direction: 'outbound', actor_type: 'ai',
+        actor_name: 'Oliver', message_type: 'text', body: msg,
+        metadata: { source: 'oliver_gpt_channel', escalation: true },
+      }));
+      const escHist = [...history, { role: 'user', content: text }, { role: 'assistant', content: msg }];
+      const toStore = { history: escHist.length > MAX_HISTORY ? escHist.slice(-MAX_HISTORY) : escHist,
+                        state: { ...state, lastMessageAt: Date.now() } };
+      conv.set(convKey, toStore);
+      persistSession(convKey, toStore);
+      log('info', 'escalate', `escalación determinista para ${convKey}`);
+      return { ok: true, reply: msg };
+    }
 
     // ── toolCtx adaptado al canal IG/FB ─────────────────────────────────
     const toolCtx = {
