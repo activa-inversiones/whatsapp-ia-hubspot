@@ -134,8 +134,10 @@ export async function handleTurn({ history = [], userText, state = {}, toolCtx =
   // ── (e) Red de seguridad anti-voseo antes de devolver ─────────────────────
   reply = sanitizeChilean(reply);
 
-  // El reply final se persiste en el historial in-memory.
-  const newHistory = [...history, userMsg, { role: 'assistant', content: reply }];
+  // El reply final se persiste en el historial. [2026-06-14 FIX re-saludo] Se guarda el userText
+  // LIMPIO (NO userMsg, que lleva el contexto volátil): guardar userMsg llenaba el historial de
+  // bloques "CONTEXTO DE LA SESIÓN" y el cerebro re-saludaba perdiendo el hilo. Honra el comentario L67-69.
+  const newHistory = [...history, { role: 'user', content: userText }, { role: 'assistant', content: reply }];
 
   // ── Hooks de persistencia (opcionales — TODO F4: cablear en producción) ───
   // En el simulador NO se cablean; quedan como puntos de extensión claros.
