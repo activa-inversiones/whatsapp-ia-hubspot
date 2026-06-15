@@ -579,14 +579,23 @@ export async function handleWebhook(req, res, deps = {}) {
             return { ok: false, reason: 'precios_no_validados', detail: 'unit_price debe venir de calcular_cotizacion, no inventado' };
           }
 
-          // ── GUARD ANTI-DUPLICADO (2026-06-14) ─────────────────────────────
-          // Si ya se generó una cotización para este número en los últimos 2 min,
-          // NO quemar otro correlativo ISO: devolver la existente. Cubre doble
-          // "confirmo", reintentos y re-cálculo por pérdida de estado.
+          // ── GUARD ANTI-DUPLICADO (2026-06-14 · v2 2026-06-15) ─────────────
+          // Si ya se generó una cotización IDÉNTICA para este número en los últimos
+          // 2 min, NO quemar otro correlativo ISO: devolver la existente. Cubre doble
+          // "confirmo" y reintentos. FIX 2026-06-15: ahora compara el CONTENIDO — si el
+          // cliente cambió algo (producto, medida, color, total: ej. corredera→abatiente),
+          // NO es duplicado → se regenera el PDF corregido (antes el dedup lo bloqueaba).
+          const _quoteSig = JSON.stringify({
+            items: (input.items || []).map((it) => [
+              it.producto_label || it.product || '', it.measures || '',
+              it.color || '', Number(it.qty) || 1, Number(it.unit_price) || 0,
+            ]),
+            total: Number(input.grand_total) || 0,
+          });
           const _prevQuote = RECENT_QUOTES.get(from);
-          if (_prevQuote && (Date.now() - _prevQuote.at) < QUOTE_DEDUP_MS) {
+          if (_prevQuote && (Date.now() - _prevQuote.at) < QUOTE_DEDUP_MS && _prevQuote.sig === _quoteSig) {
             log('info', 'generarPdf.dedup',
-              `Cotización duplicada evitada para ${from}; reusando ${_prevQuote.quote_number}`);
+              `Cotización IDÉNTICA duplicada evitada para ${from}; reusando ${_prevQuote.quote_number}`);
             return { ok: true, quote_number: _prevQuote.quote_number, pdf_sent: false, deduped: true };
           }
 
@@ -619,8 +628,8 @@ export async function handleWebhook(req, res, deps = {}) {
             log('error', 'generarPdf.correlativo', `Usando correlativo fallback: ${quoteNumber}`);
           }
 
-          // Correlativo quemado → registrar para el guard anti-duplicado (ver arriba).
-          RECENT_QUOTES.set(from, { quote_number: quoteNumber, at: Date.now() });
+          // Correlativo quemado → registrar (con firma de contenido) para el guard anti-duplicado.
+          RECENT_QUOTES.set(from, { quote_number: quoteNumber, at: Date.now(), sig: _quoteSig });
           if (RECENT_QUOTES.size > 500) RECENT_QUOTES.clear(); // backstop de memoria
 
           // ── Paso 2: Generar PDF premium ──────────────────────────────────────
@@ -651,14 +660,40 @@ export async function handleWebhook(req, res, deps = {}) {
           const filename = `${quoteNumber}.pdf`;
           const caption  = `Cotización ISO N° ${quoteNumber} · Activa Inversiones`;
           let waDocMediaId = null;
+          let docSent = false;   // ← refleja el ENVÍO REAL (sendWaDocument.ok), no solo el upload
           try {
             waDocMediaId = await uploadWaDocument(pdfBuffer, filename);
-            await sendWaDocument(from, waDocMediaId, filename, caption);
-            log('info', 'generarPdf.wa', `PDF enviado a ${from} media_id=${waDocMediaId}`);
+            const sendRes = await sendWaDocument(from, waDocMediaId, filename, caption);
+            // sendWaDocument NO lanza: devuelve {ok:false} si Meta rechaza → hay que leerlo.
+            docSent = !!(sendRes && sendRes.ok);
+            if (docSent) {
+              log('info', 'generarPdf.wa', `PDF enviado a ${from} media_id=${waDocMediaId} msgId=${sendRes.msgId || '?'}`);
+            } else {
+              log('error', 'generarPdf.wa', `Documento NO entregado a ${from}: ${sendRes?.error || 'sin detalle'}`);
+            }
           } catch (err) {
             log('error', 'generarPdf.wa', err);
             // No bloqueamos: el CRM/conversión se disparan igualmente.
           }
+
+          // ── Paso 3b: ESPEJO al dashboard (visibilidad del PDF) ───────────────
+          // FIX 2026-06-15: el dashboard solo reflejaba TEXTO → el operador veía "Te envié
+          // el PDF" pero NO el archivo ("no está en ninguna parte"), aunque Meta lo aceptara
+          // (msgId en el log). Ahora empujamos un evento message_type:'document' para que el
+          // PDF SEA VISIBLE en el CRM (Oliver), con el estado real de entrega.
+          safe('generarPdf.mirror', () => bridge.pushConversationEvent({
+            channel:      'whatsapp',
+            external_id:  from,
+            direction:    'outbound',
+            actor_type:   'ai',
+            actor_name:   'Oliver',
+            message_type: 'document',
+            body:         docSent
+              ? `📄 Cotización ${filename} enviada al cliente`
+              : `⚠️ Cotización ${filename} NO se pudo entregar al cliente`,
+            metadata: { source: 'oliver_gpt_pdf', quote_number: quoteNumber, filename,
+                        media_id: waDocMediaId, pdf_sent: docSent },
+          }));
 
           // ── Paso 4: Zoho CRM (Deal upsert + Note) ───────────────────────────
           // Fire-and-forget: si Zoho falla no bloquea el resto del flujo.
@@ -721,7 +756,7 @@ export async function handleWebhook(req, res, deps = {}) {
           return {
             ok: true,
             quote_number: quoteNumber,
-            pdf_sent:     !!waDocMediaId,
+            pdf_sent:     docSent,   // ← entrega REAL (sendWaDocument.ok), no solo el upload
             media_id:     waDocMediaId,
           };
         }),
