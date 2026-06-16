@@ -1123,9 +1123,9 @@ async function sendTemplateInformeDiario(to, fecha = "", resumen = "", linea3 = 
 // cuerpo/botón; acá solo pasamos {{1}} = nombre del cliente. Reabre la ventana de 24h.
 // Palanca #1 del Maps pack (sube en reseñas) + blinda contra reseñas falsas (las diluye).
 async function sendTemplateSolicitudResena(to, nombreCliente = "") {
-  return _sendMetaTemplate(to, "solicitud_resena", "es_CL",
-    nombreCliente ? [{ type: "body", parameters: [{ type: "text", text: nombreCliente }] }] : []
-  );
+  // Plantilla "solicitud_resena" SIN variables (genérica) → robusto: nunca falla por mismatch
+  // de params. (nombreCliente se acepta por compatibilidad pero no se usa.)
+  return _sendMetaTemplate(to, "solicitud_resena", "es_CL", []);
 }
 
 // v11.5-10: LOGGING ESTRUCTURADO de eventos críticos para Optimizer Etapa 2B
