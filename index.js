@@ -1118,6 +1118,16 @@ async function sendTemplateInformeDiario(to, fecha = "", resumen = "", linea3 = 
   );
 }
 
+// [2026-06-16] MÁQUINA DE RESEÑAS — solicitud de reseña Google post-venta.
+// La plantilla Meta "solicitud_resena" (a aprobar) lleva el LINK de reseña FIJO en su
+// cuerpo/botón; acá solo pasamos {{1}} = nombre del cliente. Reabre la ventana de 24h.
+// Palanca #1 del Maps pack (sube en reseñas) + blinda contra reseñas falsas (las diluye).
+async function sendTemplateSolicitudResena(to, nombreCliente = "") {
+  return _sendMetaTemplate(to, "solicitud_resena", "es_CL",
+    nombreCliente ? [{ type: "body", parameters: [{ type: "text", text: nombreCliente }] }] : []
+  );
+}
+
 // v11.5-10: LOGGING ESTRUCTURADO de eventos críticos para Optimizer Etapa 2B
 // Bridge a tabla oliver_events vía /internal/oliver-event/log (a crear en server.js)
 async function logOliverEvent(eventType, payload = {}) {
@@ -4501,8 +4511,12 @@ app.post("/admin/send-template", express.json(), async (req, res) => {
         // FIX 2026-05-23: pasar los 4 params requeridos por Meta
         result = await sendTemplateInformeDiario(phone, fecha, resumen, linea3, linea4);
         break;
+      case "solicitud_resena":
+      case "resena":
+        result = await sendTemplateSolicitudResena(phone, customer_name);
+        break;
       default:
-        return res.status(400).json({ ok: false, error: "unknown_template", available: ["recontacto_lead","seguimiento_cotizacion","confirmacion_cotizacion","envio_cotizacion","bienvenida_activa_inversiones","escalamiento_marcelo","informe_diario"] });
+        return res.status(400).json({ ok: false, error: "unknown_template", available: ["recontacto_lead","seguimiento_cotizacion","confirmacion_cotizacion","envio_cotizacion","bienvenida_activa_inversiones","escalamiento_marcelo","informe_diario","solicitud_resena"] });
     }
 
     fireAndForget("logOliverEvent.template_sent", logOliverEvent("template_sent_admin", { phone, template, ok: result.ok }));
@@ -4539,6 +4553,8 @@ app.post("/admin/send-template-bulk", express.json({ limit: "1mb" }), async (req
         case "envio_cotizacion": single = await sendTemplateEnvioCotizacion(r.phone, r.customer_name); break;
         case "bienvenida_activa_inversiones":
         case "bienvenida": single = await sendTemplateBienvenidaActiva(r.phone, r.customer_name); break;
+        case "solicitud_resena":
+        case "resena": single = await sendTemplateSolicitudResena(r.phone, r.customer_name); break;
         default: single = { ok: false, error: "unknown_template" };
       }
       results.push({ phone: r.phone, ok: single.ok, error: single.error });
