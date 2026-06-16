@@ -4258,6 +4258,27 @@ app.post("/internal/operator-send", async (req, res) => {
 });
 // @patch:sales-os:operator-route:end
 
+// [2026-06-16] Pedir reseña Google al cliente (botón ⭐ del cockpit) → plantilla solicitud_resena.
+app.post("/internal/operator-send-review", async (req, res) => {
+  try {
+    if (!validInternalOperatorToken(req))
+      return res.status(401).json({ ok: false, error: "unauthorized" });
+    const phone = normPhone(req.body?.phone || "");
+    if (!phone) return res.status(400).json({ ok: false, error: "phone_required" });
+    const ses = getSession(phone);
+    const nombre = String(req.body?.customer_name || ses.data?.name || "").trim();
+    const result = await sendTemplateSolicitudResena(phone, nombre);
+    if (!result.ok) {
+      logErr("/internal/operator-send-review", new Error(String(result.error)));
+      return res.status(502).json({ ok: false, error: result.error });
+    }
+    res.json({ ok: true, sent: true, phone, template: "solicitud_resena" });
+  } catch (e) {
+    logErr("/internal/operator-send-review", e);
+    res.status(500).json({ ok: false, error: "operator_send_review_failed" });
+  }
+});
+
 // [FIX P13] Endpoints para que el CRM Oliver envíe media al cliente
 // POST /internal/operator-send-image { phone, image_url, caption }
 app.post("/internal/operator-send-image", async (req, res) => {
