@@ -45,17 +45,26 @@ export function isVisionUnreadable(ext) {
   // 1. Vacío → ilegible.
   if (!t) return true;
 
-  // 2. Frase de rechazo/disculpa → ilegible.
+  // 2. Frase de rechazo/disculpa → ilegible (gana siempre, aunque mencione productos).
   if (REFUSAL_PATTERNS.some((p) => t.includes(p))) return true;
 
-  // 3. Estructural: una lista de productos real trae AL MENOS una medida
-  //    (1234x1000, 210/270, 120×60) o el separador de columnas "|". Si no tiene
-  //    ninguna de las dos, no se parece a una extracción válida → ilegible.
+  // 3. Lista/tabla con medidas (1234x1000, 210/270, 120×60) o columnas "|" → válida.
   const hasMeasure = /\d{2,4}\s*[x×\/]\s*\d{2,4}/.test(t);
   const hasPipe = t.includes('|');
-  if (!hasMeasure && !hasPipe) return true;
+  if (hasMeasure || hasPipe) return false;
 
-  return false;
+  // 4. [FIX 2026-06-18] Foto de VENTANAS/fachada SIN tabla de medidas: si la visión
+  //    DESCRIBE productos del rubro con texto sustancial, es ÚTIL → NO rechazar (el
+  //    cerebro la usa de contexto y pide las medidas que falten). Antes, una foto de
+  //    la casa del cliente (sin números) caía a ilegible y Oliver la rechazaba en loop
+  //    → se perdía al cliente (caso real Villa Ferroviaria, 18-jun: 4 fotos rechazadas).
+  //    "casa/vivienda" NO cuentan como producto (demasiado genérico — preserva el caso
+  //    "una foto de una casa con cosas" → ilegible).
+  const describesProduct = /\b(ventana|ventanal|puerta|corredera|proyectante|abatible|oscilobatiente|termopanel|mampara|cristal|vidrio|celos[ií]a|fijo)\b/.test(t);
+  if (describesProduct && t.length >= 40) return false;
+
+  // 5. Vago / sin productos del rubro y sin medidas → ilegible.
+  return true;
 }
 
 /**

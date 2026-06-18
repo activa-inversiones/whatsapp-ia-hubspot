@@ -51,6 +51,20 @@ test('G2: "NO ESPECIFICADO" en un campo NO marca ilegible (es un valor válido d
   assert.equal(isVisionUnreadable(conFaltante), false, 'una fila con un campo faltante sigue siendo válida');
 });
 
+test('G2 [FIX 18-jun]: foto de ventanas/fachada descrita SIN tabla → LEGIBLE (no perder al cliente que manda foto de su casa)', () => {
+  const utiles = [
+    'Veo una vivienda de fachada clara con dos ventanales tipo corredera grandes en el living, marcos de aluminio antiguos, parecen ir casi del piso al techo',
+    'En la imagen se observan tres ventanas correderas y una puerta de vidrio en lo que parece una cocina',
+    'La foto muestra un dormitorio con una ventana proyectante de PVC blanco',
+  ];
+  for (const v of utiles) {
+    assert.equal(isVisionUnreadable(v), false, `"${v.slice(0, 40)}…" describe ventanas reales → debe ser LEGIBLE`);
+  }
+  // Anti-falso-positivo preservado: vago sin productos del rubro sigue ilegible.
+  assert.equal(isVisionUnreadable('una foto de una casa con cosas'), true);
+  assert.equal(isVisionUnreadable('se ve una construcción cualquiera'), true);
+});
+
 test('G2: el mensaje pide ESCRIBIR las medidas y NO confirma haberlas recibido', () => {
   const msg = imageUnreadableMessage('Dalia');
   assert.match(msg, /no pude leer/i, 'reconoce honestamente que no leyó');
