@@ -16,6 +16,14 @@ test('(a) buildSystemBlocks() NO contiene voseo', () => {
   );
 });
 
+test('[FIX 18-jun] siempre-PDF: obliga PDF en el mismo turno y NO permite precio verbal suelto', () => {
+  const sys = buildSystemBlocks();
+  assert.ok(/EN EL MISMO TURNO/i.test(sys) && /NUNCA PRECIO SUELTO/i.test(sys),
+    'el prompt debe obligar generar el PDF en el mismo turno al cotizar (no dar precio suelto en texto)');
+  assert.ok(!/puede dar un RANGO VERBAL estimado/i.test(sys),
+    'NO debe quedar el permiso viejo de "rango verbal estimado" (era la causa del patrón informal)');
+});
+
 test('(b) buildSystemBlocks() contiene marcadores de áreas clave', () => {
   const sys = buildSystemBlocks();
   for (const marker of ['SPIN', 'B2B', 'MINVU', 'EN 12608', 'objeci', 'escal']) {
