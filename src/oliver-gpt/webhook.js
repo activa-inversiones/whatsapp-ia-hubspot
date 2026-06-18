@@ -59,6 +59,7 @@ import {
 } from './session-store.js';
 import { parseReferral, buildCtwaLeadPayload } from '../../services/ctwaReferral.js'; // [F3b] CTWA
 import { isVisionUnreadable } from '../../services/oliverVision.js'; // [F3b] detector imagen ilegible
+import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from './escalation.js'; // [2026-06-18] escalación determinista compartida
 
 /* =========================================================================
  * CONFIG
@@ -479,6 +480,39 @@ export async function handleWebhook(req, res, deps = {}) {
     // ── (5) MEDIA → userText útil (vision / STT). Resuelve la ceguera V2. ─
     const { userText } = await resolveUserText(inbound, req.body, deps);
     if (!userText) return;
+
+    // ── (5b) ESCALACIÓN DETERMINISTA (no depende del LLM) ────────────────
+    // [2026-06-18] Paridad con IG/FB (channel-agent.js): si el cliente pide humano/Marcelo
+    // o está molesto, avisamos SIEMPRE + mensaje fijo correcto. En prod el LLM a veces NO
+    // escalaba o respondía 'notificar_marcelo' como texto. La escalación es plata/reputación:
+    // se maneja en CÓDIGO, no en el LLM. Mismo módulo compartido que IG/FB.
+    const escalationTemplateFn = deps.sendEscalationTemplate || sendEscalationTemplate;
+    if (isEscalationRequest(userText)) {
+      await safe('escalate.notify', () =>
+        notifyHighValue(sendWhatsAppText, from, { data: { ...state }, history },
+          'cliente pidió hablar con un humano / molesto'));
+      await safe('escalate.template', () =>
+        escalationTemplateFn(state.name || '', 'cliente pide hablar con humano'));
+      const escMsg = escalationMessage();
+      await safe('escalate.send', () => sendWhatsAppText(from, escMsg));
+      await safe('escalate.persistIn', () => bridge.pushConversationEvent({
+        channel: 'whatsapp', external_id: from, direction: 'inbound', actor_type: 'customer',
+        actor_name: 'Cliente', message_type: inbound.type || 'text', body: inbound.text || userText,
+        metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, escalation: true },
+      }));
+      await safe('escalate.persistOut', () => bridge.pushConversationEvent({
+        channel: 'whatsapp', external_id: from, direction: 'outbound', actor_type: 'ai',
+        actor_name: 'Oliver', message_type: 'text', body: escMsg,
+        metadata: { source: 'oliver_gpt_webhook', escalation: true },
+      }));
+      const escHist = [...history, { role: 'user', content: userText }, { role: 'assistant', content: escMsg }];
+      const escStore = { history: escHist.length > MAX_HISTORY ? escHist.slice(-MAX_HISTORY) : escHist,
+                         state: { ...state, lastMessageAt: Date.now() } };
+      conv.set(from, escStore);
+      persistSessionFn(from, escStore, deps);
+      log('info', 'escalate', `escalación determinista para ${from}`);
+      return; // el finally libera el lock
+    }
 
     // ── (6) toolCtx cableado a servicios REALES ──────────────────────────
     const toolCtx = {
