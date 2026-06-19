@@ -371,11 +371,25 @@ const ANTI_VOSEO = [
   ["vos", "usted"],
 ];
 
+// [2026-06-19] Activa NO usa la palabra "cotización" de cara al cliente: usa "propuesta"
+// (forma corta de "Propuesta Técnica Económica", el nombre formal va en el PDF). Una regla en
+// el prompt NO basta (el LLM ve "cotización" por todo el prompt como concepto y la copia), así
+// que se reemplaza DETERMINISTAMENTE en CADA mensaje saliente, igual que el anti-voseo.
+const TERM_REPLACEMENTS = [
+  ["cotizaciones", "propuestas"],
+  ["cotización", "propuesta"],
+  ["cotizacion", "propuesta"],   // por si el LLM la escribe sin tilde
+];
+
 export function sanitizeChilean(texto) {
   if (!texto || typeof texto !== "string") return texto;
   let out = texto;
   for (const [from, to] of ANTI_VOSEO) {
     // \b...\b con flags g+i, insensible a mayúsculas; preserva capitalización
+    const re = new RegExp(`\\b${escapeRegExp(from)}\\b`, "giu");
+    out = out.replace(re, (match) => matchCase(match, to));
+  }
+  for (const [from, to] of TERM_REPLACEMENTS) {
     const re = new RegExp(`\\b${escapeRegExp(from)}\\b`, "giu");
     out = out.replace(re, (match) => matchCase(match, to));
   }
