@@ -19,7 +19,7 @@ export function lastAssistantOfferedPdf(history) {
   for (let i = (history || []).length - 1; i >= 0; i--) {
     const m = history[i];
     if (m && m.role === 'assistant') {
-      return /\bpdf\b|propuesta formal|cotizaci[oó]n formal|te (la |lo )?env[ií]o|enviar(te)? (la|el)|¿te (gustar[ií]a|env[ií]o)|mando la propuesta/i.test(String(m.content || ''));
+      return /\bpdf\b|propuesta formal|propuesta t[eé]cnica|cotizaci[oó]n formal|te (la |lo )?env[ií]o|enviar(te)? (la|el)|¿te (gustar[ií]a|env[ií]o)|mando la propuesta|(te|se|le) la preparo|prepar(o|amos|o la propuesta)|misma propuesta|se la preparo con/i.test(String(m.content || ''));
     }
   }
   return false;

@@ -17,6 +17,8 @@ test('lastAssistantOfferedPdf: detecta oferta de PDF en el último turno del asi
   assert.equal(lastAssistantOfferedPdf([{ role: 'assistant', content: '¿Te envío la propuesta formal en PDF?' }]), true);
   assert.equal(lastAssistantOfferedPdf([{ role: 'assistant', content: 'Hola, ¿en qué te ayudo?' }]), false);
   assert.equal(lastAssistantOfferedPdf([]), false);
+  // [multi-ventana] oferta tipo "¿se la preparo?" también cuenta como oferta de PDF
+  assert.equal(lastAssistantOfferedPdf([{ role: 'assistant', content: 'Anotada ✅. ¿Tiene más ventanas o se la preparo con estas?' }]), true);
   // toma el ÚLTIMO assistant, ignora user posterior
   assert.equal(lastAssistantOfferedPdf([
     { role: 'assistant', content: 'te mando la propuesta formal' }, { role: 'user', content: 'sí' },

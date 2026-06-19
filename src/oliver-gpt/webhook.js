@@ -894,9 +894,17 @@ export async function handleWebhook(req, res, deps = {}) {
     // el PDF determinista si el cliente confirma en el próximo turno (bloque de arriba).
     const _qItems = itemsFromQuoteCalls(toolCalls, newState.default_color || state.default_color);
     if (_qItems.length) {
+      // [FIX 2026-06-19] ACUMULAR ventanas entre turnos: el cliente que lista varias (una por mensaje)
+      // debe terminar en UNA sola propuesta con TODAS, no un PDF por ventana. Dedup por producto+medidas+color.
+      const _prev = (state.pending_quote && Array.isArray(state.pending_quote.items)) ? state.pending_quote.items : [];
+      const _merged = [..._prev];
+      for (const it of _qItems) {
+        const k = `${it.product}|${it.measures}|${it.color}`;
+        if (!_merged.some((m) => `${m.product}|${m.measures}|${m.color}` === k)) _merged.push(it);
+      }
       newState.pending_quote = {
-        items: _qItems,
-        grand_total: _qItems.reduce((s, it) => s + it.unit_price * (Number(it.qty) || 1), 0),
+        items: _merged,
+        grand_total: _merged.reduce((s, it) => s + it.unit_price * (Number(it.qty) || 1), 0),
         at: Date.now(),
       };
     }
