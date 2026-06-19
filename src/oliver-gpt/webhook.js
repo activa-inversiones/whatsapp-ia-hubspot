@@ -708,7 +708,7 @@ export async function handleWebhook(req, res, deps = {}) {
 
           // ── Paso 3: Enviar al cliente vía WhatsApp ───────────────────────────
           const filename = `${quoteNumber}.pdf`;
-          const caption  = `Cotización ISO N° ${quoteNumber} · Activa Inversiones`;
+          const caption  = `Propuesta Técnica Económica N° ${quoteNumber} · Activa Inversiones`;
           let waDocMediaId = null;
           let docSent = false;   // ← refleja el ENVÍO REAL (sendWaDocument.ok), no solo el upload
           try {
@@ -739,8 +739,8 @@ export async function handleWebhook(req, res, deps = {}) {
             actor_name:   'Oliver',
             message_type: 'document',
             body:         docSent
-              ? `📄 Cotización ${filename} enviada al cliente`
-              : `⚠️ Cotización ${filename} NO se pudo entregar al cliente`,
+              ? `📄 Propuesta ${filename} enviada al cliente`
+              : `⚠️ Propuesta ${filename} NO se pudo entregar al cliente`,
             metadata: { source: 'oliver_gpt_pdf', quote_number: quoteNumber, filename,
                         media_id: waDocMediaId, pdf_sent: docSent },
           }));
@@ -812,7 +812,7 @@ export async function handleWebhook(req, res, deps = {}) {
                 `[whatsapp] PDF ${quoteNumber} no se pudo entregar al cliente — enviarlo desde el inbox (ops.activalabs.ai)`));
             return {
               ok: true, quote_number: quoteNumber, pdf_sent: false, media_id: waDocMediaId,
-              message: `Te preparé tu cotización formal N° ${quoteNumber}. Si no la ves acá en un momento, Marcelo te la hace llegar enseguida.`,
+              message: `Te preparé tu Propuesta Técnica Económica N° ${quoteNumber}. Si no la ves acá en un momento, Marcelo te la hace llegar enseguida.`,
             };
           }
           return {
@@ -820,7 +820,7 @@ export async function handleWebhook(req, res, deps = {}) {
             quote_number: quoteNumber,
             pdf_sent:     docSent,   // ← entrega REAL (sendWaDocument.ok), no solo el upload
             media_id:     waDocMediaId,
-            message:      `Listo ✅ Te envié tu cotización formal N° ${quoteNumber} acá mismo (PDF). Cualquier duda la vemos.`,
+            message:      `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF). Cualquier duda la vemos.`,
           };
         }),
     };
@@ -837,7 +837,7 @@ export async function handleWebhook(req, res, deps = {}) {
         items: pq.items, grand_total: pq.grand_total,
       }));
       const replyMsg = (pdfRes && pdfRes.message) ||
-        `Listo ✅ Te preparé tu cotización formal${pdfRes?.quote_number ? ` N° ${pdfRes.quote_number}` : ''} acá mismo (PDF).`;
+        `Listo ✅ Te preparé tu Propuesta Técnica Económica${pdfRes?.quote_number ? ` N° ${pdfRes.quote_number}` : ''} acá mismo (PDF).`;
       await safe('pdf.det.send', () => sendWhatsAppText(from, replyMsg));
       await safe('pdf.det.persistIn', () => bridge.pushConversationEvent({
         channel: 'whatsapp', external_id: from, direction: 'inbound', actor_type: 'customer',

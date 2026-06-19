@@ -83,7 +83,7 @@ function header(doc, quoteNumber) {
   doc.fillColor("#fff").fontSize(22).font("Helvetica-Bold").text("ACTIVA INVERSIONES", 50, 26);
   doc.fillColor(GOLD).fontSize(10).font("Helvetica").text("Ventanas PVC · Termopanel · Alta Eficiencia Energética", 50, 54);
   doc.fillColor("#fff").fontSize(9).text("Temuco · La Araucanía · Chile", 50, 70);
-  doc.fillColor("#fff").fontSize(9).text(`Cotización N° ${quoteNumber}`, doc.page.width - 250, 40, { width: 200, align: "right" });
+  doc.fillColor("#fff").fontSize(9).text(`Propuesta N° ${quoteNumber}`, doc.page.width - 250, 40, { width: 200, align: "right" });
   doc.fillColor(GOLD).fontSize(8).text(`+56 9 5729 6035 · activaspa.cl`, doc.page.width - 250, 56, { width: 200, align: "right" });
   doc.rect(0, 90, doc.page.width, 4).fill(GOLD);
 }

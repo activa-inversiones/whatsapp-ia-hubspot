@@ -412,7 +412,7 @@ export async function handleChannelTurn(
           if (prevQ && (Date.now() - prevQ.at) < QUOTE_DEDUP_MS) {
             log('info', 'generarPdf.dedup', `Cotización duplicada evitada para ${dedupKey}; reusando ${prevQ.quote_number}`);
             return { ok: true, quote_number: prevQ.quote_number, pdf_sent: false, deduped: true,
-              message: `Ya te emití tu cotización N° ${prevQ.quote_number}.` };
+              message: `Ya te emití tu Propuesta Técnica Económica N° ${prevQ.quote_number}.` };
           }
 
           const SALES_OS_URL = (process.env.SALES_OS_URL || '').replace(/\/$/, '');
@@ -437,9 +437,9 @@ export async function handleChannelTurn(
             await safe('generarPdf.correlativo.escalate', () =>
               notifyHighValue(sendWhatsAppText, senderId,
                 { data: { ...state, name: input.name || state.name || senderName }, history },
-                `[${channel}] cliente pidió cotización formal pero el correlativo ISO no respondió — atender desde el inbox`));
+                `[${channel}] cliente pidió Propuesta Técnica Económica pero el correlativo ISO no respondió — atender desde el inbox`));
             return { ok: false, reason: 'correlativo_no_disponible',
-              message: 'Dame un momentito para emitir tu cotización formal con su folio; si se demora, Marcelo te la hace llegar enseguida.' };
+              message: 'Dame un momentito para emitir tu Propuesta Técnica Económica con su folio; si se demora, Marcelo te la hace llegar enseguida.' };
           }
           RECENT_QUOTES.set(dedupKey, { quote_number: quoteNumber, at: Date.now() });
           // Evicción por antigüedad (no clear() ciego, que abría ventana de doble-folio en carga).
@@ -471,7 +471,7 @@ export async function handleChannelTurn(
           // los precios NUNCA quedan expuestos). FB siempre; IG si la cuenta está ligada a la Página.
           const filename = `${quoteNumber}.pdf`;
           const sr = await safe('generarPdf.send', () =>
-            sendChannelDocument(channel, senderId, pdfBuffer, filename, `Cotización ISO N° ${quoteNumber} · Activa Inversiones`));
+            sendChannelDocument(channel, senderId, pdfBuffer, filename, `Propuesta Técnica Económica N° ${quoteNumber} · Activa Inversiones`));
           const pdfSent = !!(sr && sr.ok !== false);
           const outsideWindow = !!(sr && sr.outsideWindow);
 
@@ -506,11 +506,11 @@ export async function handleChannelTurn(
                 { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
                 `[${channel}] PDF ${quoteNumber} no se pudo entregar${outsideWindow ? ' (fuera de ventana 24h)' : ''} — enviarlo desde el inbox (ops.activalabs.ai)`));
             return { ok: true, quote_number: quoteNumber, pdf_sent: false,
-              message: `Te preparé tu cotización formal N° ${quoteNumber}. Si no la ves acá en un momento, Marcelo te la hace llegar enseguida.` };
+              message: `Te preparé tu Propuesta Técnica Económica N° ${quoteNumber}. Si no la ves acá en un momento, Marcelo te la hace llegar enseguida.` };
           }
 
           return { ok: true, quote_number: quoteNumber, pdf_sent: true,
-            message: `Listo ✅ Te envié tu cotización formal N° ${quoteNumber} acá mismo (PDF). Cualquier duda la vemos.` };
+            message: `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF). Cualquier duda la vemos.` };
         }),
     };
 
@@ -526,7 +526,7 @@ export async function handleChannelTurn(
         items: pq.items, grand_total: pq.grand_total,
       }));
       const replyMsg = (pdfRes && pdfRes.message) ||
-        `Listo ✅ Te envié tu cotización formal${pdfRes?.quote_number ? ` N° ${pdfRes.quote_number}` : ''} acá mismo (PDF).`;
+        `Listo ✅ Te envié tu Propuesta Técnica Económica${pdfRes?.quote_number ? ` N° ${pdfRes.quote_number}` : ''} acá mismo (PDF).`;
       await safe('pdf.send', () => sendFn(senderId, replyMsg));
       await safe('pdf.persistIn', () => bridge.pushConversationEvent({
         channel, external_id: senderId, direction: 'inbound', actor_type: 'customer',
