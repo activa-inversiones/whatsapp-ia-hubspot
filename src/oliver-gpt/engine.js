@@ -16,8 +16,15 @@
 // ESM, Node 18+.
 
 import OpenAI from 'openai';
+import { anthropicPass1, anthropicPass2 } from './engine-anthropic.js';
 
 const MODEL = () => process.env.AI_MODEL_OPENAI || 'gpt-4o';
+
+// [2026-06-19] SWITCH DE PROVEEDOR DEL CEREBRO.
+//   AI_PROVIDER=anthropic  → Claude Sonnet 4.6 (vía engine-anthropic.js, misma interfaz).
+//   sin setear / cualquier otro valor → OpenAI (comportamiento actual, sin cambios).
+// REVERSIBLE: borrar/cambiar AI_PROVIDER en Railway → vuelve GPT-4o al instante.
+const useAnthropic = () => (process.env.AI_PROVIDER || '').toLowerCase() === 'anthropic';
 
 /* =========================================================================
  * Cliente OpenAI singleton (lazy). Se crea una sola vez al primer uso, así
@@ -93,6 +100,7 @@ export async function withRetry(fn, label = 'openai') {
  * @returns {Promise<{tool_calls:Array, content:string, raw:object}>}
  */
 export async function orchestratorPass1({ system, messages = [], tools = [] }) {
+  if (useAnthropic()) return anthropicPass1({ system, messages, tools });
   const client = getClient();
   const r = await withRetry(() => client.chat.completions.create({
     model: MODEL(),
@@ -121,6 +129,7 @@ export async function orchestratorPass1({ system, messages = [], tools = [] }) {
  * @returns {Promise<string>}
  */
 export async function orchestratorPass2({ system, messages = [] }) {
+  if (useAnthropic()) return anthropicPass2({ system, messages });
   const client = getClient();
   const r = await withRetry(() => client.chat.completions.create({
     model: MODEL(),
