@@ -167,6 +167,7 @@ async function downloadWaMedia(mediaId, deps) {
   // 1) Resolver la URL temporal del media.
   const metaRes = await fetchFn(`https://graph.facebook.com/${ver}/${mediaId}`, {
     headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(12000), // [FIX 2026-06-19 VIS-01] sin timeout, un cuelgue de Meta bloqueaba el lock del cliente
   });
   if (!metaRes.ok) throw new Error(`media_meta_${metaRes.status}`);
   const meta = await metaRes.json();
@@ -174,7 +175,7 @@ async function downloadWaMedia(mediaId, deps) {
   const mime = meta?.mime_type || 'application/octet-stream';
   if (!url) throw new Error('media_url_missing');
   // 2) Descargar el binario (requiere el mismo Bearer).
-  const blobRes = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } });
+  const blobRes = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000) });
   if (!blobRes.ok) throw new Error(`media_blob_${blobRes.status}`);
   const buf = Buffer.from(await blobRes.arrayBuffer());
   return { buffer: buf, mime };
@@ -203,7 +204,7 @@ async function describeImage(buffer, mime, deps) {
       },
     ],
     max_tokens: 4096,
-  });
+  }, { timeout: 30000 }); // [FIX 2026-06-19 VIS-01] si la visión cuelga, no bloquea el lock del cliente
   const raw = (r.choices?.[0]?.message?.content || '').trim();
   // [F3b] Si la visión devolvió rechazo / vacío / sin medidas → marcar ilegible.
   // Evita que el orquestador confirme medidas que nunca llegaron (anti-alucinación).
@@ -220,7 +221,7 @@ async function transcribeAudio(buffer, mime, deps) {
     model: STT_MODEL(),
     file,
     language: 'es',
-  });
+  }, { timeout: 25000 }); // [FIX 2026-06-19 VIS-01] timeout STT — evita lock colgado
   return (r.text || '').trim();
 }
 
@@ -688,11 +689,16 @@ export async function handleWebhook(req, res, deps = {}) {
             log('error', 'generarPdf.correlativo', err);
           }
           if (!quoteNumber) {
-            // Fallback local si sales-os no responde (NO-bloqueante, pero se loguea para revisión).
-            const yr = new Date().getFullYear();
-            const seq = String(Date.now()).slice(-4);
-            quoteNumber = `CM-FR-004-${yr}-FALLBACK-${seq}`;
-            log('error', 'generarPdf.correlativo', `Usando correlativo fallback: ${quoteNumber}`);
+            // [FIX 2026-06-19 SES-03/PDF-02] El correlativo ISO no respondió. NO emitir un folio
+            // FANTASMA (CM-FR-004-...-FALLBACK-XXXX no queda en BD → viola ISO 9001 §7.5 y Zoho/CXM
+            // no lo pueden correlacionar). Mejor: NO generar el PDF, avisar a Marcelo, y que el cliente
+            // sepa que ya viene. Igual que channel-agent.js (IG/FB).
+            log('error', 'generarPdf.correlativo', 'correlativo ISO no disponible — NO se emite PDF, se escala a Marcelo');
+            await safe('generarPdf.correlativo.escalate', () =>
+              notifyHighValue(sendWhatsAppText, from, { data: { ...state }, history },
+                '[whatsapp] cliente pidió su Propuesta Técnica Económica pero el correlativo ISO no respondió — emitirla desde el inbox (ops.activalabs.ai)'));
+            return { ok: false, requiere_revision: true, reason: 'correlativo_no_disponible',
+              message: 'Dame un momentito para emitir tu Propuesta Técnica Económica con su folio; si se demora, Marcelo te la hace llegar enseguida.' };
           }
 
           // Correlativo quemado → registrar (con firma de contenido) para el guard anti-duplicado.
@@ -764,8 +770,9 @@ export async function handleWebhook(req, res, deps = {}) {
 
           // ── Paso 4: Zoho CRM (Deal upsert + Note) ───────────────────────────
           // Fire-and-forget: si Zoho falla no bloquea el resto del flujo.
-          const grandTotal = Number(input.grand_total) ||
-            (input.items || []).reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0);
+          // [FIX 2026-06-19 COB-07] SIEMPRE recalcular desde los items (unit_price NETO del motor);
+          // ignorar input.grand_total (si el LLM lo alucina con IVA, inflaría el monto a Zoho/CXM).
+          const grandTotal = (input.items || []).reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0);
           safe('generarPdf.zoho', async () => {
             const dealId = await upsertZohoDeal({
               phone:      clientPhone,
@@ -898,10 +905,10 @@ export async function handleWebhook(req, res, deps = {}) {
     // (usa el message del tool): NUNCA un saludo, NUNCA "no lo puedo enviar", NUNCA "cotización".
     // Mata el re-saludo + la contradicción vistos en el test en vivo. Si hubo PDF, también limpiamos
     // pending_quote (ya se entregó) para no re-disparar la entrega determinista.
-    const _pdfCall = toolCalls.find((t) => t.name === 'generar_pdf_cotizacion' && t.result && t.result.ok && t.result.message);
+    const _pdfCall = toolCalls.find((t) => t.name === 'generar_pdf_cotizacion' && t.result && t.result.message);
     if (_pdfCall) {
-      reply = _pdfCall.result.message;
-      newState.pending_quote = null;
+      reply = _pdfCall.result.message;                       // entrega exitosa O "dame un momentito" si el folio no salió
+      if (_pdfCall.result.ok) newState.pending_quote = null; // solo limpiar si realmente se entregó (si falló, dejar para reintento)
     }
 
     // ── (7) Enviar respuesta por WhatsApp ───────────────────────────────
