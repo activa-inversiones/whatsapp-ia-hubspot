@@ -207,6 +207,7 @@ export const TOOL_DEFS = [
           },
           color: { type: 'string', description: 'Color del perfil. Opcional.' },
           comuna: { type: 'string', description: 'Comuna de despacho/instalacion. Opcional.' },
+          cantidad: { type: 'integer', description: 'Cantidad de ventanas iguales. Opcional, default 1.' },
         },
         required: ['tipo', 'area_m2', 'glass_id'],
         additionalProperties: false,
@@ -445,7 +446,8 @@ export const TOOL_DEFS = [
 export function conUnitPrice(r, cantidad = 1) {
   if (!r || r.ok === false) return r;
   const qty = Math.max(1, Number(cantidad) || 1);
-  const lineTotal = Number(r.total_clp ?? r.total_neto_clp ?? r.total_con_iva ?? 0);
+  // [FIX 2026-06-19 COB-02] saco total_con_iva del fallback: si el motor solo devuelve con IVA, usarlo como neto + 19% del PDF = doble IVA (~19% de más). Mejor escalar.
+  const lineTotal = Number(r.total_clp ?? r.total_neto_clp ?? 0);
   if (!Number.isFinite(lineTotal) || lineTotal <= 0) {
     return { ...r, ok: false, precio_invalido: true,
       error: r.error || 'Total inválido del motor; requiere revisión de especialista (no cotizar a ciegas).' };
@@ -527,8 +529,9 @@ export async function runTool(name, input = {}, ctx = {}) {
         return { ok: false, precio_invalido: true, requiere_revision: true,
           error: _ra?.error || 'No se pudo derivar medidas por área; lo revisa un especialista.' };
       }
+      const qtyArea = Math.max(1, Number(input.cantidad) || 1);   // [FIX 2026-06-19 COB-05] antes qty:1 fijo → cobraba 1/3 si pedían 3 iguales
       const d = {
-        items: [{ measures: `${ancho}x${alto}`, product: input.tipo, qty: 1, color: input.color || '', ambiente: input.ambiente || '' }],
+        items: [{ measures: `${ancho}x${alto}`, product: input.tipo, qty: qtyArea, color: input.color || '', ambiente: input.ambiente || '' }],
         comuna: input.comuna || '',
         default_color: input.color || '',
       };
@@ -542,7 +545,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         ok: true,
         unit_price: it.unit_price,            // NETO (sin IVA) — camino V1, idéntico a calcular_cotizacion
         total_neto: it.total_price,
-        cantidad: 1,
+        cantidad: it.qty || qtyArea,
         area_m2: Number(input.area_m2) || _ra.area_m2,
         medidas_derivadas: `${ancho}x${alto}`,
         glass_label: it.glass_label,

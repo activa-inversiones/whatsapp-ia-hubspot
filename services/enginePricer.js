@@ -166,8 +166,8 @@ function normMeasuresLocal(raw) {
   let b = candidates[1];
   if (a <= 6) a *= 1000;
   if (b <= 6) b *= 1000;
-  if (a >= 7 && a <= 300) a *= 10;
-  if (b >= 7 && b <= 300) b *= 10;
+  if (a >= 7 && a < 400) a *= 10;   // [FIX 2026-06-19 COB-01] fallback faltaba: cm→mm hasta <400 (el replace_all del 18-jun no lo agarró por indentación)
+  if (b >= 7 && b < 400) b *= 10;
   return { ancho_mm: Math.round(a), alto_mm: Math.round(b) };
 }
 
@@ -335,7 +335,8 @@ export async function priceAllEngine(d, customer_id = "") {
     // 6) Totales: usar NETO (total_clp). El flujo del bot (resumen + PDF) AGREGA
     //    IVA 19% sobre el subtotal, así que los items deben ir SIN IVA. Usar
     //    total_con_iva acá causaba doble IVA (cobrar ~19% de más). FIX.
-    const lineTotal = Number(r.total_clp ?? r.total_neto_clp ?? r.total_con_iva ?? 0);
+    // [FIX 2026-06-19 COB-02] total_con_iva ELIMINADO del fallback (el comentario decía FIX pero seguía ahí). Si el motor solo da con IVA → escalar, no cobrar 19% de más.
+    const lineTotal = Number(r.total_clp ?? r.total_neto_clp ?? 0);
     if (!Number.isFinite(lineTotal) || lineTotal <= 0) {
       item.price_warning = "Total inválido del motor; lo revisa un especialista.";
       item.source = "activa_engine"; item.confidence = "manual";

@@ -101,9 +101,11 @@ export async function orchestratorPass1({ system, messages = [], tools = [] }) {
     tool_choice: 'auto',
     parallel_tool_calls: false,
     temperature: 0.3,
-    max_tokens: 500,
+    max_tokens: 1000,   // [FIX 2026-06-19 COB-04] 500 truncaba el JSON de tool_call (PDF con varios items) → input={} silencioso → PDF no se generaba
   }), 'pass1');
-  const msg = r.choices?.[0]?.message || {};
+  const choice1 = r.choices?.[0] || {};
+  if (choice1.finish_reason === 'length') console.warn('[engine] pass1 truncado (max_tokens) — el JSON de tool_call puede venir incompleto');
+  const msg = choice1.message || {};
   return {
     tool_calls: msg.tool_calls || [],
     content: msg.content || '',
@@ -124,9 +126,11 @@ export async function orchestratorPass2({ system, messages = [] }) {
     model: MODEL(),
     messages: [{ role: 'system', content: system }, ...messages],
     temperature: 0.4,
-    max_tokens: 350,
+    max_tokens: 650,   // [FIX 2026-06-19 CLI-05] 350 cortaba respuestas multi-ítem + disclaimer + precio a mitad de frase
   }), 'pass2');
-  return (r.choices?.[0]?.message?.content || '').trim();
+  const choice2 = r.choices?.[0] || {};
+  if (choice2.finish_reason === 'length') console.warn('[engine] pass2 truncado (max_tokens) — respuesta al cliente puede quedar cortada');
+  return (choice2.message?.content || '').trim();
 }
 
 export default { getClient, orchestratorPass1, orchestratorPass2 };

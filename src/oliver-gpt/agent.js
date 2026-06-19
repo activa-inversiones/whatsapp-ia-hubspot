@@ -31,7 +31,7 @@ import { TOOL_DEFS, runTool } from './tools.js';
 import { extractComuna, detectConfirmation, sanitizeChilean } from './normalizers.js';
 import * as realEngine from './engine.js';
 
-const MAX_TOOL_ITERATIONS = 3;
+const MAX_TOOL_ITERATIONS = 6;   // [FIX 2026-06-19 CLI-04] 3 no alcanzaba para cotizar N≥2 ventanas + generar el PDF en el MISMO turno (Regla #13)
 
 /**
  * handleTurn — Procesa un turno de conversación de Oliver GPT.
