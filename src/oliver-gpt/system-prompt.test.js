@@ -24,6 +24,14 @@ test('[FIX 18-jun] siempre-PDF: obliga PDF en el mismo turno y NO permite precio
     'NO debe quedar el permiso viejo de "rango verbal estimado" (era la causa del patrón informal)');
 });
 
+test('[FIX 18-jun] referencial: el prompt obliga AVISAR cuando la medida es fuera de estándar (cotiza igual + se revisa tras aprobar)', () => {
+  const sys = buildSystemBlocks();
+  assert.ok(/REFERENCIAL/i.test(sys) && /referencial.*true|"referencial"/i.test(sys),
+    'debe instruir el caso de cotización referencial (medida fuera de estándar)');
+  assert.ok((/cubicaci[oó]n/i.test(sys) || /visita t[eé]cnica/i.test(sys)) && /aprob/i.test(sys),
+    'debe decir que el precio final se confirma en cubicación/visita técnica tras aprobar');
+});
+
 test('(b) buildSystemBlocks() contiene marcadores de áreas clave', () => {
   const sys = buildSystemBlocks();
   for (const marker of ['SPIN', 'B2B', 'MINVU', 'EN 12608', 'objeci', 'escal']) {
