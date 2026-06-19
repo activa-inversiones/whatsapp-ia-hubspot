@@ -749,6 +749,25 @@ export async function handleWebhook(req, res, deps = {}) {
             // No bloqueamos: el CRM/conversión se disparan igualmente.
           }
 
+          // ── Paso 3a: GUARDAR el PDF en sales-os para que el operador lo ABRA desde el cockpit ──
+          // [FIX 2026-06-19] Antes el link /api/v5/media/{wa_media_id} daba "not found": el PDF se enviaba a
+          // WhatsApp pero NUNCA se guardaba en media_attachments. Ahora lo subimos (base64) con el MISMO
+          // wa_media_id que usa el espejo → el cockpit lo encuentra y lo muestra. (PDFs ya enviados antes
+          // de este fix no se pueden recuperar; aplica a los nuevos.)
+          safe('generarPdf.storeMedia', async () => {
+            if (!SALES_OS_URL) return;
+            await fetch(`${SALES_OS_URL}/api/v5/media/store`, {
+              method: 'POST',
+              headers: { 'x-api-key': OPERATOR_TOKEN, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                phone: from, direction: 'outbound', media_type: 'document', mime_type: 'application/pdf',
+                filename, wa_media_id: waDocMediaId || '', media_base64: pdfBuffer.toString('base64'),
+                file_size: pdfBuffer.length, ai_description: `Propuesta ${quoteNumber}`,
+              }),
+              signal: AbortSignal.timeout(15000),
+            });
+          });
+
           // ── Paso 3b: ESPEJO al dashboard (visibilidad del PDF) ───────────────
           // FIX 2026-06-15: el dashboard solo reflejaba TEXTO → el operador veía "Te envié
           // el PDF" pero NO el archivo ("no está en ninguna parte"), aunque Meta lo aceptara
