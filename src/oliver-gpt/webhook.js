@@ -497,6 +497,23 @@ export async function handleWebhook(req, res, deps = {}) {
     const { userText } = await resolveUserText(inbound, req.body, deps);
     if (!userText) return;
 
+    // ── (5a) [FIX 2026-06-19] Comando RESET — paridad con IG/FB (channel-agent.js). Limpia la
+    //    sesión (cache + Postgres) → la próxima conversación arranca limpia, SIN re-saludo heredado.
+    //    Antes WhatsApp NO tenía este comando → "reset" caía al cerebro y re-saludaba (visto en test en vivo).
+    if (/^\s*reset(ear)?\s*$/i.test(userText)) {
+      conv.delete(from);
+      persistSessionFn(from, { history: [], state: {} }, deps);
+      const resetMsg = 'Listo, partimos de cero 🙌 ¿En qué te ayudo con tus ventanas?';
+      await safe('reset.send', () => sendWhatsAppText(from, resetMsg));
+      await safe('reset.persistIn', () => bridge.pushConversationEvent({
+        channel: 'whatsapp', external_id: from, direction: 'inbound', actor_type: 'customer',
+        actor_name: 'Cliente', message_type: inbound.type || 'text', body: userText,
+        metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, command: 'reset' },
+      }));
+      log('info', 'reset', `sesión ${from} reiniciada por comando del cliente`);
+      return; // el finally libera el lock
+    }
+
     // ── (5b) ESCALACIÓN DETERMINISTA (no depende del LLM) ────────────────
     // [2026-06-18] Paridad con IG/FB (channel-agent.js): si el cliente pide humano/Marcelo
     // o está molesto, avisamos SIEMPRE + mensaje fijo correcto. En prod el LLM a veces NO
@@ -861,7 +878,7 @@ export async function handleWebhook(req, res, deps = {}) {
     // ── Llamada al cerebro probado ──────────────────────────────────────
     // Si handleTurn lanza, lo captura el try externo → fail-safe (200 ya enviado).
     const turn = await handleTurn({ history, userText, state, toolCtx });
-    const reply = turn?.reply || '';
+    let reply = turn?.reply || '';
     const newHistory = Array.isArray(turn?.history) ? turn.history : history;
     const newState = turn?.state && typeof turn.state === 'object' ? turn.state : state;
     const toolCalls = Array.isArray(turn?.toolCalls) ? turn.toolCalls : [];
@@ -875,6 +892,16 @@ export async function handleWebhook(req, res, deps = {}) {
         grand_total: _qItems.reduce((s, it) => s + it.unit_price * (Number(it.qty) || 1), 0),
         at: Date.now(),
       };
+    }
+
+    // [FIX 2026-06-19] Si en ESTE turno se generó el PDF, el texto al cliente ES la entrega
+    // (usa el message del tool): NUNCA un saludo, NUNCA "no lo puedo enviar", NUNCA "cotización".
+    // Mata el re-saludo + la contradicción vistos en el test en vivo. Si hubo PDF, también limpiamos
+    // pending_quote (ya se entregó) para no re-disparar la entrega determinista.
+    const _pdfCall = toolCalls.find((t) => t.name === 'generar_pdf_cotizacion' && t.result && t.result.ok && t.result.message);
+    if (_pdfCall) {
+      reply = _pdfCall.result.message;
+      newState.pending_quote = null;
     }
 
     // ── (7) Enviar respuesta por WhatsApp ───────────────────────────────
