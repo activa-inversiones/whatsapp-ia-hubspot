@@ -51,6 +51,7 @@ import {
 } from '../../services/voiceBridge.js'; // [F4] voz saliente
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
+import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent
 import { toFile as realToFile } from 'openai/uploads';
 import {
   loadSession as realLoadSession,
@@ -824,6 +825,39 @@ export async function handleWebhook(req, res, deps = {}) {
         }),
     };
 
+    // ── [FIX 2026-06-19 PDF-01] ENTREGA DETERMINISTA DEL PDF (NO depende del LLM) ──
+    // Si el cliente CONFIRMA tras una cotización ya lista (state.pending_quote del turno
+    // anterior), mandamos el PDF en CÓDIGO. En prod el LLM a veces escribía "[Enlace a la
+    // cotización]" como texto sin llamar la tool → el cliente NO recibía el PDF. Portado de channel-agent.js.
+    if (state.pending_quote && Array.isArray(state.pending_quote.items) && state.pending_quote.items.length
+        && isPdfAffirmative(userText) && lastAssistantOfferedPdf(history)) {
+      const pq = state.pending_quote;
+      const pdfRes = await safe('pdf.deterministic', () => toolCtx.generarPdf({
+        name: state.name || '', phone: state.telefono || from, comuna: state.comuna || '',
+        items: pq.items, grand_total: pq.grand_total,
+      }));
+      const replyMsg = (pdfRes && pdfRes.message) ||
+        `Listo ✅ Te preparé tu cotización formal${pdfRes?.quote_number ? ` N° ${pdfRes.quote_number}` : ''} acá mismo (PDF).`;
+      await safe('pdf.det.send', () => sendWhatsAppText(from, replyMsg));
+      await safe('pdf.det.persistIn', () => bridge.pushConversationEvent({
+        channel: 'whatsapp', external_id: from, direction: 'inbound', actor_type: 'customer',
+        actor_name: 'Cliente', message_type: 'text', body: userText,
+        metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, pdf_confirm: true },
+      }));
+      await safe('pdf.det.persistOut', () => bridge.pushConversationEvent({
+        channel: 'whatsapp', external_id: from, direction: 'outbound', actor_type: 'ai',
+        actor_name: 'Oliver', message_type: 'text', body: replyMsg,
+        metadata: { source: 'oliver_gpt_webhook', pdf_deterministic: true, quote_number: pdfRes?.quote_number },
+      }));
+      const histPdf = [...history, { role: 'user', content: userText }, { role: 'assistant', content: replyMsg }];
+      const toStorePdf = { history: histPdf.length > MAX_HISTORY ? histPdf.slice(-MAX_HISTORY) : histPdf,
+                           state: { ...state, pending_quote: null, lastMessageAt: Date.now() } };
+      conv.set(from, toStorePdf);
+      persistSessionFn(from, toStorePdf, deps);
+      log('info', 'pdf.deterministic', `PDF determinista para ${from} (${pdfRes?.quote_number || 'sin folio'})`);
+      return; // 200 ya enviado; el finally libera el lock
+    }
+
     // ── Llamada al cerebro probado ──────────────────────────────────────
     // Si handleTurn lanza, lo captura el try externo → fail-safe (200 ya enviado).
     const turn = await handleTurn({ history, userText, state, toolCtx });
@@ -831,6 +865,17 @@ export async function handleWebhook(req, res, deps = {}) {
     const newHistory = Array.isArray(turn?.history) ? turn.history : history;
     const newState = turn?.state && typeof turn.state === 'object' ? turn.state : state;
     const toolCalls = Array.isArray(turn?.toolCalls) ? turn.toolCalls : [];
+
+    // [FIX 2026-06-19 PDF-01] capturar la cotización del turno → pending_quote, para poder entregar
+    // el PDF determinista si el cliente confirma en el próximo turno (bloque de arriba).
+    const _qItems = itemsFromQuoteCalls(toolCalls, newState.default_color || state.default_color);
+    if (_qItems.length) {
+      newState.pending_quote = {
+        items: _qItems,
+        grand_total: _qItems.reduce((s, it) => s + it.unit_price * (Number(it.qty) || 1), 0),
+        at: Date.now(),
+      };
+    }
 
     // ── (7) Enviar respuesta por WhatsApp ───────────────────────────────
     // (7a) Texto: siempre se envía (canal garantizado).
