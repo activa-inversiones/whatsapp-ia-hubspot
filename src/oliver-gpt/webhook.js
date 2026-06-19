@@ -98,6 +98,7 @@ const RATE_MAP = new Map();
 // re-cálculo por pérdida de estado (el bug que generó 0003 y 0004 en el mismo chat).
 const RECENT_QUOTES = new Map();
 const QUOTE_DEDUP_MS = 120000; // 2 min
+const CONTROL_CACHE = new Map(); // [FIX 2026-06-19 CON-02] último control conocido por waId → fail-closed hacia el operador si sales-os cae
 
 /**
  * Comprueba si el waId está dentro del límite de 18 msg/min.
@@ -401,10 +402,24 @@ export async function handleWebhook(req, res, deps = {}) {
     // devuelve { ai_paused:false } (no bloquea). Solo pausamos si lo dice
     // explícitamente.
     const control = await safe('control', () => bridge.getConversationControl(from, 'whatsapp'));
+    // [FIX 2026-06-19 CON-02] Fail-CLOSED hacia el operador: si la lectura del control falló
+    // (sales-os caído / _error) y la última vez vimos takeover humano, NO respondemos encima del
+    // operador (antes: fail-OPEN → el bot pisaba la negociación y arruinaba el cierre). Idéntico a channel-agent.js.
+    let effectiveControl = control;
+    if (!control || control._error) {
+      const cached = CONTROL_CACHE.get(from);
+      if (cached && (cached.ai_paused === true || (cached.operator_status && cached.operator_status !== 'ai'))) {
+        effectiveControl = { ai_paused: true, operator_status: cached.operator_status || 'human', _fromCache: true };
+        log('info', 'control.failclosed', `control no disponible; respeto takeover cacheado para ${from}`);
+      }
+    } else {
+      CONTROL_CACHE.set(from, { ai_paused: control.ai_paused === true, operator_status: control.operator_status || 'ai' });
+      if (CONTROL_CACHE.size > 5000) CONTROL_CACHE.clear();
+    }
     const aiPaused =
-      !!control &&
-      (control.ai_paused === true ||
-        (control.operator_status && control.operator_status !== 'ai'));
+      !!effectiveControl &&
+      (effectiveControl.ai_paused === true ||
+        (effectiveControl.operator_status && effectiveControl.operator_status !== 'ai'));
 
     if (aiPaused) {
       // Persistir el inbound para que el operador humano lo vea, y salir SIN
@@ -787,11 +802,24 @@ export async function handleWebhook(req, res, deps = {}) {
             })
           );
 
+          // [FIX 2026-06-19 CLI-02/CLI-03] si el PDF NO se entregó → AVISAR a Marcelo (no se pierde en silencio)
+          // + devolver `message` para que el LLM diga la verdad y NO alucine "ya te lo envié".
+          if (!docSent) {
+            await safe('generarPdf.escalate', () =>
+              notifyHighValue(sendWhatsAppText, from,
+                { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
+                `[whatsapp] PDF ${quoteNumber} no se pudo entregar al cliente — enviarlo desde el inbox (ops.activalabs.ai)`));
+            return {
+              ok: true, quote_number: quoteNumber, pdf_sent: false, media_id: waDocMediaId,
+              message: `Te preparé tu cotización formal N° ${quoteNumber}. Si no la ves acá en un momento, Marcelo te la hace llegar enseguida.`,
+            };
+          }
           return {
             ok: true,
             quote_number: quoteNumber,
             pdf_sent:     docSent,   // ← entrega REAL (sendWaDocument.ok), no solo el upload
             media_id:     waDocMediaId,
+            message:      `Listo ✅ Te envié tu cotización formal N° ${quoteNumber} acá mismo (PDF). Cualquier duda la vemos.`,
           };
         }),
     };
