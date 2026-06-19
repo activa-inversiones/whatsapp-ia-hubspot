@@ -140,8 +140,8 @@ function normMeasuresLocal(raw) {
     let b = parseFloat(dimMatch[3].replace(",", "."));
     if (a <= 6) a *= 1000;
     if (b <= 6) b *= 1000;
-    if (a >= 7 && a <= 300) a *= 10;
-    if (b >= 7 && b <= 300) b *= 10;
+    if (a >= 7 && a < 400) a *= 10;   // [FIX 2026-06-18] cm→mm hasta <400 (antes <=300, sub-cotizaba grandes)
+    if (b >= 7 && b < 400) b *= 10;
     return { ancho_mm: Math.round(a), alto_mm: Math.round(b) };
   }
 

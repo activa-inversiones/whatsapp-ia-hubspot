@@ -37,13 +37,27 @@ export function resolverMedidasMm({ ancho_mm, alto_mm, medidas_texto } = {}) {
   let a = Number(ancho_mm);
   let b = Number(alto_mm);
   let corregido = false;
+  let fromText = false;
   if (medidas_texto) {
     const norm = normMeasures(medidas_texto);
     if (norm && norm.ancho_mm && norm.alto_mm) {
       if (norm.ancho_mm !== a || norm.alto_mm !== b) corregido = true;
       a = norm.ancho_mm;
       b = norm.alto_mm;
+      fromText = true; // el texto YA resolvió unidades (mm/cm/m) → es autoritativo, no re-escalar
     }
+  }
+  // [FIX 2026-06-18] Rescate cm en el path NUMÉRICO (LLM pasó ancho_mm/alto_mm sin texto).
+  // Una ventana fabricable mide ≥400 mm (mín. S60 400 / SLIDING 500). Si el número quedó en
+  // [150,400) casi seguro venía en CENTÍMETROS sin convertir (caso real: 3,15×2,40 m → el
+  // cerebro mandó 315×240 → cotizó 0,08 m² → $301k en vez de $948k). ×10 es la única lectura
+  // física válida. <150 se deja caer al guard de rango (pide confirmar, no adivina).
+  if (!fromText) {
+    const rescatarCm = (v) =>
+      (Number.isFinite(v) && v >= 150 && v < 400 && v * 10 <= MEDIDA_MAX_MM) ? v * 10 : v;
+    const na = rescatarCm(a), nb = rescatarCm(b);
+    if (na !== a || nb !== b) corregido = true;
+    a = na; b = nb;
   }
   const enRango = (v) => Number.isFinite(v) && v >= MEDIDA_MIN_MM && v <= MEDIDA_MAX_MM;
   if (!enRango(a) || !enRango(b)) {

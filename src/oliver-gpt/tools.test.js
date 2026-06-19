@@ -173,6 +173,45 @@ test('(m-7) GUARD: runTool calcular_cotizacion con medida absurda devuelve error
   assert.equal(r.error, 'medidas_fuera_de_rango');
 });
 
+// ── [FIX 2026-06-18] BUG REAL (caso Marcelo): corredera 3,15×2,40 m cotizaba $301k
+//    (0,08 m²) porque el cerebro mandaba 315×240 SIN convertir cm→mm. Una ventana <400 mm
+//    no es fabricable → debe leerse como CENTÍMETROS. Cubre los 3 caminos del LLM. ──────────
+test('(m-8) cm-como-mm NUMÉRICO: 315×240 (sin texto) → 3150×2400 mm (era 0,08 m²)', () => {
+  const r = resolverMedidasMm({ ancho_mm: 315, alto_mm: 240 });
+  assert.equal(r.ok, true);
+  assert.equal(r.ancho_mm, 3150, '315 < 400 mm no es fabricable → eran 315 cm');
+  assert.equal(r.alto_mm, 2400, '240 < 400 mm → eran 240 cm');
+  assert.equal(r.corregido, true);
+});
+
+test('(m-9) cm explícito >300: "315 x 240 cm" → 3150×2400 (el tope viejo de 300 lo rompía)', () => {
+  const r = resolverMedidasMm({ ancho_mm: 0, alto_mm: 0, medidas_texto: '315 x 240 cm' });
+  assert.equal(r.ok, true);
+  assert.equal(r.ancho_mm, 3150);
+  assert.equal(r.alto_mm, 2400);
+});
+
+test('(m-10) "315x240" sin unidad → 3150×2400 (no 315×2400 sliver)', () => {
+  const r = resolverMedidasMm({ ancho_mm: 0, alto_mm: 0, medidas_texto: '315x240' });
+  assert.equal(r.ok, true);
+  assert.equal(r.ancho_mm, 3150);
+  assert.equal(r.alto_mm, 2400);
+});
+
+test('(m-11) NO sobre-escalar lo que ya está en mm: 1500×1200 numérico se mantiene', () => {
+  const r = resolverMedidasMm({ ancho_mm: 1500, alto_mm: 1200 });
+  assert.equal(r.ok, true);
+  assert.equal(r.ancho_mm, 1500);
+  assert.equal(r.alto_mm, 1200);
+});
+
+test('(m-12) borde fabricable: 400 mm numérico se respeta como mm (no es cm)', () => {
+  const r = resolverMedidasMm({ ancho_mm: 400, alto_mm: 1200 });
+  assert.equal(r.ok, true);
+  assert.equal(r.ancho_mm, 400, '400 mm = mínimo fabricable S60, NO se reinterpreta');
+  assert.equal(r.alto_mm, 1200);
+});
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Tests herméticos de notificar_marcelo (sin red, sin WA real). runTool ya importado arriba.
 // ──────────────────────────────────────────────────────────────────────────────

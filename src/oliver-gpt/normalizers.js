@@ -245,8 +245,11 @@ export function normMeasures(raw) {
     let b = parseFloat(dimMatch[3].replace(",", "."));
     if (a <= 6) a *= 1000;
     if (b <= 6) b *= 1000;
-    if (a >= 7 && a <= 300) a *= 10;
-    if (b >= 7 && b <= 300) b *= 10;
+    // [FIX 2026-06-18] cm→mm hasta < 400 (antes <=300, BUG): una ventana fabricable mide
+    // ≥400mm (S60 400 / SLIDING 500). "315"=315cm=3,15m (corredera grande), no 31,5mm.
+    // El tope viejo de 300 dejaba 301–399cm leídos como mm → 0,08 m² → $301k en vez de $948k.
+    if (a >= 7 && a < 400) a *= 10;
+    if (b >= 7 && b < 400) b *= 10;
     return { ancho_mm: Math.round(a), alto_mm: Math.round(b) };
   }
 
@@ -276,8 +279,8 @@ export function normMeasures(raw) {
   let b = candidates[1];
   if (a <= 6) a *= 1000;
   if (b <= 6) b *= 1000;
-  if (a >= 7 && a <= 300) a *= 10;
-  if (b >= 7 && b <= 300) b *= 10;
+  if (a >= 7 && a < 400) a *= 10;   // [FIX 2026-06-18] ver nota arriba: cm hasta <400
+  if (b >= 7 && b < 400) b *= 10;
   return { ancho_mm: Math.round(a), alto_mm: Math.round(b) };
 }
 
