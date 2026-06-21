@@ -25,7 +25,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 const MODEL = () => process.env.AI_MODEL_ANTHROPIC || 'claude-sonnet-4-6';
-const EFFORT = () => (process.env.AI_EFFORT ?? 'low').trim();   // '' => no enviar
+const EFFORT = () => (process.env.AI_EFFORT ?? 'medium').trim();   // [2026-06-21] default medium (low loopeaba/no encadenaba PDF); '' => no enviar
 const CACHE_ON = () => (process.env.AI_CACHE ?? '1') !== '0';
 
 // Log del modelo REAL que devuelve la API (prueba dura de qué cerebro responde).
@@ -137,7 +137,7 @@ export async function anthropicPass1({ system, messages = [], tools = [], _clien
   const client = _client || getAnthropicClient();
   const resp = await client.messages.create({
     model: MODEL(),
-    max_tokens: 1000,
+    max_tokens: 1800, // [2026-06-21] subido de 1000: 1000 truncaba el JSON del tool -> input={} -> loop/cotiza vacio
     system: systemParam(system),
     tools: _toAnthropicTools(tools),
     messages: _toAnthropicMessages(messages),
@@ -154,7 +154,7 @@ export async function anthropicPass2({ system, messages = [], _client } = {}) {
   const conv = dropTrailingAssistant(_toAnthropicMessages(messages));
   const resp = await client.messages.create({
     model: MODEL(),
-    max_tokens: 650,
+    max_tokens: 900, // [2026-06-21] subido de 650: evitar cortar respuestas/entrega de propuesta
     system: systemParam(system),
     messages: conv,
     ...maybeOutputConfig(),
