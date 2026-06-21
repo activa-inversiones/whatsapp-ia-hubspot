@@ -44,6 +44,7 @@ import {
   sendWaDocument as realSendWaDocument,
 } from '../sales-agent/whatsapp-adapter.js';
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
+import { saveMedia } from '../../mediaStore.js'; // [#5] persistir media ENTRANTE (foto/audio/plano) para el cockpit
 import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, archivarEnWorkDrive } from '../../services/zohoCommercial.js';
 import {
   shouldSendVoice as realShouldSendVoice,
@@ -195,9 +196,12 @@ async function describeImage(buffer, mime, deps) {
           {
             type: 'text',
             text:
-              'Analiza esta imagen y extrae TODOS los productos de ventanas/puertas. ' +
-              'Para CADA uno indica: tipo de apertura, medidas (ancho x alto), cantidad y color. ' +
-              'Si hay un plano o cotización, transcribe los datos relevantes. Responde en español.',
+              'Eres un lector experto de planos y listados de ventanas/puertas. Extrae TODAS las filas, sin omitir ninguna. ' +
+              'Para CADA ventana/puerta lista una línea con: identificador (V1, V2… si aparece), tipo de apertura ' +
+              '(corredera/fija/proyectante/abatir/oscilobatiente), medidas ancho x alto TAL CUAL aparezcan (mm o cm), ' +
+              'cantidad y color. Si un dato no aparece, escribe "NO ESPECIFICADO" pero NO borres la fila. ' +
+              'Formato por ítem: <id> | <tipo> | <ancho>x<alto> | cant <n> | <color>. ' +
+              'NO resumas ni agrupes: lista cada ítem por separado. Responde solo con las filas, en español.',
           },
           { type: 'image_url', image_url: { url: `data:${mime};base64,${b64}`, detail: 'high' } },
         ],
@@ -241,6 +245,10 @@ async function resolveUserText(inbound, body, deps) {
     try {
       const { buffer, mime } = await downloadWaMedia(mediaId, deps);
       const desc = await (deps.describeImage || describeImage)(buffer, mime, deps);
+      // [#5] Persistir la imagen ENTRANTE (aunque sea ilegible) para que el operador la vea en el cockpit. Fire-and-forget.
+      saveMedia({ phone: raw?.from, direction: 'inbound', mediaType: 'image', mimeType: mime,
+        filename: `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, buffer, waMediaId: mediaId,
+        aiDescription: (desc && desc !== '[Imagen no legible]') ? desc : '[imagen recibida]' }).catch(() => {});
       // [F3b] '[Imagen no legible]' NO es contenido válido → cae al fallback que pide
       // describir por texto (evita pasar una no-descripción como medidas reales).
       if (desc && desc !== '[Imagen no legible]') {
@@ -267,6 +275,10 @@ async function resolveUserText(inbound, body, deps) {
     try {
       const { buffer, mime } = await downloadWaMedia(mediaId, deps);
       const transcript = await (deps.transcribeAudio || transcribeAudio)(buffer, mime, deps);
+      // [#5] Persistir el audio ENTRANTE + su transcripción para el cockpit. Fire-and-forget.
+      saveMedia({ phone: raw?.from, direction: 'inbound', mediaType: 'audio', mimeType: mime,
+        filename: `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, buffer, waMediaId: mediaId,
+        transcription: transcript || '', aiDescription: transcript || '[audio recibido]' }).catch(() => {});
       if (transcript) return { userText: transcript, mediaResolved: true };
     } catch (err) {
       log('error', 'media.audio', err);
@@ -275,6 +287,26 @@ async function resolveUserText(inbound, body, deps) {
       userText:
         'El cliente envió un audio que no se pudo transcribir. Pídale, de forma amable, ' +
         'que escriba su consulta por texto.',
+      mediaResolved: false,
+    };
+  }
+
+  // [#5] Documento/plano entrante (PDF, etc.): persistir para el cockpit + pedir medidas por texto.
+  if (type === 'document') {
+    const raw = rawMessage(body);
+    const mediaId = raw?.document?.id;
+    if (mediaId) {
+      try {
+        const { buffer, mime } = await downloadWaMedia(mediaId, deps);
+        const fn = raw?.document?.filename || `inbound_${raw?.from || 'wa'}_${mediaId}.pdf`;
+        saveMedia({ phone: raw?.from, direction: 'inbound', mediaType: 'document', mimeType: mime,
+          filename: fn, buffer, waMediaId: mediaId, aiDescription: `Documento/plano entrante: ${fn}` }).catch(() => {});
+      } catch (err) { log('error', 'media.document', err); }
+    }
+    return {
+      userText:
+        'El cliente envió un documento/plano. Pídale, de forma amable, que confirme por texto el tipo de ventana, ' +
+        'las medidas (ancho x alto), la cantidad y el color de cada una para poder cotizar.',
       mediaResolved: false,
     };
   }
