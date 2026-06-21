@@ -245,3 +245,26 @@ export async function addZohoNote(dealId, title, body) {
     console.error('[zohoCommercial] addZohoNote:', e.response?.data || e.message);
   }
 }
+
+/* =======================================================
+ * ADJUNTAR PDF AL DEAL (ISO trazabilidad — la propuesta queda EN el registro Zoho)
+ * Multipart: NO usar zhH() (fija Content-Type:json) — solo Authorization + dejar
+ * que axios/FormData pongan el boundary. Fire-and-forget: si falla, loguea y sigue.
+ * ======================================================= */
+export async function attachPdfToDeal(dealId, pdfBuffer, filename) {
+  if (!REQUIRE_ZOHO || !dealId || !pdfBuffer) return false;
+  try {
+    const tok = await zhToken();
+    const fd = new FormData();
+    fd.append('file', new Blob([pdfBuffer], { type: 'application/pdf' }), filename || 'propuesta.pdf');
+    await axios.post(
+      `${ZOHO.API}/crm/v2/Deals/${dealId}/Attachments`,
+      fd,
+      { headers: { Authorization: `Zoho-oauthtoken ${tok}` }, httpsAgent, timeout: 20000 }
+    );
+    return true;
+  } catch (e) {
+    console.error('[zohoCommercial] attachPdfToDeal:', e.response?.data || e.message);
+    return false;
+  }
+}

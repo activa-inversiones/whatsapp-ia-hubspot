@@ -45,7 +45,7 @@ import {
 } from '../sales-agent/whatsapp-adapter.js';
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
 import { saveMedia } from '../../mediaStore.js'; // [#5] persistir media ENTRANTE (foto/audio/plano) para el cockpit
-import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, archivarEnWorkDrive } from '../../services/zohoCommercial.js';
+import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal, archivarEnWorkDrive } from '../../services/zohoCommercial.js';
 import {
   shouldSendVoice as realShouldSendVoice,
   synthesizeVoiceBuffer as realSynthesizeVoiceBuffer,
@@ -390,6 +390,7 @@ export async function handleWebhook(req, res, deps = {}) {
     const generatePdf      = deps.generatePdf      || realGeneratePdf;
     const upsertZohoDeal   = deps.upsertZohoDeal   || realUpsertZohoDeal;
     const addZohoNote      = deps.addZohoNote      || realAddZohoNote;
+    const attachPdfToDeal  = deps.attachPdfToDeal  || realAttachPdfToDeal;
     const shouldSendVoice = deps.shouldSendVoice || realShouldSendVoice;
     const synthesizeVoiceBuffer = deps.synthesizeVoiceBuffer || realSynthesizeVoiceBuffer;
     const handleTurn      = deps.handleTurn      || realHandleTurn;
@@ -837,6 +838,8 @@ export async function handleWebhook(req, res, deps = {}) {
             if (dealId) {
               await addZohoNote(dealId, `Cotización enviada: ${quoteNumber}`,
                 `PDF enviado al cliente por WhatsApp.\nTotal: $${grandTotal.toLocaleString('es-CL')} CLP (IVA incl.)`);
+              // [#6] adjuntar el PDF AL Deal (trazabilidad ISO en el registro Zoho)
+              await attachPdfToDeal(dealId, pdfBuffer, filename);
             }
           });
 
