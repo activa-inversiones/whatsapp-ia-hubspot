@@ -42,3 +42,18 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
     }))
     .filter(it => Number(it.unit_price) > 0);
 }
+
+/**
+ * [#2 2026-06-21] Anti "precio suelto" (REGLA #13): el monto va SOLO en el PDF formal, NUNCA en el
+ * texto del chat. Si el LLM dejó un monto CLP en la respuesta (desobedeció), lo reemplaza por un
+ * redirect a la propuesta. El PDF se entrega por el flujo determinista (mismo/próximo turno).
+ * CONSERVADOR a propósito (cero falsos positivos): solo dispara con (a) "$" + miles agrupados,
+ * (b) miles agrupados + "pesos/CLP", o (c) ≥2 grupos de miles (≥ 1.000.000). NO toca medidas
+ * "1.20 m" / "120x150" / "2.400 mm", cantidades "2 ventanas", folios "N° 0021", ni teléfonos.
+ */
+export function stripMontos(text) {
+  if (!text) return text;
+  const RX = /\$\s?\d{1,3}(?:\.\d{3})+(?:\s?(?:CLP|clp|pesos?))?|\d{1,3}(?:\.\d{3})+\s?(?:CLP|clp|pesos?)|\d{1,3}(?:\.\d{3}){2,}/g;
+  const out = text.replace(RX, '(valor en la propuesta formal)');
+  return out === text ? text : out.replace(/\s{2,}/g, ' ').trim();
+}

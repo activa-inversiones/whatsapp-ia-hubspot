@@ -1,7 +1,7 @@
 // node --test src/oliver-gpt/pdf-intent.test.js
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls } from './pdf-intent.js';
+import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos } from './pdf-intent.js';
 
 test('isPdfAffirmative: afirmaciones cortas y explícitas', () => {
   for (const t of ['sí', 'Si', 'dale', 'ok', 'perfecto', 'listo', 'envíamela', 'quiero el pdf', 'mándamela', 'la propuesta formal'])
@@ -37,4 +37,31 @@ test('itemsFromQuoteCalls: extrae items válidos de calcular_cotizacion, ignora 
   assert.equal(items[0].unit_price, 300000);
   assert.equal(items[0].qty, 2);
   assert.equal(items[0].producto_label, 'Corredera SLIDING');
+});
+
+test('stripMontos: borra montos CLP del texto (positivos)', () => {
+  for (const c of [
+    'te sale $289.000 con termopanel',
+    'son $1.234.567 en total',
+    'quedan en 1.200.000 pesos',
+    'el valor es 890.000 CLP',
+    'total 1.234.567 listo',
+  ]) {
+    const out = stripMontos(c);
+    assert.ok(/valor en la propuesta formal/.test(out), `debió redirigir: ${c} → ${out}`);
+    assert.ok(!/\d\.\d{3}/.test(out), `no debió quedar monto: ${c} → ${out}`);
+  }
+});
+
+test('stripMontos: NO toca medidas/cantidades/folios/teléfonos (sin falsos positivos)', () => {
+  for (const t of [
+    'una corredera de 1.20 m por 1.50 m',
+    'medidas 120x150 cm',
+    'una ventana de 2.400 mm de ancho',
+    'tengo 2 ventanas y 3 puertas',
+    'tu Propuesta Técnica Económica N° 0021',
+    'llámame al +56 9 5729 6035',
+    'con un abono del 50%',
+    '',
+  ]) assert.equal(stripMontos(t), t, `NO debió cambiar: "${t}"`);
 });

@@ -34,8 +34,9 @@ import * as realBridge from '../../services/salesOsBridge.js';
 import { sendWhatsAppText as realSendWhatsAppText } from '../sales-agent/whatsapp-adapter.js';
 import { loadSession as realLoadSession, persistSession as realPersistSession, resetIfInactive } from './session-store.js';
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
-import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote } from '../../services/zohoCommercial.js';
+import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal } from '../../services/zohoCommercial.js';
 import { sendChannelDocument as realSendChannelDocument } from '../../services/multiChannelHandler.js';
+import { stripMontos } from './pdf-intent.js'; // [#2] filtro anti precio-suelto (compartido con webhook.js)
 
 /* =========================================================================
  * ESTADO IN-MEMORY (piloto) — por canal+sender.
@@ -207,6 +208,7 @@ export async function handleChannelTurn(
   const generatePdf           = deps.generatePdf           || realGeneratePdf;
   const upsertZohoDeal        = deps.upsertZohoDeal         || realUpsertZohoDeal;
   const addZohoNote           = deps.addZohoNote            || realAddZohoNote;
+  const attachPdfToDeal       = deps.attachPdfToDeal        || realAttachPdfToDeal;
   const sendChannelDocument   = deps.sendChannelDocument   || realSendChannelDocument;
   const loadSession           = deps.loadSession            || realLoadSession;
   const persistSession        = deps.persistSession         || realPersistSession;
@@ -483,8 +485,11 @@ export async function handleChannelTurn(
               phone: clientPhone || senderId, name: clientName, comuna: clientComuna,
               items: input.items || [], grand_total: grandTotal, stageKey: 'propuesta', quote_number: quoteNumber,
             });
-            if (dealId) await addZohoNote(dealId, `Cotización enviada: ${quoteNumber}`,
-              `PDF enviado al cliente por ${channel}.\nTotal: $${grandTotal.toLocaleString('es-CL')} CLP (IVA incl.)`);
+            if (dealId) {
+              await addZohoNote(dealId, `Cotización enviada: ${quoteNumber}`,
+                `PDF enviado al cliente por ${channel}.\nTotal: $${grandTotal.toLocaleString('es-CL')} CLP (IVA incl.)`);
+              await attachPdfToDeal(dealId, pdfBuffer, filename); // [#6 paridad] adjuntar PDF al Deal (trazabilidad ISO)
+            }
           });
 
           // Paso 5: conversión multicanal (anti-cross-inject: canal del lead = el real IG/FB).
@@ -555,7 +560,7 @@ export async function handleChannelTurn(
       handleTurn({ history, userText: text, state, toolCtx }),
       new Promise((_, rej) => setTimeout(() => rej(new Error('turn_timeout')), TURN_TIMEOUT_MS)),
     ]);
-    const reply = turn?.reply || '';
+    let reply = turn?.reply || '';
     const newHistory = Array.isArray(turn?.history) ? turn.history : history;
     const newState = turn?.state && typeof turn.state === 'object' ? turn.state : state;
     const toolCalls = Array.isArray(turn?.toolCalls) ? turn.toolCalls : [];
@@ -570,6 +575,16 @@ export async function handleChannelTurn(
         at: Date.now(),
       };
     }
+
+    // [#2 paridad 2026-06-21] Si este turno SE generó el PDF, el texto ES la entrega (usa el message del
+    // tool): nunca un saludo ni "no lo puedo enviar". Limpia pending_quote (ya se entregó). Igual que WhatsApp.
+    const _pdfCall = toolCalls.find((t) => t.name === 'generar_pdf_cotizacion' && t.result && t.result.message);
+    if (_pdfCall) {
+      reply = _pdfCall.result.message;
+      if (_pdfCall.result.ok) newState.pending_quote = null;
+    }
+    // [#2 2026-06-21] Blindaje anti precio-suelto (REGLA #13): borra cualquier monto CLP del texto antes de enviar.
+    reply = stripMontos(reply);
 
     // ── Enviar respuesta por el canal ───────────────────────────────────
     // [2026-06-14] Capturamos el resultado: si el envío falla (ej: fuera de la ventana de

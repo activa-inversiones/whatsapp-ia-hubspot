@@ -52,7 +52,7 @@ import {
 } from '../../services/voiceBridge.js'; // [F4] voz saliente
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
-import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent
+import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent
 import { toFile as realToFile } from 'openai/uploads';
 import {
   loadSession as realLoadSession,
@@ -244,8 +244,13 @@ async function resolveUserText(inbound, body, deps) {
     if (!mediaId) return { userText: text, mediaResolved: false };
     try {
       const { buffer, mime } = await downloadWaMedia(mediaId, deps);
-      const desc = await (deps.describeImage || describeImage)(buffer, mime, deps);
-      // [#5] Persistir la imagen ENTRANTE (aunque sea ilegible) para que el operador la vea en el cockpit. Fire-and-forget.
+      // [#5-robustez 2026-06-21] La visión puede fallar (ej: sin saldo OPENAI_API_KEY). Aislamos el
+      // describe en su propio try → así el saveMedia de abajo SIEMPRE corre (el operador ve la foto
+      // aunque la IA esté caída, que es justo cuando MÁS lo necesita).
+      let desc = '';
+      try { desc = await (deps.describeImage || describeImage)(buffer, mime, deps); }
+      catch (e) { log('error', 'media.image.vision', e); }
+      // [#5] Persistir la imagen ENTRANTE (aunque sea ilegible o la visión falle) para que el operador la vea. Fire-and-forget.
       saveMedia({ phone: raw?.from, direction: 'inbound', mediaType: 'image', mimeType: mime,
         filename: `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, buffer, waMediaId: mediaId,
         aiDescription: (desc && desc !== '[Imagen no legible]') ? desc : '[imagen recibida]' }).catch(() => {});
@@ -274,7 +279,11 @@ async function resolveUserText(inbound, body, deps) {
     if (!mediaId) return { userText: text, mediaResolved: false };
     try {
       const { buffer, mime } = await downloadWaMedia(mediaId, deps);
-      const transcript = await (deps.transcribeAudio || transcribeAudio)(buffer, mime, deps);
+      // [#5-robustez 2026-06-21] STT puede fallar (ej: sin saldo OPENAI_API_KEY). Aislamos la
+      // transcripción → el saveMedia de abajo SIEMPRE corre (el operador escucha el audio aunque la IA esté caída).
+      let transcript = '';
+      try { transcript = await (deps.transcribeAudio || transcribeAudio)(buffer, mime, deps); }
+      catch (e) { log('error', 'media.audio.stt', e); }
       // [#5] Persistir el audio ENTRANTE + su transcripción para el cockpit. Fire-and-forget.
       saveMedia({ phone: raw?.from, direction: 'inbound', mediaType: 'audio', mimeType: mime,
         filename: `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, buffer, waMediaId: mediaId,
@@ -972,6 +981,10 @@ export async function handleWebhook(req, res, deps = {}) {
       reply = _pdfCall.result.message;                       // entrega exitosa O "dame un momentito" si el folio no salió
       if (_pdfCall.result.ok) newState.pending_quote = null; // solo limpiar si realmente se entregó (si falló, dejar para reintento)
     }
+
+    // [#2 2026-06-21] Blindaje anti precio-suelto (REGLA #13): el monto va SOLO en el PDF. Si el LLM
+    // dejó un monto CLP en el texto, lo borra antes de enviar (conservador: no toca medidas/folios).
+    reply = stripMontos(reply);
 
     // ── (7) Enviar respuesta por WhatsApp ───────────────────────────────
     // (7a) Texto: siempre se envía (canal garantizado).
