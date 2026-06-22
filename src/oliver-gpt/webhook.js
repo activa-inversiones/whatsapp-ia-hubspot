@@ -32,6 +32,7 @@
 
 import { handleTurn as realHandleTurn } from './agent.js';
 import { getClient as realGetClient } from './engine.js';
+import { parseExcelWindows } from './parseExcel.js';
 import {
   parseInbound as realParseInbound,
   sendWhatsAppText as realSendWhatsAppText,
@@ -300,16 +301,28 @@ async function resolveUserText(inbound, body, deps) {
     };
   }
 
-  // [#5] Documento/plano entrante (PDF, etc.): persistir para el cockpit + pedir medidas por texto.
+  // [#5] Documento entrante: persistir para el cockpit. Si es EXCEL con lista de ventanas → LEERLO y cotizar.
   if (type === 'document') {
     const raw = rawMessage(body);
     const mediaId = raw?.document?.id;
+    const fn = raw?.document?.filename || `inbound_${raw?.from || 'wa'}_${mediaId}.bin`;
     if (mediaId) {
       try {
         const { buffer, mime } = await downloadWaMedia(mediaId, deps);
-        const fn = raw?.document?.filename || `inbound_${raw?.from || 'wa'}_${mediaId}.pdf`;
         saveMedia({ phone: raw?.from, direction: 'inbound', mediaType: 'document', mimeType: mime,
           filename: fn, buffer, waMediaId: mediaId, aiDescription: `Documento/plano entrante: ${fn}` }).catch(() => {});
+        // [2026-06-22 FIX] Si es Excel, LEER la lista de ventanas y cotizar (antes: pedía reescribir a mano → se perdían clientes).
+        const esExcel = /\.xlsx?$/i.test(fn) || /spreadsheet|excel/i.test(mime || '');
+        if (esExcel && buffer) {
+          try {
+            const parsed = parseExcelWindows(buffer);
+            if (parsed.ok && parsed.items.length) {
+              log('info', 'media.document.excel', `parseadas ${parsed.items.length} ventanas de ${fn}`);
+              return { userText: parsed.promptText, mediaResolved: true };
+            }
+            log('info', 'media.document.excel', `no se pudo extraer lista (${parsed.reason || 'desconocido'}) — fallback a pedir texto`);
+          } catch (e) { log('error', 'media.document.excel', e); }
+        }
       } catch (err) { log('error', 'media.document', err); }
     }
     return {
