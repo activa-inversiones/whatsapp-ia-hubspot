@@ -429,7 +429,7 @@ export async function handleWebhook(req, res, deps = {}) {
     const inbound = parseInbound(req.body);
     if (!inbound || !inbound.ok || !inbound.from) return;
 
-    const { from, msgId } = inbound;
+    const { from, msgId, push_name } = inbound; // push_name = nombre de perfil WhatsApp (fallback de nombre del cliente)
 
     if (msgId) {
       if (seen.has(msgId)) {
@@ -761,7 +761,7 @@ export async function handleWebhook(req, res, deps = {}) {
           if (RECENT_QUOTES.size > 500) RECENT_QUOTES.clear(); // backstop de memoria
 
           // ── Paso 2: Generar PDF premium ──────────────────────────────────────
-          const clientName  = input.name  || state.name  || 'Cliente';
+          const clientName  = input.name  || state.name  || push_name || 'Cliente';
           const clientPhone = input.phone || state.telefono || from;
           const clientComuna = input.comuna || state.comuna || '';
           const pdfData = {
@@ -769,6 +769,7 @@ export async function handleWebhook(req, res, deps = {}) {
             phone:   clientPhone,
             comuna:  clientComuna,
             address: state.address || '',
+            descuento_pct: Number(input.descuento_pct) || 0,   // descuento al cliente en la propuesta (0 = sin descuento)
             default_color: (input.items?.[0]?.color) || state.default_color || '',
             items:   (input.items || []).map((it) => ({
               product:        it.producto_label || it.product || 'Ventana',
@@ -1033,7 +1034,7 @@ export async function handleWebhook(req, res, deps = {}) {
       bridge.pushConversationEvent({
         channel: 'whatsapp',
         external_id: from,
-        customer_name: newState.name || '',
+        customer_name: newState.name || push_name || '',
         direction: 'inbound',
         actor_type: 'customer',
         actor_name: 'Cliente',
@@ -1052,7 +1053,7 @@ export async function handleWebhook(req, res, deps = {}) {
         bridge.pushConversationEvent({
           channel: 'whatsapp',
           external_id: from,
-          customer_name: newState.name || '',
+          customer_name: newState.name || push_name || '',
           direction: 'outbound',
           actor_type: 'ai',
           actor_name: 'Oliver',
@@ -1070,7 +1071,7 @@ export async function handleWebhook(req, res, deps = {}) {
         bridge.pushQuoteEvent({
           phone: from,
           channel: 'whatsapp',
-          customer_name: newState.name || 'Cliente WhatsApp',
+          customer_name: newState.name || push_name || 'Cliente WhatsApp',
           amount_total: quote.total || quote.grand_total || null,
           currency: 'CLP',
           status: 'draft',

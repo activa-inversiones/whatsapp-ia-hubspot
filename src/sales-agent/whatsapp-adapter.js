@@ -40,6 +40,9 @@ export function parseInbound(body) {
   const msg = val?.messages?.[0];
   if (!msg) return { ok: false };
 
+  // [2026-06-22] Nombre de perfil de WhatsApp (push_name) → fallback de nombre del cliente en el cockpit/propuesta.
+  const pushName = (val?.contacts?.[0]?.profile?.name || '').trim();
+
   const type = msg.type;
   let text = "";
   if (type === "text") {
@@ -59,7 +62,7 @@ export function parseInbound(body) {
     text = `[${type}]`;
   }
 
-  return { ok: true, from: msg.from, text, msgId: msg.id, type };
+  return { ok: true, from: msg.from, text, msgId: msg.id, type, push_name: pushName };
 }
 
 /**

@@ -152,13 +152,20 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         doc.moveTo(50, y).lineTo(doc.page.width - 50, y).lineWidth(0.5).strokeColor(LINE).stroke();
       });
 
-      // Totales
-      if (y + 110 > doc.page.height - 90) { doc.addPage(); header(doc, quoteNumber); y = 110; }
+      // Totales (con DESCUENTO opcional — data.descuento_pct, ej. 10 = 10%)
+      if (y + 150 > doc.page.height - 90) { doc.addPage(); header(doc, quoteNumber); y = 110; }
       y += 12;
-      const iva = Math.round(neto * 0.19), total = neto + iva;
+      const descPct = Math.max(0, Math.min(50, Number(data.descuento_pct) || 0)); // descuento al cliente, 0–50%
+      const desc = Math.round(neto * descPct / 100);
+      const netoFinal = neto - desc;
+      const iva = Math.round(netoFinal * 0.19), total = netoFinal + iva;
       doc.fillColor(DARK).fontSize(10).font("Helvetica");
       doc.text("Subtotal neto:", 360, y, { width: 105, align: "right" }); doc.text(fmt(neto), 470, y, { width: 75, align: "right" }); y += 17;
-      doc.text("IVA 19%:", 360, y, { width: 105, align: "right" }); doc.text(fmt(iva), 470, y, { width: 75, align: "right" }); y += 19;
+      if (desc > 0) {
+        doc.fillColor("#1E96F7").text(`Descuento ${descPct}%:`, 360, y, { width: 105, align: "right" }); doc.text(`- ${fmt(desc)}`, 470, y, { width: 75, align: "right" }); y += 17;
+        doc.fillColor(DARK).font("Helvetica-Bold").text("Subtotal c/dcto:", 360, y, { width: 105, align: "right" }); doc.text(fmt(netoFinal), 470, y, { width: 75, align: "right" }); doc.font("Helvetica"); y += 17;
+      }
+      doc.fillColor(DARK).text("IVA 19%:", 360, y, { width: 105, align: "right" }); doc.text(fmt(iva), 470, y, { width: 75, align: "right" }); y += 19;
       doc.rect(360, y - 4, 185, 26).fill(GOLD);
       doc.fillColor("#fff").fontSize(13).font("Helvetica-Bold");
       doc.text("TOTAL:", 365, y + 3, { width: 100, align: "right" }); doc.text(fmt(total), 470, y + 3, { width: 70, align: "right" });
