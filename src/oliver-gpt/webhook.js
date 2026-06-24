@@ -726,6 +726,7 @@ export async function handleWebhook(req, res, deps = {}) {
           const SALES_OS_URL = (process.env.SALES_OS_URL || '').replace(/\/$/, '');
           const OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || '';
           let quoteNumber = null;
+          let descuentoMercadoPct = 0; // [2026-06-24] viene del correlativo → se muestra en el PDF
           try {
             const correlativoRes = await fetch(
               `${SALES_OS_URL}/internal/quotes/next-number`,
@@ -739,6 +740,7 @@ export async function handleWebhook(req, res, deps = {}) {
             if (correlativoRes.ok) {
               const cj = await correlativoRes.json();
               quoteNumber = cj.quote_number || cj.number || null;
+              descuentoMercadoPct = Number(cj.descuento_cliente_pct) || 0;
             }
           } catch (err) {
             log('error', 'generarPdf.correlativo', err);
@@ -769,7 +771,8 @@ export async function handleWebhook(req, res, deps = {}) {
             phone:   clientPhone,
             comuna:  clientComuna,
             address: state.address || '',
-            descuento_pct: Number(input.descuento_pct) || 0,   // descuento al cliente en la propuesta (0 = sin descuento)
+            descuento_pct: Number(input.descuento_pct) || 0,   // descuento MANUAL adicional en la propuesta (0 = sin descuento)
+            descuento_mercado_pct: descuentoMercadoPct,         // descuento de mercado YA aplicado a los precios (se MUESTRA al cliente)
             default_color: (input.items?.[0]?.color) || state.default_color || '',
             items:   (input.items || []).map((it) => ({
               product:        it.producto_label || it.product || 'Ventana',

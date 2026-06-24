@@ -160,6 +160,17 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       const netoFinal = neto - desc;
       const iva = Math.round(netoFinal * 0.19), total = netoFinal + iva;
       doc.fillColor(DARK).fontSize(10).font("Helvetica");
+      // [2026-06-24] DESCUENTO DE MERCADO (global, ya aplicado a los precios por el motor).
+      // Se MUESTRA para que el cliente vea el ahorro. 'neto' YA viene descontado → la lista
+      // (precio sin descuento) se back-calcula: lista = neto / (1 - pct). pct es FRACCIÓN (0.2 = 20%).
+      const mPct = Math.max(0, Math.min(0.5, Number(data.descuento_mercado_pct) || 0));
+      if (mPct > 0) {
+        const lista = Math.round(neto / (1 - mPct));
+        const descMerc = lista - neto;
+        doc.text("Precio lista:", 360, y, { width: 105, align: "right" }); doc.text(fmt(lista), 470, y, { width: 75, align: "right" }); y += 17;
+        doc.fillColor("#1E96F7").text(`Descuento ${Math.round(mPct * 100)}%:`, 360, y, { width: 105, align: "right" }); doc.text(`- ${fmt(descMerc)}`, 470, y, { width: 75, align: "right" }); y += 17;
+        doc.fillColor(DARK);
+      }
       doc.text("Subtotal neto:", 360, y, { width: 105, align: "right" }); doc.text(fmt(neto), 470, y, { width: 75, align: "right" }); y += 17;
       if (desc > 0) {
         doc.fillColor("#1E96F7").text(`Descuento ${descPct}%:`, 360, y, { width: 105, align: "right" }); doc.text(`- ${fmt(desc)}`, 470, y, { width: 75, align: "right" }); y += 17;
