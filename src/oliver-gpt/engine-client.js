@@ -127,6 +127,26 @@ async function httpJson(url, { method = 'GET', body, headers = {}, timeoutMs = D
   return data;
 }
 
+// [2026-06-24] Normaliza el color que diga el cliente al valor REAL del catálogo que el
+// motor reconoce (quoteEngine COLOR_SFX: BLANCO/NOGAL/ROBLE DORADO/GRAFITO/NEW BLACK).
+// Sin esto, "café"/"gris"/"negro" no matchean → el motor cae a Blanco (precio/visual erróneo).
+// Catálogo real (foto del dueño): Blanco · Nogal · Roble Dorado · Grafito Antracita · Negro.
+const COLOR_CATALOGO = {
+  cafe: 'NOGAL', café: 'NOGAL', marron: 'NOGAL', marrón: 'NOGAL', nogal: 'NOGAL',
+  'madera oscura': 'NOGAL', amaderado: 'NOGAL', madera: 'NOGAL',
+  roble: 'ROBLE DORADO', 'roble dorado': 'ROBLE DORADO', dorado: 'ROBLE DORADO',
+  'madera clara': 'ROBLE DORADO', 'roble claro': 'ROBLE DORADO',
+  gris: 'GRAFITO', grafito: 'GRAFITO', antracita: 'GRAFITO', plomo: 'GRAFITO',
+  'gris antracita': 'GRAFITO', 'grafito antracita': 'GRAFITO',
+  negro: 'NEW BLACK', 'new black': 'NEW BLACK', black: 'NEW BLACK', 'grafito oscuro': 'NEW BLACK',
+  blanco: 'BLANCO', white: 'BLANCO',
+};
+function normalizeColor(c) {
+  if (c === undefined || c === null || c === '') return c;
+  const k = String(c).trim().toLowerCase().replace(/\s+/g, ' ');
+  return COLOR_CATALOGO[k] || c; // si no matchea, pasa tal cual (el motor cae a BL)
+}
+
 /**
  * Cotiza una ventana puntual.
  * @param {object} params
@@ -160,7 +180,7 @@ export async function calcularCotizacion(params = {}) {
   };
   if (serie !== undefined) payload.serie = serie;
   if (hojas !== undefined) payload.hojas = Number(hojas);
-  if (color !== undefined) payload.color = color;
+  if (color !== undefined) payload.color = normalizeColor(color);
   if (comuna !== undefined) payload.comuna = comuna;
   if (cantidad !== undefined) payload.cantidad = Number(cantidad);
 
@@ -192,7 +212,7 @@ export async function calcularPorArea(params = {}) {
     glass_id: gid,
   };
   if (proporcion !== undefined) payload.proporcion = proporcion;
-  if (color !== undefined) payload.color = color;
+  if (color !== undefined) payload.color = normalizeColor(color);
   if (comuna !== undefined) payload.comuna = comuna;
 
   return httpJson(`${BASE_URL()}/api/quotes/calculate-by-area`, {

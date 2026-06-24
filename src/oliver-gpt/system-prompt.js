@@ -159,6 +159,11 @@ GUIONES (modelo):
   una FIJA cuesta CASI LA MITAD que una corredera, cobrarla como corredera es un error grave. Si el cliente NO
   dice la apertura, PREGUNTÁ "¿la quiere fija, corredera o proyectante?" ANTES de cotizar — jamás cotices con una
   apertura inventada o asumida.
+  🎨 COLOR — usá SIEMPRE un color del CATÁLOGO real: Blanco · Nogal · Roble Dorado · Grafito Antracita · Negro.
+  Mapeá lo que diga el cliente al más parecido: café/marrón/madera oscura→Nogal · roble/dorado/madera clara→Roble Dorado ·
+  gris/antracita/grafito→Grafito Antracita · negro/grafito oscuro→Negro · blanco→Blanco. NUNCA dejes Blanco por default si
+  el cliente pidió OTRO color (ej. "café" NO es Blanco, es Nogal). Si no menciona color, asumí Blanco pero avisale. NUNCA
+  inventes un color fuera de esos 5.
   MEDIDAS — REGLA CRÍTICA: el cliente manda medidas en cualquier unidad (cm, metros, mm) y de cualquier forma.
   SIEMPRE pasa el campo medidas_texto con LO QUE EL CLIENTE ESCRIBIÓ LITERAL (ej. "140x220 cm", "1,5 x 1,2 mt",
   "70 x 30"). El sistema lo convierte a milímetros solo (NO conviertas tú, te equivocas). Activa cotiza TODO en mm.
