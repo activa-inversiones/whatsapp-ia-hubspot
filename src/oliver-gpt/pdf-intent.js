@@ -39,6 +39,7 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
       unit_price: Number(t.result.unit_price) || 0,
       glass_label: t.result.glass_label || 'Termopanel DVH',
       ambiente: t.input?.ambiente || '',
+      termico: t.result?.termico || null,   // [thermal] Uw → PDF (camino determinista)
     }))
     .filter(it => Number(it.unit_price) > 0);
 }

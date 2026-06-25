@@ -357,6 +357,7 @@ export async function priceAllEngine(d, customer_id = "") {
     item.serie = serie;
     if (r.producto_label) item.producto_label = r.producto_label;
     if (r.corredera) item.corredera = r.corredera;
+    if (r.termico) item.termico = r.termico; // [thermal] hoja Uw (aditivo; null en H98/sin match → no se muestra)
     if (dim && dim.suggest) item.price_warning = dim.message;
 
     return { lineTotal };

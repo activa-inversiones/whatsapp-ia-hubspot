@@ -500,6 +500,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         producto_label: it.producto_label,
         serie: it.serie,
         referencial: it.referencial || false,
+        termico: it.termico || null,          // [thermal] hoja Uw para el PDF (null = no mostrar)
         _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses otro campo.',
       };
     }

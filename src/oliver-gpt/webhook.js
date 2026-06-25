@@ -836,6 +836,7 @@ export async function handleWebhook(req, res, deps = {}) {
               unit_price:     Number(it.unit_price) || 0,  // NUNCA inventado: viene del motor
               glass_label:    it.glass_label || 'Termopanel DVH',
               ambiente:       it.ambiente || '',
+              termico:        it.termico || null,   // [thermal] Uw aditivo (null = no se muestra)
             })),
             quote_num: quoteNumber,
           };

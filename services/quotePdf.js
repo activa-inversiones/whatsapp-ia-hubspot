@@ -140,7 +140,12 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         doc.fillColor(DARK).fontSize(9).font("Helvetica-Bold").text(`V${idx + 1} · ${label}`, 165, y + 7, { width: 190 });
         doc.fillColor(GRAY).fontSize(7.5).font("Helvetica")
            .text(`${ms.ancho}×${ms.alto} mm · ${m2} m² · ${col.name} · ${vidrio}`, 165, y + 22, { width: 190 });
-        doc.fillColor("#1E96F7").fontSize(7).text("Ver en 3D / probar en tu pared", 165, y + 36, { width: 190 });
+        // [thermal] Uw discreto bajo la descripción — SOLO si vino del motor (null=H98 → nada)
+        if (it.termico && Number(it.termico.uw) > 0) {
+          doc.fillColor(GRAY).fontSize(6.8).font("Helvetica-Oblique")
+             .text(`Uw = ${Number(it.termico.uw).toFixed(2)} W/m²K · ISO 10077-1`, 165, y + 32, { width: 190 });
+        }
+        doc.fillColor("#1E96F7").fontSize(7).font("Helvetica").text("Ver en 3D / probar en tu pared", 165, y + 44, { width: 190 });
         // números
         const qty = Number(it.qty) || 1, unit = Number(it.unit_price) || 0, sub = unit * qty;
         neto += sub;
