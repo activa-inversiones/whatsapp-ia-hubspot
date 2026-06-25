@@ -122,7 +122,7 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
 
       const items = data.items || [];
       let neto = 0;
-      const rowH = 56;
+      const rowH = 60; // [thermal] +4px de aire para la línea Uw bajo la descripción (sin apretar)
       items.forEach((it, idx) => {
         if (y + rowH > doc.page.height - 90) {           // salto de página
           doc.addPage(); header(doc, quoteNumber); y = 110; y = tableHead(doc, y);
@@ -143,9 +143,9 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         // [thermal] Uw discreto bajo la descripción — SOLO si vino del motor (null=H98 → nada)
         if (it.termico && Number(it.termico.uw) > 0) {
           doc.fillColor(GRAY).fontSize(6.8).font("Helvetica-Oblique")
-             .text(`Uw = ${Number(it.termico.uw).toFixed(2)} W/m²K · ISO 10077-1`, 165, y + 32, { width: 190 });
+             .text(`Uw = ${Number(it.termico.uw).toFixed(2)} W/m²K · ISO 10077-1`, 165, y + 34, { width: 190 });
         }
-        doc.fillColor("#1E96F7").fontSize(7).font("Helvetica").text("Ver en 3D / probar en tu pared", 165, y + 44, { width: 190 });
+        doc.fillColor("#1E96F7").fontSize(7).font("Helvetica").text("Ver en 3D / probar en tu pared", 165, y + 46, { width: 190 });
         // números
         const qty = Number(it.qty) || 1, unit = Number(it.unit_price) || 0, sub = unit * qty;
         neto += sub;
