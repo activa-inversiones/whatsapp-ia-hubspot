@@ -108,6 +108,24 @@ export async function handleTurn({ history = [], userText, state = {}, toolCtx =
         input = {};
       }
 
+      // [2026-06-24] GUARD de apertura (determinístico): el LLM a veces cotiza una "fija"
+      // como CORREDERA (precio 2x). La palabra que dijo el cliente MANDA sobre la del LLM.
+      // Si en el texto del cliente hay una apertura explícita y NO coincide con la que eligió
+      // el LLM, la corregimos antes de pegarle al motor. Solo aplica a las tools de cotización.
+      if (name === 'calcular_cotizacion' || name === 'calcular_por_area') {
+        const _t = String(userText || '').toLowerCase();
+        const apReal = /\boscilo\s?batient/.test(_t) ? 'OSCILOBATIENTE'
+          : /\bproyectant/.test(_t) ? 'PROYECTANTE'
+          : (/\bcorrediz/.test(_t) || /\bcorrederas?\b/.test(_t) || /\bdeslizant/.test(_t)) ? 'CORREDERA'
+          : (/\bbatient/.test(_t) || /\babatibl/.test(_t)) ? 'BATIENTE'
+          : /\bfij[ao]s?\b/.test(_t) ? 'FIJA'
+          : null;
+        if (apReal && String(input.tipo || '').toUpperCase() !== apReal) {
+          console.warn(`[agent] apertura corregida: LLM='${input.tipo}' → cliente dijo '${apReal}'`);
+          input = { ...input, tipo: apReal };
+        }
+      }
+
       let result;
       try {
         result = await execTool(name, input, toolCtx);
