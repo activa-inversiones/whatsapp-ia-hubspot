@@ -4158,7 +4158,7 @@ app.get("/health", async (_req, res) => {
   res.json({
     ok: true,
     v: "10.2.2-prod",
-    build: "guard-apertura+color+descuento-2026-06-25",
+    build: "fix-fija-corredera+blindaje-pdf-2026-06-24",
     agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
     engine_pricer: "activa_engine",

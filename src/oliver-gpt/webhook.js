@@ -45,6 +45,7 @@ import {
   sendWaDocument as realSendWaDocument,
 } from '../sales-agent/whatsapp-adapter.js';
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
+import { priceAllEngine } from '../../services/enginePricer.js'; // [2026-06-24] blindaje label↔precio en generarPdf
 import { saveMedia } from '../../mediaStore.js'; // [#5] persistir media ENTRANTE (foto/audio/plano) para el cockpit
 import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal, archivarEnWorkDrive } from '../../services/zohoCommercial.js';
 import {
@@ -67,6 +68,21 @@ import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from '
 /* =========================================================================
  * CONFIG
  * ========================================================================= */
+
+// [2026-06-24] Deriva UNA apertura clara del texto de un label de producto (o null si no hay
+// exactamente una). Mismo criterio que el guard de agent.js. Se usa para el blindaje label↔precio
+// del PDF: solo validamos ítems cuya apertura es inequívoca (si no, no tocamos → conservador).
+function aperturaFromLabel(text) {
+  const t = String(text || '').toLowerCase();
+  const f = new Set();
+  if (/\boscilo\s?batient/.test(t)) f.add('OSCILOBATIENTE');
+  if (/\bproyectant/.test(t)) f.add('PROYECTANTE');
+  if (/\bcorrediz/.test(t) || /\bcorrederas?\b/.test(t) || /\bdeslizant/.test(t) || /\bsliding\b/.test(t)) f.add('CORREDERA');
+  if (/\bbatient/.test(t) && !/\boscilo/.test(t)) f.add('BATIENTE');
+  if (/\bfij[ao]s?\b/.test(t)) f.add('FIJA');
+  return f.size === 1 ? [...f][0] : null;
+}
+
 const META = {
   VER: process.env.META_GRAPH_VERSION || 'v22.0',
   TOKEN: process.env.WHATSAPP_TOKEN,
@@ -700,6 +716,43 @@ export async function handleWebhook(req, res, deps = {}) {
             log('error', 'generarPdf.guard',
               `PDF abortado: ${itemsBad.length}/${input.items?.length || 0} ítems sin unit_price>0 (posible alucinación de precios)`);
             return { ok: false, reason: 'precios_no_validados', detail: 'unit_price debe venir de calcular_cotizacion, no inventado' };
+          }
+
+          // ── BLINDAJE label↔precio (2026-06-24) — INVARIANTE: el precio DEBE corresponder a la
+          // apertura que el cliente VE en el label. Causa raíz del bug 0064/0065/0066: una FIJA salía
+          // con precio de CORREDERA (~2x). Aquí, en el ÚNICO punto de salida del PDF (cubre LLM,
+          // entrega determinista y pending_quote viejo de antes de un deploy), re-cotizamos en el
+          // MOTOR la apertura del label y, si el precio recibido no corresponde, lo CORREGIMOS al del
+          // motor (NUNCA inventado). Conservador: solo ítems con apertura inequívoca; si el motor
+          // falla, NO bloquea (el PDF sale con el precio que vino). Soporta pedido mixto (ítem×ítem).
+          try {
+            const _val = (input.items || [])
+              .map((it) => ({ it, ap: aperturaFromLabel(it.producto_label || it.product || '') }))
+              .filter((x) => x.ap);
+            if (_val.length) {
+              const _probe = {
+                items: _val.map((x) => ({
+                  product:  x.it.producto_label || x.it.product,  // label completo → conserva variantes (hojas/riel)
+                  measures: x.it.measures || '',
+                  color:    x.it.color || '',
+                  qty:      Number(x.it.qty) || 1,
+                  ambiente: x.it.ambiente || '',
+                })),
+                comuna: input.comuna || state.comuna || '',
+              };
+              await priceAllEngine(_probe);
+              _val.forEach((x, k) => {
+                const expected = Number(_probe.items[k]?.unit_price) || 0;
+                const got = Number(x.it.unit_price) || 0;
+                if (expected > 0 && Math.abs(expected - got) > Math.max(500, expected * 0.02)) {
+                  log('error', 'generarPdf.guard.apertura',
+                    `PRECIO CORREGIDO label='${x.ap}' recibido=${got} motor=${expected} (${x.it.producto_label || x.it.product})`);
+                  x.it.unit_price = expected; // precio REAL del motor para la apertura del label → coherente
+                }
+              });
+            }
+          } catch (e) {
+            log('error', 'generarPdf.guard.apertura.err', e?.message || e); // no bloquear el PDF si el motor no responde
           }
 
           // ── GUARD ANTI-DUPLICADO (2026-06-14 · v2 2026-06-15) ─────────────

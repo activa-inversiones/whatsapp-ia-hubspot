@@ -41,6 +41,22 @@ test("mapAperturaToEngine: abatible → BATIENTE, fijo → FIJA, oscilo → OSCI
   assert.equal(mapAperturaToEngine("oscilobatiente"), "OSCILOBATIENTE");
 });
 
+// [REGRESIÓN 2026-06-24 — BUG RAÍZ COTIZADOR] El enum real es "FIJA"/"BATIENTE" y el label del
+// PDF dice "Fija"; antes normTipoAperturaLocal solo veía "fijo"/"abatible" → "FIJA"/"BATIENTE" caían
+// al fallback CORREDERA y se cotizaban como corredera (~2x). Estos casos DEBEN devolver su apertura.
+test("mapAperturaToEngine: FIJA/BATIENTE y variantes NO caen a CORREDERA (bug 0064-0066)", () => {
+  assert.equal(mapAperturaToEngine("FIJA"), "FIJA");
+  assert.equal(mapAperturaToEngine("fija"), "FIJA");
+  assert.equal(mapAperturaToEngine("fijas"), "FIJA");
+  assert.equal(mapAperturaToEngine("Ventana Fija PVC línea europea"), "FIJA");
+  assert.equal(mapAperturaToEngine("BATIENTE"), "BATIENTE");
+  assert.equal(mapAperturaToEngine("ventana batiente"), "BATIENTE");
+  // y no romper lo que ya andaba:
+  assert.equal(mapAperturaToEngine("CORREDERA"), "CORREDERA");
+  assert.equal(mapAperturaToEngine("Corredera SLIDING H80 Doble Riel S75"), "CORREDERA");
+  assert.equal(mapAperturaToEngine("oscilobatiente"), "OSCILOBATIENTE");
+});
+
 // ── (c) el tipo NUNCA es TERMOPANEL ──────────────────────────────
 test("mapAperturaToEngine: NUNCA devuelve TERMOPANEL y siempre es apertura válida", () => {
   const entradas = [

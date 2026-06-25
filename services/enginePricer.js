@@ -54,8 +54,13 @@ function normTipoAperturaLocal(text) {
   if (t.includes("abatible") || t.includes("abatir")) return "ABATIBLE";
   if (t.includes("oscilobatiente") || t.includes("oscilo")) return "OSCILOBATIENTE";
   if (t.includes("proyectante") || t.includes("proy")) return "PROYECTANTE";
-  if (t.includes("fijo") || t.includes("marco fijo")) return "FIJO";
-  if (t.includes("corredera") || t.includes("sliding")) return "CORREDERA";
+  // [FIX 2026-06-24 — BUG RAÍZ COTIZADOR] El enum real del bot es "FIJA"/"BATIENTE", pero antes
+  // solo se matcheaba "fijo"/"abatible" → "FIJA" y "BATIENTE" caían al fallback CORREDERA y se
+  // cotizaban (y rotulaban serie SLIDING) como CORREDERA: precio ~2x. Explica el caso 0064/0065/0066.
+  // Probado: _test-apertura-bug.mjs (RED→GREEN). Ahora cubre fija/fijas/fijo/fijos y batiente.
+  if (/\bfij[ao]s?\b/.test(t) || t.includes("marco fijo")) return "FIJO";
+  if (t.includes("corredera") || t.includes("corrediz") || t.includes("sliding") || t.includes("deslizan")) return "CORREDERA";
+  if (t.includes("batiente")) return "ABATIBLE"; // (oscilobatiente ya capturado arriba)
   if (t.includes("basculante")) return "BASCULANTE";
   if (t.includes("plegable")) return "PLEGABLE";
   return "CORREDERA"; // más común
