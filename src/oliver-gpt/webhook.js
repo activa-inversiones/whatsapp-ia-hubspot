@@ -509,6 +509,28 @@ export async function handleWebhook(req, res, deps = {}) {
           metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, ai_paused: true },
         })
       );
+      // [FIX 2026-06-25 MEDIA-PAUSE] Capturar TAMBIÉN el adjunto cuando la IA está pausada (takeover humano).
+      // BUG: este return salía ANTES de resolveUserText (↓ línea ~569) → downloadWaMedia + saveMedia NUNCA
+      // corrían → el archivo del cliente se PERDÍA justo cuando un humano atiende (caso Nicolle: documento
+      // mostrado como "no vinculable" en el cockpit). NO invoca la IA (respeta el takeover): solo descarga el
+      // binario y lo persiste para que el operador lo vea. El ACK a Meta ya se envió arriba (res.sendStatus
+      // 200), así que el await NO demora el webhook; solo serializa el próximo mensaje del mismo cliente (lock).
+      if (inbound.type === 'image' || inbound.type === 'audio' || inbound.type === 'document') {
+        await safe('control.captureMedia', async () => {
+          const raw = rawMessage(req.body);
+          const node = raw?.[inbound.type];            // raw.image / raw.audio / raw.document
+          const mediaId = node?.id;
+          if (!mediaId) return;
+          const { buffer, mime } = await downloadWaMedia(mediaId, deps);
+          const ext = inbound.type === 'image' ? 'jpg' : inbound.type === 'audio' ? 'ogg' : 'bin';
+          const filename = node?.filename || `inbound_${from}_${mediaId}.${ext}`;
+          await saveMedia({
+            phone: from, direction: 'inbound', mediaType: inbound.type, mimeType: mime,
+            filename, buffer, waMediaId: mediaId,
+            aiDescription: `Adjunto recibido con IA pausada (operador): ${filename}`,
+          });
+        });
+      }
       log('info', 'control', `IA pausada (takeover humano) para ${from}; inbound persistido`);
       return;
     }
