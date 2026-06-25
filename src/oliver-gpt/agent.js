@@ -110,19 +110,24 @@ export async function handleTurn({ history = [], userText, state = {}, toolCtx =
 
       // [2026-06-24] GUARD de apertura (determinístico): el LLM a veces cotiza una "fija"
       // como CORREDERA (precio 2x). La palabra que dijo el cliente MANDA sobre la del LLM.
-      // Si en el texto del cliente hay una apertura explícita y NO coincide con la que eligió
-      // el LLM, la corregimos antes de pegarle al motor. Solo aplica a las tools de cotización.
+      // Funciona con TEXTO ("4 ventanas fijas") Y con IMAGEN (la visión deja el texto
+      // "...| fija | 80x200 |..." en userText → se detecta igual). Si el cliente menciona UNA
+      // sola apertura y NO coincide con la que eligió el LLM, la corregimos antes de pegarle al
+      // motor. Si hay VARIAS aperturas (pedido mixto), NO tocamos (el LLM cotiza cada una).
       if (name === 'calcular_cotizacion' || name === 'calcular_por_area') {
         const _t = String(userText || '').toLowerCase();
-        const apReal = /\boscilo\s?batient/.test(_t) ? 'OSCILOBATIENTE'
-          : /\bproyectant/.test(_t) ? 'PROYECTANTE'
-          : (/\bcorrediz/.test(_t) || /\bcorrederas?\b/.test(_t) || /\bdeslizant/.test(_t)) ? 'CORREDERA'
-          : (/\bbatient/.test(_t) || /\babatibl/.test(_t)) ? 'BATIENTE'
-          : /\bfij[ao]s?\b/.test(_t) ? 'FIJA'
-          : null;
-        if (apReal && String(input.tipo || '').toUpperCase() !== apReal) {
-          console.warn(`[agent] apertura corregida: LLM='${input.tipo}' → cliente dijo '${apReal}'`);
-          input = { ...input, tipo: apReal };
+        const found = new Set();
+        if (/\boscilo\s?batient/.test(_t)) found.add('OSCILOBATIENTE');
+        if (/\bproyectant/.test(_t)) found.add('PROYECTANTE');
+        if (/\bcorrediz/.test(_t) || /\bcorrederas?\b/.test(_t) || /\bdeslizant/.test(_t)) found.add('CORREDERA');
+        if (/\bbatient/.test(_t) || /\babatibl/.test(_t)) found.add('BATIENTE');
+        if (/\bfij[ao]s?\b/.test(_t)) found.add('FIJA');
+        if (found.size === 1) {
+          const apReal = [...found][0];
+          if (String(input.tipo || '').toUpperCase() !== apReal) {
+            console.warn(`[agent] apertura corregida: LLM='${input.tipo}' → cliente='${apReal}'`);
+            input = { ...input, tipo: apReal };
+          }
         }
       }
 
