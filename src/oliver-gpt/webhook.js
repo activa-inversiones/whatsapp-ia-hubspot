@@ -755,6 +755,32 @@ export async function handleWebhook(req, res, deps = {}) {
             log('error', 'generarPdf.guard.apertura.err', e?.message || e); // no bloquear el PDF si el motor no responde
           }
 
+          // ── [thermal 2026-06-25] Uw SIEMPRE del MOTOR, nunca del LLM ───────
+          // Re-cotiza CADA ventana en el motor (priceAllEngine → /api/quotes/calculate)
+          // y toma su `termico` REAL (Uw certificado). Oliver NO pasa nada térmico:
+          // el Uw no puede depender de que el LLM lo copie (como pasó con la 0071).
+          // ROBUSTO: todo en try/catch → si el motor falla, termico queda null y el
+          // PDF sale igual (NUNCA roto). NO toca precios (solo escribe it.termico).
+          // H98 (sin perfil en la API thermal) → motor devuelve termico null → no se muestra.
+          try {
+            const _therm = {
+              items: (input.items || []).map((it) => ({
+                product:  it.producto_label || it.product || '',
+                measures: it.measures || '',
+                color:    it.color || '',
+                qty:      Number(it.qty) || 1,
+                ambiente: it.ambiente || '',
+              })),
+              comuna: input.comuna || state.comuna || '',
+            };
+            await priceAllEngine(_therm);
+            (input.items || []).forEach((it, k) => {
+              it.termico = _therm.items[k]?.termico || null; // motor manda; sin termico → null
+            });
+          } catch (e) {
+            log('error', 'generarPdf.termico.err', e?.message || e); // jamás bloquea el PDF
+          }
+
           // ── GUARD ANTI-DUPLICADO (2026-06-14 · v2 2026-06-15) ─────────────
           // Si ya se generó una cotización IDÉNTICA para este número en los últimos
           // 2 min, NO quemar otro correlativo ISO: devolver la existente. Cubre doble
