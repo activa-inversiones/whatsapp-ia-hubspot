@@ -1384,6 +1384,52 @@ async function handleAgendaCommand(waId, adminCmd) {
   }
 }
 
+// [CEO ASISTENTE 2026-06-26] Cerebro asistente del DUEÑO (Oliver para Marcelo). Entiende pedidos LIBRES por
+// voz o texto, usa su agenda real, y responde por VOZ si le habló por voz. Solo ACONSEJA/REDACTA borradores —
+// NUNCA envía nada a terceros (eso lo decide y aprieta Marcelo). CEO-only; lo invoca el intercept gated por flag.
+async function handleCeoAssistant(inc, textSinWake) {
+  const waId = inc.waId;
+  const wasVoice = inc.type === "audio";
+  // 1) Texto del pedido: voz → transcribir; texto → ya viene sin el "oliver" inicial.
+  let pedido = (textSinWake || "").trim();
+  if (wasVoice && inc.audioId) {
+    try {
+      const meta = await waMediaUrl(inc.audioId);
+      const { buffer, mime } = await waDownload(meta.url);
+      pedido = await stt(buffer, mime);
+    } catch (e) { logErr("ceo_assistant.stt", e); }
+  }
+  if (!pedido) { await waSendH(waId, "No te entendí bien, ¿me lo repetís?", true); return; }
+  // 2) Contexto real liviano: agenda del día (si sales-os responde).
+  let agendaTxt = "";
+  try { const a = await callAgendaApi('GET', '/internal/agenda/today', null); if (a && a.message) agendaTxt = String(a.message); } catch {}
+  // 3) Cerebro (OpenAI gpt-4o-mini = barato, ya configurado en el bot).
+  let respuesta = "";
+  try {
+    const r = await openai.chat.completions.create({
+      model: process.env.AI_MODEL_CEO || "gpt-4o-mini",
+      temperature: 0.4,
+      max_tokens: 400,
+      messages: [
+        { role: "system", content:
+          "Eres Oliver, el asistente personal de Marcelo Cifuentes, dueño de Activa Inversiones (fábrica de ventanas PVC en Temuco, Chile). " +
+          "Marcelo te habla por WhatsApp para organizarse: su agenda del día, a qué clientes llamar y qué decirles, redactar BORRADORES de correo o mensaje (solo borradores: él los envía, vos NUNCA mandás nada a terceros), y recordarle cosas. " +
+          "Responde BREVE, en español chileno, directo y útil, sin humo. Si te falta un dato, pedíselo; NUNCA inventes precios, medidas ni datos del negocio. " +
+          (agendaTxt ? ("Su agenda de hoy:\n" + agendaTxt) : "Hoy no tiene nada cargado en su agenda.") },
+        { role: "user", content: pedido },
+      ],
+    });
+    respuesta = (r.choices?.[0]?.message?.content || "").trim();
+  } catch (e) { logErr("ceo_assistant.brain", e); }
+  if (!respuesta) respuesta = "Disculpá, no pude procesar eso ahora. ¿Lo intentás de nuevo?";
+  // 4) Responder: por voz si te habló por voz; si la voz falla, cae a texto.
+  if (wasVoice) {
+    try { await sendVoiceOrAudio(waId, respuesta, "audio"); return; }
+    catch (e) { logErr("ceo_assistant.voice", e); }
+  }
+  await waSendH(waId, respuesta, true);
+}
+
 // Dispatcher de cubicación pendiente — revisar cada 15s, enviar a los 60s
 setInterval(() => {
   const now = Date.now();
@@ -4158,7 +4204,7 @@ app.get("/health", async (_req, res) => {
   res.json({
     ok: true,
     v: "10.2.2-prod",
-    build: "media-crm-workdrive-2026-06-26",
+    build: "ceo-assistant-2026-06-26",
     agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
     engine_pricer: "activa_engine",
@@ -4637,6 +4683,27 @@ app.post("/webhook", async (req, res) => {
       }
     }
   } catch (e) { try { logErr("manual_conv_outer", e); } catch {} }
+
+  // [CEO ASISTENTE 2026-06-26] El dueño le pide CUALQUIER cosa a Oliver por VOZ o texto. CEO-only + flag
+  // OLIVER_CEO_ASSISTANT (default OFF → cero cambio). Audio del CEO = asistente; texto = solo si empieza con
+  // "oliver" (así seguís testeando el cotizador por texto). Va DESPUÉS de los comandos agenda/venta (los
+  // respeta, ya retornaron arriba) y ANTES del routing a clientes (no cae al cotizador). Solo aconseja/redacta.
+  try {
+    if (process.env.OLIVER_CEO_ASSISTANT === "true") {
+      const _caInc = extractMsg(req.body);
+      const _caWake = /^\s*oliver\b[\s,:.!¡¿?-]*/i;
+      const _caTxt = _caInc?.text || "";
+      const _caTrigger = _caInc?.type === "audio" || (_caInc?.type === "text" && _caWake.test(_caTxt));
+      if (_caInc?.ok && verifySig(req) && normalizeWaId(_caInc.waId) === normalizeAdminPhone(ADMIN_PHONE) && _caTrigger) {
+        res.sendStatus(200);
+        if (!isDup(_caInc.msgId)) {
+          try { await handleCeoAssistant(_caInc, _caTxt.replace(_caWake, "")); }
+          catch (e) { try { logErr("ceo_assistant", e); } catch {} }
+        }
+        return;
+      }
+    }
+  } catch (e) { try { logErr("ceo_assistant_outer", e); } catch {} }
 
   // [Oliver GPT pilot] routing por feature-flag — handler AISLADO (src/oliver-gpt).
   // Gated: si OLIVER_GPT_ENABLED!="true" o el número no está en OLIVER_GPT_NUMBERS,
