@@ -268,3 +268,25 @@ export async function attachPdfToDeal(dealId, pdfBuffer, filename) {
     return false;
   }
 }
+
+/* [2026-06-25 CM-FR-005] Adjunta una media ENTRANTE del cliente al Deal en Zoho CRM, SOLO si el Deal YA
+ * existe (zhFindDeal). NO force-crea Deals (el expediente WorkDrive ya cubre a todos). Fire-and-forget. */
+export async function attachInboundToDeal(phone, buffer, filename, mime = 'application/octet-stream') {
+  if (!REQUIRE_ZOHO || !phone || !buffer) return false;
+  try {
+    const deal = await zhFindDeal(phone);
+    if (!deal?.id) return false; // sin Deal todavía → no adjuntar (no force-crear)
+    const tok = await zhToken();
+    const fd = new FormData();
+    fd.append('file', new Blob([buffer], { type: mime }), filename || 'adjunto.bin');
+    await axios.post(
+      `${ZOHO.API}/crm/v2/Deals/${deal.id}/Attachments`,
+      fd,
+      { headers: { Authorization: `Zoho-oauthtoken ${tok}` }, httpsAgent, timeout: 20000 }
+    );
+    return true;
+  } catch (e) {
+    console.error('[zohoCommercial] attachInboundToDeal:', e.response?.data || e.message);
+    return false;
+  }
+}

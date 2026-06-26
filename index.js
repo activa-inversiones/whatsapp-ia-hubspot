@@ -4158,7 +4158,7 @@ app.get("/health", async (_req, res) => {
   res.json({
     ok: true,
     v: "10.2.2-prod",
-    build: "media-pause-capture-2026-06-25",
+    build: "media-crm-workdrive-2026-06-26",
     agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
     engine_pricer: "activa_engine",

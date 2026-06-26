@@ -47,7 +47,7 @@ import {
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
 import { priceAllEngine } from '../../services/enginePricer.js'; // [2026-06-24] blindaje label↔precio en generarPdf
 import { saveMedia } from '../../mediaStore.js'; // [#5] persistir media ENTRANTE (foto/audio/plano) para el cockpit
-import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal, archivarEnWorkDrive } from '../../services/zohoCommercial.js';
+import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal, attachInboundToDeal, archivarEnWorkDrive } from '../../services/zohoCommercial.js';
 import {
   shouldSendVoice as realShouldSendVoice,
   synthesizeVoiceBuffer as realSynthesizeVoiceBuffer,
@@ -271,6 +271,8 @@ async function resolveUserText(inbound, body, deps) {
       saveMedia({ phone: raw?.from, direction: 'inbound', mediaType: 'image', mimeType: mime,
         filename: `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, buffer, waMediaId: mediaId,
         aiDescription: (desc && desc !== '[Imagen no legible]') ? desc : '[imagen recibida]' }).catch(() => {});
+      // [B1 2026-06-25] Adjuntar la imagen al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
+      attachInboundToDeal(raw?.from, buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, mime).catch(() => {});
       // [F3b] '[Imagen no legible]' NO es contenido válido → cae al fallback que pide
       // describir por texto (evita pasar una no-descripción como medidas reales).
       if (desc && desc !== '[Imagen no legible]') {
@@ -305,6 +307,8 @@ async function resolveUserText(inbound, body, deps) {
       saveMedia({ phone: raw?.from, direction: 'inbound', mediaType: 'audio', mimeType: mime,
         filename: `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, buffer, waMediaId: mediaId,
         transcription: transcript || '', aiDescription: transcript || '[audio recibido]' }).catch(() => {});
+      // [B1 2026-06-25] Adjuntar el audio al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
+      attachInboundToDeal(raw?.from, buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, mime).catch(() => {});
       if (transcript) return { userText: transcript, mediaResolved: true };
     } catch (err) {
       log('error', 'media.audio', err);
@@ -327,6 +331,8 @@ async function resolveUserText(inbound, body, deps) {
         const { buffer, mime } = await downloadWaMedia(mediaId, deps);
         saveMedia({ phone: raw?.from, direction: 'inbound', mediaType: 'document', mimeType: mime,
           filename: fn, buffer, waMediaId: mediaId, aiDescription: `Documento/plano entrante: ${fn}` }).catch(() => {});
+        // [B1 2026-06-25] Adjuntar el documento al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
+        attachInboundToDeal(raw?.from, buffer, fn, mime).catch(() => {});
         // [2026-06-22 FIX] Si es Excel, LEER la lista de ventanas y cotizar (antes: pedía reescribir a mano → se perdían clientes).
         const esExcel = /\.xlsx?$/i.test(fn) || /spreadsheet|excel/i.test(mime || '');
         if (esExcel && buffer) {
@@ -513,10 +519,12 @@ export async function handleWebhook(req, res, deps = {}) {
       // BUG: este return salía ANTES de resolveUserText (↓ línea ~569) → downloadWaMedia + saveMedia NUNCA
       // corrían → el archivo del cliente se PERDÍA justo cuando un humano atiende (caso Nicolle: documento
       // mostrado como "no vinculable" en el cockpit). NO invoca la IA (respeta el takeover): solo descarga el
-      // binario y lo persiste para que el operador lo vea. El ACK a Meta ya se envió arriba (res.sendStatus
-      // 200), así que el await NO demora el webhook; solo serializa el próximo mensaje del mismo cliente (lock).
+      // binario y lo persiste para que el operador lo vea. El ACK a Meta ya se envió arriba (res.sendStatus 200).
+      // [REVISIÓN 2026-06-25] FIRE-AND-FORGET (SIN await): descargar el media puede tardar hasta ~27s (CDN Meta);
+      // con await se retendría el lock del cliente y el operador vería sus mensajes siguientes con retraso. Se
+      // dispara en background con su propio try/catch (safe) + los timeouts internos de downloadWaMedia.
       if (inbound.type === 'image' || inbound.type === 'audio' || inbound.type === 'document') {
-        await safe('control.captureMedia', async () => {
+        safe('control.captureMedia', async () => {
           const raw = rawMessage(req.body);
           const node = raw?.[inbound.type];            // raw.image / raw.audio / raw.document
           const mediaId = node?.id;
@@ -529,6 +537,8 @@ export async function handleWebhook(req, res, deps = {}) {
             filename, buffer, waMediaId: mediaId,
             aiDescription: `Adjunto recibido con IA pausada (operador): ${filename}`,
           });
+          // [B1 2026-06-25] Adjuntar al Deal de Zoho CRM si ya existe (operador atendiendo un deal activo).
+          attachInboundToDeal(from, buffer, filename, mime).catch(() => {});
         });
       }
       log('info', 'control', `IA pausada (takeover humano) para ${from}; inbound persistido`);
