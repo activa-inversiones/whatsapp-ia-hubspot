@@ -439,6 +439,9 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "";
 const ELEVENLABS_MODEL_ID = process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2";
 const ELEVENLABS_OUTPUT_FORMAT = process.env.ELEVENLABS_OUTPUT_FORMAT || "mp3_44100_128";
+// Velocidad de la voz: 0.7 (lento) … 1.0 (normal) … 1.2 (rápido). Marcelo pidió un poco más lento.
+// Ajustable sin tocar código con la env ELEVENLABS_SPEED. Clamp al rango válido de ElevenLabs.
+const ELEVENLABS_SPEED = Math.min(1.2, Math.max(0.7, Number(process.env.ELEVENLABS_SPEED || 0.9)));
 // Legacy TTS bridge (backward compat — not used if VOICE_TTS_PROVIDER=elevenlabs)
 const VOICE_TTS_URL = process.env.VOICE_TTS_URL || "";
 const VOICE_TTS_TOKEN = process.env.VOICE_TTS_TOKEN || "";
@@ -1872,7 +1875,7 @@ async function ttsElevenlabs(text) {
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(ELEVENLABS_VOICE_ID)}?output_format=${encodeURIComponent(ELEVENLABS_OUTPUT_FORMAT)}`;
   const { data } = await axios.post(
     url,
-    { text: clean, model_id: ELEVENLABS_MODEL_ID },
+    { text: clean, model_id: ELEVENLABS_MODEL_ID, voice_settings: { speed: ELEVENLABS_SPEED } },
     {
       headers: {
         "xi-api-key": ELEVENLABS_API_KEY,
