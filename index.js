@@ -1337,6 +1337,10 @@ function parseAdminCmd(text) {
     if (mm) return { type: 'agenda_snooze', query: mm[1].trim(), days: parseInt(mm[2], 10) };
     return { type: 'agenda_snooze', query: rest.replace(/[.!?\s]+$/, '').trim(), days: 7 };
   }
+  // AGENDÁ <nombre> [EN <N> DÍAS] — recordatorio manual futuro
+  // Ej: "AGENDÁ llamar a Pedro" (hoy) o "AGENDÁ cotización Ramírez EN 5 DÍAS"
+  const agM = text.trim().match(/^AGEND[AÁ]\s+(.+?)(?:\s+EN\s+(\d+)\s+D[IÍ]A[S]?)?$/i);
+  if (agM) return { type: 'agenda_add', name: agM[1].trim(), days: parseInt(agM[2] || '0', 10) };
 
   return null;
 }
@@ -1382,6 +1386,15 @@ async function handleAgendaCommand(waId, adminCmd) {
     else if (a.reason === 'ambiguo') msg = `Hay varios con ese nombre: ${(a.options || []).map(o => o.name + ' (' + o.phone + ')').join(', ')}. Responde POSPONER con el teléfono.`;
     else if (a.reason === 'no_encontrado') msg = `No encontré a "${adminCmd.query}" en la agenda.`;
     else msg = a.error ? `No pude posponer: ${a.error}` : "No pude posponer.";
+    await waSendH(waId, msg, true);
+    return;
+  }
+  if (adminCmd.type === "agenda_add") {
+    const a = await callAgendaApi('POST', '/internal/agenda/add', { name: adminCmd.name, days: adminCmd.days });
+    let msg;
+    if (a.ok && adminCmd.days > 0) msg = `📌 Agendé recordatorio para *${a.customer_name}* — aparece en ${adminCmd.days} día(s).`;
+    else if (a.ok) msg = `📌 Agendé recordatorio para *${a.customer_name}* — lo verás hoy en la agenda.`;
+    else msg = `No pude agendar: ${a.error || 'error desconocido'}`;
     await waSendH(waId, msg, true);
     return;
   }
@@ -4655,7 +4668,7 @@ app.post("/webhook", async (req, res) => {
     if (_agInc?.ok && _agInc.type === "text" && verifySig(req) &&
         normalizeWaId(_agInc.waId) === normalizeAdminPhone(ADMIN_PHONE)) {
       const _agCmd = parseAdminCmd(_agInc.text || "");
-      if (_agCmd && (_agCmd.type === "agenda_today" || _agCmd.type === "agenda_done" || _agCmd.type === "agenda_snooze")) {
+      if (_agCmd && (_agCmd.type === "agenda_today" || _agCmd.type === "agenda_done" || _agCmd.type === "agenda_snooze" || _agCmd.type === "agenda_add")) {
         __agendaDebug.push({ ts: new Date().toISOString(), stage: "early_intercept", waId: _agInc.waId, esCEO: true, adminCmd: _agCmd.type, text: (_agInc.text || "").slice(0, 60), build: AGENDA_BUILD });
         if (__agendaDebug.length > 20) __agendaDebug.shift();
         res.sendStatus(200);
