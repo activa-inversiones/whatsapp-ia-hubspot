@@ -59,8 +59,8 @@ const BOOKINGS_URL = () => process.env.MARCELO_BOOKINGS_URL ||
   'https://outlook.office.com/bookwithme/user/35f7b8685a9041ae951cdb858eea458b@activaspa.cl/meetingtype/oi8VUtFlrEOffOOfJQCRiw2?anonymous&ismsaljsauthenabled&ep=mlink';
 function escalationMessage() {
   return 'Te entiendo 🙌 Prefiero que te atienda directamente un experto.\n' +
-    'Le avisé al Ing. Marcelo Cifuentes Méndez — Gerente de Ingeniería de Activa, Consultor Externo del ' +
-    'Ministerio de Vivienda y Urbanismo y Evaluador Energético acreditado MINVU (Res. 266/2025). Te contacta personalmente.\n' +
+    'Le avisé al Ing. Marcelo Cifuentes Méndez — Ingeniero Civil Industrial, Gerente de Ingeniería de Activa y ' +
+    'Evaluador Energético acreditado MINVU (Res. 266/2025). Te contacta personalmente.\n' +
     '📲 WhatsApp directo: +56 9 5729 6035\n' +
     '📅 O agenda tú mismo una hora: ' + BOOKINGS_URL();
 }

@@ -7,7 +7,7 @@
 //   (2) El playbook profesional V2 REAL de personality.md (16 áreas) con ALTA FIDELIDAD:
 //       guiones de objeciones AECR, ejemplos de tono, scripts de descubrimiento técnico,
 //       tabla B2C/B2B, arsenal de valor, garantías, framework de 7 pasos.
-//   (3) Las 31 reglas absolutas de V1 (objeciones, escalación, anti-ghosting, reviews).
+//   (3) Las 35 reglas absolutas de V1 (objeciones, escalación, anti-ghosting, reviews).
 //   (4) Credenciales MINVU (6, con la regla de oro: nunca listar las 6, nunca "fábrica WinHouse").
 //   (5) Regla #24 anti-voseo, con TODO el prompt reescrito en chileno profesional.
 //   (6) OPERATING_INSTRUCTIONS (mensajes cortos, 1 idea, reglas de uso de tools, nunca inventar URLs).
@@ -300,10 +300,10 @@ Canalice: descubrimiento → cotización → PDF → enlace de aprobación → c
 `.trim();
 
 /* =========================================================================
- * 3) 31 REGLAS ABSOLUTAS (V1 #20) — reescritas en chileno profesional (sin voseo)
+ * 3) 35 REGLAS ABSOLUTAS (V1 #20) — reescritas en chileno profesional (sin voseo)
  * ========================================================================= */
 const REGLAS_ABSOLUTAS = `
-═══ 31 REGLAS ABSOLUTAS ═══
+═══ 35 REGLAS ABSOLUTAS ═══
 
 REGLA #1 — MENSAJES CORTOS, CERO REPETICIÓN
 Máximo 2-3 líneas por mensaje. Esto es WhatsApp, no email. Nunca repita información ya entregada.
@@ -522,6 +522,9 @@ La visión puede confundir unidades, modelos o leer planos parcialmente — conf
 que nos obligan a rehacer la visita técnica o perder la venta.
 ⛔ PROHIBIDO: decir "Anotada ✅ V1 corredera 2500×2300 mm" como si fuera un hecho sin confirmar.
 La frase correcta es: "Detecté una corredera de 2500×2300 mm. ¿Es correcto?"
+PRECEDENCIA: para inputs de IMAGEN esta regla SOBREESCRIBE la Regla #3 y la Regla #13 — NO cotice ni genere PDF
+hasta que el cliente confirme las medidas, aunque ya tenga todos los datos técnicos. Excepción: si en el MISMO
+mensaje el cliente manda la imagen Y confirma explícitamente ("estas medidas son correctas, cotíceme") → cotice.
 
 REGLA #33 — ALUMINIO: HONESTIDAD TOTAL — NUNCA COTIZAR EN ALUMINIO (CRÍTICO)
 Activa fabrica EXCLUSIVAMENTE en PVC termopanel y monolítico. NO tenemos línea de aluminio.
@@ -709,7 +712,7 @@ REGLAS DURAS DE NEGOCIO:
 
 /**
  * buildSystemBlocks() — Devuelve el system prompt completo (string) para OpenAI.
- * Bloque ESTABLE: identidad + playbook 16 áreas + 31 reglas + credenciales MINVU
+ * Bloque ESTABLE: identidad + playbook 16 áreas + 35 reglas + credenciales MINVU
  * + anti-voseo + instrucciones operativas. Sin cache_control (no es Anthropic).
  * @returns {string}
  */
