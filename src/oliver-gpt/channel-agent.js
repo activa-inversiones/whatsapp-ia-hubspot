@@ -511,7 +511,7 @@ export async function handleChannelTurn(
                 { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
                 `[${channel}] PDF ${quoteNumber} no se pudo entregar${outsideWindow ? ' (fuera de ventana 24h)' : ''} — enviarlo desde el inbox (ops.activalabs.ai)`));
             return { ok: true, quote_number: quoteNumber, pdf_sent: false,
-              message: `Te preparé tu Propuesta Técnica Económica N° ${quoteNumber}. Si no la ves acá en un momento, Marcelo te la hace llegar enseguida.` };
+              message: `Tu Propuesta Técnica Económica N° ${quoteNumber} está lista ✅ No pude enviarte el archivo por este canal — el Ing. Marcelo Cifuentes Méndez (Ingeniero Civil Industrial, Gerente de Ingeniería de Activa) te la enviará directamente a tu WhatsApp. 📲 +56 9 5729 6035` };
           }
 
           return { ok: true, quote_number: quoteNumber, pdf_sent: true,
