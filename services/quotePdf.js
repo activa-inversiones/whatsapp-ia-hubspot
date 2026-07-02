@@ -111,8 +111,18 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       header(doc, quoteNumber);
       doc.fillColor(GRAY).fontSize(9).font("Helvetica").text(`Fecha: ${new Date().toLocaleDateString("es-CL")} · Válida 15 días`, 50, 104);
 
-      // Cliente
       let y = 120;
+      // [2026-07-02 BUG parcial] Aviso PROPUESTA PARCIAL — visible y no opcional cuando parte del
+      // pedido escaló a Marcelo (evita que el cliente lea el total parcial como el total del proyecto).
+      if (data.is_partial) {
+        doc.rect(50, y, doc.page.width - 100, 22).fill("#FDECEA");
+        doc.fillColor("#B3261E").fontSize(9).font("Helvetica-Bold")
+          .text(`PROPUESTA PARCIAL${data.partial_note ? " — " + data.partial_note : " — no incluye todos los ítems solicitados; el resto lo cotiza Marcelo directamente"}`,
+            58, y + 6, { width: doc.page.width - 116 });
+        y += 30;
+      }
+
+      // Cliente
       doc.fillColor(DARK).fontSize(10).font("Helvetica-Bold").text("CLIENTE", 50, y);
       doc.font("Helvetica").fontSize(9).fillColor(DARK);
       doc.text(`${data.name || "Cliente"}  ·  ${data.phone || ""}  ·  ${data.comuna || "Temuco"}${data.address ? "  ·  " + data.address : ""}`, 110, y);

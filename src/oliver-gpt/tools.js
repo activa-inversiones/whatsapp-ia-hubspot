@@ -386,6 +386,8 @@ export const TOOL_DEFS = [
           },
           grand_total: { type: 'number', description: 'Total calculado en CLP (suma de unit_price * qty). Debe venir de calcular_cotizacion.' },
           descuento_pct: { type: 'number', description: 'Descuento al cliente en % (ej. 10 = 10% off). Opcional (default 0). SOLO si el dueño autoriza un descuento. Se muestra como línea "Descuento" en el PDF y se recalcula el total con IVA.' },
+          is_partial: { type: 'boolean', description: 'true SOLO si parte del pedido del cliente escaló a Marcelo y este PDF cubre ÚNICAMENTE los ítems cotizables (ver REGLA #6.1). Muestra un aviso visible "PROPUESTA PARCIAL" en el PDF. NUNCA true si el PDF ya cubre todo lo que el cliente pidió.' },
+          partial_note: { type: 'string', description: 'Solo si is_partial=true. Frase corta (ej. "No incluye las 20 ventanas fijas del proyecto, que Marcelo te cotiza directo") que se imprime bajo el aviso PARCIAL en el PDF.' },
         },
         required: ['items'],
         additionalProperties: false,

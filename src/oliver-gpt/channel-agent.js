@@ -37,6 +37,9 @@ import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quote
 import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal } from '../../services/zohoCommercial.js';
 import { sendChannelDocument as realSendChannelDocument } from '../../services/multiChannelHandler.js';
 import { stripMontos, quoteDataComplete } from './pdf-intent.js'; // [#2] filtro anti precio-suelto + [PDF-RACE] guard de completitud (compartidos con webhook.js)
+// [2026-07-02 dedupe] escalación desde el módulo COMPARTIDO — las copias locales causaron el bug
+// del título viejo de Marcelo en IG/FB (se actualizó escalation.js y las copias quedaron atrás).
+import { escalationMessage, isEscalationRequest, sendEscalationTemplate } from './escalation.js';
 
 /* =========================================================================
  * ESTADO IN-MEMORY (piloto) — por canal+sender.
@@ -52,61 +55,10 @@ const MAX_HISTORY = 40;
 const RECENT_QUOTES = new Map();
 const QUOTE_DEDUP_MS = Number(process.env.QUOTE_DEDUP_MS) || 120000; // 2 min
 
-// [2026-06-15] ESCALACIÓN DETERMINISTA — no depende del LLM (que en prod a veces respondía el
-// nombre de la tool 'notificar_marcelo' como texto, o no avisaba). La escalación es plata/reputación:
-// se detecta el pedido de humano/molestia en CÓDIGO y se maneja siempre igual (aviso + mensaje fijo).
-const BOOKINGS_URL = () => process.env.MARCELO_BOOKINGS_URL ||
-  'https://outlook.office.com/bookwithme/user/35f7b8685a9041ae951cdb858eea458b@activaspa.cl/meetingtype/oi8VUtFlrEOffOOfJQCRiw2?anonymous&ismsaljsauthenabled&ep=mlink';
-function escalationMessage() {
-  return 'Te entiendo 🙌 Prefiero que te atienda directamente un experto.\n' +
-    'Le avisé al Ing. Marcelo Cifuentes Méndez — Ingeniero Civil Industrial, Gerente de Ingeniería de Activa y ' +
-    'Evaluador Energético acreditado MINVU (Res. 266/2025). Te contacta personalmente.\n' +
-    '📲 WhatsApp directo: +56 9 5729 6035\n' +
-    '📅 O agenda tú mismo una hora: ' + BOOKINGS_URL();
-}
-function isEscalationRequest(text) {
-  const t = String(text || '').toLowerCase();
-  if (/hablar con (marcelo|un? (humano|persona|asesor|vendedor|ejecutivo)|el? (due[ñn]o|jefe|gerente))/.test(t)) return true;
-  if (/(p[aá]same|comun[ií]came|conect[aá]me) .{0,15}(marcelo|humano|persona|asesor|vendedor|due[ñn]o)/.test(t)) return true;
-  if (/\bescal(a|ar|en|o|ame)\b/.test(t) && /(marcelo|humano|persona|alguien)/.test(t)) return true;
-  if (/(estoy|muy|tan|s[uú]per) (enojad|molest|furios|indignad|frustrad)/.test(t)) return true;
-  if (/\b(reclamo|p[eé]simo servicio|p[eé]sima atenci|estafa)\b/.test(t)) return true;
-  return false;
-}
-
-// [2026-06-15] Aviso GARANTIZADO al dueño por PLANTILLA de WhatsApp — bypasa la ventana 24h
-// (el mensaje libre solo llega si Marcelo escribió al bot en 24h; la plantilla llega SIEMPRE → 100% auto).
-// Usa 'informe_diario' (plantilla YA APROBADA por Meta, la misma que el windowOpener dispara a diario con
-// éxito) por self-call a /admin/send-template (ADMIN_PIN seteado). El detalle completo del lead queda en el
-// cockpit; la plantilla solo dispara la alerta para que Marcelo entre. 4 params: fecha, resumen, linea3, linea4.
-async function sendEscalationTemplate(name, motivo, deps = {}) {
-  const fetchFn = deps.fetchFn || fetch;
-  const PIN = process.env.ADMIN_PIN || process.env.OLIVER_ADMIN_PIN || '';
-  const owner = process.env.OWNER_NOTIFICATION_PHONE || process.env.ESCALATION_PHONE || process.env.MARCELO_PHONE || '56957296035';
-  if (!PIN) return { ok: false, error: 'ADMIN_PIN_missing' };
-  const base = (process.env.SELF_URL || `http://127.0.0.1:${process.env.PORT || 8080}`).replace(/\/$/, '');
-  let fecha = '';
-  try { fecha = new Date().toLocaleDateString('es-CL', { timeZone: 'America/Santiago' }); } catch { fecha = new Date().toISOString().slice(0, 10); }
-  const body = {
-    template: 'informe_diario',
-    phone: owner,
-    fecha,
-    resumen: `ESCALACION: ${String(name || 'un cliente').slice(0, 40)} pide hablar contigo AHORA`,
-    linea3: String(motivo || 'pide hablar con humano').replace(/[\[\]]/g, '').slice(0, 90),
-    linea4: 'Revisa/toma el chat en ops.activalabs.ai (Oliver CRM)',
-  };
-  try {
-    const r = await fetchFn(`${base}/admin/send-template?pin=${encodeURIComponent(PIN)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10000),
-    });
-    return await r.json().catch(() => ({ ok: r.ok }));
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
-}
+// [2026-06-15 → 2026-07-02] ESCALACIÓN DETERMINISTA — no depende del LLM. Las 3 funciones
+// (escalationMessage / isEscalationRequest / sendEscalationTemplate) viven ÚNICAMENTE en
+// ./escalation.js (módulo compartido con webhook.js) — acá había copias locales byte-a-byte
+// que se desincronizaron una vez (título viejo de Marcelo en IG/FB) y se eliminaron.
 
 // [2026-06-15] ENTREGA DETERMINISTA DEL PDF — el PDF es la FORMALIDAD (dar solo el precio en texto = perder
 // al cliente por informalidad). No puede depender de que el LLM llame generar_pdf_cotizacion (en prod a veces

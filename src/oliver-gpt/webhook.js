@@ -961,6 +961,8 @@ export async function handleWebhook(req, res, deps = {}) {
             address: state.address || '',
             descuento_pct: Number(input.descuento_pct) || 0,   // descuento MANUAL adicional en la propuesta (0 = sin descuento)
             descuento_mercado_pct: descuentoMercadoPct,         // descuento de mercado YA aplicado a los precios (se MUESTRA al cliente)
+            is_partial:   Boolean(input.is_partial),            // [2026-07-02 BUG parcial] parte del pedido escaló a Marcelo
+            partial_note: String(input.partial_note || '').slice(0, 200),
             default_color: (input.items?.[0]?.color) || state.default_color || '',
             items:   (input.items || []).map((it) => ({
               product:        it.producto_label || it.product || 'Ventana',
