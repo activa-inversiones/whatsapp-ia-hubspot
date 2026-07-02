@@ -45,6 +45,27 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
 }
 
 /**
+ * [PDF-RACE 2026-07-01] Guard de COMPLETITUD antes de quemar folio ISO / emitir el PDF (COMPARTIDO).
+ * Evidencia BD: PDFs emitidos 9-13 seg ANTES de que el cliente respondiera nombre/color/tipo
+ * (folios 0081/0085/0086 Ximena, 0060/0061 Vivi, 0090 Julio — causalidad invertida probada).
+ * Regla del dueño: PDF formal SOLO con datos confirmados; el NOMBRE se obtiene ANTES del PDF.
+ * NO exige color (política REGLA #13: BLANCO por defecto) para no bloquear PDFs legítimos.
+ */
+export function quoteDataComplete(input = {}, state = {}) {
+  const missing = [];
+  const name = String(input.name || state.name || '').trim();
+  if (!name || /^cliente$/i.test(name)) missing.push('name');
+  const items = Array.isArray(input.items) ? input.items : [];
+  if (!items.length) missing.push('items');
+  items.forEach((it, i) => {
+    if (!String(it.producto_label || it.product || '').trim()) missing.push(`items[${i}].product`);
+    if (!String(it.measures || '').trim()) missing.push(`items[${i}].measures`);
+    if (!(Number(it.unit_price) > 0)) missing.push(`items[${i}].unit_price`);
+  });
+  return { ok: missing.length === 0, missing };
+}
+
+/**
  * [#2 2026-06-21] Anti "precio suelto" (REGLA #13): el monto va SOLO en el PDF formal, NUNCA en el
  * texto del chat. Si el LLM dejó un monto CLP en la respuesta (desobedeció), lo reemplaza por un
  * redirect a la propuesta. El PDF se entrega por el flujo determinista (mismo/próximo turno).

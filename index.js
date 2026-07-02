@@ -2387,6 +2387,11 @@ async function loadSessionFromStore(waId) {
     ses.pdfSent = !!stored.pdf_sent;
     ses.zohoDealId = stored.zoho_deal_id || null;
     if (stored.pending_table_pages) ses.pendingTablePages = stored.pending_table_pages;
+    // [BUG#5 2026-07-01] rehidratar el flujo VENTA/COTIZÓ del dueño (sobrevive restarts de Railway).
+    // Viaja dentro de data._manualConv (ver persistSessionToStore); se extrae y se limpia de data.
+    ses.manualConv = (ses.data && ses.data._manualConv) || stored.manual_conv || null;
+    ses.manualConvPending = (ses.data && ses.data._manualConvPending) || stored.manual_conv_pending || null;
+    if (ses.data && typeof ses.data === "object") { delete ses.data._manualConv; delete ses.data._manualConvPending; }
     ses.lastAt = stored.last_activity ? new Date(stored.last_activity).getTime() : Date.now();
     sessions.set(waId, ses);
     return true;
@@ -2408,6 +2413,15 @@ function persistSessionToStore(waId, ses) {
     zohoDealId: ses.zohoDealId || null,
     pendingTablePages: ses.pendingTablePages || null,
   };
+  // [BUG#5 2026-07-01] flujo VENTA/COTIZÓ del dueño: sin esto, un restart de Railway entre pasos
+  // del flujo guiado pierde manualConv → el monto que escribe Marcelo cae al vacío (loop de 3 días).
+  // Viaja DENTRO de data (columna JSONB existente): el endpoint de sales-os (whatsappSessionStore.js)
+  // destructura solo campos conocidos y descartaría un top-level nuevo; así evitamos DDL en la BD viva.
+  // Si ambos son null no se escriben → el UPDATE con data completo limpia los residuos (flujo terminado).
+  if (ses.manualConv || ses.manualConvPending) {
+    payload.data = { ...(payload.data || {}), _manualConv: ses.manualConv || null,
+      _manualConvPending: ses.manualConvPending || null };
+  }
   // Fire and forget con timeout — no esperamos respuesta
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), WA_PERSIST_TIMEOUT_MS);
@@ -4305,7 +4319,31 @@ app.post("/internal/operator-send", async (req, res) => {
     // WhatsApp (comportamiento original, intacto)
     const phone = normPhone(req.body?.phone || "");
     if (!phone) return res.status(400).json({ ok: false, error: "phone_required" });
+    // [HANDOFF 2026-07-01] hidratar desde Postgres ANTES de getSession: tras un restart de Railway,
+    // getSession() devolvería una sesión vacía y el saveSession de abajo PISARÍA la sesión guardada
+    // (pérdida de history/data). Además el flag de handoff necesita la sesión real.
+    try { await loadSessionFromStore(phone); } catch {}
     const ses = getSession(phone);
+
+    // [HANDOFF 2026-07-01] Comandos de control desde el cockpit (NO se envían al cliente):
+    // "BOT ON" reactiva a Oliver para este cliente; "BOT OFF" lo pausa sin mandar mensaje.
+    if (/^BOT\s+(ON|OFF)$/i.test(text)) {
+      const on = /on$/i.test(text.trim());
+      ses.handoffActive = !on;
+      if (ses.data && typeof ses.data === "object") ses.data.handoffActive = !on;
+      ses.handoffReassured = false;
+      saveSession(phone, ses);
+      return res.json({ ok: true, sent: false, phone, handoff: !on,
+        note: on ? "Oliver reactivado para este cliente" : "Oliver pausado para este cliente" });
+    }
+
+    // [HANDOFF 2026-07-01 — BUG: Oliver pisaba chats tomados] Cuando el operador (Marcelo) escribe
+    // manualmente desde el cockpit, marcar handoff PERSISTENTE (ses.data.handoffActive viaja a Postgres
+    // en el mismo saveSession). Así, cuando el cliente vuelve a escribir —aunque sea al día siguiente y
+    // con proceso reiniciado— el guard isHandoffActive() silencia a Oliver y no contradice al operador.
+    // Reactivación: comando "BOT ON" (arriba). Mecanismo persistHandoff ya existente y testeado (GT-07).
+    try { await persistHandoff(phone, ses, { reason: "operator_takeover" }); } catch {}
+
     ses.history.push({ role: "assistant", content: text });
     saveSession(phone, ses);
     await waSendH(phone, text, true, {
@@ -4687,6 +4725,10 @@ app.post("/webhook", async (req, res) => {
     const _mcInc = extractMsg(req.body);
     if (_mcInc?.ok && _mcInc.type === "text" && verifySig(req) &&
         normalizeWaId(_mcInc.waId) === normalizeAdminPhone(ADMIN_PHONE)) {
+      // [BUG#5 2026-07-01] hidratar desde Postgres ANTES de evaluar _inFlow: tras un restart de
+      // Railway el Map está vacío y el flujo guiado en curso (manualConv) se perdía → el monto
+      // que escribía el dueño caía al routing normal (loop de 3 días). Solo aplica al número admin.
+      try { await loadSessionFromStore(_mcInc.waId); } catch {}
       const _mcSes = getSession(_mcInc.waId);
       const _mcTxt = _mcInc.text || "";
       const _inFlow = !!((_mcSes.manualConv && _mcSes.manualConv.step) || _mcSes.manualConvPending);

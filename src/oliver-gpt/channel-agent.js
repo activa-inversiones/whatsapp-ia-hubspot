@@ -36,7 +36,7 @@ import { loadSession as realLoadSession, persistSession as realPersistSession, r
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
 import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal } from '../../services/zohoCommercial.js';
 import { sendChannelDocument as realSendChannelDocument } from '../../services/multiChannelHandler.js';
-import { stripMontos } from './pdf-intent.js'; // [#2] filtro anti precio-suelto (compartido con webhook.js)
+import { stripMontos, quoteDataComplete } from './pdf-intent.js'; // [#2] filtro anti precio-suelto + [PDF-RACE] guard de completitud (compartidos con webhook.js)
 
 /* =========================================================================
  * ESTADO IN-MEMORY (piloto) — por canal+sender.
@@ -405,6 +405,21 @@ export async function handleChannelTurn(
               message: 'Necesito calcular bien el precio antes de emitir el PDF formal. Dame un momento.' };
           }
 
+          // [IG-LOOP 2026-07-01] Cap duro PERSISTENTE (caso real: Juan Pablo, IG — Oliver repitió
+          // "ya te emití" 3 veces, quemó folios 0073→0074 y el PDF nunca se envió). Si la entrega
+          // ya se agotó (1 reintento) y quedó escalada, SIEMPRE el mismo mensaje fijo: sin folio
+          // nuevo, sin reintentar envío, sin depender del LLM. REGLA #35 garantizada por código.
+          // Reuso/estado del folio ACOTADO a 48h: pasado eso, la sesión se trata como nueva
+          // (una cotización genuinamente nueva semanas después NO debe heredar un folio viejo).
+          const QUOTE_REUSE_MS = 48 * 60 * 60 * 1000;
+          const lq = (state.last_quote && (Date.now() - (state.last_quote.at || 0)) < QUOTE_REUSE_MS)
+            ? state.last_quote : null;
+          if (lq && lq.quote_number && lq.escalated) {
+            log('info', 'generarPdf.escalated', `Entrega ya escalada para ${convKey} (${lq.quote_number}); sin reintentos`);
+            return { ok: true, quote_number: lq.quote_number, pdf_sent: false, escalated: true,
+              message: `Tu Propuesta Técnica Económica N° ${lq.quote_number} ya está lista y el Ing. Marcelo Cifuentes te la enviará personalmente por WhatsApp. 📲 +56 9 5729 6035` };
+          }
+
           // Dedup por TELÉFONO real si lo hay (un lead = un folio aunque pase de IG a WhatsApp);
           // si no hay teléfono (IG/FB sin número), por canal:sender. [2026-06-14 review]
           const dedupKey = (input.phone && String(input.phone).replace(/\D/g, '').length >= 8)
@@ -413,16 +428,36 @@ export async function handleChannelTurn(
           const prevQ = RECENT_QUOTES.get(dedupKey);
           if (prevQ && (Date.now() - prevQ.at) < QUOTE_DEDUP_MS) {
             log('info', 'generarPdf.dedup', `Cotización duplicada evitada para ${dedupKey}; reusando ${prevQ.quote_number}`);
+            // [IG-LOOP 2026-07-01] HONESTIDAD: si esa propuesta NO se entregó, no decir "ya te emití"
+            // (era parte del loop que perdió al cliente). Decir la verdad: Marcelo la envía.
+            const _undelivered = lq && lq.quote_number === prevQ.quote_number && lq.pdf_sent === false;
             return { ok: true, quote_number: prevQ.quote_number, pdf_sent: false, deduped: true,
-              message: `Ya te emití tu Propuesta Técnica Económica N° ${prevQ.quote_number}.` };
+              message: _undelivered
+                ? `Tu Propuesta Técnica Económica N° ${prevQ.quote_number} está lista — el Ing. Marcelo Cifuentes te la hará llegar por WhatsApp. 📲 +56 9 5729 6035`
+                : `Ya te emití tu Propuesta Técnica Económica N° ${prevQ.quote_number}.` };
           }
 
           const SALES_OS_URL = (process.env.SALES_OS_URL || '').replace(/\/$/, '');
           const OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || '';
 
+          // ── [PDF-RACE 2026-07-01] GUARD de COMPLETITUD: PDF formal SOLO con datos confirmados ──
+          // (compartido con webhook.js). Sin nombre real o ítems incompletos: NO se quema folio ISO.
+          const _gate = quoteDataComplete(input, state);
+          if (!_gate.ok) {
+            log('error', 'generarPdf.gate', `PDF bloqueado por datos incompletos: ${_gate.missing.join(', ')}`);
+            return { ok: false, reason: 'datos_incompletos', missing: _gate.missing,
+              message: _gate.missing.includes('name')
+                ? '¿A nombre de quién emito la Propuesta Técnica Económica? Con eso te la envío al tiro.'
+                : 'Antes de emitir la propuesta formal necesito confirmar un detalle de las ventanas. Ya te pregunto.' };
+          }
+
           // Paso 1: correlativo ISO — MISMA fuente única que WhatsApp (un solo folio).
-          let quoteNumber = null;
-          try {
+          // [IG-LOOP 2026-07-01] Si la sesión YA tiene folio (state.last_quote persiste en Postgres),
+          // se REUSA: correcciones y reintentos NO queman correlativos nuevos (antes: 0073→0074, y
+          // 0081→0085→0086 por regenerar tras cada corrección). Folio nuevo = solo sesión sin folio.
+          let quoteNumber = (lq && lq.quote_number) ? lq.quote_number : null;
+          if (quoteNumber) log('info', 'generarPdf.folio', `Reusando folio de la sesión ${quoteNumber} para ${convKey}`);
+          if (!quoteNumber) try {
             const cr = await fetch(`${SALES_OS_URL}/internal/quotes/next-number`, {
               method: 'POST',
               headers: { 'x-api-key': OPERATOR_TOKEN, 'Content-Type': 'application/json' },
@@ -506,14 +541,22 @@ export async function handleChannelTurn(
 
           // Si NO se entregó el PDF por el canal → escalar a Marcelo (no se pierde en silencio).
           if (!pdfSent) {
+            // [IG-LOOP 2026-07-01] rastro PERSISTENTE del fallo: 1 solo reintento permitido; al 2°
+            // fallo queda escalated=true y el guard de arriba corta todo reintento futuro en código.
+            const _attempts = ((lq && lq.quote_number === quoteNumber) ? (Number(lq.deliveryAttempts) || 0) : 0) + 1;
+            state.last_quote = { quote_number: quoteNumber, at: Date.now(),
+              deliveryAttempts: _attempts, escalated: _attempts >= 2, pdf_sent: false };
             await safe('generarPdf.escalate', () =>
               notifyHighValue(sendWhatsAppText, senderId,
                 { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
-                `[${channel}] PDF ${quoteNumber} no se pudo entregar${outsideWindow ? ' (fuera de ventana 24h)' : ''} — enviarlo desde el inbox (ops.activalabs.ai)`));
+                `[${channel}] PDF ${quoteNumber} no se pudo entregar${outsideWindow ? ' (fuera de ventana 24h)' : ''} (intento ${_attempts}) — enviarlo desde el inbox (ops.activalabs.ai)`));
             return { ok: true, quote_number: quoteNumber, pdf_sent: false,
               message: `Tu Propuesta Técnica Económica N° ${quoteNumber} está lista ✅ No pude enviarte el archivo por este canal — el Ing. Marcelo Cifuentes Méndez (Ingeniero Civil Industrial, Gerente de Ingeniería de Activa) te la enviará directamente a tu WhatsApp. 📲 +56 9 5729 6035` };
           }
 
+          // [IG-LOOP 2026-07-01] entrega OK → registrar folio como entregado (dedup honesto + reuso).
+          state.last_quote = { quote_number: quoteNumber, at: Date.now(),
+            deliveryAttempts: 0, escalated: false, pdf_sent: true };
           return { ok: true, quote_number: quoteNumber, pdf_sent: true,
             message: `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF). Cualquier duda la vemos.` };
         }),
@@ -564,6 +607,9 @@ export async function handleChannelTurn(
     const newHistory = Array.isArray(turn?.history) ? turn.history : history;
     const newState = turn?.state && typeof turn.state === 'object' ? turn.state : state;
     const toolCalls = Array.isArray(turn?.toolCalls) ? turn.toolCalls : [];
+    // [IG-LOOP 2026-07-01] el cerebro devuelve su propio state: sin este merge se perdería el
+    // last_quote que generarPdf escribió DURANTE este turno (folio/reintentos/escalado persistente).
+    if (state.last_quote) newState.last_quote = state.last_quote;
 
     // Capturar la cotización (ítems con precio REAL del motor) para la ENTREGA DETERMINISTA del PDF al
     // confirmar (ver arriba). Solo se actualiza si este turno cotizó; si no, se conserva la anterior.

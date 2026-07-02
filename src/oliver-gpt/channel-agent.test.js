@@ -135,7 +135,42 @@ test('PDF no entregable (IG sin Página / fuera de ventana) → escala, no se pi
   });
   const out = await handleChannelTurn({ channel: 'instagram', senderId: 'IG_win', text: 'cotiza', msgId: 'w1', sendFn: async () => ({ ok: true }) }, deps);
   assert.ok(log.escalations >= 1);
-  assert.match(out.reply, /Marcelo te la hace llegar/);
+  // [2026-07-01 Bug#2] mensaje explícito: Marcelo la envía por WhatsApp (antes: "te la hace llegar" vago)
+  assert.match(out.reply, /Marcelo Cifuentes.*enviará directamente a tu WhatsApp/);
+});
+
+// [IG-LOOP 2026-07-01] Caso real Juan Pablo (Instagram): entrega falla → NO quemar folio nuevo,
+// máx 1 reintento y luego mensaje fijo de escalación SIEMPRE (cap en código, no en el LLM).
+test('IG-LOOP: entrega fallida reusa folio, cap de 1 reintento y luego escalado fijo', async () => {
+  stubFetch('CM-FR-004-2026-0073');
+  const conv = new Map();
+  const sendDocFail = async () => ({ ok: false, error: 'no_attachment' });
+
+  // Turno 1: cotiza → folio 0073, entrega falla (intento 1)
+  const { deps: d1, log: l1 } = mkDeps({ handleTurn: handleTurnPdf, conv, sendChannelDocument: sendDocFail });
+  const o1 = await handleChannelTurn({ channel: 'instagram', senderId: 'IG_loop', text: 'cotiza', msgId: 'l1', sendFn: async () => ({ ok: true }) }, d1);
+  assert.match(o1.reply, /CM-FR-004-2026-0073/);
+  assert.ok(l1.escalations >= 1, 'escala al primer fallo');
+
+  // Simular que pasó la ventana de dedup de 2 min (RECENT_QUOTES): limpiar el Map module-level
+  // no es posible desde el test → avanzar el reloj del entry en su lugar no aplica; el guard
+  // nuevo por state.last_quote NO depende de la ventana, así que forzamos folio distinto para
+  // detectar cualquier next-number indebido.
+  stubFetch('CM-FR-004-2026-9074'); // si pidiera folio nuevo saldría 9074 → NO debe aparecer
+
+  // Turno 2: cliente reclama → reusa 0073 (intento 2) → queda escalado
+  const { deps: d2 } = mkDeps({ handleTurn: handleTurnPdf, conv, sendChannelDocument: sendDocFail });
+  const o2 = await handleChannelTurn({ channel: 'instagram', senderId: 'IG_loop', text: 'no me llegó', msgId: 'l2', sendFn: async () => ({ ok: true }) }, d2);
+  assert.match(o2.reply, /CM-FR-004-2026-0073/, 'reusa el MISMO folio');
+  assert.doesNotMatch(o2.reply, /9074/, 'no quema folio nuevo');
+  assert.doesNotMatch(o2.reply, /Ya te emití/, 'no miente que entregó');
+
+  // Turno 3: otro reclamo → mensaje fijo de escalación, sin reintento de envío
+  const { deps: d3, log: l3 } = mkDeps({ handleTurn: handleTurnPdf, conv, sendChannelDocument: sendDocFail });
+  const o3 = await handleChannelTurn({ channel: 'instagram', senderId: 'IG_loop', text: 'sigo sin el pdf', msgId: 'l3', sendFn: async () => ({ ok: true }) }, d3);
+  assert.match(o3.reply, /CM-FR-004-2026-0073/, 'sigue el MISMO folio');
+  assert.match(o3.reply, /Marcelo Cifuentes/, 'mensaje fijo de escalación');
+  assert.equal(l3.attachments.length, 0, 'NO reintenta el envío del documento');
 });
 
 test('sesión fría (redeploy): hidrata desde Postgres → recibe historial previo (no re-saluda)', async () => {
@@ -191,7 +226,9 @@ test('PDF DETERMINISTA: cotiza → "ok envíamela" entrega el PDF en código (si
   const htCotiza = async () => ({
     reply: '¿Te gustaría que te envíe la propuesta formal en PDF?',
     history: [{ role: 'user', content: 'cotiza' }, { role: 'assistant', content: '¿Te gustaría que te envíe la propuesta formal en PDF?' }],
-    state: {},
+    // [PDF-RACE 2026-07-01] el flujo nuevo exige NOMBRE antes del PDF (REGLA #13 + gate en código):
+    // el cerebro ya lo capturó durante la cotización.
+    state: { name: 'Juan Pérez' },
     toolCalls: [{ name: 'calcular_cotizacion',
       input: { tipo: 'corredera', medidas_texto: '1200x1000', cantidad: 4, color: 'blanco' },
       result: { ok: true, unit_price: 324573, cantidad: 4, glass_label: '4+12+4', producto_label: 'Corredera SLIDING H80' } }],
@@ -207,4 +244,27 @@ test('PDF DETERMINISTA: cotiza → "ok envíamela" entrega el PDF en código (si
   assert.equal(llm2, 0, 'la entrega del PDF NO pasa por el LLM');
   assert.equal(log2.attachments.length, 1, 'el PDF SE entrega al confirmar');
   assert.match(out2.reply, /CM-FR-004-2026-0030/, 'con el folio ISO real');
+});
+
+// [PDF-RACE 2026-07-01] GATE de completitud: sin NOMBRE real no se emite PDF ni se quema folio
+// (casos BD: 0081/0085/0086 emitidos antes de que el cliente respondiera). Oliver pide el nombre.
+test('GATE: sin nombre NO se emite PDF ni se quema folio → pide el nombre', async () => {
+  stubFetch('CM-FR-004-2026-0500');
+  const conv = new Map();
+  const htCotizaSinNombre = async () => ({
+    reply: '¿Te gustaría que te envíe la propuesta formal en PDF?',
+    history: [{ role: 'user', content: 'cotiza' }, { role: 'assistant', content: '¿Te gustaría que te envíe la propuesta formal en PDF?' }],
+    state: {},   // ← sin nombre
+    toolCalls: [{ name: 'calcular_cotizacion',
+      input: { tipo: 'corredera', medidas_texto: '1200x1000', cantidad: 1, color: 'blanco' },
+      result: { ok: true, unit_price: 324573, cantidad: 1, glass_label: '4+12+4', producto_label: 'Corredera SLIDING H80' } }],
+  });
+  const { deps: d1 } = mkDeps({ handleTurn: htCotizaSinNombre, conv });
+  await handleChannelTurn({ channel: 'instagram', senderId: 'IG_gate', text: 'cotiza', msgId: 'g1', sendFn: async () => ({ ok: true }) }, d1);
+
+  const { deps: d2, log: log2 } = mkDeps({ handleTurn: async () => ({ reply: 'NO_DEBERIA', history: [], state: {}, toolCalls: [] }), conv });
+  const out2 = await handleChannelTurn({ channel: 'instagram', senderId: 'IG_gate', text: 'sí envíamela', msgId: 'g2', sendFn: async () => ({ ok: true }) }, d2);
+  assert.equal(log2.attachments.length, 0, 'NO entrega PDF sin nombre');
+  assert.match(out2.reply, /a nombre de qui[eé]n/i, 'pide el nombre del cliente');
+  assert.doesNotMatch(out2.reply, /CM-FR-004-2026-0500/, 'NO quemó folio');
 });

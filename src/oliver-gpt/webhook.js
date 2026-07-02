@@ -54,7 +54,7 @@ import {
 } from '../../services/voiceBridge.js'; // [F4] voz saliente
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
-import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent
+import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, quoteDataComplete } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent
 import { toFile as realToFile } from 'openai/uploads';
 import {
   loadSession as realLoadSession,
@@ -750,6 +750,19 @@ export async function handleWebhook(req, res, deps = {}) {
             return { ok: false, reason: 'precios_no_validados', detail: 'unit_price debe venir de calcular_cotizacion, no inventado' };
           }
 
+          // ── [PDF-RACE 2026-07-01] GUARD de COMPLETITUD: PDF formal SOLO con datos confirmados ──
+          // Casos reales BD: 0081/0085/0086 (Ximena), 0060 (Vivi), 0090 (Julio) — el PDF salía ANTES
+          // de que el cliente respondiera nombre/color/tipo. Sin nombre real o ítems incompletos:
+          // NO se quema folio ISO; se devuelve message para que Oliver pida el dato que falta.
+          const _gate = quoteDataComplete(input, state);
+          if (!_gate.ok) {
+            log('error', 'generarPdf.gate', `PDF bloqueado por datos incompletos: ${_gate.missing.join(', ')}`);
+            return { ok: false, reason: 'datos_incompletos', missing: _gate.missing,
+              message: _gate.missing.includes('name')
+                ? '¿A nombre de quién emito la Propuesta Técnica Económica? Con eso te la envío al tiro.'
+                : 'Antes de emitir la propuesta formal necesito confirmar un detalle de las ventanas. Ya te pregunto.' };
+          }
+
           // ── BLINDAJE label↔precio (2026-06-24) — INVARIANTE: el precio DEBE corresponder a la
           // apertura que el cliente VE en el label. Causa raíz del bug 0064/0065/0066: una FIJA salía
           // con precio de CORREDERA (~2x). Aquí, en el ÚNICO punto de salida del PDF (cubre LLM,
@@ -838,7 +851,17 @@ export async function handleWebhook(req, res, deps = {}) {
           const OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || '';
           let quoteNumber = null;
           let descuentoMercadoPct = 0; // [2026-06-24] viene del correlativo → se muestra en el PDF
-          try {
+          // [PDF-RACE 2026-07-01] REUSAR el folio de la sesión (ventana 48h): una corrección del
+          // cliente = REVISIÓN del MISMO folio, no correlativo nuevo (antes: 0081→0085→0086 en una
+          // sola sesión = 3 folios ISO quemados para la misma propuesta).
+          const QUOTE_REUSE_MS = 48 * 60 * 60 * 1000;
+          const _lq = state.last_quote;
+          if (_lq && _lq.quote_number && (Date.now() - (_lq.at || 0)) < QUOTE_REUSE_MS) {
+            quoteNumber = _lq.quote_number;
+            descuentoMercadoPct = Number(_lq.descuento_mercado_pct) || 0;
+            log('info', 'generarPdf.folio', `Reusando folio de la sesión ${quoteNumber} para ${from} (revisión, no folio nuevo)`);
+          }
+          if (!quoteNumber) try {
             const correlativoRes = await fetch(
               `${SALES_OS_URL}/internal/quotes/next-number`,
               {
@@ -1022,15 +1045,22 @@ export async function handleWebhook(req, res, deps = {}) {
           // [FIX 2026-06-19 CLI-02/CLI-03] si el PDF NO se entregó → AVISAR a Marcelo (no se pierde en silencio)
           // + devolver `message` para que el LLM diga la verdad y NO alucine "ya te lo envié".
           if (!docSent) {
+            // [PDF-RACE 2026-07-01] rastro persistente del folio (reuso 48h) + estado real de entrega.
+            state.last_quote = { quote_number: quoteNumber, at: Date.now(), pdf_sent: false,
+              descuento_mercado_pct: descuentoMercadoPct };
             await safe('generarPdf.escalate', () =>
               notifyHighValue(sendWhatsAppText, from,
                 { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
                 `[whatsapp] PDF ${quoteNumber} no se pudo entregar al cliente — enviarlo desde el inbox (ops.activalabs.ai)`));
             return {
               ok: true, quote_number: quoteNumber, pdf_sent: false, media_id: waDocMediaId,
-              message: `Te preparé tu Propuesta Técnica Económica N° ${quoteNumber}. Si no la ves acá en un momento, Marcelo te la hace llegar enseguida.`,
+              // [2026-07-01 Bug#2 paridad] explícito y honesto: Marcelo la envía (no "si no la ves" vago).
+              message: `Tu Propuesta Técnica Económica N° ${quoteNumber} está lista ✅ Tuve un problema para adjuntarte el archivo — el Ing. Marcelo Cifuentes te la enviará directamente en un momento. 📲 +56 9 5729 6035`,
             };
           }
+          // [PDF-RACE 2026-07-01] entrega OK → registrar folio para reuso (revisiones = mismo folio).
+          state.last_quote = { quote_number: quoteNumber, at: Date.now(), pdf_sent: true,
+            descuento_mercado_pct: descuentoMercadoPct };
           return {
             ok: true,
             quote_number: quoteNumber,
@@ -1081,6 +1111,9 @@ export async function handleWebhook(req, res, deps = {}) {
     const newHistory = Array.isArray(turn?.history) ? turn.history : history;
     const newState = turn?.state && typeof turn.state === 'object' ? turn.state : state;
     const toolCalls = Array.isArray(turn?.toolCalls) ? turn.toolCalls : [];
+    // [PDF-RACE 2026-07-01] sin este merge se perdería el last_quote (folio de la sesión, estado
+    // real de entrega) que generarPdf escribió DURANTE este turno vía toolCalls del LLM.
+    if (state.last_quote) newState.last_quote = state.last_quote;
 
     // [FIX 2026-06-19 PDF-01] capturar la cotización del turno → pending_quote, para poder entregar
     // el PDF determinista si el cliente confirma en el próximo turno (bloque de arriba).
