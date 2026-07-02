@@ -62,6 +62,7 @@ import {
   resetIfInactive,
 } from './session-store.js';
 import { parseReferral, buildCtwaLeadPayload } from '../../services/ctwaReferral.js'; // [F3b] CTWA
+import { parseLandingRef, buildLandingLeadPayload } from '../../services/landingRefParser.js'; // [2026-07-02] atribución orgánica landing→WA
 import { isVisionUnreadable } from '../../services/oliverVision.js'; // [F3b] detector imagen ilegible
 import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from './escalation.js'; // [2026-06-18] escalación determinista compartida
 
@@ -595,6 +596,59 @@ export async function handleWebhook(req, res, deps = {}) {
       }
     } catch (e) {
       log('error', 'ctwa.capture', e);
+    }
+
+    // ── (4c) LANDING REF — Atribución ORGÁNICA (landing V3 → wa.me con [Ref:uuid]). ──
+    // [2026-07-02] El espejo del bloque CTWA de arriba, para SEO: las landings YA agregan el tag
+    // al link de WhatsApp (injectRef v5.1.0) pero este tramo nunca se codeó → 0 leads orgánicos
+    // atribuibles en toda la BD (auditoría). El tag se QUITA del texto ANTES de armar userText:
+    // ni el cliente, ni el operador, ni el LLM lo ven jamás. Fire-and-forget: nunca bloquea.
+    try {
+      if (inbound?.text && !state.landingRefCaptured) {
+        const _lref = (deps.parseLandingRef || parseLandingRef)(inbound.text);
+        if (_lref.hasRef) {
+          state.landingRefCaptured = true;
+          state.landing_lead_id = _lref.leadId;
+          inbound.text = _lref.cleanText; // strip: el resto del pipeline no ve el tag
+          const _bridge = deps.bridge || realBridge;
+          const _cxmBase = (process.env.UNIFIED_CXM_BASE_URL || 'https://unified-cxm-ads-flow-production.up.railway.app').replace(/\/$/, '');
+          const _apiKey = process.env.DASHBOARD_API_KEY || process.env.UNIFIED_CXM_DASHBOARD_API_KEY || '';
+          safe('landing_ref.ingest', async () => {
+            // 1) contexto de la landing (slug/servicio/comuna) desde el collector del CXM
+            let ctx = { lead_id: _lref.leadId };
+            if (_apiKey) {
+              try {
+                const r = await fetch(`${_cxmBase}/api/lead-event/ref/${encodeURIComponent(_lref.leadId)}`, {
+                  headers: { 'x-api-key': _apiKey }, signal: AbortSignal.timeout(4000),
+                });
+                if (r.ok) { const j = await r.json(); if (j?.lead || j?.ok) ctx = { ...ctx, ...(j.lead || j) }; }
+              } catch (e) { log('error', 'landing_ref.fetch', e); }
+            }
+            // 2) evento quote_started en landing_events (mismo collector público del beacon):
+            //    "el lead ESCRIBIÓ a Oliver desde esta landing" — cierra leads_count por slug.
+            try {
+              await fetch(`${_cxmBase}/api/lead-event`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  lead_id: _lref.leadId, event_name: 'quote_started',
+                  event_id: `oliver_wa_${_lref.leadId}`,
+                  landing_slug: ctx.landing_slug || null,
+                  landing_servicio: ctx.service || ctx.landing_servicio || null,
+                  landing_comuna: ctx.comuna || ctx.landing_comuna || null,
+                }),
+                signal: AbortSignal.timeout(4000),
+              });
+            } catch (e) { log('error', 'landing_ref.event', e); }
+            // 3) lead en sales-os con source=landing_organic (mismo bridge probado del CTWA)
+            await _bridge.pushLeadEvent(
+              (deps.buildLandingLeadPayload || buildLandingLeadPayload)(from, ctx, { name: state.name || '' })
+            );
+          });
+          log('info', 'landing_ref_attribution', `Lead ORGÁNICO capturado tel=${from} lead_id=${_lref.leadId}`);
+        }
+      }
+    } catch (e) {
+      log('error', 'landing_ref.capture', e);
     }
 
     // ── (5) MEDIA → userText útil (vision / STT). Resuelve la ceguera V2. ─
