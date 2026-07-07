@@ -49,6 +49,7 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
         glass_label: t.result.glass_label || 'Termopanel DVH',
         ambiente: t.input?.ambiente || '',
         termico: t.result?.termico || null,   // [thermal] Uw → PDF (camino determinista)
+        referencial: !!t.result?.referencial, // [2026-07-07] fuera de estándar → escalación a Marcelo (revisión ingeniería)
       };
     })
     .filter(it => Number(it.unit_price) > 0);

@@ -951,6 +951,12 @@ export async function handleWebhook(req, res, deps = {}) {
             await priceAllEngine(_therm);
             (input.items || []).forEach((it, k) => {
               it.termico = _therm.items[k]?.termico || null; // motor manda; sin termico → null
+              // [2026-07-07] referencial = medida fuera de estándar (sobre máx o bajo mín). Motor-truth
+              // para TODOS los ítems (no depende de que el LLM lo pase) → dispara la escalación de abajo.
+              if (_therm.items[k]?.referencial) {
+                it.referencial = true;
+                it.measures_original = _therm.items[k].measures_original || it.measures_original || it.measures;
+              }
             });
           } catch (e) {
             log('error', 'generarPdf.termico.err', e?.message || e); // jamás bloquea el PDF
@@ -1173,6 +1179,23 @@ export async function handleWebhook(req, res, deps = {}) {
               },
             })
           );
+
+          // ── [2026-07-07] ESCALACIÓN por VENTANA FUERA DE ESTÁNDAR (instrucción del dueño) ──────
+          // Toda ventana referencial (sobre el máximo o bajo el mínimo de fábrica) se cotiza IGUAL
+          // (no se frena al cliente), pero Marcelo (Evaluador Energético Externo MINVU) DEBE revisar
+          // la medida/precio antes de fabricar. Motor-truth (referencial se derivó del motor arriba),
+          // no depende del LLM. Best-effort + cooldown 2h por cliente:motivo → no spamea. Corre para
+          // ambos caminos (entregado o no) porque la revisión de ingeniería aplica igual.
+          const _refItems = (input.items || []).filter((it) => it.referencial);
+          if (_refItems.length) {
+            const _lista = _refItems
+              .map((it) => `• ${it.producto_label || it.product || 'Ventana'} (${it.measures_original || it.measures || 's/medida'})`)
+              .join('\n');
+            await safe('generarPdf.referencial.escalate', () =>
+              notifyHighValue(sendWhatsAppText, from,
+                { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber, grand_total: grandTotal, items: input.items }, history },
+                `oliver_gpt:ventana_fuera_estandar — 🔧 REVISIÓN DE INGENIERÍA: ${_refItems.length} ventana(s) fuera del estándar de fábrica en el folio ${quoteNumber}. Confirmar medida y precio final antes de fabricar:\n${_lista}`));
+          }
 
           // [FIX 2026-06-19 CLI-02/CLI-03] si el PDF NO se entregó → AVISAR a Marcelo (no se pierde en silencio)
           // + devolver `message` para que el LLM diga la verdad y NO alucine "ya te lo envié".

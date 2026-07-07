@@ -90,3 +90,19 @@ test('itemsFromQuoteCalls: sin medidas_resueltas cae al texto crudo (comportamie
   assert.equal(items[0].measures, '150x150 cm');
   assert.equal(items[0].ancho_mm, undefined);
 });
+
+// ── [2026-07-07] referencial se preserva → dispara escalación de revisión de ingeniería ──
+test('itemsFromQuoteCalls: preserva referencial:true de la ventana fuera de estándar', () => {
+  const calls = [{
+    name: 'calcular_cotizacion',
+    input: { tipo: 'PROYECTANTE', medidas_texto: '350x600' },
+    result: { ok: true, unit_price: 120000, cantidad: 1, producto_label: 'Proyectante S60', referencial: true, medidas_resueltas: '400x600mm' },
+  }, {
+    name: 'calcular_cotizacion',
+    input: { tipo: 'CORREDERA', medidas_texto: '1200x1000' },
+    result: { ok: true, unit_price: 300000, cantidad: 1, producto_label: 'Corredera SLIDING', referencial: false, medidas_resueltas: '1200x1000mm' },
+  }];
+  const items = itemsFromQuoteCalls(calls, 'BLANCO');
+  assert.equal(items[0].referencial, true, 'la fuera de estándar marca referencial');
+  assert.equal(items[1].referencial, false, 'la normal NO');
+});
