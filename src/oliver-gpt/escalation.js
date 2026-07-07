@@ -15,8 +15,12 @@
 //
 // ESM, Node 18+.
 
-const BOOKINGS_URL = () => process.env.MARCELO_BOOKINGS_URL ||
-  'https://outlook.office.com/bookwithme/user/35f7b8685a9041ae951cdb858eea458b@activaspa.cl/meetingtype/oi8VUtFlrEOffOOfJQCRiw2?anonymous&ismsaljsauthenabled&ep=mlink';
+// [2026-07-07] Link CORTO propio (caso real: cliente "no podía pinchar" el link). La URL de Bookings
+// lleva un '@' en el path → WhatsApp la parte como si fuera un email y el tap no abre. Ahora se entrega
+// ops.activalabs.ai/agenda (redirige en sales-os al Bookings real; destino configurable allá con
+// MARCELO_BOOKINGS_URL). Env NUEVA a propósito: si MARCELO_BOOKINGS_URL quedó seteada en Railway del
+// bot con la URL monstruo, NO debe pisar el link corto.
+const BOOKINGS_URL = () => process.env.OLIVER_AGENDA_URL || 'https://ops.activalabs.ai/agenda';
 
 // Mensaje fijo al cliente cuando se escala (idéntico en todos los canales).
 export function escalationMessage() {

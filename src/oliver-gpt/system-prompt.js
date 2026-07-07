@@ -33,10 +33,11 @@ const COMPANY = {
     'https://www.google.com/maps/place/ACTIVA+Inversiones/@-38.7202747,-72.645712,942m/data=!3m2!1e3!4b1!4m6!3m5!1s0x9614d5646f17a655:0x980991a065c5737a!8m2!3d-38.7202747!4d-72.6431317',
   GOOGLE_REVIEWS_COUNT: process.env.GOOGLE_REVIEWS_COUNT || '29', // [2026-07-06] real en Maps (24 era stale)
   GOOGLE_REVIEWS_RATING: process.env.GOOGLE_REVIEWS_RATING || '5.0',
-  // Página de reservas de Microsoft Bookings de Marcelo (cae en su Outlook). Override por env.
-  BOOKINGS_URL:
-    process.env.MARCELO_BOOKINGS_URL ||
-    'https://outlook.office.com/bookwithme/user/35f7b8685a9041ae951cdb858eea458b@activaspa.cl/meetingtype/oi8VUtFlrEOffOOfJQCRiw2?anonymous&ismsaljsauthenabled&ep=mlink',
+  // [2026-07-07] Agenda de Marcelo = LINK CORTO propio (ops.activalabs.ai/agenda → redirige en sales-os
+  // al Microsoft Bookings real). La URL larga de Bookings lleva '@' en el path → WhatsApp la partía como
+  // email y los clientes no podían pinchar (caso real). Env NUEVA (no MARCELO_BOOKINGS_URL) para que un
+  // valor viejo en Railway no pise el link corto.
+  BOOKINGS_URL: process.env.OLIVER_AGENDA_URL || 'https://ops.activalabs.ai/agenda',
 };
 
 /* =========================================================================

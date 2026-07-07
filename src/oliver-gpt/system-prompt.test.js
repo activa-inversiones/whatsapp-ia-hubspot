@@ -123,3 +123,12 @@ test('[FIX 07-jul] correo: el prompt trae el correo REAL y prohíbe inventar otr
   assert.ok(/NUNCA invente otra\s+dirección de correo/i.test(sys),
     'el prompt debe prohibir inventar otro correo');
 });
+
+// ── [2026-07-07] Link corto de agenda (WhatsApp partía la URL de Bookings por el '@') ──
+test('[FIX 07-jul] agenda: el prompt entrega el link CORTO, nunca la URL larga de Bookings', () => {
+  const sys = buildSystemBlocks();
+  assert.ok(sys.includes('ops.activalabs.ai/agenda'),
+    'el prompt debe entregar el link corto de agenda (clickeable en WhatsApp)');
+  assert.ok(!sys.includes('bookwithme'),
+    'la URL larga de Bookings (con @ que WhatsApp parte) no puede volver al prompt');
+});
