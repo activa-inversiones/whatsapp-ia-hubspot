@@ -589,6 +589,10 @@ export async function handleChannelTurn(
     // 24h de Meta), NO marcamos el outbound como entregado y escalamos a Marcelo para que
     // atienda al cliente desde el inbox (no se pierde en silencio).
     let sendResult = null;
+    // [2026-07-06 OBS] Misma instrumentación que WhatsApp: reply vacío = cliente sin respuesta (fallback = lote 2).
+    if (!reply || !String(reply).trim()) {
+      try { log('error', 'turn.reply_empty', `${convKey}: toolCalls=${(toolCalls || []).map((t) => t.name).join(',') || 'ninguno'}`); } catch {}
+    }
     if (reply) {
       sendResult = await safe('send', () => sendFn(senderId, reply));
     }

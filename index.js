@@ -397,13 +397,13 @@ const COMPANY = {
   NAME: process.env.COMPANY_NAME || "Activa Inversiones",
   PHONE: process.env.COMPANY_PHONE || "+56 9 1234 5678",
   EMAIL: process.env.COMPANY_EMAIL || "ventas@activa.cl",
-  ADDRESS: process.env.COMPANY_ADDRESS || "Temuco, La Araucanía, Chile",
+  ADDRESS: process.env.COMPANY_ADDRESS || "Av. Luis Durand 03619, Temuco, La Araucanía", // [2026-07-06] NAP real (=GBP); el fallback genérico dejaba al LLM inventar calle ("Avenida Alemania 0478", cliente fue y no encontró)
   WEBSITE: process.env.COMPANY_WEBSITE || "www.activa.cl",
   RUT: process.env.COMPANY_RUT || "76.XXX.XXX-X",
   // v11.8 — Prueba social (Regla #31) — DATOS DINÁMICOS desde BD
   // Variables FALLBACK si googleReviewsScanner no actualizó BD aún
   GOOGLE_REVIEWS_URL: process.env.GOOGLE_REVIEWS_URL || "https://www.google.com/maps/place/ACTIVA+Inversiones/@-38.7202747,-72.645712,942m/data=!3m2!1e3!4b1!4m6!3m5!1s0x9614d5646f17a655:0x980991a065c5737a!8m2!3d-38.7202747!4d-72.6431317",
-  GOOGLE_REVIEWS_COUNT: process.env.GOOGLE_REVIEWS_COUNT || "24",
+  GOOGLE_REVIEWS_COUNT: process.env.GOOGLE_REVIEWS_COUNT || "29", // [2026-07-06] real en Maps (24 era stale)
   GOOGLE_REVIEWS_RATING: process.env.GOOGLE_REVIEWS_RATING || "5.0",
   GOOGLE_PLACE_ID: process.env.GOOGLE_PLACE_ID || "ChIJVaYXb1bVFJYR-3OFwAJ_mPg",
 };
@@ -1226,10 +1226,16 @@ async function fireManualConversion(waId, data, ses) {
 // Maneja un mensaje del dueño en el flujo de registro manual (línea rápida, guiado o mid-flow).
 async function handleManualConversion(waId, text, ses) {
   const t = String(text || "").trim();
-  // Cancelar en cualquier punto (incluye una confirmación de monto pendiente)
-  if (/^(cancela(r)?|salir|olv[ií]dalo|d[eé]jalo)$/i.test(t) && (ses.manualConv || ses.manualConvPending)) {
+  // Cancelar en cualquier punto (incluye una confirmación de monto pendiente).
+  // [2026-07-06] + reset/exit/stop: el dueño escribió "reset" y "exit" DENTRO del flujo y fueron
+  // tomados como respuestas del paso activo (registró una conversión basura). El intercept temprano
+  // del webhook hace return antes del handler reset global → el escape tiene que vivir ACÁ.
+  if (/^(cancela(r)?|salir|olv[ií]dalo|d[eé]jalo|reset(ear)?|exit|stop)$/i.test(t) && (ses.manualConv || ses.manualConvPending)) {
+    const wasReset = /^reset/i.test(t);
     ses.manualConv = null; ses.manualConvPending = null;
-    await waSendH(waId, "Cancelado 👍. No registré nada.", true);
+    await waSendH(waId, wasReset
+      ? "Cancelado 👍. No registré nada. (Registro cerrado; si también querías reiniciar la cotización, escribe *reset* de nuevo.)"
+      : "Cancelado 👍. No registré nada.", true);
     saveSession(waId, ses);
     return;
   }
@@ -1292,6 +1298,30 @@ function adminCheckAuth(phone, pin) {
   const adminNorm = normalizeAdminPhone(ADMIN_PHONE);
   return phoneNorm === adminNorm && pin === ADMIN_PIN;
 }
+
+// [2026-07-06] Chuleta de comandos del dueño (pedido de Marcelo: "no sabía qué palabras existen").
+// Mantener al día cuando se agregue/cambie un comando. Se responde al escribir "comandos" / "/comandos".
+const COMANDOS_HELP = `📋 *COMANDOS DE OLIVER (dueño)*
+
+*Agenda de seguimiento:*
+• AGENDA o AGENDA HOY — seguimientos del día
+• LISTO <nombre o fono> [: nota] — marcar hecho
+• POSPONER <nombre o fono> <días> — posponer (sin nº = 7)
+• AGENDÁ <texto> [EN N DÍAS] — crear recordatorio
+
+*Registrar venta/cotización (manual):*
+• VENTA Juan Pérez 912345678 1500000 facebook — todo en una línea
+• "venta" o "cotización" (palabra sola) — modo guiado
+• Ojo: "cotiza / cotizar / cotízala…" NO abren registro (van al motor), salvo que la línea traiga monto
+• Salir del registro: cancelar · salir · olvídalo · déjalo · reset · exit · stop
+• Canales: tiktok · instagram · facebook/meta · google · maps · youtube · whatsapp · recomendado · web · otro
+
+*Cotizador:*
+• reset o resetear (palabra sola) — borra la sesión y parte de cero
+
+*Otros:*
+• comandos — esta lista
+• /test — marca sesión de prueba (vía prompt, poco confiable)`;
 
 // Parser minimalista de comandos admin
 function parseAdminCmd(text) {
@@ -4697,6 +4727,21 @@ app.post("/admin/send-template-bulk", express.json({ limit: "1mb" }), async (req
 // [FIX P14] Aumentar límite del body parser del bot para archivos base64 hasta 25MB
 // (ya debería estar configurado, pero forzamos)
 app.post("/webhook", async (req, res) => {
+  // [2026-07-06 COMANDOS] Chuleta del dueño: "comandos" / "/comandos" → lista de palabras predefinidas.
+  // Solo ADMIN, intercept temprano (mismo patrón que agenda). Determinista, no pasa por el LLM.
+  try {
+    const _cmInc = extractMsg(req.body);
+    if (_cmInc?.ok && _cmInc.type === "text" && verifySig(req) &&
+        normalizeWaId(_cmInc.waId) === normalizeAdminPhone(ADMIN_PHONE) &&
+        /^\s*\/?comandos?\s*$/i.test(_cmInc.text || "")) {
+      res.sendStatus(200);
+      if (!isDup(_cmInc.msgId)) {
+        try { await waSendH(_cmInc.waId, COMANDOS_HELP, true); } catch (e) { try { logErr("comandos_help", e); } catch {} }
+      }
+      return;
+    }
+  } catch (e) { try { logErr("comandos_help_outer", e); } catch {} }
+
   // [AGENDA FASE 1] Interceptar comandos de agenda del CEO (AGENDA/LISTO/POSPONER) ANTES del
   // routing a Oliver v2. El número CEO está en OLIVER_V2_NUMBERS y v2 NO tiene estos comandos
   // → sin esto la agenda nunca engancha para Marcelo. Solo aplica al número CEO + texto que

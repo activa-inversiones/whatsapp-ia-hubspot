@@ -230,7 +230,12 @@ async function describeImage(buffer, mime, deps) {
   const raw = (r.choices?.[0]?.message?.content || '').trim();
   // [F3b] Si la visión devolvió rechazo / vacío / sin medidas → marcar ilegible.
   // Evita que el orquestador confirme medidas que nunca llegaron (anti-alucinación).
-  if (isVisionUnreadable(raw)) return '[Imagen no legible]';
+  if (isVisionUnreadable(raw)) {
+    // [2026-07-06 OBS] Log del crudo para diagnosticar rachas de ilegibles (caso Flavio: 15/15 en 2 min,
+    // sin saber si fue rechazo del modelo o texto sin medidas). Solo observabilidad, cero cambio de flujo.
+    try { log('warn', 'vision.unreadable', { len: raw.length, snippet: raw.slice(0, 180) }); } catch {}
+    return '[Imagen no legible]';
+  }
   return raw;
 }
 
@@ -1206,6 +1211,12 @@ export async function handleWebhook(req, res, deps = {}) {
 
     // ── (7) Enviar respuesta por WhatsApp ───────────────────────────────
     // (7a) Texto: siempre se envía (canal garantizado).
+    // [2026-07-06 OBS] reply vacío = cliente SIN respuesta (caso real 56940732508: pedido de 11 ventanas
+    // quedó mudo un viernes noche). Por ahora SOLO instrumentamos la señal para cazar la causa raíz en
+    // logs de Railway; el fallback de comportamiento va en el lote 2 (decisión del abogado del diablo).
+    if (!reply || !String(reply).trim()) {
+      try { log('error', 'turn.reply_empty', { from, toolCalls: toolCalls.map((t) => t.name).join(',') || 'ninguno', historyLen: newHistory.length }); } catch {}
+    }
     if (reply) {
       await safe('sendWhatsAppText', () => sendWhatsAppText(from, reply));
     }

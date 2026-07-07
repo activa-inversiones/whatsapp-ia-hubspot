@@ -103,3 +103,14 @@ test('(d) ambas son funciones que devuelven string no vacío', () => {
   assert.equal(typeof ctx2, 'string');
   assert.ok(ctx2.trim().length > 0);
 });
+
+// ── [2026-07-06] Dirección real de la fábrica en el prompt (caso "Avenida Alemania 0478" inventada) ──
+test('[FIX 06-jul] dirección: el prompt trae la dirección REAL y prohíbe inventar otra', () => {
+  const sys = buildSystemBlocks();
+  assert.ok(sys.includes('Luis Durand 03619'),
+    'el prompt debe contener la dirección NAP real de la fábrica (Av. Luis Durand 03619, Temuco)');
+  assert.ok(/NUNCA invente otra calle|NUNCA invente otra direcci/i.test(sys),
+    'el prompt debe prohibir explícitamente inventar direcciones de la empresa');
+  assert.ok(!sys.includes('Avenida Alemania'),
+    'la dirección alucinada del incidente no puede estar en el prompt');
+});

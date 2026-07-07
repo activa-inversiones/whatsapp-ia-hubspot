@@ -148,3 +148,33 @@ test('confirmMessage: incluye tipo, nombre, monto, canal y estado de reporte', (
   const msg3 = confirmMessage({ kind: 'venta', name: 'Leo', phone: '569', amount: 700000, channel: 'tiktok' }, { skipped: 'channel_pending' });
   assert.match(msg3, /Fase 2/i, 'tiktok aún sin enviador → se avisa que se activa después');
 });
+
+// ── [2026-07-06] FIX secuestro registro manual + canal meta + re-pregunta (caso real del dueño) ──
+test('FIX secuestro: imperativos hacia el MOTOR no disparan registro manual', () => {
+  assert.equal(detectKind('cotizala igual'), null, '"cotizala igual" iba al motor, no al registro');
+  assert.equal(detectKind('cotizar tamaños sobre medida igual'), null);
+  assert.equal(detectKind('cotiza esta ventana de baño'), null);
+  assert.equal(isManualConvTrigger('cotizala igual'), false);
+});
+
+test('FIX secuestro: sustantivo/pretérito y línea rápida con monto SIGUEN disparando', () => {
+  assert.equal(detectKind('cotización'), 'cotizacion', 'palabra sola → guiado');
+  assert.equal(detectKind('cotizó María 850000'), 'cotizacion');
+  assert.equal(detectKind('cotizar Juan 900000'), 'cotizacion', 'imperativo + MONTO = línea rápida real');
+  assert.equal(detectKind('venta'), 'venta');
+});
+
+test('CANALES: "meta" se reconoce como facebook → plataforma meta', () => {
+  assert.equal(normalizeChannel('meta'), 'facebook');
+  assert.equal(channelToPlatform(normalizeChannel('meta')), 'meta');
+});
+
+test('CANALES: canal no reconocido re-pregunta UNA vez y recién después cae a otro', () => {
+  const s = startGuidedAtChannel({ kind: 'cotizacion', name: 'Prueba', phone: null, amount: 1500000 });
+  let r = advanceGuided(s, 'lo anterior es cotizacion');
+  assert.ok(!r.done, 'primera respuesta no reconocida NO cierra el flujo');
+  assert.match(r.ask, /canal/i);
+  r = advanceGuided(r.state, 'no tengo idea');
+  assert.equal(r.done, true);
+  assert.equal(r.data.channel, 'otro');
+});

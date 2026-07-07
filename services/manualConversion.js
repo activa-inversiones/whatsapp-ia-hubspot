@@ -21,13 +21,19 @@ export const VERSION = '1.0.0';
 // Lookahead acento-seguro (?![a-záéíóúñ]) en vez de \b: el \b no funciona tras "vendí"/"cotizó"
 // (la vocal acentuada no es \w). Así "venta" matchea pero "ventana" NO (le sigue letra).
 const VENTA_RE = /^\s*(venta|vend[a-záéíóúñ]*|cerr[a-záéíóúñ]*|ganad[ao])(?![a-záéíóúñ])/i;
-const COTIZ_RE = /^\s*(cotiz[a-záéíóúñ]*|cotic[eé]|presupuesto|propuesta)(?![a-záéíóúñ])/i;
+// [2026-07-06 FIX secuestro] Sustantivo/pretérito disparan SIEMPRE ("cotización", "cotizó Juan 500 mil").
+// Los IMPERATIVOS hacia el MOTOR ("cotiza", "cotizala igual", "cotizar tamaños sobre medida") NO son
+// registro manual: solo disparan si la línea trae MONTO (la línea rápida "cotizar Juan 900000" sigue OK).
+// Caso real 2026-07-06 19:10: "cotizala igual" secuestró la cotización del motor y registró basura.
+const COTIZ_NOUN_RE = /^\s*(cotizaci[oó]n(es)?|cotiz[oó]|cotic[eé]|presupuesto|propuesta)(?![a-záéíóúñ])/i;
+const COTIZ_ANY_RE = /^\s*cotiz[a-záéíóúñ]*(?![a-záéíóúñ])/i;
 
 /** 'venta' | 'cotizacion' | null según la PALABRA inicial. */
 export function detectKind(text) {
   const t = String(text || '');
   if (VENTA_RE.test(t)) return 'venta';
-  if (COTIZ_RE.test(t)) return 'cotizacion';
+  if (COTIZ_NOUN_RE.test(t)) return 'cotizacion';
+  if (COTIZ_ANY_RE.test(t) && extractAmount(t) != null) return 'cotizacion';
   return null;
 }
 
@@ -91,7 +97,7 @@ export function extractAmount(text) {
  * Quita la palabra-tipo, el teléfono y el monto → lo que queda es el NOMBRE.
  */
 export function extractName(text) {
-  let t = String(text || '').replace(VENTA_RE, ' ').replace(COTIZ_RE, ' ');
+  let t = String(text || '').replace(VENTA_RE, ' ').replace(COTIZ_NOUN_RE, ' ').replace(COTIZ_ANY_RE, ' ');
   const pm = t.match(/(\+?56[\s.-]?)?9[\s.-]?\d{4}[\s.-]?\d{4}\b/);
   if (pm) t = t.replace(pm[0], ' ');
   // quitar montos y palabras de moneda
@@ -109,7 +115,7 @@ export const CHANNELS = ['tiktok', 'instagram', 'facebook', 'google', 'maps', 'y
 const CHANNEL_ALIASES = [
   [/tik\s*tok|tiktok/i, 'tiktok'],
   [/instagram|insta\b/i, 'instagram'],
-  [/facebook|\bface\b|\bfb\b/i, 'facebook'],
+  [/facebook|\bface\b|\bfb\b|\bmeta\b/i, 'facebook'], // [2026-07-06] 'meta' = familia FB/IG (el dueño respondió "meta" y caía a 'otro')
   [/google\s*maps|\bmaps\b|mapa/i, 'maps'],
   [/youtube|you\s*tube|\byt\b/i, 'youtube'],
   [/google|buscador|search/i, 'google'],
@@ -189,7 +195,13 @@ export function advanceGuided(state, answer) {
     return { state: s, ask: askForStep('channel', s.kind) };
   }
   if (s.step === 'channel') {
-    s.channel = normalizeChannel(a) || 'otro';
+    const ch = normalizeChannel(a);
+    // [2026-07-06] Canal no reconocido → re-preguntar UNA vez antes de caer a 'otro' (antes era silencioso).
+    if (!ch && !s.channelRetry) {
+      s.channelRetry = true;
+      return { state: s, ask: 'No caché el canal 😅. Opciones: TikTok · Instagram · Facebook/Meta · Google · Maps · YouTube · WhatsApp · Recomendado · Web — o escribe *otro*.' };
+    }
+    s.channel = ch || 'otro';
     return { state: s, done: true, data: { kind: s.kind, name: s.name, phone: s.phone, amount: s.amount, channel: s.channel } };
   }
   return { state: s };

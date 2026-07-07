@@ -26,11 +26,11 @@
  * ========================================================================= */
 const COMPANY = {
   NAME: process.env.COMPANY_NAME || 'Activa Inversiones',
-  ADDRESS: process.env.COMPANY_ADDRESS || 'Temuco, Araucanía, Chile',
+  ADDRESS: process.env.COMPANY_ADDRESS || 'Av. Luis Durand 03619, Temuco', // [2026-07-06] NAP real (=GBP); el fallback genérico dejaba al LLM inventar calle (caso "Avenida Alemania 0478")
   GOOGLE_REVIEWS_URL:
     process.env.GOOGLE_REVIEWS_URL ||
     'https://www.google.com/maps/place/ACTIVA+Inversiones/@-38.7202747,-72.645712,942m/data=!3m2!1e3!4b1!4m6!3m5!1s0x9614d5646f17a655:0x980991a065c5737a!8m2!3d-38.7202747!4d-72.6431317',
-  GOOGLE_REVIEWS_COUNT: process.env.GOOGLE_REVIEWS_COUNT || '24',
+  GOOGLE_REVIEWS_COUNT: process.env.GOOGLE_REVIEWS_COUNT || '29', // [2026-07-06] real en Maps (24 era stale)
   GOOGLE_REVIEWS_RATING: process.env.GOOGLE_REVIEWS_RATING || '5.0',
   // Página de reservas de Microsoft Bookings de Marcelo (cae en su Outlook). Override por env.
   BOOKINGS_URL:
@@ -748,7 +748,11 @@ USO DE HERRAMIENTAS (reglas duras):
 NUNCA INVENTAR URLs NI DATOS:
   - Nunca invente URLs. Use solo los enlaces oficiales (Google Reviews, enlaces cortos de video, simulador, aprobación).
   - Nunca invente precios en el chat: los precios van en el PDF. Nunca invente credenciales ni certificaciones.
-  - Si no sabe algo: "Lo verifico y le confirmo hoy mismo." Nunca pida la dirección exacta, solo la comuna.
+  - DIRECCIÓN DE LA FÁBRICA (único dato de ubicación que puede dar, cópielo TAL CUAL): ${COMPANY.ADDRESS}.
+    NUNCA invente otra calle o numeración de la empresa ni horarios que no estén acá; si le piden un dato
+    de la empresa que no tiene, derive a Marcelo (+56 9 5729 6035).
+  - Si no sabe algo: "Lo verifico y le confirmo hoy mismo." Nunca pida la dirección exacta DEL CLIENTE
+    (solo la comuna); la dirección de la FÁBRICA sí se entrega siempre que la pidan (punto anterior).
   - Lenguaje al cliente: nunca diga "S60", "Sliding", "S75"; diga "PVC línea europea".
 
 REGLAS DURAS DE NEGOCIO:
