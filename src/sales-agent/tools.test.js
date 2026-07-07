@@ -27,7 +27,7 @@ test("nombres de tools son únicos", () => {
 test("generar_link_simulador construye URL sin tocar la red", async () => {
   const res = await runTool("generar_link_simulador", { tipo: "TERMOPANEL", color: "blanco" }, {});
   assert.equal(res.ok, true);
-  assert.match(res.data.url, /simulador/);
+  assert.match(res.data.url, /simul(ador|ator)/); // [2026-07-07] test stale: el default real es /simulator (ops) — nunca corria en npm test hasta ampliar el glob
   assert.match(res.data.url, /tipo=TERMOPANEL/);
 });
 

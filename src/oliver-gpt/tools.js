@@ -112,6 +112,57 @@ const SIMULADOR_BASE =
   process.env.ACTIVA_SIMULADOR_URL || 'https://activaspa.cl/simulador';
 
 /**
+ * Llama a sales-os POST /internal/ttl/freeze (contrato F1) para congelar el TTL
+ * del lead por `dias` con `motivo`. Además intenta agendar el follow-up vía
+ * /internal/agenda/add (mismo endpoint que usa callAgendaApi en index.js) —
+ * si ese endpoint no está alcanzable o falla, el freeze YA basta (no bloquea).
+ * Env leídas EN LLAMADA (no top-level): mismas que salesOsBridge.js / session-store.js
+ * (secreto YA compartido entre sales-os y el bot para todo /internal/*).
+ * @param {{ phone: string, dias: number, motivo: string }} params
+ * @returns {Promise<{ ok: boolean, freeze?: object, agenda?: object, error?: string }>}
+ */
+export async function posponerSeguimiento({ phone, dias, motivo } = {}) {
+  if (!phone) return { ok: false, error: 'phone_requerido' };
+  const salesOsUrl = (process.env.SALES_OS_URL || '').replace(/\/$/, '');
+  const salesOsToken = process.env.SALES_OS_OPERATOR_TOKEN || '';
+  if (!salesOsUrl || !salesOsToken) {
+    return { ok: false, error: 'sales_os_no_configurado' };
+  }
+  const diasRaw = Number(dias);
+  const diasNum = Number.isFinite(diasRaw) && diasRaw > 0 ? Math.max(1, Math.min(60, diasRaw)) : 7;
+
+  let freeze;
+  try {
+    const r = await fetch(`${salesOsUrl}/internal/ttl/freeze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': salesOsToken },
+      body: JSON.stringify({ phone, dias: diasNum, motivo: motivo || 'cliente postergó' }),
+      signal: AbortSignal.timeout(10000),
+    });
+    freeze = await r.json().catch(() => ({ ok: r.ok }));
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+
+  // Agenda del follow-up: mejor esfuerzo. Si falla, el freeze ya cubre el objetivo
+  // (no insistirle al cliente hasta que venza el congelamiento). No bloquea el resultado.
+  let agenda = null;
+  try {
+    const ra = await fetch(`${salesOsUrl}/internal/agenda/add`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': salesOsToken },
+      body: JSON.stringify({ phone, name: '', days: diasNum, note: motivo || 'cliente postergó' }),
+      signal: AbortSignal.timeout(10000),
+    });
+    agenda = await ra.json().catch(() => ({ ok: ra.ok }));
+  } catch (e) {
+    agenda = { ok: false, error: e.message || String(e) };
+  }
+
+  return { ok: !!(freeze && freeze.ok !== false), freeze, agenda, dias: diasNum };
+}
+
+/**
  * Resuelve la URL del catálogo/media a partir de una catalog_key.
  * Espeja resolveCatalogUrl de index.js ~L3497.
  * Retorna null si la env var no está configurada (no lanza).
@@ -436,6 +487,38 @@ export const TOOL_DEFS = [
       },
     },
   },
+  // ── posponer_seguimiento ──────────────────────────────────────────────────
+  // [2026-07-07 ZL-F2] Motor Zero-Leaks: drift contextual. Cuando el cliente
+  // POSTERGA explícitamente ("el próximo mes", "más adelante", "aún no decido"),
+  // esta tool congela el TTL en sales-os (F1) y agenda el follow-up, en vez de
+  // que Oliver siga insistiendo en el mismo chat.
+  {
+    type: 'function',
+    function: {
+      name: 'posponer_seguimiento',
+      description:
+        'Pospone el seguimiento de este lead cuando el cliente dice explícitamente que ' +
+        'quiere retomar más adelante (ej. "el próximo mes", "más adelante", "aún no decido", ' +
+        '"te aviso yo"). Congela las alertas automáticas por los días indicados y agenda el ' +
+        'recordatorio para retomar. Úsala en vez de seguir insistiendo en el mismo chat.',
+      parameters: {
+        type: 'object',
+        properties: {
+          dias: {
+            type: 'integer',
+            description: 'Días a postergar (entre 1 y 60). Si el cliente no da un plazo exacto, ' +
+              'use 30 para "el próximo mes" o 7 para "esta semana no".',
+          },
+          motivo: {
+            type: 'string',
+            description: 'Motivo breve de la postergación, en las palabras del cliente (ej. "dijo que decide el próximo mes").',
+          },
+        },
+        required: ['dias', 'motivo'],
+        additionalProperties: false,
+      },
+    },
+  },
   // ── guardar_lead ──────────────────────────────────────────────────────────
   {
     type: 'function',
@@ -662,6 +745,16 @@ export async function runTool(name, input = {}, ctx = {}) {
         return { ok: false, reason: 'saveLead_not_wired' };
       }
       return ctx.saveLead(input);
+    }
+
+    case 'posponer_seguimiento': {
+      // [2026-07-07 ZL-F2] El teléfono llega por ctx.telefono (ya cableado en
+      // webhook.js y channel-agent.js: toolCtx = { telefono: from/senderId, ... }).
+      if (!ctx.telefono) {
+        console.warn('[tools] posponer_seguimiento: ctx.telefono no cableado (simulador/test?)');
+        return { ok: false, reason: 'telefono_not_wired' };
+      }
+      return posponerSeguimiento({ phone: ctx.telefono, dias: input.dias, motivo: input.motivo });
     }
 
     case 'generar_pdf_cotizacion': {

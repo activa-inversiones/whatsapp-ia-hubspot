@@ -285,6 +285,9 @@ import {
   salesOsConfigured,
 } from "./services/salesOsBridge.js";
 // @patch:sales-os:imports:end
+// [2026-07-07 ZL-F2] Motor Zero-Leaks — re-engagement determinista (ver services/reengagement.js)
+import { reengage } from "./services/reengagement.js";
+import { loadSession as loadOliverGptSession } from "./src/oliver-gpt/session-store.js";
 import {
   evaluateLeadValue,
   notifyHighValue,
@@ -311,6 +314,7 @@ import { classifyProduct, warmHandoffMessage } from "./services/oliverProduct.js
 import { detectNoiseLoop, noiseLoopMessage } from "./services/oliverNoise.js"; // [2026-06-10 anti-loop] basura variada (caso 119 msgs)
 import { detectOutOfCatalog, outOfCatalogRetentionMessage } from "./services/oliverOutOfCatalog.js"; // [2026-06-10 GT-05] vidrio shower → ofrecer PVC, no competencia
 import { shouldSkipFollowup } from "./services/oliverFollowup.js"; // [2026-06-10] no enviar follow-up a Marcelo/internos
+import { parseAgendaVoz } from "./services/agendaVoz.js"; // [2026-07-07 ZL-F3] agenda por voz del CEO — parser determinista
 import { persistHandoff, isHandoffActive } from "./services/oliverHandoff.js"; // [2026-06-10 #B/GT-07] handoff persistente (bot no revive)
 import { isSessionStuck, sessionStuckAlertMessage } from "./services/stuckLeadMonitor.js"; // [2026-06-10 #C] aviso lead pegado (no perder Dalias en silencio)
 import { isVisionUnreadable, imageUnreadableMessage } from "./services/oliverVision.js"; // [2026-06-10 G2] imagen ilegible → no mentir "recibí tus medidas"
@@ -1446,6 +1450,40 @@ async function handleCeoAssistant(inc, textSinWake) {
     } catch (e) { logErr("ceo_assistant.stt", e); }
   }
   if (!pedido) { await waSendH(waId, "No te entendí bien, ¿me lo repetís?", true); return; }
+  // [2026-07-07 ZL-F3] Agenda por voz: si el pedido matchea intención determinista de agenda
+  // (agéndame/anota/listo/posterga), ejecutar INMEDIATO contra sales-os — NO pasar por el LLM
+  // asesor (que solo redacta borradores y nunca escribe). Reusa callAgendaApi/handleAgendaCommand
+  // (mismos paths que ya usa el intercept AGENDA/LISTO/POSPONER — cero lógica de API duplicada).
+  // Si no matchea (null) → sigue el flujo asistente normal más abajo, cero cambio de comportamiento.
+  try {
+    const agendaCmd = parseAgendaVoz(pedido);
+    if (agendaCmd) {
+      let msg;
+      if (agendaCmd.type === "agenda_add") {
+        const a = await callAgendaApi("POST", "/internal/agenda/add", { name: agendaCmd.name, days: agendaCmd.days });
+        msg = a.ok
+          ? `📅 Agendado: ${a.customer_name} — ${agendaCmd.dayLabel}`
+          : `No pude agendar: ${a.error || "error desconocido"}`;
+      } else if (agendaCmd.type === "agenda_done") {
+        const a = await callAgendaApi("POST", "/internal/agenda/done", { query: agendaCmd.query, note: null });
+        if (a.ok) msg = `✅ Listo: ${a.customer_name}.`;
+        else if (a.reason === "ambiguo") msg = `Hay varios con ese nombre: ${(a.options || []).map(o => `${o.name} (${o.phone})`).join(", ")}. Decime el teléfono.`;
+        else if (a.reason === "no_encontrado") msg = `No encontré a "${agendaCmd.query}" en la agenda.`;
+        else msg = `No pude marcar como listo: ${a.error || "error desconocido"}`;
+      } else if (agendaCmd.type === "agenda_snooze") {
+        const a = await callAgendaApi("POST", "/internal/agenda/snooze", { query: agendaCmd.query, days: agendaCmd.days });
+        if (a.ok) msg = `⏸️ Pospuse a ${a.customer_name} por ${a.days} día(s).`;
+        else if (a.reason === "ambiguo") msg = `Hay varios con ese nombre: ${(a.options || []).map(o => `${o.name} (${o.phone})`).join(", ")}. Decime el teléfono.`;
+        else if (a.reason === "no_encontrado") msg = `No encontré a "${agendaCmd.query}" en la agenda.`;
+        else msg = `No pude posponer: ${a.error || "error desconocido"}`;
+      }
+      if (msg) {
+        if (wasVoice) { try { await sendVoiceOrAudio(waId, msg, "audio"); return; } catch (e) { logErr("ceo_assistant.agenda_voz.voice", e); } }
+        await waSendH(waId, msg, true);
+        return;
+      }
+    }
+  } catch (e) { logErr("ceo_assistant.agenda_voz", e); /* fail-safe: sigue al flujo asistente normal */ }
   // 2) Contexto real liviano: agenda del día (si sales-os responde).
   let agendaTxt = "";
   try { const a = await callAgendaApi('GET', '/internal/agenda/today', null); if (a && a.message) agendaTxt = String(a.message); } catch {}
@@ -1459,7 +1497,7 @@ async function handleCeoAssistant(inc, textSinWake) {
       messages: [
         { role: "system", content:
           "Eres Oliver, el asistente personal de Marcelo Cifuentes, dueño de Activa Inversiones (fábrica de ventanas PVC en Temuco, Chile). " +
-          "Marcelo te habla por WhatsApp para organizarse: su agenda del día, a qué clientes llamar y qué decirles, redactar BORRADORES de correo o mensaje (solo borradores: él los envía, vos NUNCA mandás nada a terceros), y recordarle cosas. " +
+          "Marcelo te habla por WhatsApp para organizarse: su agenda del día, a qué clientes llamar y qué decirles, redactar BORRADORES de correo o mensaje (solo borradores: él los envía, vos NUNCA mandás nada a terceros; EXCEPCIÓN [ZL-F3]: los comandos de AGENDA por voz SÍ se ejecutan al tiro contra sales-os — es la agenda del propio Marcelo, no un tercero), y recordarle cosas. " +
           "Responde BREVE, en español chileno, directo y útil, sin humo. Si te falta un dato, pedíselo; NUNCA inventes precios, medidas ni datos del negocio. " +
           (agendaTxt ? ("Su agenda de hoy:\n" + agendaTxt) : "Hoy no tiene nada cargado en su agenda.") },
         { role: "user", content: pedido },
@@ -4601,6 +4639,66 @@ app.get("/internal/agenda-debug", (req, res) => {
     count: __agendaDebug.length,
     last: __agendaDebug.slice(-20),
   });
+});
+
+// [2026-07-07 ZL-F2] Motor Zero-Leaks, carril F2 — re-engagement determinista.
+// Llamado por sales-os (F1, barredor de TTL) cuando un lead vence sin actividad.
+// Contrato EXACTO con F1: POST {phone, motivo, quote_number?} — auth x-api-key
+// === SALES_OS_OPERATOR_TOKEN (mismo secreto que ya comparten ambos servicios).
+// Doble llave de seguridad vive DENTRO de reengage() (services/reengagement.js):
+// flag ZERO_LEAKS_REENGAGE + ventana Meta 24h + candado por cliente. Este handler
+// solo autentica, cablea deps reales y devuelve el JSON honesto de reengage().
+app.post("/internal/reengage", express.json(), async (req, res) => {
+  try {
+    if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
+    const { phone, motivo, quote_number } = req.body || {};
+    if (!phone) return res.status(400).json({ ok: false, error: "phone_requerido" });
+
+    const cleanPhone = normPhone(phone);
+    const result = await reengage(
+      { phone: cleanPhone, motivo: motivo || "", quote_number: quote_number || null },
+      {
+        loadSessionFn: (p) => loadOliverGptSession(p),
+        sendTextFn: (to, body) => waSendH(to, body, false, { source: "zero_leaks_reengage" }),
+        // sendTemplateFn: self-call a /admin/send-template (mismo patrón que sendEscalationTemplate
+        // en src/oliver-gpt/escalation.js). Solo se invoca si REENGAGE_TEMPLATE_NAME está seteada.
+        sendTemplateFn: async ({ phone: to, templateName, motivo: m, quote_number: qn, name: nm }) => {
+          const PIN = process.env.ADMIN_PIN || process.env.OLIVER_ADMIN_PIN || "";
+          if (!PIN) return { ok: false, error: "ADMIN_PIN_missing" };
+          const base = (process.env.SELF_URL || `http://127.0.0.1:${process.env.PORT || 8080}`).replace(/\/$/, "");
+          try {
+            const r = await fetch(`${base}/admin/send-template?pin=${encodeURIComponent(PIN)}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              // [fix escéptico ZL] contrato REAL de /admin/send-template: las plantillas de
+              // re-engagement aprobadas (seguimiento_cotizacion / recontacto_lead) leen
+              // customer_name y quote_num; los campos fecha/resumen/linea* solo aplican a
+              // informe_diario. Se mandan TODOS para que cualquier case del switch funcione.
+              body: JSON.stringify({
+                template: templateName,
+                phone: to,
+                customer_name: String(nm || "").trim() || "Cliente",
+                quote_num: qn || "",
+                fecha: "",
+                resumen: qn ? `Seguimiento propuesta ${qn}` : "Seguimiento de su cotización",
+                linea3: String(m || "").slice(0, 90),
+                linea4: "",
+              }),
+              signal: AbortSignal.timeout(10000),
+            });
+            return await r.json().catch(() => ({ ok: r.ok }));
+          } catch (e) {
+            return { ok: false, error: e.message };
+          }
+        },
+        pushConversationEventFn: (payload) => pushConversationEvent(payload),
+      }
+    );
+    res.json(result);
+  } catch (e) {
+    logErr("/internal/reengage", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 app.post("/internal/operator-send-catalog", async (req, res) => {
