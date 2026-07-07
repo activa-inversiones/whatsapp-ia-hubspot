@@ -315,6 +315,7 @@ import { detectNoiseLoop, noiseLoopMessage } from "./services/oliverNoise.js"; /
 import { detectOutOfCatalog, outOfCatalogRetentionMessage } from "./services/oliverOutOfCatalog.js"; // [2026-06-10 GT-05] vidrio shower → ofrecer PVC, no competencia
 import { shouldSkipFollowup } from "./services/oliverFollowup.js"; // [2026-06-10] no enviar follow-up a Marcelo/internos
 import { parseAgendaVoz } from "./services/agendaVoz.js"; // [2026-07-07 ZL-F3] agenda por voz del CEO — parser determinista
+import { addZohoNote as zohoAddNote } from "./services/zohoCommercial.js"; // [2026-07-07] "Salesforce reutilizando Zoho": nota en el Deal cuando sales-os marca un seguimiento hecho
 import { persistHandoff, isHandoffActive } from "./services/oliverHandoff.js"; // [2026-06-10 #B/GT-07] handoff persistente (bot no revive)
 import { isSessionStuck, sessionStuckAlertMessage } from "./services/stuckLeadMonitor.js"; // [2026-06-10 #C] aviso lead pegado (no perder Dalias en silencio)
 import { isVisionUnreadable, imageUnreadableMessage } from "./services/oliverVision.js"; // [2026-06-10 G2] imagen ilegible → no mentir "recibí tus medidas"
@@ -4697,6 +4698,25 @@ app.post("/internal/reengage", express.json(), async (req, res) => {
     res.json(result);
   } catch (e) {
     logErr("/internal/reengage", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// [2026-07-07] "Salesforce reutilizando Zoho" (directiva del dueño): cuando sales-os marca un
+// seguimiento como hecho (agenda/Zero-Leaks), queda una NOTA en el Deal de Zoho — trazabilidad
+// ISO del contacto, sin duplicar el CRM. Wrapper delgado sobre addZohoNote (ya construida y en
+// uso desde webhook.js) — sales-os no tiene credenciales Zoho propias, este endpoint las reusa.
+// Contrato: POST {deal_id, note} — auth x-api-key === SALES_OS_OPERATOR_TOKEN (mismo patrón que
+// /internal/reengage). Best-effort: si Zoho falla, no revienta al caller (addZohoNote ya loguea).
+app.post("/internal/zoho/add-note", express.json(), async (req, res) => {
+  try {
+    if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
+    const { deal_id, note } = req.body || {};
+    if (!deal_id || !note) return res.status(400).json({ ok: false, error: "deal_id_and_note_required" });
+    await zohoAddNote(String(deal_id), "Seguimiento (agenda ACTIVA)", String(note).slice(0, 2000));
+    res.json({ ok: true, deal_id });
+  } catch (e) {
+    logErr("/internal/zoho/add-note", e);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
