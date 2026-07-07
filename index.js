@@ -4028,7 +4028,7 @@ async function generateLocalQuotePdf(data, quoteNumber) {
       doc.fillColor("#fff").fontSize(22).font("Helvetica-Bold").text("ACTIVA INVERSIONES", 50, 28);
       doc.fillColor(gold).fontSize(10).font("Helvetica").text("Ventanas PVC · Termopanel · Aluminio", 50, 56);
       doc.fillColor("#fff").fontSize(9).text("Temuco · La Araucanía · Chile", 50, 72);
-      doc.fillColor("#fff").fontSize(9).text(`+56 9 5729 6035  ·  contacto@activaspa.cl`, doc.page.width - 250, 56, { width: 200, align: "right" });
+      doc.fillColor("#fff").fontSize(9).text(`+56 9 5729 6035  ·  mcifuentes@activaspa.cl`, doc.page.width - 250, 56, { width: 200, align: "right" }); // [2026-07-07] unificado al correo real (era contacto@)
 
       doc.moveDown(3);
       doc.fillColor(dark).fontSize(18).font("Helvetica-Bold").text("PROPUESTA TÉCNICO COMERCIAL", 50, 120);
