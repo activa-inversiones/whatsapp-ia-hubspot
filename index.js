@@ -396,7 +396,7 @@ const ZOHO = {
 const COMPANY = {
   NAME: process.env.COMPANY_NAME || "Activa Inversiones",
   PHONE: process.env.COMPANY_PHONE || "+56 9 1234 5678",
-  EMAIL: process.env.COMPANY_EMAIL || "ventas@activa.cl",
+  EMAIL: process.env.COMPANY_EMAIL || "mcifuentes@activaspa.cl", // [2026-07-07] correo real (dominio activaspa.cl); antes placeholder falso "ventas@activa.cl"
   ADDRESS: process.env.COMPANY_ADDRESS || "Av. Luis Durand 03619, Temuco, La Araucanía", // [2026-07-06] NAP real (=GBP); el fallback genérico dejaba al LLM inventar calle ("Avenida Alemania 0478", cliente fue y no encontró)
   WEBSITE: process.env.COMPANY_WEBSITE || "www.activa.cl",
   RUT: process.env.COMPANY_RUT || "76.XXX.XXX-X",

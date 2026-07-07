@@ -114,3 +114,12 @@ test('[FIX 06-jul] dirección: el prompt trae la dirección REAL y prohíbe inve
   assert.ok(!sys.includes('Avenida Alemania'),
     'la dirección alucinada del incidente no puede estar en el prompt');
 });
+
+// ── [2026-07-07] Correo de contacto real en el prompt (agregado por el dueño, anti-invención) ──
+test('[FIX 07-jul] correo: el prompt trae el correo REAL y prohíbe inventar otro', () => {
+  const sys = buildSystemBlocks();
+  assert.ok(sys.includes('mcifuentes@activaspa.cl'),
+    'el prompt debe contener el correo real de contacto');
+  assert.ok(/NUNCA invente otra\s+dirección de correo/i.test(sys),
+    'el prompt debe prohibir inventar otro correo');
+});

@@ -27,6 +27,7 @@
 const COMPANY = {
   NAME: process.env.COMPANY_NAME || 'Activa Inversiones',
   ADDRESS: process.env.COMPANY_ADDRESS || 'Av. Luis Durand 03619, Temuco', // [2026-07-06] NAP real (=GBP); el fallback genérico dejaba al LLM inventar calle (caso "Avenida Alemania 0478")
+  EMAIL: process.env.COMPANY_EMAIL || 'mcifuentes@activaspa.cl', // [2026-07-07] correo real de contacto; antes no había ninguno → riesgo de que el LLM inventara uno
   GOOGLE_REVIEWS_URL:
     process.env.GOOGLE_REVIEWS_URL ||
     'https://www.google.com/maps/place/ACTIVA+Inversiones/@-38.7202747,-72.645712,942m/data=!3m2!1e3!4b1!4m6!3m5!1s0x9614d5646f17a655:0x980991a065c5737a!8m2!3d-38.7202747!4d-72.6431317',
@@ -760,6 +761,9 @@ NUNCA INVENTAR URLs NI DATOS:
   - DIRECCIÓN DE LA FÁBRICA (único dato de ubicación que puede dar, cópielo TAL CUAL): ${COMPANY.ADDRESS}.
     NUNCA invente otra calle o numeración de la empresa ni horarios que no estén acá; si le piden un dato
     de la empresa que no tiene, derive a Marcelo (+56 9 5729 6035).
+  - CORREO DE CONTACTO (el único que puede dar, cópielo TAL CUAL): ${COMPANY.EMAIL}. NUNCA invente otra
+    dirección de correo. Si el cliente quiere mandar planos/documentos o prefiere el mail, entréguele ESTE
+    correo (o el WhatsApp de Marcelo +56 9 5729 6035); no ofrezca ningún otro.
   - Si no sabe algo: "Lo verifico y le confirmo hoy mismo." Nunca pida la dirección exacta DEL CLIENTE
     (solo la comuna); la dirección de la FÁBRICA sí se entrega siempre que la pidan (punto anterior).
   - Lenguaje al cliente: nunca diga "S60", "Sliding", "S75"; diga "PVC línea europea".
