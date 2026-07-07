@@ -401,3 +401,43 @@ test('(p6) cantidad inválida (0/undefined) se trata como 1 (no divide por cero)
   const r = conUnitPrice({ ok: true, total_clp: 130963 }, 0);
   assert.equal(r.unit_price, 130963);
 });
+
+// ── [2026-07-06 LOTE2] unidad_confirmada: la confirmación EXPLÍCITA del cliente manda ──
+test('(u-1) unidad_confirmada mm: 350x600 va LITERAL (antes rescatarCm re-manglaba a 3500)', () => {
+  const r = resolverMedidasMm({ ancho_mm: 350, alto_mm: 600, medidas_texto: '350x600', unidad_confirmada: 'mm' });
+  assert.equal(r.ok, true);
+  assert.equal(r.ancho_mm, 350);
+  assert.equal(r.alto_mm, 600);
+});
+
+test('(u-2) unidad_confirmada cm: conversión ×10 determinista', () => {
+  const r = resolverMedidasMm({ ancho_mm: 140, alto_mm: 220, medidas_texto: '140x220', unidad_confirmada: 'cm' });
+  assert.equal(r.ok, true);
+  assert.equal(r.ancho_mm, 1400);
+  assert.equal(r.alto_mm, 2200);
+});
+
+test('(u-3) unidad_confirmada mm con medida implausible sigue frenando (guard intacto)', () => {
+  const r = resolverMedidasMm({ ancho_mm: 80, alto_mm: 60, medidas_texto: '80x60', unidad_confirmada: 'mm' });
+  assert.equal(r.ok, false);
+  assert.equal(r.error, 'medidas_fuera_de_rango');
+});
+
+test('(u-4) sin unidad_confirmada el comportamiento histórico NO cambia', () => {
+  const r = resolverMedidasMm({ ancho_mm: 315, alto_mm: 240 });
+  assert.equal(r.ancho_mm, 3150);
+  assert.equal(r.alto_mm, 2400);
+});
+
+test('(u-5) unidad_confirmada SIN par verificable en el texto → NO confía en los números del LLM', () => {
+  const r = resolverMedidasMm({ ancho_mm: 180, alto_mm: 240, medidas_texto: 'ciento ochenta de ancho', unidad_confirmada: 'mm' });
+  assert.equal(r.ok, false, 'sin par AxB verificable se re-pregunta, no se asume (riesgo sub-cotización 10x)');
+  assert.equal(r.error, 'medidas_fuera_de_rango');
+});
+
+test('(u-6) unidad_confirmada acepta separador "por" ("350 por 600")', () => {
+  const r = resolverMedidasMm({ ancho_mm: 350, alto_mm: 600, medidas_texto: '350 por 600', unidad_confirmada: 'mm' });
+  assert.equal(r.ok, true);
+  assert.equal(r.ancho_mm, 350);
+  assert.equal(r.alto_mm, 600);
+});

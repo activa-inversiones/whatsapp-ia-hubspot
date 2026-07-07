@@ -65,3 +65,28 @@ test('stripMontos: NO toca medidas/cantidades/folios/teléfonos (sin falsos posi
     '',
   ]) assert.equal(stripMontos(t), t, `NO debió cambiar: "${t}"`);
 });
+
+// ── [2026-07-06 LOTE2] medidas_resueltas → campos numéricos + string limpio en pending_quote ──
+test('itemsFromQuoteCalls: medidas_resueltas "AxBmm" → ancho_mm/alto_mm numéricos + measures limpio', () => {
+  const calls = [{
+    name: 'calcular_cotizacion',
+    input: { tipo: 'PROYECTANTE', medidas_texto: '350x600', ambiente: 'baño' },
+    result: { ok: true, unit_price: 120000, cantidad: 1, producto_label: 'Proyectante S60', glass_label: '4+12+4 satén (baño)', medidas_resueltas: '350x600mm', referencial: true },
+  }];
+  const items = itemsFromQuoteCalls(calls, 'BLANCO');
+  assert.equal(items.length, 1);
+  assert.equal(items[0].measures, '350x600', 'display SIN sufijo (Zoho/PDF/alertas)');
+  assert.equal(items[0].ancho_mm, 350, 'campo numérico para re-cotizaciones exactas');
+  assert.equal(items[0].alto_mm, 600);
+});
+
+test('itemsFromQuoteCalls: sin medidas_resueltas cae al texto crudo (comportamiento histórico)', () => {
+  const calls = [{
+    name: 'calcular_cotizacion',
+    input: { tipo: 'CORREDERA', medidas_texto: '150x150 cm' },
+    result: { ok: true, unit_price: 350000, cantidad: 1, producto_label: 'Corredera SLIDING' },
+  }];
+  const items = itemsFromQuoteCalls(calls, '');
+  assert.equal(items[0].measures, '150x150 cm');
+  assert.equal(items[0].ancho_mm, undefined);
+});

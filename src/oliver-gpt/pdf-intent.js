@@ -29,18 +29,28 @@ export function lastAssistantOfferedPdf(history) {
 export function itemsFromQuoteCalls(toolCalls, defaultColor) {
   return (toolCalls || [])
     .filter(t => (t.name === 'calcular_cotizacion' || t.name === 'calcular_por_area') && t.result && t.result.ok && Number(t.result.unit_price) > 0)
-    .map(t => ({
-      product: t.result.producto_label || t.input?.tipo || 'Ventana',
-      producto_label: t.result.producto_label || t.input?.tipo || 'Ventana',
-      measures: t.input?.medidas_texto || t.input?.measures || t.result?.medidas_derivadas ||
-        ((t.input?.ancho_mm && t.input?.alto_mm) ? `${t.input.ancho_mm}x${t.input.alto_mm}` : ''),
-      color: t.input?.color || defaultColor || '',
-      qty: Number(t.result.cantidad) || Number(t.input?.cantidad) || 1,
-      unit_price: Number(t.result.unit_price) || 0,
-      glass_label: t.result.glass_label || 'Termopanel DVH',
-      ambiente: t.input?.ambiente || '',
-      termico: t.result?.termico || null,   // [thermal] Uw → PDF (camino determinista)
-    }))
+    .map(t => {
+      // [2026-07-06 LOTE2] PRIORIDAD: medidas RESUELTAS por el tool ("AxBmm" — sobreviven la confirmación
+      // de unidad). Se separan en CAMPOS NUMÉRICOS (ancho_mm/alto_mm: las re-cotizaciones del PDF usan
+      // esto exacto, sin re-parsear) + string LIMPIO para display (Zoho/PDF/alertas ven "350x600").
+      // Antes, el texto crudo del cliente ("350x600") se re-manglaba ×10 al re-cotizar en generarPdf.
+      const _res = String(t.result?.medidas_resueltas || '').match(/^(\d+)x(\d+)mm$/i);
+      return {
+        product: t.result.producto_label || t.input?.tipo || 'Ventana',
+        producto_label: t.result.producto_label || t.input?.tipo || 'Ventana',
+        measures: _res ? `${_res[1]}x${_res[2]}`
+          : (t.input?.medidas_texto || t.input?.measures || t.result?.medidas_derivadas ||
+            ((t.input?.ancho_mm && t.input?.alto_mm) ? `${t.input.ancho_mm}x${t.input.alto_mm}` : '')),
+        ancho_mm: _res ? Number(_res[1]) : undefined,
+        alto_mm: _res ? Number(_res[2]) : undefined,
+        color: t.input?.color || defaultColor || '',
+        qty: Number(t.result.cantidad) || Number(t.input?.cantidad) || 1,
+        unit_price: Number(t.result.unit_price) || 0,
+        glass_label: t.result.glass_label || 'Termopanel DVH',
+        ambiente: t.input?.ambiente || '',
+        termico: t.result?.termico || null,   // [thermal] Uw → PDF (camino determinista)
+      };
+    })
     .filter(it => Number(it.unit_price) > 0);
 }
 

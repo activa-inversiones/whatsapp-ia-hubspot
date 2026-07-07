@@ -589,9 +589,21 @@ export async function handleChannelTurn(
     // 24h de Meta), NO marcamos el outbound como entregado y escalamos a Marcelo para que
     // atienda al cliente desde el inbox (no se pierde en silencio).
     let sendResult = null;
-    // [2026-07-06 OBS] Misma instrumentación que WhatsApp: reply vacío = cliente sin respuesta (fallback = lote 2).
+    // [2026-07-06 LOTE2] Paridad con WhatsApp: reply vacío = cliente sin respuesta → log + fallback
+    // contextual (acá tampoco hubo PDF: _pdfCall habría sobreescrito reply) + aviso a Marcelo
+    // (cooldown por cliente:motivo de highValueNotifier protege del spam).
     if (!reply || !String(reply).trim()) {
       try { log('error', 'turn.reply_empty', `${convKey}: toolCalls=${(toolCalls || []).map((t) => t.name).join(',') || 'ninguno'}`); } catch {}
+      reply = (newState.pending_quote && Array.isArray(newState.pending_quote.items) && newState.pending_quote.items.length)
+        ? '¿Le genero la propuesta en PDF con lo que ya cotizamos? Responda *sí* y se la envío al tiro 👍'
+        : 'Disculpe, se me trabó la respuesta 😅. ¿Me repite lo último, por favor? Si prefiere, Marcelo también puede atenderlo directo al +56 9 5729 6035.';
+      // [escéptico L2 — BLOQUEANTE] el history persistido debe reflejar el fallback real (agent.js:163
+      // lo armó con content:'') → si no, lastAssistantOfferedPdf del próximo turno no ve la oferta.
+      const _lastH = newHistory[newHistory.length - 1];
+      if (_lastH && _lastH.role === 'assistant' && !String(_lastH.content || '').trim()) _lastH.content = reply;
+      await safe('replyEmpty.notify', () =>
+        notifyHighValue(sendWhatsAppText, senderId, { data: { ...newState }, history: newHistory },
+          'oliver_gpt:respuesta_vacia — el cerebro devolvió texto vacío en ' + channel + ' (ver log turn.reply_empty); el cliente recibió un fallback'));
     }
     if (reply) {
       sendResult = await safe('send', () => sendFn(senderId, reply));

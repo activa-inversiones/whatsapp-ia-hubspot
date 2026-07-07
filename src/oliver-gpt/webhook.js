@@ -94,6 +94,16 @@ const STT_MODEL = () => process.env.STT_MODEL || 'whisper-1';
 // Tope de elementos guardados por conversación (bound de tokens del piloto).
 const MAX_HISTORY = 40;
 
+// [2026-07-06 LOTE2] Tope GLOBAL de alertas a Marcelo por respuesta vacía: si el fallo es sistémico
+// (proveedor caído), 20 clientes mudos NO pueden ser 20 WhatsApp al dueño (abogado del diablo). Máx 3/h.
+const REPLY_EMPTY_ALERTS = { windowStart: 0, count: 0 };
+function replyEmptyAlertAllowed() {
+  const now = Date.now();
+  if (now - REPLY_EMPTY_ALERTS.windowStart > 3600000) { REPLY_EMPTY_ALERTS.windowStart = now; REPLY_EMPTY_ALERTS.count = 0; }
+  REPLY_EMPTY_ALERTS.count += 1;
+  return REPLY_EMPTY_ALERTS.count <= 3;
+}
+
 /* =========================================================================
  * ESTADO IN-MEMORY (piloto)
  *  · CONV: Map<from, {history, state}>  → contexto conversacional.
@@ -657,7 +667,7 @@ export async function handleWebhook(req, res, deps = {}) {
     }
 
     // ── (5) MEDIA → userText útil (vision / STT). Resuelve la ceguera V2. ─
-    const { userText } = await resolveUserText(inbound, req.body, deps);
+    const { userText, mediaResolved } = await resolveUserText(inbound, req.body, deps);
     if (!userText) return;
 
     // ── (5a) [FIX 2026-06-19] Comando RESET — paridad con IG/FB (channel-agent.js). Limpia la
@@ -675,6 +685,53 @@ export async function handleWebhook(req, res, deps = {}) {
       }));
       log('info', 'reset', `sesión ${from} reiniciada por comando del cliente`);
       return; // el finally libera el lock
+    }
+
+    // ── (5a2) [2026-07-06 LOTE2] ANTI-LOOP de imágenes ilegibles ─────────
+    // Caso real (Flavio, 15 fotos en 2 min): la visión falló en TODAS y Oliver repitió ~14 veces
+    // "no me llegan" (FALSO: sí llegan y quedan en el panel vía saveMedia). Determinista, antes del
+    // cerebro. Racha: 1ª = flujo normal (el cerebro pide texto); 2ª = escalar UNA vez a Marcelo y
+    // avisar honesto (la promesa "se las paso a Marcelo" SOLO si la escalación realmente salió —
+    // notifyHighValue retorna {sent}); 3ª+ = acuse breve cada 5, silencio el resto (ya avisamos).
+    // El lock por cliente serializa la ráfaga → el contador no corre riesgo de carrera.
+    const esImagenIlegible = inbound.type === 'image' && mediaResolved === false;
+    state.unreadable_streak = esImagenIlegible ? (Number(state.unreadable_streak) || 0) + 1 : 0;
+    if (esImagenIlegible && state.unreadable_streak >= 2) {
+      // [escéptico L2] SIEMPRE persistir el inbound en el timeline del panel (como reset/escalación) —
+      // sin esto, las fotos de los turnos silenciosos desaparecen del hilo que el operador reconstruye.
+      await safe('imgloop.persistIn', () => bridge.pushConversationEvent({
+        channel: 'whatsapp', external_id: from, direction: 'inbound', actor_type: 'customer',
+        actor_name: 'Cliente', message_type: 'image', body: '[imagen no legible por IA]',
+        metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, img_unreadable_streak: state.unreadable_streak },
+      }));
+      let imgLoopMsg = null;
+      if (state.unreadable_streak === 2) {
+        const esc = await safe('imgloop.notify', () =>
+          notifyHighValue(sendWhatsAppText, from, { data: { ...state }, history },
+            'oliver_gpt:imagenes_ilegibles — el cliente mandó varias fotos que la IA no pudo leer; las fotos SÍ están guardadas en el panel (media), cotizar desde ahí'));
+        imgLoopMsg = (esc && esc.sent)
+          ? 'Sus fotos SÍ quedaron guardadas de mi lado 👍 — se las paso a Marcelo para que le prepare la propuesta desde ahí. Si prefiere avanzar al tiro, también puede escribirme las medidas por texto (ancho × alto y tipo).'
+          : 'Sus fotos quedaron guardadas 👍. Para avanzar de inmediato, ¿me escribe las medidas por texto? (ancho × alto, tipo de ventana y cantidad).';
+      } else if (state.unreadable_streak % 5 === 0) {
+        imgLoopMsg = 'Recibida 👍 — también quedó guardada para Marcelo.';
+      }
+      if (imgLoopMsg) {
+        await safe('imgloop.send', () => sendWhatsAppText(from, imgLoopMsg));
+        await safe('imgloop.persistOut', () => bridge.pushConversationEvent({
+          channel: 'whatsapp', external_id: from, direction: 'outbound', actor_type: 'ai',
+          actor_name: 'Oliver IA', message_type: 'text', body: imgLoopMsg,
+          metadata: { source: 'oliver_gpt_webhook', img_unreadable_streak: state.unreadable_streak },
+        }));
+      }
+      // Persistir el contador SIN pasar por el cerebro (el turno termina acá; el finally libera el lock).
+      // [escéptico L2 — BLOQUEANTE] conv.set es OBLIGATORIO: el cache caliente gana sobre Postgres en el
+      // próximo webhook — sin esto la racha se congelaba en 2 y se repetía el mensaje en cada foto
+      // (el MISMO síntoma que este bloque arregla). + lastMessageAt como en el guardado normal.
+      state.lastMessageAt = Date.now();
+      conv.set(from, { history, state });
+      persistSessionFn(from, { history, state }, deps);
+      log('warn', 'imgloop', `racha de imágenes ilegibles=${state.unreadable_streak} para ${from}${imgLoopMsg ? '' : ' (silencio deliberado)'}`);
+      return;
     }
 
     // ── (5b) ESCALACIÓN DETERMINISTA (no depende del LLM) ────────────────
@@ -822,6 +879,20 @@ export async function handleWebhook(req, res, deps = {}) {
                 : 'Antes de emitir la propuesta formal necesito confirmar un detalle de las ventanas. Ya te pregunto.' };
           }
 
+          // ── [2026-07-06 LOTE2] Medidas RESUELTAS: "AxBmm" es el transporte INTERNO de la confirmación
+          // de unidad. Acá se separa en campos numéricos (los guards de abajo re-cotizan EXACTO, sin
+          // re-parsear heurísticas) + string limpio para display (Zoho/PDF/alertas ven "350x600").
+          (input.items || []).forEach((it) => {
+            const _mres = String(it.measures || '').match(/^\s*(\d+)x(\d+)mm\s*$/i);
+            if (_mres) {
+              it.ancho_mm = Number(it.ancho_mm) || Number(_mres[1]);
+              it.alto_mm  = Number(it.alto_mm)  || Number(_mres[2]);
+              it.measures = `${_mres[1]}x${_mres[2]}`;
+            }
+          });
+          const _measuresForEngine = (it) =>
+            (Number(it.ancho_mm) > 0 && Number(it.alto_mm) > 0) ? `${it.ancho_mm}x${it.alto_mm}mm` : (it.measures || '');
+
           // ── BLINDAJE label↔precio (2026-06-24) — INVARIANTE: el precio DEBE corresponder a la
           // apertura que el cliente VE en el label. Causa raíz del bug 0064/0065/0066: una FIJA salía
           // con precio de CORREDERA (~2x). Aquí, en el ÚNICO punto de salida del PDF (cubre LLM,
@@ -837,7 +908,7 @@ export async function handleWebhook(req, res, deps = {}) {
               const _probe = {
                 items: _val.map((x) => ({
                   product:  x.it.producto_label || x.it.product,  // label completo → conserva variantes (hojas/riel)
-                  measures: x.it.measures || '',
+                  measures: _measuresForEngine(x.it), // [LOTE2] resueltas exactas si existen (sin re-mangle ×10)
                   color:    x.it.color || '',
                   qty:      Number(x.it.qty) || 1,
                   ambiente: x.it.ambiente || '',
@@ -870,7 +941,7 @@ export async function handleWebhook(req, res, deps = {}) {
             const _therm = {
               items: (input.items || []).map((it) => ({
                 product:  it.producto_label || it.product || '',
-                measures: it.measures || '',
+                measures: _measuresForEngine(it), // [LOTE2] resueltas exactas si existen (sin re-mangle ×10)
                 color:    it.color || '',
                 qty:      Number(it.qty) || 1,
                 ambiente: it.ambiente || '',
@@ -1211,11 +1282,26 @@ export async function handleWebhook(req, res, deps = {}) {
 
     // ── (7) Enviar respuesta por WhatsApp ───────────────────────────────
     // (7a) Texto: siempre se envía (canal garantizado).
-    // [2026-07-06 OBS] reply vacío = cliente SIN respuesta (caso real 56940732508: pedido de 11 ventanas
-    // quedó mudo un viernes noche). Por ahora SOLO instrumentamos la señal para cazar la causa raíz en
-    // logs de Railway; el fallback de comportamiento va en el lote 2 (decisión del abogado del diablo).
+    // [2026-07-06 LOTE2] reply vacío = cliente SIN respuesta (caso real 56940732508: pedido de 11
+    // ventanas quedó mudo un viernes noche). Instrumentación (cazar causa raíz en Railway) + FALLBACK
+    // CONTEXTUAL. Acá NO hubo PDF en el turno (el branch _pdfCall ya habría sobreescrito reply con un
+    // message no-vacío) → nunca duplica la entrega. Si hay cotización acumulada, invitamos el "sí" que
+    // dispara la entrega determinista (bloque PDF-01 del próximo turno); si no, repetir + salida humana.
     if (!reply || !String(reply).trim()) {
       try { log('error', 'turn.reply_empty', { from, toolCalls: toolCalls.map((t) => t.name).join(',') || 'ninguno', historyLen: newHistory.length }); } catch {}
+      reply = (newState.pending_quote && Array.isArray(newState.pending_quote.items) && newState.pending_quote.items.length)
+        ? '¿Le genero la propuesta en PDF con lo que ya cotizamos? Responda *sí* y se la envío al tiro 👍'
+        : 'Disculpe, se me trabó la respuesta 😅. ¿Me repite lo último, por favor? Si prefiere, Marcelo también puede atenderlo directo al +56 9 5729 6035.';
+      // [escéptico L2 — BLOQUEANTE] El history que se persiste DEBE reflejar el fallback que el cliente
+      // recibió (agent.js:163 lo armó con content:''): sin esto, lastAssistantOfferedPdf(history) del
+      // turno siguiente ve '' y el "sí" del cliente NO dispara la entrega determinista del PDF.
+      const _lastH = newHistory[newHistory.length - 1];
+      if (_lastH && _lastH.role === 'assistant' && !String(_lastH.content || '').trim()) _lastH.content = reply;
+      if (replyEmptyAlertAllowed()) {
+        await safe('replyEmpty.notify', () =>
+          notifyHighValue(sendWhatsAppText, from, { data: { ...newState }, history: newHistory },
+            'oliver_gpt:respuesta_vacia — el cerebro devolvió texto vacío (ver log turn.reply_empty); el cliente recibió un fallback'));
+      }
     }
     if (reply) {
       await safe('sendWhatsAppText', () => sendWhatsAppText(from, reply));

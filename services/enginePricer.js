@@ -133,8 +133,21 @@ function normColorLocal(text) {
  * Réplica local de normMeasures (index.js) — NO exportada desde index.
  * Devuelve { ancho_mm, alto_mm } o null.
  */
-function normMeasuresLocal(raw) {
+export function normMeasuresLocal(raw) { // [LOTE2] export para test del sufijo mm (antes solo interna)
   const s = String(raw || "");
+
+  // [2026-07-06 LOTE2] Formato INTERNO "AxBmm" (enteros pegados, sin espacios) = medidas YA resueltas
+  // por calcular_cotizacion (incluida la confirmación de unidad del cliente) → tomar LITERAL, sin
+  // heurísticas. Sin esto, este re-parseo re-manglaba lo ya confirmado (350x600 confirmado → ×10 →
+  // 3500x600, caso real proyectante de baño 2026-07-06). El anclaje ^$ ESTRICTO evita falsos positivos
+  // con texto de clientes ("140x100 mm" con espacio o "1,40x1,00 mm" con decimales → heurística, como
+  // siempre). Bounds [50,6000] = defensa en profundidad (escéptico L2); validate/clamps deciden el resto.
+  const mmExplicit = s.match(/^\s*(\d+)x(\d+)mm\s*$/i);
+  if (mmExplicit) {
+    const a = Number(mmExplicit[1]);
+    const b = Number(mmExplicit[2]);
+    if (a >= 50 && a <= 6000 && b >= 50 && b <= 6000) return { ancho_mm: a, alto_mm: b };
+  }
 
   const dimMatch =
     s.match(/(\d+([.,]\d+)?)\s*[x×X]\s*(\d+([.,]\d+)?)/) ||
@@ -205,6 +218,16 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
         referencial: true, clampAncho: lim.maxAncho, clampAlto: lim.maxAlto,
       };
     }
+    // [2026-07-06 LOTE2] Bajo el mínimo → REFERENCIAL clamp-UP (pedido del dueño: cotizar igual por
+    // tamaño/materiales; fabricar bajo el mínimo cuesta lo mismo que el mínimo). NUNCA escalate (GT-06).
+    if (ancho_mm < lim.minAncho || alto_mm < lim.minAlto) {
+      return {
+        message: `La corredera de ${ancho_mm}×${alto_mm} mm está bajo el mínimo estándar (${lim.minAncho}×${lim.minAlto} mm); precio referencial del mínimo de fabricación.`,
+        referencial: true,
+        clampMinAncho: ancho_mm < lim.minAncho ? lim.minAncho : 0,
+        clampMinAlto: alto_mm < lim.minAlto ? lim.minAlto : 0,
+      };
+    }
     return null;
   }
 
@@ -215,6 +238,16 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
       return {
         message: `La puerta de ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${lim.maxAncho}×${lim.maxAlto} mm); precio referencial acotado.`,
         referencial: true, clampAncho: lim.maxAncho, clampAlto: lim.maxAlto,
+      };
+    }
+    // [2026-07-06 LOTE2] Puerta bajo mínimo (800×1500): mismo criterio referencial clamp-up. El PDF
+    // muestra la medida pedida (measures_original) y el precio referencial se valida en visita técnica.
+    if (ancho_mm < lim.minAncho || alto_mm < lim.minAlto) {
+      return {
+        message: `La puerta de ${ancho_mm}×${alto_mm} mm está bajo el mínimo estándar (${lim.minAncho}×${lim.minAlto} mm); precio referencial del mínimo de fabricación.`,
+        referencial: true,
+        clampMinAncho: ancho_mm < lim.minAncho ? lim.minAncho : 0,
+        clampMinAlto: alto_mm < lim.minAlto ? lim.minAlto : 0,
       };
     }
     return null;
@@ -233,6 +266,17 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
     return {
       message: `Medida ${ancho_mm}×${alto_mm} excede todos los límites de fabricación.`,
       escalate: true,
+    };
+  }
+  // [2026-07-06 LOTE2] Ventana bajo el mínimo S60 (400×400) → REFERENCIAL clamp-UP y COTIZAR (caso real:
+  // proyectante de baño 350×600 confirmada en mm era RECHAZADA; el dueño ordenó cotizar igual el valor
+  // que corresponde por materiales = el del mínimo de fabricación). NUNCA escalate (regresión GT-06).
+  if (ancho_mm < lim.minAncho || alto_mm < lim.minAlto) {
+    return {
+      message: `La ventana de ${ancho_mm}×${alto_mm} mm está bajo el mínimo estándar (${lim.minAncho}×${lim.minAlto} mm); precio referencial del mínimo de fabricación.`,
+      referencial: true,
+      clampMinAncho: ancho_mm < lim.minAncho ? lim.minAncho : 0,
+      clampMinAlto: alto_mm < lim.minAlto ? lim.minAlto : 0,
     };
   }
   return null;
@@ -299,8 +343,11 @@ export async function priceAllEngine(d, customer_id = "") {
       item.measures_original = `${m.ancho_mm}x${m.alto_mm}`;
       item.price_warning = dim.message;
       // Acotar SOLO la dimensión que excede (Math.min) — no sobre-cotizar la que sí cabe.
-      m.ancho_mm = Math.min(m.ancho_mm, dim.clampAncho);
-      m.alto_mm  = Math.min(m.alto_mm,  dim.clampAlto);
+      if (dim.clampAncho) m.ancho_mm = Math.min(m.ancho_mm, dim.clampAncho);
+      if (dim.clampAlto)  m.alto_mm  = Math.min(m.alto_mm,  dim.clampAlto);
+      // [2026-07-06 LOTE2] Bajo mínimo → clamp-UP solo en la dimensión que falta (precio del mínimo).
+      if (dim.clampMinAncho) m.ancho_mm = Math.max(m.ancho_mm, dim.clampMinAncho);
+      if (dim.clampMinAlto)  m.alto_mm  = Math.max(m.alto_mm,  dim.clampMinAlto);
     }
 
     // 3) Mapeo de apertura (NUNCA TERMOPANEL) + serie de perfiles + nº hojas

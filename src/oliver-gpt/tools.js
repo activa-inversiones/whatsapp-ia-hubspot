@@ -33,11 +33,44 @@ const MEDIDA_MAX_MM = 6000;
  * - Aplica guard de rango: fuera de [150, 6000] mm → no cotizar, pedir confirmación.
  * @returns {{ ok: true, ancho_mm, alto_mm, corregido: boolean } | { ok: false, error, message, ancho_mm, alto_mm }}
  */
-export function resolverMedidasMm({ ancho_mm, alto_mm, medidas_texto } = {}) {
+export function resolverMedidasMm({ ancho_mm, alto_mm, medidas_texto, unidad_confirmada } = {}) {
   let a = Number(ancho_mm);
   let b = Number(alto_mm);
   let corregido = false;
   let fromText = false;
+  // [2026-07-06 LOTE2] El CLIENTE confirmó la unidad EXPLÍCITAMENTE (tras preguntársela) → los números
+  // van LITERALES ('mm') o ×10 ('cm'), saltando TODAS las heurísticas. Antes no había forma de zanjar
+  // la ambigüedad: el cliente confirmaba "350 mm de ancho" y rescatarCm igual lo re-manglaba a 3500
+  // (caso real proyectante de baño 2026-07-06 → rechazo en vez de cotizar). Se prefiere el par crudo
+  // de medidas_texto (lo que el cliente escribió) sobre los números del LLM, que tiende a manglear.
+  const unidad = String(unidad_confirmada || '').toLowerCase();
+  if (unidad === 'mm' || unidad === 'cm') {
+    const rawPair = String(medidas_texto || '').match(/(\d+(?:[.,]\d+)?)\s*(?:[x×X\/]|por)\s*(\d+(?:[.,]\d+)?)/i);
+    if (!rawPair) {
+      // [escéptico L2] SIN par verificable en el texto del cliente NO se confía en los números del LLM
+      // (riesgo real: 1,80×2,40 m transcrito como 180/240 → sub-cotización silenciosa 10×). Se pide
+      // el par de nuevo en vez de asumir.
+      return {
+        ok: false, error: 'medidas_fuera_de_rango', ancho_mm: a, alto_mm: b,
+        message:
+          'No pude verificar el par ancho×alto en el texto original. Pídele al cliente que escriba las ' +
+          'medidas como ANCHOxALTO (ej: 350x600) y vuelve a llamar con ese medidas_texto y unidad_confirmada.',
+      };
+    }
+    a = parseFloat(rawPair[1].replace(',', '.'));
+    b = parseFloat(rawPair[2].replace(',', '.'));
+    if (unidad === 'cm') { a = a * 10; b = b * 10; }
+    const enRangoC = (v) => Number.isFinite(v) && v >= MEDIDA_MIN_MM && v <= MEDIDA_MAX_MM;
+    if (!enRangoC(a) || !enRangoC(b)) {
+      return {
+        ok: false, error: 'medidas_fuera_de_rango', ancho_mm: a, alto_mm: b,
+        message:
+          `Las medidas ${a}×${b} mm están fuera del rango plausible (${MEDIDA_MIN_MM}–${MEDIDA_MAX_MM} mm). ` +
+          `NO cotices: pídele al cliente que confirme las medidas y la unidad (¿centímetros o milímetros?).`,
+      };
+    }
+    return { ok: true, ancho_mm: Math.round(a), alto_mm: Math.round(b), corregido: false, unidad_confirmada: unidad };
+  }
   if (medidas_texto) {
     const norm = normMeasures(medidas_texto);
     if (norm && norm.ancho_mm && norm.alto_mm) {
@@ -170,6 +203,15 @@ export const TOOL_DEFS = [
           comuna: { type: 'string', description: 'Comuna de despacho/instalacion. Opcional.' },
           cantidad: { type: 'integer', description: 'Cantidad de ventanas. Opcional.' },
           ambiente: { type: 'string', description: 'Recinto de la ventana (ej. "baño", "living"). Opcional pero ÚTIL: si es baño se usa vidrio satén automáticamente.' },
+          unidad_confirmada: {
+            type: 'string',
+            enum: ['mm', 'cm'],
+            description:
+              'SOLO cuando el CLIENTE confirmó EXPLÍCITAMENTE la unidad después de que se le preguntó ' +
+              '(ej: "sí, son milímetros", "350 de ancho por 600 de alto en mm"). Con esto el sistema toma ' +
+              'las medidas de medidas_texto TAL CUAL (mm) o ×10 (cm), sin heurísticas. NUNCA lo pases por ' +
+              'deducción propia: solo tras confirmación textual del cliente.',
+          },
         },
         required: ['tipo', 'medidas_texto'],
         additionalProperties: false,
@@ -483,7 +525,9 @@ export async function runTool(name, input = {}, ctx = {}) {
       if (!med.ok) return med; // medidas fuera de rango → el LLM pide confirmación, no cotiza
       const qty = Math.max(1, Number(input.cantidad) || 1);
       const d = {
-        items: [{ measures: `${med.ancho_mm}x${med.alto_mm}`, product: input.tipo, qty, color: input.color || '', ambiente: input.ambiente || '' }],
+        // [2026-07-06 LOTE2] Sufijo "mm": medidas YA resueltas acá → normMeasuresLocal (priceAllEngine)
+        // las toma LITERALES y no re-aplica su heurística ×10 (doble normalización cazada por el abogado).
+        items: [{ measures: `${med.ancho_mm}x${med.alto_mm}mm`, product: input.tipo, qty, color: input.color || '', ambiente: input.ambiente || '' }],
         comuna: input.comuna || '',
         default_color: input.color || '',
       };
@@ -502,8 +546,11 @@ export async function runTool(name, input = {}, ctx = {}) {
         producto_label: it.producto_label,
         serie: it.serie,
         referencial: it.referencial || false,
+        // [2026-07-06 LOTE2] Medidas RESUELTAS con sufijo mm: pending_quote/PDF re-cotizan con ESTO
+        // (no con el texto crudo del cliente) → la confirmación de unidad sobrevive hasta el PDF.
+        medidas_resueltas: `${med.ancho_mm}x${med.alto_mm}mm`,
         termico: it.termico || null,          // [thermal] hoja Uw para el PDF (null = no mostrar)
-        _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses otro campo.',
+        _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses otro campo. En "measures" de cada item del PDF pasa medidas_resueltas TAL CUAL.',
       };
     }
 
@@ -535,7 +582,7 @@ export async function runTool(name, input = {}, ctx = {}) {
       }
       const qtyArea = Math.max(1, Number(input.cantidad) || 1);   // [FIX 2026-06-19 COB-05] antes qty:1 fijo → cobraba 1/3 si pedían 3 iguales
       const d = {
-        items: [{ measures: `${ancho}x${alto}`, product: input.tipo, qty: qtyArea, color: input.color || '', ambiente: input.ambiente || '' }],
+        items: [{ measures: `${ancho}x${alto}mm`, product: input.tipo, qty: qtyArea, color: input.color || '', ambiente: input.ambiente || '' }], // [LOTE2] sufijo mm = literal aguas abajo
         comuna: input.comuna || '',
         default_color: input.color || '',
       };
@@ -552,6 +599,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         cantidad: it.qty || qtyArea,
         area_m2: Number(input.area_m2) || _ra.area_m2,
         medidas_derivadas: `${ancho}x${alto}`,
+        medidas_resueltas: `${ancho}x${alto}mm`, // [LOTE2] prioridad en pending_quote/PDF (no se re-mangla)
         glass_label: it.glass_label,
         producto_label: it.producto_label,
         serie: it.serie,
