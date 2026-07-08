@@ -27,6 +27,10 @@ import Anthropic from '@anthropic-ai/sdk';
 const MODEL = () => process.env.AI_MODEL_ANTHROPIC || 'claude-sonnet-4-6';
 const EFFORT = () => (process.env.AI_EFFORT ?? 'medium').trim();   // [2026-06-21] default medium (low loopeaba/no encadenaba PDF); '' => no enviar
 const CACHE_ON = () => (process.env.AI_CACHE ?? '1') !== '0';
+// [2026-07-08] TTL del caché de prompt. Default '1h': antes era 5min (ephemeral), y como los
+// clientes responden espaciado el caché se vencía entre mensajes → se re-pagaba el prompt entero
+// (system+tools ~27K tokens). '1h' lo mantiene vivo entre respuestas. AI_CACHE_TTL=5m revierte.
+const CACHE_TTL = () => (process.env.AI_CACHE_TTL || '1h').trim();
 
 // Log del modelo REAL que devuelve la API (prueba dura de qué cerebro responde).
 // Una vez por proceso para no ensuciar los logs. Aparece en Railway → Console.
@@ -35,6 +39,13 @@ function logModelOnce(resp) {
   if (_modelLogged || !resp || !resp.model) return;
   console.log(`[engine-anthropic] cerebro activo (modelo real de la API): ${resp.model}`);
   _modelLogged = true;
+}
+
+// [2026-07-08] Log de USO por llamada → ver el ahorro del caché en vivo (Railway Console).
+// cache_read alto = caché funcionando (se cobra 0.1x); cache_write = primera vez / caché vencido.
+function logUsage(tag, resp) {
+  const u = resp?.usage; if (!u) return;
+  console.log(`[engine-anthropic] ${tag} tokens: in=${u.input_tokens || 0} out=${u.output_tokens || 0} cache_write=${u.cache_creation_input_tokens || 0} cache_read=${u.cache_read_input_tokens || 0}`);
 }
 
 /* Cliente Anthropic singleton (lazy). Importar este módulo NO exige la API key:
@@ -123,7 +134,14 @@ export function _mapPass1Response(resp) {
 function systemParam(system) {
   const s = String(system || '');
   if (!CACHE_ON()) return s;
-  return [{ type: 'text', text: s, cache_control: { type: 'ephemeral' } }];
+  // El caché en el bloque system cubre el prefijo COMPLETO (orden API: tools → system → messages),
+  // así que cachea tools + system juntos. Solo cambia el COBRO, no lo que Oliver lee/responde.
+  const cc = { type: 'ephemeral' };
+  // GUARD (abogado del diablo): SOLO '1h' es extensión válida (SDK/API: ttl ∈ '5m'|'1h').
+  // Cualquier otro valor (typo, '5min', un número) NO se envía → cae al default 5min ephemeral.
+  // Así un env mal escrito al revertir NUNCA tira 400 en producción; como mucho vuelve a 5min.
+  if (CACHE_TTL() === '1h') cc.ttl = '1h';
+  return [{ type: 'text', text: s, cache_control: cc }];
 }
 
 function maybeOutputConfig() {
@@ -144,6 +162,7 @@ export async function anthropicPass1({ system, messages = [], tools = [], _clien
     ...maybeOutputConfig(),
   });
   logModelOnce(resp);
+  logUsage('pass1', resp);
   if (resp?.stop_reason === 'max_tokens') console.warn('[engine-anthropic] pass1 truncado (max_tokens)');
   if (resp?.stop_reason === 'refusal') console.warn('[engine-anthropic] pass1 refusal — revisar stop_details');
   return _mapPass1Response(resp);
@@ -160,6 +179,7 @@ export async function anthropicPass2({ system, messages = [], _client } = {}) {
     ...maybeOutputConfig(),
   });
   logModelOnce(resp);
+  logUsage('pass2', resp);
   if (resp?.stop_reason === 'max_tokens') console.warn('[engine-anthropic] pass2 truncado (max_tokens)');
   let out = '';
   for (const block of (resp?.content || [])) if (block.type === 'text') out += block.text || '';
