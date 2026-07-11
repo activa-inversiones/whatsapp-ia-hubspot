@@ -246,6 +246,61 @@ test('quote — si hay cotización en toolCalls dispara pushQuoteEvent', async (
   assert.equal(spy.quoteEvents.length, 1, 'debe registrar la cotización');
   assert.equal(spy.quoteEvents[0].amount_total, 321593);
   assert.equal(spy.quoteEvents[0].currency, 'CLP');
+  // [2026-07-11 FIX lead_id NULL] pushQuoteEvent debe incluir lead:{...} con phone poblado
+  // (sales-os upsertQuote solo fija lead_id si payload.lead viene poblado; sin esto el JOIN
+  // quotes→leads queda roto y la atribución de ads se pierde).
+  assert.ok(spy.quoteEvents[0].lead, 'el quote-event debe incluir lead:{...}');
+  assert.equal(spy.quoteEvents[0].lead.phone, '56999999999');
+  assert.equal(spy.quoteEvents[0].lead.channel, 'whatsapp');
+});
+
+test('generarPdf (status sent) — pushQuoteEvent incluye lead:{...} con phone', async () => {
+  const origFetch = global.fetch;
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/internal/quotes/next-number')) {
+      return { ok: true, json: async () => ({ quote_number: 'CM-FR-004-2026-0099' }) };
+    }
+    return { ok: false, json: async () => ({}) };
+  };
+
+  const { deps, spy } = makeDeps({
+    generatePdf: async () => Buffer.from('%PDF-1.4 fake'),
+    uploadWaDocument: async () => 'media-1',
+    sendWaDocument: async () => ({ ok: true, msgId: 'sent-1' }),
+    upsertZohoDeal: async () => 'deal-1',
+    addZohoNote: async () => {},
+    attachPdfToDeal: async () => {},
+    handleTurn: async ({ userText, state, toolCtx }) => {
+      const r = await toolCtx.generarPdf({
+        name: 'Marcelo', comuna: 'Temuco',
+        items: [{ producto_label: 'Corredera SLIDING H80', measures: '1200x1000', color: 'blanco', qty: 1, unit_price: 324573 }],
+      });
+      return {
+        reply: r.message,
+        history: [{ role: 'user', content: userText }, { role: 'assistant', content: r.message }],
+        toolCalls: [{ name: 'generar_pdf_cotizacion' }],
+        state: { ...state },
+      };
+    },
+  });
+
+  try {
+    await handleWebhook(makeReq(), makeRes(), deps);
+  } finally {
+    global.fetch = origFetch;
+  }
+
+  assert.equal(spy.quoteEvents.length, 1, 'debe registrar la cotización (status sent)');
+  assert.equal(spy.quoteEvents[0].status, 'sent');
+  const lead = spy.quoteEvents[0].lead;
+  // [2026-07-11 FIX lead_id NULL] este era el call site roto en producción: pushQuoteEvent con
+  // 'sent' se disparaba SIN lead:{...} → sales-os no podía resolver lead_id (JOIN quotes→leads roto).
+  assert.ok(lead, 'el quote-event (sent) debe incluir lead:{...}');
+  assert.equal(lead.phone, '56999999999');
+  assert.equal(lead.name, 'Marcelo');
+  assert.equal(lead.comuna, 'Temuco');
+  assert.equal(lead.channel, 'whatsapp');
 });
 
 test('toolCtx cableado — saveLead/notifyMarcelo/persistSession son funciones', async () => {

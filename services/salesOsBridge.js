@@ -243,6 +243,13 @@ export async function pushLeadEvent(payload) {
  */
 export async function pushQuoteEvent(payload) {
   if (!ingestEnabled()) return { ok: false, skipped: true };
+  // [2026-07-11 guardrail] Bug lead_id NULL (auditoría BD viva): si viene phone sin lead,
+  // quoteService.upsertQuote (sales-os) NO puede resolver lead_id → JOIN quotes→leads roto,
+  // atribución de ads se salta por no_match_keys. Solo detecta/loguea, no bloquea el envío.
+  if (payload && payload.phone && !payload.lead) {
+    log("info", "pushQuoteEvent.guardrail",
+      `⚠️ quote SIN lead (phone=${payload.phone}, channel=${payload.channel || "?"}) — lead_id quedará NULL en sales-os`);
+  }
   return requestWithRetry("/api/ingest/quote-event", {
     method: "POST",
     body: payload,

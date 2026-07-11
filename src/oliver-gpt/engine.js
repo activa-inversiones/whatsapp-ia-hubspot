@@ -91,16 +91,43 @@ export async function withRetry(fn, label = 'openai') {
   throw lastErr;
 }
 
-/**
- * orchestratorPass1 — Decisión de acciones (tool calling).
- * @param {object} args
- * @param {string} args.system - System prompt (string).
- * @param {Array}  args.messages - Mensajes de la conversación (sin el system).
- * @param {Array}  args.tools - Definiciones de tools (formato OpenAI).
- * @returns {Promise<{tool_calls:Array, content:string, raw:object}>}
- */
-export async function orchestratorPass1({ system, messages = [], tools = [] }) {
-  if (useAnthropic()) return anthropicPass1({ system, messages, tools });
+/* =========================================================================
+ * FALLBACK ENTRE PROVEEDORES [2026-07-11]
+ * Oliver le responde a clientes reales. Si el proveedor primario (el de AI_PROVIDER)
+ * falla de forma persistente — el caso típico: se acabó el saldo de la API key —, en
+ * vez de cortar la venta y mandar el fallback genérico, se reintenta con el OTRO proveedor.
+ * Así un saldo en cero en Anthropic (o en OpenAI) NUNCA deja a un cliente sin respuesta real.
+ *   - Solo se activa cuando el primario THROWS, o sea tras sus propios reintentos
+ *     (OpenAI: withRetry; Anthropic SDK: maxRetries:3) → falla real, no un blip transitorio.
+ *   - Si el secundario no está configurado (falta su API key) o también falla → se relanza el
+ *     error original y arriba actúa el "fallback amable" de siempre. NUNCA empeora lo actual.
+ *   - Kill-switch: AI_FALLBACK=0 en Railway lo desactiva (vuelve al modo single-provider).
+ * ========================================================================= */
+const FALLBACK_ON = () => (process.env.AI_FALLBACK ?? '1') !== '0';
+
+// Ejecuta el proveedor primario; si lanza, reintenta con el secundario. Exportada para tests.
+export async function runWithFallback(label, primaryIsAnthropic, anthropicFn, openaiFn) {
+  const primary = primaryIsAnthropic ? 'anthropic' : 'openai';
+  const secondary = primaryIsAnthropic ? 'openai' : 'anthropic';
+  try {
+    return await (primaryIsAnthropic ? anthropicFn() : openaiFn());
+  } catch (primaryErr) {
+    if (!FALLBACK_ON()) throw primaryErr;
+    const status = primaryErr?.status || primaryErr?.response?.status || '';
+    console.error(`[engine] ${label} proveedor PRIMARIO ${primary} falló (${status} ${primaryErr?.message || primaryErr}). Fallback → ${secondary}.`);
+    try {
+      const r = await (primaryIsAnthropic ? openaiFn() : anthropicFn());
+      console.warn(`[engine] ${label} respondido por FALLBACK ${secondary} — el cliente NO se quedó sin respuesta.`);
+      return r;
+    } catch (secondaryErr) {
+      console.error(`[engine] ${label} fallback ${secondary} también falló (${secondaryErr?.message || secondaryErr}). Se relanza el error primario.`);
+      throw primaryErr;
+    }
+  }
+}
+
+// --- Motor OpenAI (interno; el switch de proveedor + fallback lo hacen los orchestrator*) ---
+async function openaiPass1({ system, messages = [], tools = [] }) {
   const client = getClient();
   const r = await withRetry(() => client.chat.completions.create({
     model: MODEL(),
@@ -121,15 +148,7 @@ export async function orchestratorPass1({ system, messages = [], tools = [] }) {
   };
 }
 
-/**
- * orchestratorPass2 — Texto final para el cliente (sin tools).
- * @param {object} args
- * @param {string} args.system - System prompt (string).
- * @param {Array}  args.messages - Mensajes (incluye tool results de Pass1).
- * @returns {Promise<string>}
- */
-export async function orchestratorPass2({ system, messages = [] }) {
-  if (useAnthropic()) return anthropicPass2({ system, messages });
+async function openaiPass2({ system, messages = [] }) {
   const client = getClient();
   const r = await withRetry(() => client.chat.completions.create({
     model: MODEL(),
@@ -142,4 +161,31 @@ export async function orchestratorPass2({ system, messages = [] }) {
   return (choice2.message?.content || '').trim();
 }
 
-export default { getClient, orchestratorPass1, orchestratorPass2 };
+/**
+ * orchestratorPass1 — Decisión de acciones (tool calling). Proveedor por AI_PROVIDER + fallback.
+ * @param {object} args
+ * @param {string} args.system - System prompt (string).
+ * @param {Array}  args.messages - Mensajes de la conversación (sin el system).
+ * @param {Array}  args.tools - Definiciones de tools (formato OpenAI).
+ * @returns {Promise<{tool_calls:Array, content:string, raw:object}>}
+ */
+export async function orchestratorPass1({ system, messages = [], tools = [] }) {
+  return runWithFallback('pass1', useAnthropic(),
+    () => anthropicPass1({ system, messages, tools }),
+    () => openaiPass1({ system, messages, tools }));
+}
+
+/**
+ * orchestratorPass2 — Texto final para el cliente (sin tools). Proveedor por AI_PROVIDER + fallback.
+ * @param {object} args
+ * @param {string} args.system - System prompt (string).
+ * @param {Array}  args.messages - Mensajes (incluye tool results de Pass1).
+ * @returns {Promise<string>}
+ */
+export async function orchestratorPass2({ system, messages = [] }) {
+  return runWithFallback('pass2', useAnthropic(),
+    () => anthropicPass2({ system, messages }),
+    () => openaiPass2({ system, messages }));
+}
+
+export default { getClient, orchestratorPass1, orchestratorPass2, runWithFallback };

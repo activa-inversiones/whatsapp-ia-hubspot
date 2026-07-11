@@ -486,6 +486,31 @@ export async function handleChannelTurn(
               amount_total: grandTotal, currency: 'CLP', status: 'sent', quote_number: quoteNumber,
               fbclid: state.fbclid || null, gclid: state.gclid || null,
               ttclid: state.ttclid || null, ctwa_clid: state.ctwa_clid || null,
+              // [2026-07-11 FIX lead_id NULL] sin este campo, quoteService.upsertQuote (sales-os)
+              // no puede resolver lead_id → JOIN quotes→leads roto (auditoría BD viva confirmada).
+              // Réplica de buildLeadPayload (index.js, ruta legacy WhatsApp) con los datos que
+              // el flujo GPT v2 (IG/FB) tiene a mano en este punto; lo no disponible queda null.
+              lead: {
+                source: channel || 'oliver_gpt',
+                channel: channel || null,
+                lead_name: clientName || null,
+                name: clientName || null,
+                phone: clientPhone || senderId || null,
+                comuna: clientComuna || null,
+                city: clientComuna || null,
+                project_type: null,
+                product_interest: (input.items?.[0]?.producto_label || input.items?.[0]?.product) || null,
+                windows_qty: (input.items || []).length
+                  ? String((input.items || []).reduce((acc, it) => acc + (Number(it.qty) || 1), 0))
+                  : null,
+                budget: grandTotal ? String(grandTotal) : null,
+                message: null,
+                status: 'quoted',
+                zoho_deal_id: null,
+                external_id: senderId || null,
+                fbclid: state.fbclid || null, gclid: state.gclid || null,
+                ttclid: state.ttclid || null, ctwa_clid: state.ctwa_clid || null,
+              },
               payload: { comuna: clientComuna, ctwa_clid: state.ctwa_clid || null,
                 fbclid: state.fbclid || null, gclid: state.gclid || null, ttclid: state.ttclid || null },
             })

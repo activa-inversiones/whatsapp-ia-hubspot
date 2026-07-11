@@ -69,6 +69,14 @@ test('IG: folio único + SUBIDA BINARIA del PDF (sin URL pública) + conversión
   const qe = log.quoteEvents[0];
   assert.ok(qe && qe.channel === 'instagram', 'conversión con canal instagram (anti-cross-inject)');
   assert.ok(log.persisted.length >= 1, 'sesión persistida a Postgres');
+  // [2026-07-11 FIX lead_id NULL] pushQuoteEvent debe incluir lead:{...} con phone poblado
+  // (sales-os upsertQuote solo fija lead_id si payload.lead viene poblado; sin esto el JOIN
+  // quotes→leads queda roto y la atribución de ads se pierde).
+  assert.ok(qe.lead, 'el quote-event debe incluir lead:{...}');
+  assert.equal(qe.lead.phone, 'IG_happy', 'lead.phone cae al senderId cuando no hay teléfono explícito');
+  assert.equal(qe.lead.name, 'Marcelo');
+  assert.equal(qe.lead.comuna, 'Temuco');
+  assert.equal(qe.lead.channel, 'instagram');
 });
 
 test('FB: también entrega el PDF binario', async () => {
