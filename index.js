@@ -4702,6 +4702,125 @@ app.post("/internal/reengage", express.json(), async (req, res) => {
   }
 });
 
+// ═══ [2026-07-12] LLAMADA ENTRANTE → WhatsApp (Cloud API / Oliver) ═══
+// El dueño recibe la llamada en su +56957296035; una automatización en su Android
+// (MacroDroid) postea el número que llamó → creamos el LEAD (dedupe por teléfono) +
+// Oliver le manda el template de apertura para enviarle info/cotización por WhatsApp.
+// Reusa infra existente: ingestCtwaLead (/api/ingest/lead) + /admin/send-template +
+// pushConversationEvent. MISMA doble-llave de seguridad que reengage():
+//   1) flag CALL_TO_WA_ENABLED === 'true'  (default OFF → NO manda NADA).
+//   2) candado por teléfono (6h) para no spamear si el celular dispara dos veces.
+// Auth: header x-call-secret === CALL_WEBHOOK_SECRET (secreto dedicado del teléfono);
+//       si no está seteado, cae al token interno de operador (x-api-key).
+// Template: CALL_TO_WA_TEMPLATE (default 'envio_cotizacion', YA aprobado en Meta).
+const LAST_CALL_WA = new Map();
+const CALL_WA_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h por número
+app.post("/internal/inbound-call", express.json(), async (req, res) => {
+  try {
+    const secret = req.get("x-call-secret") || req.query.secret;
+    const okAuth = process.env.CALL_WEBHOOK_SECRET
+      ? (secret === process.env.CALL_WEBHOOK_SECRET)
+      : validInternalOperatorToken(req);
+    if (!okAuth) return res.status(401).json({ ok: false, error: "unauthorized" });
+
+    const { phone, name, source, send_wa } = req.body || {};
+    if (!phone) return res.status(400).json({ ok: false, error: "phone_requerido" });
+    const cleanPhone = normPhone(phone);
+    if (!cleanPhone || cleanPhone.replace(/[^0-9]/g, "").length < 8) {
+      return res.status(400).json({ ok: false, error: "phone_invalido" });
+    }
+
+    // ORIGEN DECLARADO (diseño del dueño 2026-07-12): al colgar, su Android le pregunta
+    // "¿crear lead? ¿de dónde?" (él se lo preguntó al cliente en la llamada). El botón
+    // manda `source`; acá se normaliza al vocabulario del activador CANALES. `auto` =
+    // vino de un canal medido (futuro número call-tracking de landing/ads).
+    const SOURCE_MAP = {
+      landing: "phone_call_landing", web: "phone_call_landing", pagina: "phone_call_landing",
+      maps: "phone_call_google_maps", google_maps: "phone_call_google_maps",
+      google: "phone_call_google", busqueda: "phone_call_google",
+      recomendacion: "phone_call_recomendacion", reco: "phone_call_recomendacion", referido: "phone_call_recomendacion",
+      organico: "phone_call_organico", otro: "phone_call_otro", auto: "phone_call",
+    };
+    const rawSource = String(source || "auto").trim().toLowerCase();
+    const leadSource = SOURCE_MAP[rawSource] || "phone_call_otro";
+
+    // LLAVE 1: flag OFF por defecto → el dueño lo activa cuando el flujo esté probado.
+    if (process.env.CALL_TO_WA_ENABLED !== "true") {
+      return res.json({ ok: false, reason: "flag_off", phone: cleanPhone });
+    }
+    // No escribirle al propio dueño (por si aparece su número / una prueba).
+    const ownerPhone = normPhone(process.env.OWNER_PHONE || process.env.MARCELO_PHONE || "56957296035");
+    if (cleanPhone === ownerPhone) {
+      return res.json({ ok: false, reason: "numero_propio", phone: cleanPhone });
+    }
+    // FILTRO 1 (server-side): lista de exclusión de números que NUNCA reciben la apertura
+    // (socios/proveedores/familia no guardados en el teléfono). Env CALL_TO_WA_BLOCKLIST =
+    // "569...,569...". El filtro PRIMARIO es la restricción de MacroDroid "no es un contacto";
+    // esta es la red de seguridad para casos puntuales.
+    const denylist = String(process.env.CALL_TO_WA_BLOCKLIST || "")
+      .split(",").map((s) => normPhone(s.trim())).filter(Boolean);
+    if (denylist.includes(cleanPhone)) {
+      return res.json({ ok: false, reason: "en_blocklist", phone: cleanPhone });
+    }
+    // 1) Crear/actualizar el lead SIEMPRE (dedupe/upsert por teléfono en sales-os) con el
+    //    ORIGEN REAL declarado → trazabilidad de llamadas por canal. No bloquea el envío.
+    ingestCtwaLead({
+      phone: cleanPhone, source: leadSource, channel: "phone",
+      name: String(name || "").trim(),
+      message: `Llamada entrante al ${ownerPhone} · origen declarado: ${rawSource}`,
+    });
+
+    // ¿Solo lead, sin WhatsApp? (botón "crear lead sin mensaje")
+    if (send_wa === false || send_wa === "false") {
+      return res.json({ ok: true, phone: cleanPhone, source: leadSource, lead: true, sent: false, reason: "send_wa_false" });
+    }
+    // CANDADO: 1 apertura de WhatsApp por número cada 6h (el lead ya quedó creado igual).
+    const now = Date.now();
+    const prev = LAST_CALL_WA.get(cleanPhone);
+    if (prev && (now - prev) < CALL_WA_COOLDOWN_MS) {
+      return res.json({ ok: true, phone: cleanPhone, source: leadSource, lead: true, sent: false, reason: "candado_6h" });
+    }
+
+    // 2) Oliver manda el template de apertura (ventana Meta cerrada → template aprobado).
+    const template = process.env.CALL_TO_WA_TEMPLATE || "envio_cotizacion";
+    const PIN = process.env.ADMIN_PIN || process.env.OLIVER_ADMIN_PIN || "";
+    if (!PIN) return res.status(500).json({ ok: false, error: "ADMIN_PIN_missing" });
+    const base = (process.env.SELF_URL || `http://127.0.0.1:${process.env.PORT || 8080}`).replace(/\/$/, "");
+    let tplRes;
+    try {
+      const r = await fetch(`${base}/admin/send-template?pin=${encodeURIComponent(PIN)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ template, phone: cleanPhone, customer_name: String(name || "").trim() || "Cliente" }),
+        signal: AbortSignal.timeout(10000),
+      });
+      tplRes = await r.json().catch(() => ({ ok: r.ok }));
+    } catch (e) {
+      return res.status(502).json({ ok: false, reason: "envio_fallo", error: e.message });
+    }
+    if (!tplRes || tplRes.ok === false) {
+      return res.status(502).json({ ok: false, reason: "envio_fallo", error: tplRes?.error || tplRes?.result?.error || "desconocido" });
+    }
+
+    // Éxito → candado + bitácora auditable (mismo patrón que reengage()).
+    LAST_CALL_WA.set(cleanPhone, now);
+    try {
+      await pushConversationEvent({
+        channel: "whatsapp", external_id: cleanPhone, direction: "outbound",
+        customer_name: String(name || "").trim(),
+        actor_type: "ai", actor_name: "Oliver", message_type: "template",
+        body: `[apertura por llamada entrante (origen: ${rawSource}) → template ${template}]`,
+        metadata: { source: "inbound_call_to_wa", template, origen_declarado: rawSource, lead_source: leadSource },
+      });
+    } catch { /* no bloquea: el envío ya se hizo */ }
+
+    res.json({ ok: true, phone: cleanPhone, source: leadSource, lead: true, template, sent: true });
+  } catch (e) {
+    logErr("/internal/inbound-call", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // [2026-07-07] "Salesforce reutilizando Zoho" (directiva del dueño): cuando sales-os marca un
 // seguimiento como hecho (agenda/Zero-Leaks), queda una NOTA en el Deal de Zoho — trazabilidad
 // ISO del contacto, sin duplicar el CRM. Wrapper delgado sobre addZohoNote (ya construida y en
