@@ -4717,10 +4717,10 @@ const LAST_CALL_WA = new Map();
 const CALL_WA_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h por número
 app.post("/internal/inbound-call", express.json(), async (req, res) => {
   try {
-    const secret = req.get("x-call-secret") || req.query.secret;
-    const okAuth = process.env.CALL_WEBHOOK_SECRET
-      ? (secret === process.env.CALL_WEBHOOK_SECRET)
-      : validInternalOperatorToken(req);
+    // trim en ambos lados: los teclados/paneles suelen colar un espacio o salto de línea al pegar.
+    const secret = String(req.get("x-call-secret") || req.query.secret || "").trim();
+    const envSecret = String(process.env.CALL_WEBHOOK_SECRET || "").trim();
+    const okAuth = envSecret ? (secret === envSecret) : validInternalOperatorToken(req);
     if (!okAuth) return res.status(401).json({ ok: false, error: "unauthorized" });
 
     const { phone, name, source, send_wa } = req.body || {};
