@@ -30,13 +30,18 @@ export function parseLandingRef(text) {
 
 /**
  * Payload para bridge.pushLeadEvent (sales-os /api/ingest/lead), atribuyendo el
- * lead a la landing orgánica SIN pisar campos de atribución paga (gclid/fbclid/ctwa).
+ * lead a su landing de origen Y PROPAGANDO los click ids que la landing capturó
+ * (gclid/fbclid vienen en ctx desde GET /api/lead-event/ref/:id → lead_sessions).
+ * [2026-07-12 fix señal-ads] Antes se descartaban acá y leads.gclid quedaba 0/775.
+ * No pisa un click id ya guardado: upsertLead usa COALESCE(NULLIF($x,''), col).
  */
 export function buildLandingLeadPayload(phone, ctx = {}, extra = {}) {
   const payload = {
     phone: String(phone || ''),
     source: 'landing_organic',
     channel: 'whatsapp',
+    gclid: ctx.gclid || '',
+    fbclid: ctx.fbclid || '',
     metadata: {
       landing_ref: ctx.lead_id || null,
       landing_slug: ctx.landing_slug || null,
@@ -44,6 +49,7 @@ export function buildLandingLeadPayload(phone, ctx = {}, extra = {}) {
       landing_comuna: ctx.comuna || ctx.landing_comuna || null,
     },
   };
+  if (ctx.gclid || ctx.fbclid) payload.ad_click_id_source = 'landing_ref';
   if (extra.name) payload.name = String(extra.name);
   if (extra.message) payload.message = String(extra.message).slice(0, 300);
   return payload;
