@@ -27,6 +27,22 @@ const GRAPH_VER = process.env.META_GRAPH_VERSION || "v22.0";
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VER}`;
 const IG_GRAPH_BASE = `https://graph.instagram.com/${GRAPH_VER}`;
 
+// [2026-07-13 sec] fetch con timeout/AbortController — mismo patrón que
+// services/igFbMediaBridge.js (fetchWithTimeout, líneas 176-184) para que
+// las llamadas a Graph API nunca queden colgadas indefinidamente si Meta
+// no responde. Cambio quirúrgico: solo envuelve fetch(), no cambia el
+// resultado en el camino feliz (mismo response, mismo try/catch del caller).
+const FETCH_TIMEOUT_MS = 15000;
+async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // 1. DETECTAR CANAL DEL WEBHOOK
 // ═══════════════════════════════════════════════════════════════════
@@ -260,6 +276,117 @@ export async function sendChannelDocument(channel, recipientId, buffer, filename
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// 3c. ENTREGAR AUDIO POR CANAL — SUBIDA BINARIA  [2026-07-13]
+//     CLON de uploadChannelMedia + sendChannelDocument, pero con attachment type "audio"
+//     (Meta exige un tipo distinto a "file" para que el cliente lo reciba como nota de voz
+//     reproducible en vez de un adjunto descargable). Duplica la lógica de upload INLINE
+//     a propósito — NO toca uploadChannelMedia/sendChannelDocument existentes (cero riesgo
+//     sobre el flujo de PDF de cotización ya en producción).
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Sube un audio (buffer) a Meta y lo entrega por IG/FB como attachment type "audio".
+ * @returns {Promise<{ok:boolean, messageId?:string, error?:string, outsideWindow?:boolean}>}
+ */
+export async function sendChannelAudio(channel, recipientId, buffer, filename = "audio.mp3", mimeType = "audio/mpeg") {
+  if (channel !== "instagram" && channel !== "facebook") return { ok: false, error: `canal no soportado: ${channel}` };
+  if (!PAGE_ID || !PAGE_TOKEN) return { ok: false, error: "META_PAGE_ID/META_PAGE_ACCESS_TOKEN no configurados (requeridos para subir adjuntos)" };
+
+  // Upload (duplicado inline de uploadChannelMedia, con type:"audio" en vez de "file")
+  let attachmentId;
+  try {
+    const safeName = String(filename).replace(/[^\x20-\x7E]/g, "_"); // Meta rechaza nombres no-ASCII
+    const form = new FormData();
+    form.append("message", JSON.stringify({ attachment: { type: "audio", payload: { is_reusable: false } } }));
+    if (channel === "instagram") form.append("platform", "instagram");
+    form.append("filedata", new Blob([buffer], { type: mimeType }), safeName);
+    const uploadUrl = `${GRAPH_BASE}/${PAGE_ID}/message_attachments?access_token=${encodeURIComponent(PAGE_TOKEN)}`;
+    const upResp = await fetchWithTimeout(uploadUrl, { method: "POST", body: form });
+    const upData = await upResp.json();
+    if (upData.error || !upData.attachment_id) {
+      console.error(`[multiChannel] upload audio ${channel}:`, upData.error?.message || "sin attachment_id");
+      return { ok: false, error: upData.error?.message || "sin attachment_id" };
+    }
+    attachmentId = upData.attachment_id;
+  } catch (e) {
+    console.error(`[multiChannel] upload audio ${channel}:`, e.message);
+    return { ok: false, error: e.message };
+  }
+
+  // Send (duplicado inline de sendChannelDocument, con attachment type:"audio")
+  try {
+    const isIG = channel === "instagram";
+    const url = isIG ? `${IG_GRAPH_BASE}/me/messages` : `${GRAPH_BASE}/${PAGE_ID}/messages`;
+    const token = isIG ? IG_TOKEN : PAGE_TOKEN;
+    const body = {
+      recipient: { id: recipientId },
+      message: { attachment: { type: "audio", payload: { attachment_id: attachmentId } } },
+    };
+    if (!isIG) body.messaging_type = "RESPONSE"; // solo FB; IG rechaza messaging_type (#100)
+    const resp = await fetchWithTimeout(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      const code = data.error.code, sub = data.error.error_subcode;
+      const outsideWindow = code === 10 || sub === 2018278 || sub === 2022;
+      console.error(`[multiChannel] Error enviar audio ${channel}:`, data.error.message, outsideWindow ? "(fuera de ventana 24h)" : "");
+      return { ok: false, error: data.error.message, code, error_subcode: sub, outsideWindow };
+    }
+    return { ok: true, messageId: data.message_id };
+  } catch (e) {
+    console.error(`[multiChannel] Error enviar audio ${channel}:`, e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 3d. ENVIAR MEDIA POR URL DIRECTA (catálogo público)  [2026-07-13]
+//     A diferencia del PDF de cotización (sendChannelDocument, SIEMPRE binario porque el
+//     precio no puede ser público), acá el activo YA es público a propósito (fotos de
+//     catálogo, videos institucionales) → se envía por URL, sin subir el binario a Meta.
+//     Mismo patrón de detección de ventana 24h que sendMessage/sendChannelDocument.
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Envía un asset (imagen/video/audio/file) por URL pública directa.
+ * @param {string} mediaType - "image" | "video" | "audio" | "file" (tipo de attachment de Meta)
+ * @returns {Promise<{ok:boolean, messageId?:string, error?:string, outsideWindow?:boolean}>}
+ */
+export async function sendChannelMediaAsset(channel, recipientId, url, mediaType = "image", caption = "") {
+  if (channel !== "instagram" && channel !== "facebook") return { ok: false, error: `canal no soportado: ${channel}` };
+  try {
+    const isIG = channel === "instagram";
+    const apiUrl = isIG ? `${IG_GRAPH_BASE}/me/messages` : `${GRAPH_BASE}/${PAGE_ID}/messages`;
+    const token = isIG ? IG_TOKEN : PAGE_TOKEN;
+    const body = {
+      recipient: { id: recipientId },
+      message: { attachment: { type: mediaType, payload: { url, is_reusable: true } } },
+    };
+    if (!isIG) body.messaging_type = "RESPONSE"; // solo FB; IG rechaza messaging_type (#100)
+    const resp = await fetchWithTimeout(apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      const code = data.error.code, sub = data.error.error_subcode;
+      const outsideWindow = code === 10 || sub === 2018278 || sub === 2022;
+      console.error(`[multiChannel] Error enviar media ${channel}:`, data.error.message, outsideWindow ? "(fuera de ventana 24h)" : "");
+      return { ok: false, error: data.error.message, code, error_subcode: sub, outsideWindow };
+    }
+    if (caption) await sendMessage(channel, recipientId, caption, null).catch(() => {});
+    return { ok: true, messageId: data.message_id };
+  } catch (e) {
+    console.error(`[multiChannel] Error enviar media ${channel}:`, e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // 4. OBTENER PERFIL DEL USUARIO
 // ═══════════════════════════════════════════════════════════════════
 
@@ -376,6 +503,89 @@ export function buildLeadPayload(channel, senderId, senderName, text, direction 
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// 6b. DEDUP + RATE LIMIT — [2026-07-13 sec]
+//     WhatsApp ya tiene isDup()+rateOk() en index.js (líneas 2564-2583,
+//     cap 18 msj/min) pero el webhook de IG/FB no tenía NINGÚN freno —
+//     cualquier DM público podía mandar decenas de mensajes/audios por
+//     minuto y cada uno disparaba una llamada completa al cerebro (LLM).
+//     Mismo patrón acá, self-contained (archivo separado, variables
+//     propias — CERO cambio al camino de WhatsApp). Solo bloquea tráfico
+//     duplicado (reintentos de Meta) o abusivo (ráfagas); un cliente
+//     real escribiendo normal nunca lo nota.
+// ═══════════════════════════════════════════════════════════════════
+
+const _seenChannelMsgIds = new Map(); // msgId -> timestamp (dedup reintentos de Meta)
+const _rateByChannelSender = new Map(); // senderId -> { n, resetAt } (ráfagas por minuto)
+
+const _DEDUP_TTL_MS = 2 * 60_000; // 2 min — igual a SEEN_TTL de index.js
+const _RATE_WINDOW_MS = 60_000; // 1 min
+const _RATE_MAX_PER_MIN = Number(process.env.IG_FB_RATE_LIMIT_PER_MIN) > 0
+  ? Number(process.env.IG_FB_RATE_LIMIT_PER_MIN)
+  : 18; // mismo tope que WhatsApp (index.js rateOk)
+
+/** @returns {boolean} true si msgId ya fue procesado (reintento de Meta a descartar). */
+function isDupChannelMsg(msgId) {
+  if (!msgId) return false;
+  if (_seenChannelMsgIds.has(msgId)) return true;
+  _seenChannelMsgIds.set(msgId, Date.now());
+  return false;
+}
+
+/** @returns {{ok:boolean, msg?:string}} cap de mensajes/minuto por remitente (canal:senderId). */
+function channelRateOk(convKey) {
+  if (!convKey) return { ok: true };
+  const now = Date.now();
+  let r = _rateByChannelSender.get(convKey);
+  if (!r || now >= r.resetAt) {
+    r = { n: 0, resetAt: now + _RATE_WINDOW_MS };
+    _rateByChannelSender.set(convKey, r);
+  }
+  r.n++;
+  return r.n > _RATE_MAX_PER_MIN
+    ? { ok: false, msg: "Escribes muy rápido 😅 Dame 10 seg." }
+    : { ok: true };
+}
+
+// Purga periódica — evita memory leak (mismo espíritu que el cleanup de
+// index.js líneas 2585-2600: sin esto, los Map crecen sin límite).
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, ts] of _seenChannelMsgIds) {
+    if (now - ts > _DEDUP_TTL_MS) _seenChannelMsgIds.delete(id);
+  }
+  for (const [id, r] of _rateByChannelSender) {
+    if (now - r.resetAt > _RATE_WINDOW_MS * 5) _rateByChannelSender.delete(id);
+  }
+}, 5 * 60_000);
+
+// ═══════════════════════════════════════════════════════════════════
+// 6c. REDACTAR ADJUNTOS ANTES DE LOGUEAR — [2026-07-13 sec]
+//     El log FASE 0 (IG_FB_LOG_RAW_ATTACHMENTS) volcaba attachments[] CRUDO,
+//     incluyendo payload.url (URL real de CDN de Meta del adjunto del
+//     cliente) en texto plano a los logs de Railway. Cualquiera con acceso
+//     a esos logs podía abrir la foto/audio privado mientras la firma de
+//     la URL siguiera vigente. Se conserva el "shape" (type, presencia y
+//     longitud de la url) que FASE 0 necesita para diseñar igFbMediaBridge,
+//     pero se redacta el valor real.
+// ═══════════════════════════════════════════════════════════════════
+
+function redactAttachmentsForLog(attachments) {
+  if (!Array.isArray(attachments)) return attachments;
+  return attachments.map((att) => {
+    if (!att || typeof att !== "object") return att;
+    const copy = { ...att };
+    if (copy.payload && typeof copy.payload === "object") {
+      const payloadCopy = { ...copy.payload };
+      if (typeof payloadCopy.url === "string") {
+        payloadCopy.url = `[REDACTED len=${payloadCopy.url.length}]`;
+      }
+      copy.payload = payloadCopy;
+    }
+    return copy;
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // 7. REGISTRO DE RUTAS MULTI-CANAL
 // ═══════════════════════════════════════════════════════════════════
 
@@ -416,11 +626,30 @@ export function registerMultiChannelRoutes(app, { processMessage, waSend, logInf
       return;
     }
 
+    // [2026-07-13 FASE 0, temporal] Loguear el shape real de attachments[] (imagen/audio) antes
+    // de construir igFbMediaBridge.js — solo con flag ON, no cambia ningún comportamiento.
+    // [2026-07-13 sec] Adjuntos REDACTADOS antes de loguear (ver redactAttachmentsForLog):
+    // el payload.url crudo es la URL real de CDN del archivo del cliente, no debe llegar a los logs.
+    if (process.env.IG_FB_LOG_RAW_ATTACHMENTS === "true" && req.body?.entry?.[0]?.messaging?.[0]?.message?.attachments) {
+      logInfo("igfb.raw_attachment", JSON.stringify(redactAttachmentsForLog(req.body.entry[0].messaging[0].message.attachments)));
+    }
+
     try {
       const normalized = normalizeIncoming(req.body);
       if (!normalized.ok) return;
 
       const { channel, senderId, senderName, text, msgId } = normalized;
+
+      // [2026-07-13 sec] Dedup (reintentos de Meta) + rate-limit (ráfagas) — mismo
+      // freno que ya tiene WhatsApp (index.js isDup/rateOk). Sin esto, cualquier DM
+      // público podía mandar decenas de mensajes/min y cada uno llegaba al cerebro (LLM).
+      if (isDupChannelMsg(msgId)) return;
+      const rc = channelRateOk(`instagram:${senderId}`);
+      if (!rc.ok) {
+        await sendMessage("instagram", senderId, rc.msg, null).catch(() => {});
+        return;
+      }
+
       logInfo("instagram", `Mensaje de ${senderId}: ${text.substring(0, 50)}`);
 
       // Obtener perfil
@@ -435,6 +664,7 @@ export function registerMultiChannelRoutes(app, { processMessage, waSend, logInf
           senderName: name,
           text,
           msgId,
+          attachments: normalized.raw?.attachments || null,
           sendFn: (to, msg) => sendMessage("instagram", to, msg),
         });
       }
@@ -453,11 +683,30 @@ export function registerMultiChannelRoutes(app, { processMessage, waSend, logInf
       return;
     }
 
+    // [2026-07-13 FASE 0, temporal] Loguear el shape real de attachments[] (imagen/audio) antes
+    // de construir igFbMediaBridge.js — solo con flag ON, no cambia ningún comportamiento.
+    // [2026-07-13 sec] Adjuntos REDACTADOS antes de loguear (ver redactAttachmentsForLog):
+    // el payload.url crudo es la URL real de CDN del archivo del cliente, no debe llegar a los logs.
+    if (process.env.IG_FB_LOG_RAW_ATTACHMENTS === "true" && req.body?.entry?.[0]?.messaging?.[0]?.message?.attachments) {
+      logInfo("igfb.raw_attachment", JSON.stringify(redactAttachmentsForLog(req.body.entry[0].messaging[0].message.attachments)));
+    }
+
     try {
       const normalized = normalizeIncoming(req.body);
       if (!normalized.ok) return;
 
       const { channel, senderId, senderName, text, msgId } = normalized;
+
+      // [2026-07-13 sec] Dedup (reintentos de Meta) + rate-limit (ráfagas) — mismo
+      // freno que ya tiene WhatsApp (index.js isDup/rateOk). Sin esto, cualquier DM
+      // público podía mandar decenas de mensajes/min y cada uno llegaba al cerebro (LLM).
+      if (isDupChannelMsg(msgId)) return;
+      const rc = channelRateOk(`facebook:${senderId}`);
+      if (!rc.ok) {
+        await sendMessage("facebook", senderId, rc.msg, null).catch(() => {});
+        return;
+      }
+
       logInfo("facebook", `Mensaje de ${senderId}: ${text.substring(0, 50)}`);
 
       // Obtener perfil
@@ -472,6 +721,7 @@ export function registerMultiChannelRoutes(app, { processMessage, waSend, logInf
           senderName: name,
           text,
           msgId,
+          attachments: normalized.raw?.attachments || null,
           sendFn: (to, msg) => sendMessage("facebook", to, msg),
         });
       }
@@ -522,6 +772,8 @@ export default {
   extractText,
   sendMessage,
   sendChannelDocument,
+  sendChannelAudio,
+  sendChannelMediaAsset,
   uploadChannelMedia,
   getUserProfile,
   normalizeIncoming,
