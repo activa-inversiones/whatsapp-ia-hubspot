@@ -1091,6 +1091,14 @@ async function sendTemplateEnvioCotizacion(to, nombreCliente = "") {
     nombreCliente ? [{ type: "body", parameters: [{ type: "text", text: nombreCliente }] }] : []
   );
 }
+// [2026-07-12] Apertura del flujo llamada→WhatsApp (endpoint /internal/inbound-call).
+// Encabezado estático "Fábrica de Ventanas y Puertas · Activa Inversiones" (sin param) +
+// body con 1 var {{1}}=nombre. Mismo patrón que envio_cotizacion.
+async function sendTemplateAperturaPorLlamada(to, nombreCliente = "") {
+  return _sendMetaTemplate(to, "apertura_por_llamada", "es_CL",
+    nombreCliente ? [{ type: "body", parameters: [{ type: "text", text: nombreCliente }] }] : []
+  );
+}
 async function sendTemplateBienvenidaActiva(to, nombreCliente = "") {
   return _sendMetaTemplate(to, "bienvenida_activa_inversiones", "es_CL",
     nombreCliente ? [{ type: "body", parameters: [{ type: "text", text: nombreCliente }] }] : []
@@ -4892,6 +4900,9 @@ app.post("/admin/send-template", express.json(), async (req, res) => {
       case "envio_cotizacion":
         result = await sendTemplateEnvioCotizacion(phone, customer_name);
         break;
+      case "apertura_por_llamada":
+        result = await sendTemplateAperturaPorLlamada(phone, customer_name);
+        break;
       case "bienvenida_activa_inversiones":
       case "bienvenida":
         result = await sendTemplateBienvenidaActiva(phone, customer_name);
@@ -4908,7 +4919,7 @@ app.post("/admin/send-template", express.json(), async (req, res) => {
         result = await sendTemplateSolicitudResena(phone, customer_name);
         break;
       default:
-        return res.status(400).json({ ok: false, error: "unknown_template", available: ["recontacto_lead","seguimiento_cotizacion","confirmacion_cotizacion","envio_cotizacion","bienvenida_activa_inversiones","escalamiento_marcelo","informe_diario","solicitud_resena"] });
+        return res.status(400).json({ ok: false, error: "unknown_template", available: ["recontacto_lead","seguimiento_cotizacion","confirmacion_cotizacion","envio_cotizacion","apertura_por_llamada","bienvenida_activa_inversiones","escalamiento_marcelo","informe_diario","solicitud_resena"] });
     }
 
     fireAndForget("logOliverEvent.template_sent", logOliverEvent("template_sent_admin", { phone, template, ok: result.ok }));
