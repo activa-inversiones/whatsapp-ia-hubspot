@@ -2348,6 +2348,44 @@ async function vision(buf, mime) {
   }
 }
 
+// [2026-07-13 IG/FB media parity] Visión GENERALISTA para adjuntos de IG/FB.
+// vision() de arriba está hiperespecializada en leer PLANILLAS/tablas de productos
+// (a propósito — WhatsApp la usa para fotos de cotizaciones): con una foto normal
+// (una ventana, un vano) responde "no hay tabla" → isVisionUnreadable → el cliente
+// recibía "[Imagen no legible]" (verificado en vivo 2026-07-14 03:35, prueba del dueño).
+// Esta variante describe CUALQUIER imagen en contexto ventanas, sin inventar datos.
+// NO TOCA: vision() sigue igual para WhatsApp/planillas.
+async function visionGeneral(buf, mime) {
+  try {
+    const b64 = buf.toString("base64");
+    const r = await openai.chat.completions.create({
+      model: process.env.AI_MODEL_VISION || "gpt-4o",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Sos el asistente de una fábrica de ventanas de PVC/termopanel. Un cliente envió esta imagen por chat.\n"
+                + "Describí en 2-4 frases qué muestra (¿una ventana existente? ¿un vano/pared? ¿un plano? ¿una planilla con medidas? ¿otra cosa?) y todo dato útil para cotizar: medidas visibles, cantidad de hojas, material aparente, estado.\n"
+                + "REGLAS: si hay medidas o números visibles, transcribilos TAL CUAL; si no se ven, NO los inventes (decí que no se aprecian). Si es una planilla/tabla de productos, listá cada fila con formato 'Recinto | Tipo | ANCHOxALTO | Cantidad | Color'. Sin texto extra antes ni después.",
+            },
+            {
+              type: "image_url",
+              image_url: { url: `data:${mime};base64,${b64}`, detail: "high" },
+            },
+          ],
+        },
+      ],
+      max_tokens: 1024,
+    });
+    return (r.choices?.[0]?.message?.content || "").trim();
+  } catch (e) {
+    logErr("VisionGeneral", e);
+    return "";
+  }
+}
+
 // [F9] timeout wrapper para pdfParse — evita CPU hang con PDFs maliciosos
 const PDF_PARSE_TIMEOUT_MS = 15000;
 
@@ -4350,7 +4388,9 @@ registerMultiChannelRoutes(app, {
     if (attachments && process.env.IG_FB_MEDIA_PARITY_ENABLED === "true") {
       try {
         const { processIncomingMedia } = await import("./services/igFbMediaBridge.js");
-        const media = await processIncomingMedia(channel, { attachments }, senderId, msgId, { stt, vision });
+        // visionGeneral (no vision): la vision() de planillas responde "no hay tabla" ante
+        // una foto normal → "[Imagen no legible]" falso. Verificado en vivo 2026-07-14 03:35.
+        const media = await processIncomingMedia(channel, { attachments }, senderId, msgId, { stt, vision: visionGeneral });
         if (media?.huboMedia && media.textoParaBrain) {
           brainText = media.textoParaBrain;
           logInfo("igfb.media", `${media.tipoMedia} resuelto para ${senderId}: ${brainText.substring(0, 80)}`);
