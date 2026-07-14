@@ -155,7 +155,12 @@ export async function anthropicPass1({ system, messages = [], tools = [], _clien
   const client = _client || getAnthropicClient();
   const resp = await client.messages.create({
     model: MODEL(),
-    max_tokens: 1800, // [2026-06-21] subido de 1000: 1000 truncaba el JSON del tool -> input={} -> loop/cotiza vacio
+    // [2026-07-14] 1800 -> 4096 (env OLIVER_PASS1_MAX_TOKENS): la planilla de 15 filas del 13-jul
+    // choco el tope 3 veces (out=1800 exacto) — pass1 emite ~15 tool_use de calcular_cotizacion en
+    // una pasada y el corte a mitad del JSON deja input={} -> cotizacion con filas PERDIDAS en
+    // silencio. Mismo fix ya probado en index.js:2120/2342 ("900/500 truncaba tablas de 18 filas").
+    // max_tokens es TECHO, no gasto: solo se paga lo generado. // [2026-06-21] subido de 1000.
+    max_tokens: Number(process.env.OLIVER_PASS1_MAX_TOKENS) > 0 ? Number(process.env.OLIVER_PASS1_MAX_TOKENS) : 4096,
     system: systemParam(system),
     tools: _toAnthropicTools(tools),
     messages: _toAnthropicMessages(messages),

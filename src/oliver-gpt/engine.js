@@ -136,7 +136,11 @@ async function openaiPass1({ system, messages = [], tools = [] }) {
     tool_choice: 'auto',
     parallel_tool_calls: false,
     temperature: 0.3,
-    max_tokens: 1000,   // [FIX 2026-06-19 COB-04] 500 truncaba el JSON de tool_call (PDF con varios items) → input={} silencioso → PDF no se generaba
+    // [2026-07-14] 1000 -> 4096 (env OLIVER_PASS1_MAX_TOKENS): mismo fix que engine-anthropic
+    // pass1 — este es el camino de RESPALDO (GPT) cuando se agotan los tokens de Anthropic;
+    // con planillas de 15+ filas el tope de 1000 truncaba peor que el de Claude.
+    // [FIX 2026-06-19 COB-04] 500 truncaba el JSON de tool_call → input={} silencioso.
+    max_tokens: Number(process.env.OLIVER_PASS1_MAX_TOKENS) > 0 ? Number(process.env.OLIVER_PASS1_MAX_TOKENS) : 4096,
   }), 'pass1');
   const choice1 = r.choices?.[0] || {};
   if (choice1.finish_reason === 'length') console.warn('[engine] pass1 truncado (max_tokens) — el JSON de tool_call puede venir incompleto');
