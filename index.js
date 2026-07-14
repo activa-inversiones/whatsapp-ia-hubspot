@@ -4333,16 +4333,38 @@ app.get("/health", async (_req, res) => {
 });
 // Multi-channel routes (Instagram DM + Facebook Messenger)
 registerMultiChannelRoutes(app, {
-  processMessage: async ({ channel, senderId, senderName, text, msgId, sendFn }) => {
+  processMessage: async ({ channel, senderId, senderName, text, msgId, sendFn, attachments }) => {
     // [2026-06-14] IG/FB ahora pasan por el CEREBRO de Oliver (mismo handleTurn que
     // WhatsApp) — cotiza CORRECTO vía priceAllEngine. Reemplaza al mini gpt-4o-mini
     // que solo saludaba y redirigía a WhatsApp (no cotizaba).
     //
+    // [2026-07-13 IG/FB media parity] Si el mensaje trae adjunto (audio/imagen) y el flag
+    // IG_FB_MEDIA_PARITY_ENABLED está ON, el bridge lo resuelve a texto REAL (descarga del
+    // CDN de Meta → Whisper stt() / vision() — las MISMAS funciones que ya usa WhatsApp,
+    // inyectadas para no crear ciclo ESM) ANTES de llegar al cerebro. Shape del payload
+    // VERIFICADO contra webhook real 2026-07-13 22:44 (log igfb.raw_attachment:
+    // [{"type":"audio","payload":{"url":...}}]). Fail-safe total: flag OFF, tipo no
+    // soportado, rate-limit diario, redelivery o CUALQUIER error → media queda null y
+    // text sigue siendo el placeholder de siempre ("[audio]"/"[image]") — byte-idéntico.
+    let brainText = text;
+    if (attachments && process.env.IG_FB_MEDIA_PARITY_ENABLED === "true") {
+      try {
+        const { processIncomingMedia } = await import("./services/igFbMediaBridge.js");
+        const media = await processIncomingMedia(channel, { attachments }, senderId, msgId, { stt, vision });
+        if (media?.huboMedia && media.textoParaBrain) {
+          brainText = media.textoParaBrain;
+          logInfo("igfb.media", `${media.tipoMedia} resuelto para ${senderId}: ${brainText.substring(0, 80)}`);
+        }
+      } catch (e) {
+        logErr("igfb.mediaBridge", e);
+      }
+    }
+
     // Lead entrante: lo registramos aquí (fire-and-forget) para visibilidad en el
     // dashboard; el cerebro maneja el resto de persistencia (pushConversationEvent)
     // y la escalación/lead comercial vía sus tools.
     try {
-      const payload = buildMultiChannelPayload(channel, senderId, senderName, text, "inbound", "customer");
+      const payload = buildMultiChannelPayload(channel, senderId, senderName, brainText, "inbound", "customer");
       pushLeadEvent(payload);
     } catch (e) {
       logErr("multiChannel.push", e);
@@ -4350,7 +4372,7 @@ registerMultiChannelRoutes(app, {
 
     // El cerebro es fail-safe: ante cualquier error responde un fallback amable y
     // nunca lanza. multiChannelHandler ya envió el 200 a Meta antes de llamar acá.
-    await handleChannelTurn({ channel, senderId, senderName, text, msgId, sendFn });
+    await handleChannelTurn({ channel, senderId, senderName, text: brainText, msgId, sendFn });
   },
   waSend,
   logInfo,
