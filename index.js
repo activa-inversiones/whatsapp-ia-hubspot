@@ -4385,6 +4385,11 @@ registerMultiChannelRoutes(app, {
     // soportado, rate-limit diario, redelivery o CUALQUIER error → media queda null y
     // text sigue siendo el placeholder de siempre ("[audio]"/"[image]") — byte-idéntico.
     let brainText = text;
+    // [2026-07-14 IG/FB media→inbox] Referencia del adjunto guardado en el MediaStore para que
+    // el persist del cerebro lleve message_type real + metadata.media_id y el inbox del cockpit
+    // pinte la foto/audio ORIGINAL (hoy solo se ve el texto de análisis). null = sin adjunto,
+    // flag OFF o guardado fallido → todo sigue byte-idéntico a hoy (best-effort, aditivo).
+    let mediaEntrante = null;
     if (attachments && process.env.IG_FB_MEDIA_PARITY_ENABLED === "true") {
       try {
         const { processIncomingMedia } = await import("./services/igFbMediaBridge.js");
@@ -4394,6 +4399,30 @@ registerMultiChannelRoutes(app, {
         if (media?.huboMedia && media.textoParaBrain) {
           brainText = media.textoParaBrain;
           logInfo("igfb.media", `${media.tipoMedia} resuelto para ${senderId}: ${brainText.substring(0, 80)}`);
+          // [2026-07-14 IG/FB media→inbox] Persistir el binario en el MediaStore v5.3
+          // (POST /api/v5/media/store → Postgres media_attachments), el MISMO mecanismo que
+          // WhatsApp (webhook.js). Fire-and-forget: saveMedia NUNCA lanza (retorna null si
+          // falla, mediaStore.js) y el análisis/respuesta del bot NO depende de esto.
+          // phone = senderId (IGSID/PSID) = external_id de la conversación que usa el inbox.
+          // NO se loggea la URL firmada del CDN de Meta (el buffer ya viene descargado).
+          if (media.buffer && media.buffer.length) {
+            const ext = media.mime && media.mime.includes("/")
+              ? media.mime.split("/")[1].split(";")[0].trim()
+              : (media.tipoMedia === "audio" ? "mp4" : "jpg");
+            const filename = `igfb_${channel}_${senderId}_${Date.now()}.${ext}`;
+            const guardado = saveMedia({
+              phone: senderId,
+              direction: "inbound",
+              mediaType: media.tipoMedia,
+              mimeType: media.mime || "",
+              filename,
+              buffer: media.buffer,
+              waMediaId: msgId || "",
+              transcription: media.tipoMedia === "audio" ? (media.transcripcion || "") : "",
+              aiDescription: media.tipoMedia === "image" ? (media.descripcion || "") : "",
+            }).catch(() => null);
+            mediaEntrante = { tipo: media.tipoMedia, mime: media.mime || "", filename, guardado };
+          }
         }
       } catch (e) {
         logErr("igfb.mediaBridge", e);
@@ -4412,7 +4441,9 @@ registerMultiChannelRoutes(app, {
 
     // El cerebro es fail-safe: ante cualquier error responde un fallback amable y
     // nunca lanza. multiChannelHandler ya envió el 200 a Meta antes de llamar acá.
-    await handleChannelTurn({ channel, senderId, senderName, text: brainText, msgId, sendFn });
+    // [2026-07-14 IG/FB media→inbox] mediaEntrante es campo OPCIONAL nuevo (null si no hubo
+    // adjunto) → cero impacto en el resto de llamadas/tests de handleChannelTurn.
+    await handleChannelTurn({ channel, senderId, senderName, text: brainText, msgId, sendFn, mediaEntrante });
   },
   waSend,
   logInfo,

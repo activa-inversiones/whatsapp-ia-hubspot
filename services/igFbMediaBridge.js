@@ -399,7 +399,10 @@ export async function describeImageBuffer(buffer, mime, visionFn) {
  *                           mismo webhook. Sin msgId no se puede deduplicar.
  * @param {{stt?:Function, vision?:Function}} [deps]  Funciones inyectadas
  *                           por index.js (stt/vision reales) — NUNCA importadas.
- * @returns {Promise<{textoParaBrain:string|null, huboMedia:boolean, tipoMedia:string|null, capped?:boolean, deduped?:boolean}|null>}
+ * @returns {Promise<{textoParaBrain:string|null, huboMedia:boolean, tipoMedia:string|null, capped?:boolean, deduped?:boolean, buffer?:Buffer, mime?:string, transcripcion?:string, descripcion?:string}|null>}
+ *   [2026-07-14 media→inbox] Con huboMedia:true vienen además buffer+mime (binario descargado)
+ *   y transcripcion (audio) o descripcion (imagen) — para que el caller lo persista en el
+ *   MediaStore y el inbox muestre el adjunto original (paridad con WhatsApp).
  *   null = flag OFF (o error inesperado) → el caller debe usar su placeholder/texto actual.
  *   objeto con huboMedia:false → tampoco hay texto nuevo (adjunto no soportado, sin url,
  *   descarga fallida, redelivery duplicada, o tope de rate-limit alcanzado) → el caller
@@ -453,7 +456,11 @@ export async function processIncomingMedia(channel, message, senderId, msgId, de
       const textoParaBrain = texto
         ? `${AUDIO_TURN_PREFIX}, transcripción]: ${texto}`
         : "[Audio no reconocido]";
-      return { textoParaBrain, huboMedia: true, tipoMedia };
+      // [2026-07-14 IG/FB media→inbox] Campos ADITIVOS (buffer/mime/transcripcion): el caller
+      // (index.js) los usa para guardar el binario en el MediaStore y que el inbox muestre el
+      // audio original (paridad con WhatsApp). Los callers existentes solo leen
+      // textoParaBrain/huboMedia/tipoMedia → cero impacto en ramas actuales.
+      return { textoParaBrain, huboMedia: true, tipoMedia, buffer: descargado.buffer, mime: descargado.mime, transcripcion: texto || "" };
     }
 
     // imagen
@@ -461,7 +468,10 @@ export async function processIncomingMedia(channel, message, senderId, msgId, de
     const textoParaBrain = isVisionUnreadable(descripcion)
       ? "[Imagen no legible]"
       : `[Cliente envió una imagen, análisis]: ${descripcion}`;
-    return { textoParaBrain, huboMedia: true, tipoMedia };
+    // [2026-07-14 IG/FB media→inbox] buffer/mime/descripcion ADITIVOS — misma razón que en audio.
+    // Se retorna el buffer aunque la imagen sea "no legible": el dueño igual necesita VER la foto
+    // original en el inbox para verificar la cubicación (ese es justamente el gap que cerramos).
+    return { textoParaBrain, huboMedia: true, tipoMedia, buffer: descargado.buffer, mime: descargado.mime, descripcion: descripcion || "" };
   } catch (e) {
     // Nunca lanzar: cualquier falla inesperada cae al comportamiento actual.
     console.error("[igFbMediaBridge] processIncomingMedia falló:", e && e.message ? e.message : e);
