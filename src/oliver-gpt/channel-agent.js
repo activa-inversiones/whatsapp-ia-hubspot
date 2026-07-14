@@ -135,6 +135,45 @@ async function safe(label, fn) {
 }
 
 /**
+ * [2026-07-14 IG/FB media→inbox] Resuelve message_type + metadata del evento inbound
+ * cuando el turno traía un adjunto IG/FB ya guardado (o guardándose) en el MediaStore.
+ * index.js lanza saveMedia fire-and-forget ANTES de llamar al cerebro y pasa acá la
+ * promesa → cuando el persist corre (post-cerebro, segundos después) el guardado casi
+ * siempre ya resolvió: costo ~0ms. El id devuelto por /api/v5/media/store viaja en
+ * metadata.media_id → fast-path del inbox (inbox-ui.js pinta <img>/<audio> directo,
+ * MISMO render que WhatsApp, sin depender de /media/resolve ni de ventanas de tiempo).
+ * Best-effort REAL: sin adjunto o guardado fallido → null → el evento sale message_type
+ * 'text' como siempre (evita burbujas "Cargando…"/"no vinculable" en el inbox).
+ * NUNCA lanza: cualquier falla degrada al comportamiento actual.
+ *
+ * @param {{tipo:string, mime?:string, filename?:string, guardado?:Promise}|null} mediaEntrante
+ * @returns {Promise<{message_type:string, metadata:object}|null>}
+ */
+async function resolveInboundMediaEvent(mediaEntrante) {
+  try {
+    if (!mediaEntrante || !mediaEntrante.tipo || !mediaEntrante.guardado) return null;
+    // saveMedia (mediaStore.js) nunca lanza y tiene timeout propio de 10s; el race de
+    // 12s es solo un cinturón extra para que el persist jamás quede colgado por esto.
+    const saved = await Promise.race([
+      Promise.resolve(mediaEntrante.guardado).catch(() => null),
+      new Promise((resolve) => setTimeout(resolve, 12000, null)),
+    ]);
+    const mediaId = saved && saved.media && saved.media.id;
+    if (!mediaId) return null;
+    return {
+      message_type: mediaEntrante.tipo, // 'image' | 'audio' (whitelist del bridge)
+      metadata: {
+        media_id: mediaId,
+        mime_type: mediaEntrante.mime || '',
+        filename: mediaEntrante.filename || '',
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * handleChannelTurn — procesa un turno de Instagram DM / Facebook Messenger
  * con el cerebro de Oliver.
  *
@@ -145,12 +184,16 @@ async function safe(label, fn) {
  * @param {string} args.text       - texto del mensaje
  * @param {string} [args.msgId]    - id del mensaje (dedupe)
  * @param {Function} args.sendFn   - (to, text) => envío atado al canal
+ * @param {object} [args.mediaEntrante] - [2026-07-14 media→inbox] OPCIONAL: {tipo, mime,
+ *                                   filename, guardado:Promise} del adjunto IG/FB guardado
+ *                                   en el MediaStore (ver resolveInboundMediaEvent). null =
+ *                                   turno sin media → comportamiento idéntico al actual.
  * @param {object} [deps]          - inyectables para tests (handleTurn, bridge,
  *                                   notifyHighValue, sendWhatsAppText, conv, seen)
  * @returns {Promise<{ ok:boolean, reply?:string, reason?:string }>}
  */
 export async function handleChannelTurn(
-  { channel, senderId, senderName = '', text = '', msgId = '', sendFn },
+  { channel, senderId, senderName = '', text = '', msgId = '', sendFn, mediaEntrante = null },
   deps = {}
 ) {
   const handleTurn      = deps.handleTurn      || realHandleTurn;
@@ -211,6 +254,9 @@ export async function handleChannelTurn(
       (effectiveControl.ai_paused === true ||
         (effectiveControl.operator_status && effectiveControl.operator_status !== 'ai'));
     if (aiPaused) {
+      // [2026-07-14 media→inbox] En takeover Marcelo atiende desde el inbox: es CUANDO MÁS
+      // necesita ver la foto/audio original del cliente. null si el turno no traía media.
+      const mediaEvt = await resolveInboundMediaEvent(mediaEntrante);
       await safe('control.persistInbound', () =>
         bridge.pushConversationEvent({
           channel,
@@ -218,9 +264,9 @@ export async function handleChannelTurn(
           direction: 'inbound',
           actor_type: 'customer',
           actor_name: senderName || 'Cliente',
-          message_type: 'text',
+          message_type: mediaEvt ? mediaEvt.message_type : 'text',
           body: text,
-          metadata: { source: 'oliver_gpt_channel', msg_id: msgId, ai_paused: true },
+          metadata: { source: 'oliver_gpt_channel', msg_id: msgId, ai_paused: true, ...(mediaEvt ? mediaEvt.metadata : {}) },
         })
       );
       log('info', 'control', `IA pausada (takeover) para ${convKey}; inbound persistido`);
@@ -276,10 +322,13 @@ export async function handleChannelTurn(
         (deps.sendEscalationTemplate || sendEscalationTemplate)(state.name || senderName, `[${channel}] cliente pide hablar con humano`));
       const msg = escalationMessage();
       await safe('escalate.send', () => sendFn(senderId, msg));
+      // [2026-07-14 media→inbox] Un AUDIO transcrito "quiero hablar con Marcelo" cae acá:
+      // la burbuja debe mostrar el audio original igual que en el persist principal.
+      const mediaEvtEsc = await resolveInboundMediaEvent(mediaEntrante);
       await safe('escalate.persistIn', () => bridge.pushConversationEvent({
         channel, external_id: senderId, direction: 'inbound', actor_type: 'customer',
-        actor_name: senderName || 'Cliente', message_type: 'text', body: text,
-        metadata: { source: 'oliver_gpt_channel', msg_id: msgId, escalation: true },
+        actor_name: senderName || 'Cliente', message_type: mediaEvtEsc ? mediaEvtEsc.message_type : 'text', body: text,
+        metadata: { source: 'oliver_gpt_channel', msg_id: msgId, escalation: true, ...(mediaEvtEsc ? mediaEvtEsc.metadata : {}) },
       }));
       await safe('escalate.persistOut', () => bridge.pushConversationEvent({
         channel, external_id: senderId, direction: 'outbound', actor_type: 'ai',
@@ -367,9 +416,21 @@ export async function handleChannelTurn(
           const lq = (state.last_quote && (Date.now() - (state.last_quote.at || 0)) < QUOTE_REUSE_MS)
             ? state.last_quote : null;
           if (lq && lq.quote_number && lq.escalated) {
-            log('info', 'generarPdf.escalated', `Entrega ya escalada para ${convKey} (${lq.quote_number}); sin reintentos`);
-            return { ok: true, quote_number: lq.quote_number, pdf_sent: false, escalated: true,
-              message: `Tu Propuesta Técnica Económica N° ${lq.quote_number} ya está lista y el Ing. Marcelo Cifuentes te la enviará personalmente por WhatsApp. 📲 +56 9 5729 6035` };
+            // [2026-07-14 auto-recuperación] El lock permanente dejaba al cliente SIN PDF para
+            // siempre aunque la CAUSA del fallo se arreglara (caso real HOY: META_PAGE_ACCESS_TOKEN
+            // vencido → renovado, y este guard cortaba antes de probar la entrega). Se permite UN
+            // reintento de ENTREGA por hora: MISMO folio (no quema correlativo), mensaje honesto,
+            // y si vuelve a fallar re-escala y el candado sigue — nada del incidente IG-LOOP
+            // (folios quemados + "ya te emití" en loop) puede repetirse con este cap.
+            const RETRY_COOLDOWN_MS = 60 * 60 * 1000; // 1h
+            const cooldownOk = (Date.now() - (lq.at || 0)) >= RETRY_COOLDOWN_MS;
+            if (!cooldownOk) {
+              log('info', 'generarPdf.escalated', `Entrega ya escalada para ${convKey} (${lq.quote_number}); sin reintentos`);
+              return { ok: true, quote_number: lq.quote_number, pdf_sent: false, escalated: true,
+                message: `Tu Propuesta Técnica Económica N° ${lq.quote_number} ya está lista y el Ing. Marcelo Cifuentes te la enviará personalmente por WhatsApp. 📲 +56 9 5729 6035` };
+            }
+            log('info', 'generarPdf.retry_post_escalation', `Cooldown 1h cumplido para ${convKey} (${lq.quote_number}); 1 reintento de entrega`);
+            // sigue al flujo normal: el folio se REUSA más abajo y los intentos se re-registran.
           }
 
           // Dedup por TELÉFONO real si lo hay (un lead = un folio aunque pase de IG a WhatsApp);
@@ -553,10 +614,13 @@ export async function handleChannelTurn(
       const replyMsg = (pdfRes && pdfRes.message) ||
         `Listo ✅ Te envié tu Propuesta Técnica Económica${pdfRes?.quote_number ? ` N° ${pdfRes.quote_number}` : ''} acá mismo (PDF).`;
       await safe('pdf.send', () => sendFn(senderId, replyMsg));
+      // [2026-07-14 media→inbox] Un AUDIO transcrito "sí" (confirmación de PDF) cae acá:
+      // paridad con el persist principal para no perder la burbuja del audio original.
+      const mediaEvtPdf = await resolveInboundMediaEvent(mediaEntrante);
       await safe('pdf.persistIn', () => bridge.pushConversationEvent({
         channel, external_id: senderId, direction: 'inbound', actor_type: 'customer',
-        actor_name: senderName || 'Cliente', message_type: 'text', body: text,
-        metadata: { source: 'oliver_gpt_channel', msg_id: msgId, pdf_confirm: true },
+        actor_name: senderName || 'Cliente', message_type: mediaEvtPdf ? mediaEvtPdf.message_type : 'text', body: text,
+        metadata: { source: 'oliver_gpt_channel', msg_id: msgId, pdf_confirm: true, ...(mediaEvtPdf ? mediaEvtPdf.metadata : {}) },
       }));
       await safe('pdf.persistOut', () => bridge.pushConversationEvent({
         channel, external_id: senderId, direction: 'outbound', actor_type: 'ai',
@@ -648,6 +712,10 @@ export async function handleChannelTurn(
     }
 
     // ── Persistencia (inbound + outbound) ───────────────────────────────
+    // [2026-07-14 media→inbox] Si el turno traía adjunto IG/FB guardado en el MediaStore,
+    // el inbound sale con message_type real + metadata.media_id → el inbox pinta la
+    // foto/audio original (fast-path, igual que WhatsApp). Sin media → 'text' como siempre.
+    const mediaEvt = await resolveInboundMediaEvent(mediaEntrante);
     await safe('persist.inbound', () =>
       bridge.pushConversationEvent({
         channel,
@@ -656,9 +724,9 @@ export async function handleChannelTurn(
         direction: 'inbound',
         actor_type: 'customer',
         actor_name: 'Cliente',
-        message_type: 'text',
+        message_type: mediaEvt ? mediaEvt.message_type : 'text',
         body: text,
-        metadata: { source: 'oliver_gpt_channel', msg_id: msgId },
+        metadata: { source: 'oliver_gpt_channel', msg_id: msgId, ...(mediaEvt ? mediaEvt.metadata : {}) },
       })
     );
     if (reply) {
