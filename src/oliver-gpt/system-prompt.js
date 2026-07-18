@@ -859,6 +859,23 @@ export function buildSessionContext(state = {}) {
   ];
   if (consolidacion) lineas.push(`Resumen consolidado: ${consolidacion}`);
 
+  // [CTWA-SALUDO 2026-07-18] El cliente llegó desde un anuncio Meta (Ronda 1): abrir con el
+  // saludo aprobado del ángulo. El flag es one-shot (webhook lo borra tras el turno).
+  // [tribunal] Cláusula de precedencia EXPLÍCITA: los textos aprobados mencionan a Marcelo
+  // y dicen "Activa Inversiones", lo que choca con las reglas ⛔ de identidad del system
+  // (que van en rol system y le ganarían al user) — sin esta cláusula el LLM "corregiría"
+  // el saludo y rompería el EXACTAMENTE que es el objetivo del feature.
+  const ctwaSaludo = s.ctwa_saludo_pending || '';
+  if (ctwaSaludo) {
+    lineas.push(
+      'EL CLIENTE LLEGÓ DESDE UN ANUNCIO (este es su primer mensaje). Abre tu respuesta EXACTAMENTE',
+      '  con este saludo, copiado TAL CUAL: fue aprobado por el dueño y tiene PRIORIDAD sobre las',
+      '  reglas de presentación/saludo de tu prompt SOLO para esta apertura (incluida la mención a',
+      '  Marcelo y la forma del nombre de la empresa). Después del saludo, responde con normalidad',
+      `  a lo que el cliente escribió: ${ctwaSaludo}`,
+    );
+  }
+
   return lineas.join('\n');
 }
 

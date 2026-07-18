@@ -62,6 +62,7 @@ import {
   resetIfInactive,
 } from './session-store.js';
 import { parseReferral, buildCtwaLeadPayload } from '../../services/ctwaReferral.js'; // [F3b] CTWA
+import { saludoForReferral } from '../../services/ctwaSaludos.js'; // [2026-07-18] saludo por ángulo Ronda 1
 import { parseLandingRef, buildLandingLeadPayload } from '../../services/landingRefParser.js'; // [2026-07-02] atribución orgánica landing→WA
 import { isVisionUnreadable } from '../../services/oliverVision.js'; // [F3b] detector imagen ilegible
 import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from './escalation.js'; // [2026-06-18] escalación determinista compartida
@@ -592,6 +593,10 @@ export async function handleWebhook(req, res, deps = {}) {
     // Solo en el primer mensaje con referral de la sesión (flag ctwaCaptured,
     // ya hidratado en state). Fire-and-forget vía safe(): no bloquea ni tumba.
     // Espeja index.js ~L4901-4913 usando el bridge probado (pushLeadEvent).
+    // [tribunal 2026-07-18] El saludo por ángulo vive en variable LOCAL hasta justo
+    // antes de handleTurn: así ningún early-return determinista (escalación, img-loop,
+    // PDF) puede persistir el flag y resucitar el saludo en un turno posterior.
+    let _ctwaSaludoTurn = null;
     try {
       const _rawMsg = rawMessage(req.body);
       if (_rawMsg) {
@@ -607,6 +612,20 @@ export async function handleWebhook(req, res, deps = {}) {
           safe('ctwa.ingest', () => _bridge.pushLeadEvent(_payload));
           log('info', 'ctwa_attribution',
             `Lead CTWA capturado tel=${from} ad=${_ref.adId || '?'} clid=${_ref.ctwaClid ? 'sí' : 'no'}`);
+          // [2026-07-18] Saludo por ángulo del anuncio (Ronda 1): Oliver abre coherente
+          // con el anuncio que el cliente clickeó (anuncio→saludo→cotización).
+          // Sin match/killswitch → saludo normal, cero cambio.
+          // [tribunal] SOLO conversación NUEVA (history vacío): un cliente antiguo que
+          // clickea el anuncio (retargeting) NO recibe el saludo frío a mitad de hilo
+          // (violaría la ⛔ ANTI-RE-SALUDO). La atribución de arriba se captura igual.
+          const _sal = (deps.saludoForReferral || saludoForReferral)(_ref);
+          if (_sal) {
+            state.ctwa_angle = _sal.angle; // persiste siempre: análisis/coherencia futura
+            if (history.length === 0) {
+              _ctwaSaludoTurn = _sal.saludo; // local: entra al state recién antes de handleTurn
+              log('info', 'ctwa_saludo', `Saludo por ángulo '${_sal.angle}' para ${from}`);
+            }
+          }
         }
       }
     } catch (e) {
@@ -801,12 +820,15 @@ export async function handleWebhook(req, res, deps = {}) {
           )
         ),
 
-      // persistSession → PUT real a /internal/wa-sessions/{from} (F2).
-      // fire-and-forget: no bloquea el turno. Si falla → se traga el error.
-      persistSession: (sessState) => {
-        persistSessionFn(from, sessState || { history, state }, deps);
-        return Promise.resolve();
-      },
+      // persistSession → no-op DELIBERADO [tribunal 2026-07-18]. agent.js llama
+      // toolCtx.persistSession(nextState) con el STATE PLANO (sin {history,state}):
+      // persistSessionFn leía undefined/undefined y hacía PUT {history:[],data:{}} →
+      // BORRABA la sesión remota a mitad de turno; si el persist final (9) fallaba o
+      // Railway redeployaba en esa ventana, amnesia total del cliente. El webhook YA
+      // persiste el estado completo al final de cada camino (precedente idéntico:
+      // channel-agent.js). NO "arreglar" el shape acá: persistiría ctwa_saludo_pending
+      // a mitad de turno (antes del delete one-shot) y reviviría el saludo.
+      persistSession: () => Promise.resolve(),
 
       // sendMedia → envío REAL de catálogos/fotos/videos por WhatsApp.
       // Resuelve la catalog_key a URL desde env vars y despacha con el helper correcto.
@@ -1288,6 +1310,11 @@ export async function handleWebhook(req, res, deps = {}) {
 
     // ── Llamada al cerebro probado ──────────────────────────────────────
     // Si handleTurn lanza, lo captura el try externo → fail-safe (200 ya enviado).
+    // [CTWA-SALUDO tribunal] recién AQUÍ el saludo entra al state: todas las salidas
+    // deterministas ya pasaron, así que jamás se persiste fuera de este turno. Si el
+    // LLM devuelve reply vacío (fallback de (7a)), el saludo se PIERDE — deliberado:
+    // preferimos perderlo a un "primer mensaje" tardío; la alerta respuesta_vacia avisa.
+    if (_ctwaSaludoTurn) state.ctwa_saludo_pending = _ctwaSaludoTurn;
     const turn = await handleTurn({ history, userText, state, toolCtx });
     let reply = turn?.reply || '';
     const newHistory = Array.isArray(turn?.history) ? turn.history : history;
@@ -1296,6 +1323,8 @@ export async function handleWebhook(req, res, deps = {}) {
     // [PDF-RACE 2026-07-01] sin este merge se perdería el last_quote (folio de la sesión, estado
     // real de entrega) que generarPdf escribió DURANTE este turno vía toolCalls del LLM.
     if (state.last_quote) newState.last_quote = state.last_quote;
+    // [CTWA-SALUDO 2026-07-18] one-shot: ya viajó en el contexto de ESTE turno → jamás repetir.
+    if (newState.ctwa_saludo_pending) delete newState.ctwa_saludo_pending;
 
     // [FIX 2026-06-19 PDF-01] capturar la cotización del turno → pending_quote, para poder entregar
     // el PDF determinista si el cliente confirma en el próximo turno (bloque de arriba).
