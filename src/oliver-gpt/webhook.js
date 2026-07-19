@@ -398,6 +398,21 @@ async function safe(label, fn) {
   }
 }
 
+const ATTRIBUTION_STATE_KEYS = [
+  'ctwa_clid', 'ad_id', 'gclid', 'fbclid', 'ttclid',
+  'landing_lead_id', 'landingRefCaptured', 'ctwaCaptured',
+];
+
+// Copia solo valores presentes: un fetch parcial nunca borra atribucion ya persistida.
+function copyAttributionState(target, source) {
+  if (!target || typeof target !== 'object' || !source || typeof source !== 'object') return target;
+  for (const key of ATTRIBUTION_STATE_KEYS) {
+    const value = source[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') target[key] = value;
+  }
+  return target;
+}
+
 // Extrae la primera cotización calculada de los toolCalls del turno (si la hay).
 function extractQuote(toolCalls = []) {
   for (const tc of toolCalls) {
@@ -587,7 +602,16 @@ export async function handleWebhook(req, res, deps = {}) {
     const rawState  = safeCache.state && typeof safeCache.state === 'object' ? safeCache.state : {};
     // Reset por inactividad: limpia lockedData si >7 días sin actividad.
     const baseState  = resetIfInactive({ ...rawState, lastMessageAt: rawState.lastMessageAt || 0 });
-    const state = { ...baseState, telefono: from, fecha: new Date().toISOString() };
+    const state = {
+      ...baseState,
+      telefono: from,
+      fecha: new Date().toISOString(),
+      ctwa_clid: baseState.ctwa_clid || null,
+      ad_id: baseState.ad_id || null,
+      gclid: baseState.gclid || null,
+      fbclid: baseState.fbclid || null,
+      ttclid: baseState.ttclid || null,
+    };
 
     // ── (4b) CTWA — Captura atribución Meta Ads (Click-to-WhatsApp). ────────
     // Solo en el primer mensaje con referral de la sesión (flag ctwaCaptured,
@@ -636,7 +660,9 @@ export async function handleWebhook(req, res, deps = {}) {
     // [2026-07-02] El espejo del bloque CTWA de arriba, para SEO: las landings YA agregan el tag
     // al link de WhatsApp (injectRef v5.1.0) pero este tramo nunca se codeó → 0 leads orgánicos
     // atribuibles en toda la BD (auditoría). El tag se QUITA del texto ANTES de armar userText:
-    // ni el cliente, ni el operador, ni el LLM lo ven jamás. Fire-and-forget: nunca bloquea.
+    // ni el cliente, ni el operador, ni el LLM lo ven jamás. El GET se comparte con los
+    // consumidores de atribución; los POST auxiliares siguen fire-and-forget y fail-safe.
+    let landingAttributionReady = Promise.resolve();
     try {
       if (inbound?.text && !state.landingRefCaptured) {
         const _lref = (deps.parseLandingRef || parseLandingRef)(inbound.text);
@@ -647,7 +673,7 @@ export async function handleWebhook(req, res, deps = {}) {
           const _bridge = deps.bridge || realBridge;
           const _cxmBase = (process.env.UNIFIED_CXM_BASE_URL || 'https://unified-cxm-ads-flow-production.up.railway.app').replace(/\/$/, '');
           const _apiKey = process.env.DASHBOARD_API_KEY || process.env.UNIFIED_CXM_DASHBOARD_API_KEY || '';
-          safe('landing_ref.ingest', async () => {
+          landingAttributionReady = safe('landing_ref.context', async () => {
             // 1) contexto de la landing (slug/servicio/comuna) desde el collector del CXM
             let ctx = { lead_id: _lref.leadId };
             if (_apiKey) {
@@ -658,25 +684,28 @@ export async function handleWebhook(req, res, deps = {}) {
                 if (r.ok) { const j = await r.json(); if (j?.lead || j?.ok) ctx = { ...ctx, ...(j.lead || j) }; }
               } catch (e) { log('error', 'landing_ref.fetch', e); }
             }
-            // 2) evento quote_started en landing_events (mismo collector público del beacon):
-            //    "el lead ESCRIBIÓ a Oliver desde esta landing" — cierra leads_count por slug.
-            try {
-              await fetch(`${_cxmBase}/api/lead-event`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  lead_id: _lref.leadId, event_name: 'quote_started',
-                  event_id: `oliver_wa_${_lref.leadId}`,
-                  landing_slug: ctx.landing_slug || null,
-                  landing_servicio: ctx.service || ctx.landing_servicio || null,
-                  landing_comuna: ctx.comuna || ctx.landing_comuna || null,
-                }),
-                signal: AbortSignal.timeout(4000),
-              });
-            } catch (e) { log('error', 'landing_ref.event', e); }
-            // 3) lead en sales-os con source=landing_organic (mismo bridge probado del CTWA)
-            await _bridge.pushLeadEvent(
-              (deps.buildLandingLeadPayload || buildLandingLeadPayload)(from, ctx, { name: state.name || '' })
-            );
+            copyAttributionState(state, ctx);
+            safe('landing_ref.ingest', async () => {
+              // 2) evento quote_started en landing_events (mismo collector público del beacon):
+              //    "el lead ESCRIBIÓ a Oliver desde esta landing" — cierra leads_count por slug.
+              try {
+                await fetch(`${_cxmBase}/api/lead-event`, {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    lead_id: _lref.leadId, event_name: 'quote_started',
+                    event_id: `oliver_wa_${_lref.leadId}`,
+                    landing_slug: ctx.landing_slug || null,
+                    landing_servicio: ctx.service || ctx.landing_servicio || null,
+                    landing_comuna: ctx.comuna || ctx.landing_comuna || null,
+                  }),
+                  signal: AbortSignal.timeout(4000),
+                });
+              } catch (e) { log('error', 'landing_ref.event', e); }
+              // 3) lead en sales-os con source=landing_organic (mismo bridge probado del CTWA)
+              await _bridge.pushLeadEvent(
+                (deps.buildLandingLeadPayload || buildLandingLeadPayload)(from, ctx, { name: state.name || '' })
+              );
+            });
           });
           log('info', 'landing_ref_attribution', `Lead ORGÁNICO capturado tel=${from} lead_id=${_lref.leadId}`);
         }
@@ -687,7 +716,15 @@ export async function handleWebhook(req, res, deps = {}) {
 
     // ── (5) MEDIA → userText útil (vision / STT). Resuelve la ceguera V2. ─
     const { userText, mediaResolved } = await resolveUserText(inbound, req.body, deps);
-    if (!userText) return;
+    if (!userText) {
+      await landingAttributionReady;
+      if (state.landingRefCaptured) {
+        const attributionOnly = { history, state: { ...state, lastMessageAt: Date.now() } };
+        conv.set(from, attributionOnly);
+        persistSessionFn(from, attributionOnly, deps);
+      }
+      return;
+    }
 
     // ── (5a) [FIX 2026-06-19] Comando RESET — paridad con IG/FB (channel-agent.js). Limpia la
     //    sesión (cache + Postgres) → la próxima conversación arranca limpia, SIN re-saludo heredado.
@@ -746,6 +783,7 @@ export async function handleWebhook(req, res, deps = {}) {
       // [escéptico L2 — BLOQUEANTE] conv.set es OBLIGATORIO: el cache caliente gana sobre Postgres en el
       // próximo webhook — sin esto la racha se congelaba en 2 y se repetía el mensaje en cada foto
       // (el MISMO síntoma que este bloque arregla). + lastMessageAt como en el guardado normal.
+      await landingAttributionReady;
       state.lastMessageAt = Date.now();
       conv.set(from, { history, state });
       persistSessionFn(from, { history, state }, deps);
@@ -777,6 +815,7 @@ export async function handleWebhook(req, res, deps = {}) {
         actor_name: 'Oliver', message_type: 'text', body: escMsg,
         metadata: { source: 'oliver_gpt_webhook', escalation: true },
       }));
+      await landingAttributionReady;
       const escHist = [...history, { role: 'user', content: userText }, { role: 'assistant', content: escMsg }];
       const escStore = { history: escHist.length > MAX_HISTORY ? escHist.slice(-MAX_HISTORY) : escHist,
                          state: { ...state, lastMessageAt: Date.now() } };
@@ -792,8 +831,9 @@ export async function handleWebhook(req, res, deps = {}) {
 
       // saveLead → pushLeadEvent (persistencia real del lead).
       saveLead: (leadState = {}) =>
-        safe('saveLead', () =>
-          bridge.pushLeadEvent({
+        safe('saveLead', async () => {
+          await landingAttributionReady;
+          return bridge.pushLeadEvent({
             phone: from,
             channel: 'whatsapp',
             name: leadState.name || state.name || '',
@@ -801,9 +841,15 @@ export async function handleWebhook(req, res, deps = {}) {
             stage: leadState.stageKey || 'oliver_gpt',
             items: leadState.items || [],
             value: leadState.grand_total || null,
+            ctwa_clid: leadState.ctwa_clid || state.ctwa_clid || null,
+            ad_id: leadState.ad_id || state.ad_id || null,
+            gclid: leadState.gclid || state.gclid || null,
+            fbclid: leadState.fbclid || state.fbclid || null,
+            ttclid: leadState.ttclid || state.ttclid || null,
+            landing_ref: leadState.landing_ref || leadState.landing_lead_id || state.landing_lead_id || null,
             metadata: { source: 'oliver_gpt' },
-          })
-        ),
+          });
+        }),
 
       // notifyMarcelo → escalación REAL (highValueNotifier a ESCALATION_PHONE).
       // highValueNotifier.notifyHighValue(waSendFn, customerPhone, session, reason).
@@ -1176,6 +1222,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // La atribución se basó en el click_id capturado en F3b (state.ctwa_clid / gclid / ttclid).
           // Se llama bridge.pushQuoteEvent con status 'sent'; el server.js (sales-os) llama
           // fireConversion → CXM /api/conversions/track con el canal correcto.
+          await landingAttributionReady;
           safe('generarPdf.conversion', () =>
             bridge.pushQuoteEvent({
               phone:           clientPhone,
@@ -1191,6 +1238,8 @@ export async function handleWebhook(req, res, deps = {}) {
               gclid:     state.gclid     || null,
               ttclid:    state.ttclid    || null,
               ctwa_clid: state.ctwa_clid || null,
+              ad_id:     state.ad_id     || null,
+              landing_ref: state.landing_lead_id || null,
               // [2026-07-11 FIX lead_id NULL] sin este campo, quoteService.upsertQuote (sales-os)
               // no puede resolver lead_id → JOIN quotes→leads roto (auditoría BD viva confirmada).
               // Réplica de buildLeadPayload (index.js, ruta legacy) con los datos que el flujo
@@ -1217,11 +1266,15 @@ export async function handleWebhook(req, res, deps = {}) {
                 gclid:     state.gclid     || null,
                 ttclid:    state.ttclid    || null,
                 ctwa_clid: state.ctwa_clid || null,
+                ad_id:     state.ad_id     || null,
+                landing_ref: state.landing_lead_id || null,
               },
               payload: {
                 comuna:   clientComuna,
                 // Click ids — anti-cross-inject: solo el canal del lead.
                 ctwa_clid: state.ctwa_clid || null,
+                ad_id:     state.ad_id     || null,
+                landing_ref: state.landing_lead_id || null,
                 fbclid:    state.fbclid    || null,
                 gclid:     state.gclid     || null,
                 ttclid:    state.ttclid    || null,
@@ -1300,6 +1353,7 @@ export async function handleWebhook(req, res, deps = {}) {
         metadata: { source: 'oliver_gpt_webhook', pdf_deterministic: true, quote_number: pdfRes?.quote_number },
       }));
       const histPdf = [...history, { role: 'user', content: userText }, { role: 'assistant', content: replyMsg }];
+      await landingAttributionReady;
       const toStorePdf = { history: histPdf.length > MAX_HISTORY ? histPdf.slice(-MAX_HISTORY) : histPdf,
                            state: { ...state, pending_quote: null, lastMessageAt: Date.now() } };
       conv.set(from, toStorePdf);
@@ -1320,6 +1374,7 @@ export async function handleWebhook(req, res, deps = {}) {
     const newHistory = Array.isArray(turn?.history) ? turn.history : history;
     const newState = turn?.state && typeof turn.state === 'object' ? turn.state : state;
     const toolCalls = Array.isArray(turn?.toolCalls) ? turn.toolCalls : [];
+    copyAttributionState(newState, state);
     // [PDF-RACE 2026-07-01] sin este merge se perdería el last_quote (folio de la sesión, estado
     // real de entrega) que generarPdf escribió DURANTE este turno vía toolCalls del LLM.
     if (state.last_quote) newState.last_quote = state.last_quote;
@@ -1447,6 +1502,8 @@ export async function handleWebhook(req, res, deps = {}) {
     // Cotización en el turno → pushQuoteEvent.
     const quote = extractQuote(toolCalls);
     if (quote) {
+      await landingAttributionReady;
+      copyAttributionState(newState, state);
       await safe('persist.quote', () =>
         bridge.pushQuoteEvent({
           phone: from,
@@ -1455,6 +1512,12 @@ export async function handleWebhook(req, res, deps = {}) {
           amount_total: quote.total || quote.grand_total || null,
           currency: 'CLP',
           status: 'draft',
+          fbclid:    newState.fbclid    || null,
+          gclid:     newState.gclid     || null,
+          ttclid:    newState.ttclid    || null,
+          ctwa_clid: newState.ctwa_clid || null,
+          ad_id:     newState.ad_id     || null,
+          landing_ref: newState.landing_lead_id || null,
           // [2026-07-11 FIX lead_id NULL] sin este campo, quoteService.upsertQuote (sales-os)
           // no puede resolver lead_id → JOIN quotes→leads roto (auditoría BD viva confirmada).
           // Réplica de buildLeadPayload con los datos que este punto del flujo GPT v2 tiene a
@@ -1479,8 +1542,19 @@ export async function handleWebhook(req, res, deps = {}) {
             gclid:     newState.gclid     || null,
             ttclid:    newState.ttclid    || null,
             ctwa_clid: newState.ctwa_clid || null,
+            ad_id:     newState.ad_id     || null,
+            landing_ref: newState.landing_lead_id || null,
           },
-          payload: { comuna: newState.comuna || '', quote },
+          payload: {
+            comuna: newState.comuna || '',
+            quote,
+            ctwa_clid: newState.ctwa_clid || null,
+            ad_id: newState.ad_id || null,
+            landing_ref: newState.landing_lead_id || null,
+            fbclid: newState.fbclid || null,
+            gclid: newState.gclid || null,
+            ttclid: newState.ttclid || null,
+          },
         })
       );
     }
@@ -1497,6 +1571,8 @@ export async function handleWebhook(req, res, deps = {}) {
     }
 
     // ── (9) Guardar el cache actualizado + persistir en Postgres ─────────
+    await landingAttributionReady;
+    copyAttributionState(newState, state);
     const trimmed =
       newHistory.length > MAX_HISTORY ? newHistory.slice(-MAX_HISTORY) : newHistory;
     const sessionToSave = {

@@ -5234,7 +5234,7 @@ app.post("/webhook", async (req, res) => {
         ses.ctwaCaptured = true;
         ses.data.ctwa_clid = _ref.ctwaClid || null;
         ses.data.ad_id = _ref.adId || null;
-        fireAndForget("ctwa.ingest", ingestCtwaLead(buildCtwaLeadPayload(waId, _ref, { name: ses.data?.name || "" })));
+        fireAndForget("ctwa.ingest", ingestCtwaLead(buildCtwaLeadPayload(normPhone(waId), _ref, { name: ses.data?.name || "" })));
         logInfo("ctwa_attribution", `Lead CTWA capturado tel=${waId} ad=${_ref.adId || "?"} clid=${_ref.ctwaClid ? "sí" : "no"}`);
       }
     } catch (e) { logErr("ctwa.capture", e); }

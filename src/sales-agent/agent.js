@@ -13,6 +13,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { buildSystemBlocks, buildSessionContext } from "./system-prompt.js";
 import { TOOL_DEFS, runTool } from "./tools.js";
 import { parseInbound, sendWhatsAppText } from "./whatsapp-adapter.js";
+import { parseReferral } from "../../services/ctwaReferral.js";
 
 const MODEL_ID = process.env.OLIVER_MODEL || "claude-haiku-4-5";
 const MAX_TOKENS = 1024; // respuestas de WhatsApp son cortas
@@ -113,6 +114,20 @@ const CONV_HISTORY = new Map(); // Map<from(string), history[]>
 // razonable para una conversación de ventas corta.
 const MAX_HISTORY_TURNS = 20;
 
+export function referralStateFromBody(body) {
+  try {
+    const message = body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0] || null;
+    const referral = parseReferral(message);
+    if (!referral.isCtwaAd) return { ctwa_clid: null, ad_id: null };
+    return {
+      ctwa_clid: referral.ctwaClid || null,
+      ad_id: referral.adId || null,
+    };
+  } catch {
+    return { ctwa_clid: null, ad_id: null };
+  }
+}
+
 // ── Post-filtro determinista anti-voseo (defensivo) ─────────────────────────
 // Red de seguridad por si el modelo se escapa al voseo argentino pese al system
 // prompt. Se aplica al reply ANTES de enviarlo por WhatsApp.
@@ -173,6 +188,7 @@ export async function handleWebhook(req, res) {
     const state = {
       telefono: from,
       fecha: new Date().toISOString(),
+      ...referralStateFromBody(req.body),
     };
 
     // saveLead / notifyMarcelo se dejan sin setear → tools.js usa stubs seguros.

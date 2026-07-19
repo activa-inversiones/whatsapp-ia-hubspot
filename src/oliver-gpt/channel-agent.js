@@ -134,6 +134,20 @@ async function safe(label, fn) {
   }
 }
 
+const ATTRIBUTION_STATE_KEYS = [
+  'ctwa_clid', 'ad_id', 'gclid', 'fbclid', 'ttclid',
+  'landing_lead_id', 'landingRefCaptured', 'ctwaCaptured',
+];
+
+function copyAttributionState(target, source) {
+  if (!target || typeof target !== 'object' || !source || typeof source !== 'object') return target;
+  for (const key of ATTRIBUTION_STATE_KEYS) {
+    const value = source[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') target[key] = value;
+  }
+  return target;
+}
+
 /**
  * [2026-07-14 IG/FB media→inbox] Resuelve message_type + metadata del evento inbound
  * cuando el turno traía un adjunto IG/FB ya guardado (o guardándose) en el MediaStore.
@@ -307,6 +321,11 @@ export async function handleChannelTurn(
       canal: channel,               // hint de canal para el cerebro
       name: baseState.name || senderName || '',
       fecha: new Date().toISOString(),
+      ctwa_clid: baseState.ctwa_clid || null,
+      ad_id: baseState.ad_id || null,
+      gclid: baseState.gclid || null,
+      fbclid: baseState.fbclid || null,
+      ttclid: baseState.ttclid || null,
     };
 
     // ── ESCALACIÓN DETERMINISTA (crítica, NO depende del LLM) ────────────
@@ -360,6 +379,12 @@ export async function handleChannelTurn(
             stage: leadState.stageKey || 'oliver_gpt',
             items: leadState.items || [],
             value: leadState.grand_total || null,
+            ctwa_clid: leadState.ctwa_clid || state.ctwa_clid || null,
+            ad_id: leadState.ad_id || state.ad_id || null,
+            gclid: leadState.gclid || state.gclid || null,
+            fbclid: leadState.fbclid || state.fbclid || null,
+            ttclid: leadState.ttclid || state.ttclid || null,
+            landing_ref: leadState.landing_ref || leadState.landing_lead_id || state.landing_lead_id || null,
             metadata: { source: 'oliver_gpt_channel', channel },
           })
         ),
@@ -547,6 +572,7 @@ export async function handleChannelTurn(
               amount_total: grandTotal, currency: 'CLP', status: 'sent', quote_number: quoteNumber,
               fbclid: state.fbclid || null, gclid: state.gclid || null,
               ttclid: state.ttclid || null, ctwa_clid: state.ctwa_clid || null,
+              ad_id: state.ad_id || null, landing_ref: state.landing_lead_id || null,
               // [2026-07-11 FIX lead_id NULL] sin este campo, quoteService.upsertQuote (sales-os)
               // no puede resolver lead_id → JOIN quotes→leads roto (auditoría BD viva confirmada).
               // Réplica de buildLeadPayload (index.js, ruta legacy WhatsApp) con los datos que
@@ -571,8 +597,10 @@ export async function handleChannelTurn(
                 external_id: senderId || null,
                 fbclid: state.fbclid || null, gclid: state.gclid || null,
                 ttclid: state.ttclid || null, ctwa_clid: state.ctwa_clid || null,
+                ad_id: state.ad_id || null, landing_ref: state.landing_lead_id || null,
               },
               payload: { comuna: clientComuna, ctwa_clid: state.ctwa_clid || null,
+                ad_id: state.ad_id || null, landing_ref: state.landing_lead_id || null,
                 fbclid: state.fbclid || null, gclid: state.gclid || null, ttclid: state.ttclid || null },
             })
           );
@@ -648,6 +676,7 @@ export async function handleChannelTurn(
     const newHistory = Array.isArray(turn?.history) ? turn.history : history;
     const newState = turn?.state && typeof turn.state === 'object' ? turn.state : state;
     const toolCalls = Array.isArray(turn?.toolCalls) ? turn.toolCalls : [];
+    copyAttributionState(newState, state);
     // [IG-LOOP 2026-07-01] el cerebro devuelve su propio state: sin este merge se perdería el
     // last_quote que generarPdf escribió DURANTE este turno (folio/reintentos/escalado persistente).
     if (state.last_quote) newState.last_quote = state.last_quote;
