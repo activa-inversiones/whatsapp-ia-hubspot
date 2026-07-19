@@ -11,6 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { mapAperturaToEngine, priceAllEngine } from "./enginePricer.js";
+import { MENSAJE_PRODUCTO_FUERA_DE_ALCANCE } from "./productoFueraDeAlcance.js";
 
 const APERTURAS_ENGINE = new Set([
   "CORREDERA",
@@ -33,6 +34,13 @@ test("mapAperturaToEngine: desconocido → CORREDERA (default)", () => {
   assert.equal(mapAperturaToEngine("algo raro"), "CORREDERA");
   assert.equal(mapAperturaToEngine(""), "CORREDERA");
   assert.equal(mapAperturaToEngine(undefined), "CORREDERA");
+});
+
+test("mapAperturaToEngine: PUERTA no cae silenciosamente en CORREDERA", () => {
+  assert.throws(
+    () => mapAperturaToEngine("puerta de patio"),
+    /producto_fuera_de_alcance:puerta/i,
+  );
 });
 
 test("mapAperturaToEngine: abatible → BATIENTE, fijo → FIJA, oscilo → OSCILOBATIENTE", () => {
@@ -81,6 +89,35 @@ test("mapAperturaToEngine: NUNCA devuelve TERMOPANEL y siempre es apertura váli
 // ── (b) GOLDEN EN VIVO ───────────────────────────────────────────
 // 10 × ventana proyectante 1m² (1000x1000) nogal, comuna Temuco.
 // Referencia PDF real: ~3.3M CLP con IVA.
+test("priceAllEngine: PUERTA escala sin llamar al Engine ni entregar precio", async () => {
+  const fetchOriginal = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error("el Engine no debe llamarse para una puerta");
+  };
+
+  const d = {
+    items: [{ product: "puerta de patio", measures: "900x2100mm", qty: 1 }],
+    comuna: "Temuco",
+  };
+
+  try {
+    const res = await priceAllEngine(d);
+    assert.equal(fetchCalls, 0);
+    assert.equal(res.ok, false);
+    assert.equal(res.escalate, true);
+    assert.equal(res.reason, "producto_fuera_de_alcance:puerta");
+    assert.equal(res.category, "puerta");
+    assert.equal(res.customer_message, MENSAJE_PRODUCTO_FUERA_DE_ALCANCE);
+    assert.equal(res.total, null);
+    assert.equal(d.items[0].unit_price, undefined);
+    assert.equal(d.items[0].price_warning, MENSAJE_PRODUCTO_FUERA_DE_ALCANCE);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
+
 test("GOLDEN EN VIVO: priceAllEngine 10× proyectante 1m² nogal Temuco → ok, total>0", async () => {
   const d = {
     items: [

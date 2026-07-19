@@ -16,6 +16,7 @@
 // ESM, Node 18+.
 
 import { calcularCotizacion } from "../src/oliver-gpt/engine-client.js";
+import { detectarProductoFueraDeAlcance } from "./productoFueraDeAlcance.js";
 
 // glass_id por defecto (termopanel). Configurable por env.
 const DEFAULT_GLASS_ID = Number(process.env.ACTIVA_ENGINE_DEFAULT_GLASS_ID) || 44;
@@ -73,6 +74,10 @@ function normTipoAperturaLocal(text) {
  * @returns {'CORREDERA'|'PROYECTANTE'|'FIJA'|'BATIENTE'|'OSCILOBATIENTE'}
  */
 export function mapAperturaToEngine(product) {
+  const fueraDeAlcance = detectarProductoFueraDeAlcance(product);
+  if (fueraDeAlcance.fueraDeAlcance) {
+    throw new TypeError(fueraDeAlcance.razon);
+  }
   const norm = normTipoAperturaLocal(product);
   switch (norm) {
     case "PROYECTANTE":
@@ -320,6 +325,21 @@ export async function priceAllEngine(d, customer_id = "") {
   const priceOneItem = async (i) => {
     const item = d.items[i];
 
+    // 0) Alcance real del catálogo automático. Esta guarda corre ANTES de
+    // normalizar apertura, validar medidas o llamar al Engine: nunca convierte
+    // silenciosamente un producto desconocido en una ventana CORREDERA.
+    const fueraDeAlcance = detectarProductoFueraDeAlcance(item.product, {
+      tipo: item.tipo,
+      serie: item.serie,
+    });
+    if (fueraDeAlcance.fueraDeAlcance) {
+      item.price_warning = fueraDeAlcance.mensajeCliente;
+      item.source = "activa_engine";
+      item.confidence = "manual";
+      item.out_of_scope_category = fueraDeAlcance.categoria;
+      return { escalada: true, fueraDeAlcance };
+    }
+
     // 1) Medidas (normalizadas + orientación corregida en el pre-pass)
     const m = measured[i];
     if (tableIsAltoAncho && m) item.measures_swapped = true;
@@ -434,14 +454,19 @@ export async function priceAllEngine(d, customer_id = "") {
   d.grand_total = grandTotal || null;
 
   if (escaladas > 0) {
+    const fueraDeAlcance = results.find((res) => res?.fueraDeAlcance)?.fueraDeAlcance;
     return {
       ok: false,
-      error: "La cotización requiere revisión de especialista.",
+      error: fueraDeAlcance?.mensajeCliente || "La cotización requiere revisión de especialista.",
       partial: true,
       total: d.grand_total,
       source: "activa_engine",
       escalate: true,
-      reason: "partial_cotization",
+      reason: fueraDeAlcance?.razon || "partial_cotization",
+      ...(fueraDeAlcance ? {
+        category: fueraDeAlcance.categoria,
+        customer_message: fueraDeAlcance.mensajeCliente,
+      } : {}),
     };
   }
 

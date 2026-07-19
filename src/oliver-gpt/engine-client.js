@@ -14,6 +14,8 @@
 //
 // ESM, fetch nativo (Node 18+).
 
+import { detectarProductoFueraDeAlcance } from '../../services/productoFueraDeAlcance.js';
+
 const BASE_URL = () =>
   (process.env.ACTIVA_ENGINE_URL || 'https://ops.activalabs.ai').trim().replace(/\/+$/, ''); // .trim(): robusto a espacios/tabs en la var de Railway
 
@@ -162,6 +164,10 @@ function normalizeColor(c) {
  */
 export async function calcularCotizacion(params = {}) {
   const { tipo, ancho_mm, alto_mm, glass_id, serie, color, comuna, cantidad, hojas } = params;
+  const fueraDeAlcance = detectarProductoFueraDeAlcance('', { tipo, serie });
+  if (fueraDeAlcance.fueraDeAlcance) {
+    throw new EngineError(fueraDeAlcance.razon, { body: fueraDeAlcance });
+  }
   const apertura = normalizarApertura(tipo);
   const gid = exigirGlassId(glass_id);
 
@@ -199,6 +205,10 @@ export async function calcularCotizacion(params = {}) {
  */
 export async function calcularPorArea(params = {}) {
   const { tipo, area_m2, glass_id, proporcion, color, comuna } = params;
+  const fueraDeAlcance = detectarProductoFueraDeAlcance('', { tipo });
+  if (fueraDeAlcance.fueraDeAlcance) {
+    throw new EngineError(fueraDeAlcance.razon, { body: fueraDeAlcance });
+  }
   const apertura = normalizarApertura(tipo);
   const gid = exigirGlassId(glass_id);
 

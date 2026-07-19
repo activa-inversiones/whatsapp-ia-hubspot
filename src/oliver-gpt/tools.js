@@ -221,7 +221,9 @@ export const TOOL_DEFS = [
         'DEVUELVE el campo "unit_price" (precio unitario NETO, sin IVA): es EXACTAMENTE el ' +
         'valor que debes pasar como unit_price a generar_pdf_cotizacion. NO uses total_con_iva ' +
         'ni precio_por_m2. EL VIDRIO Y LA SERIE SE ELIGEN SOLOS (por tamaño y ambiente) — NO ' +
-        'pases glass_id ni serie; NO uses listar_vidrios. Solo manda tipo + medidas_texto + (si es baño) ambiente.',
+        'pases glass_id ni serie; NO uses listar_vidrios. Solo manda tipo + medidas_texto + (si es baño) ambiente. ' +
+        'SOLO cotiza ventanas estándar S60/SLIDING. Para mosquiteros, puertas, plegables, formas ' +
+        'irregulares o líneas Andes, Zenia, Americana y Venau, NO ejecutes esta tool: llama notificar_marcelo.',
       parameters: {
         type: 'object',
         properties: {
@@ -230,7 +232,7 @@ export const TOOL_DEFS = [
             enum: [...APERTURAS], // enum cerrado SIN TERMOPANEL
             description:
               'Apertura de la ventana. Uno de: CORREDERA, PROYECTANTE, FIJA, BATIENTE, ' +
-              'OSCILOBATIENTE. NUNCA TERMOPANEL (eso es un vidrio, va por glass_id).',
+              'OSCILOBATIENTE. NUNCA TERMOPANEL ni PUERTA: una puerta se escala a Marcelo sin cotizar.',
           },
           ancho_mm: { type: 'number', description: 'Ancho en milimetros (tu mejor estimación). El sistema RE-CONVIERTE desde medidas_texto si lo incluyes, así que prioriza enviar medidas_texto.' },
           alto_mm: { type: 'number', description: 'Alto en milimetros (tu mejor estimación). El sistema RE-CONVIERTE desde medidas_texto si lo incluyes.' },
@@ -248,7 +250,10 @@ export const TOOL_DEFS = [
           },
           serie: {
             type: 'string',
-            description: 'IGNORADO — la serie se elige AUTOMÁTICAMENTE. No la pases.',
+            description:
+              'IGNORADO — no la pases. El automático solo cubre S60/SLIDING. Si el cliente pide ' +
+              'mosquitero, plegable, forma irregular o las líneas Andes, Zenia, Americana o Venau, ' +
+              'no cotices y usa notificar_marcelo.',
           },
           color: { type: 'string', description: 'Color del perfil. Opcional.' },
           comuna: { type: 'string', description: 'Comuna de despacho/instalacion. Opcional.' },
@@ -585,6 +590,36 @@ export function conUnitPrice(r, cantidad = 1) {
     _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses total_con_iva ni precio_por_m2.' };
 }
 
+async function falloDeCotizacion(r, item, ctx) {
+  const message = item?.price_warning || r?.error || 'No se pudo cotizar; lo revisa un especialista.';
+  const productoFueraDeAlcance =
+    r?.escalate === true && /^producto_fuera_de_alcance:/.test(String(r?.reason || ''));
+
+  if (productoFueraDeAlcance && typeof ctx.notifyMarcelo === 'function') {
+    try {
+      await ctx.notifyMarcelo({
+        reason: `oliver_gpt:${r.reason}`,
+        data: { out_of_scope_category: r.category || '' },
+      });
+    } catch (err) {
+      console.error('[tools] escalación determinística de producto falló:', err?.message || err);
+    }
+  }
+
+  return {
+    ok: false,
+    precio_invalido: true,
+    requiere_revision: true,
+    error: message,
+    ...(productoFueraDeAlcance ? {
+      escalate: true,
+      reason: r.reason,
+      category: r.category,
+      message: r.customer_message || message,
+    } : {}),
+  };
+}
+
 /**
  * Ejecuta una tool por nombre contra el engine-client.
  * @param {string} name - Nombre de la tool (debe estar en TOOL_DEFS).
@@ -617,8 +652,7 @@ export async function runTool(name, input = {}, ctx = {}) {
       const r = await priceAllEngine(d);
       const it = d.items[0] || {};
       if (!r.ok || !(Number(it.unit_price) > 0)) {
-        return { ok: false, precio_invalido: true, requiere_revision: true,
-          error: it.price_warning || r.error || 'No se pudo cotizar; lo revisa un especialista.' };
+        return falloDeCotizacion(r, it, ctx);
       }
       return {
         ok: true,
@@ -672,8 +706,7 @@ export async function runTool(name, input = {}, ctx = {}) {
       const r = await priceAllEngine(d);
       const it = d.items[0] || {};
       if (!r.ok || !(Number(it.unit_price) > 0)) {
-        return { ok: false, precio_invalido: true, requiere_revision: true,
-          error: it.price_warning || r.error || 'No se pudo cotizar; lo revisa un especialista.' };
+        return falloDeCotizacion(r, it, ctx);
       }
       return {
         ok: true,

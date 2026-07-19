@@ -32,6 +32,19 @@ test('[FIX 18-jun] referencial: el prompt obliga AVISAR cuando la medida es fuer
     'debe decir que el precio final se confirma en cubicación/visita técnica tras aprobar');
 });
 
+test('[PRODUCTO FUERA DE ALCANCE] puerta no se mapea a apertura y T8 escala sin cotizar', () => {
+  const sys = buildSystemBlocks();
+  assert.doesNotMatch(sys, /["']puerta["']\s*(?:→|->)\s*PUERTA/i,
+    'PUERTA no existe en el enum del Engine y no puede quedar como mapeo');
+  assert.match(sys, /T8\s+Producto fuera de alcance/i);
+  assert.match(sys, /8 TRIGGERS/i);
+  for (const marcador of ['mosquiter', 'plegable', 'irregular', 'puerta', 'Andes', 'Zenia', 'Americana', 'Venau']) {
+    assert.match(sys, new RegExp(marcador, 'i'), `falta ${marcador}`);
+  }
+  assert.match(sys, /Esto lo revisa Marcelo personalmente para darte el precio exacto/i);
+  assert.match(sys, /REGLA #5[^]*producto fuera de alcance[^]*NO aplica/i);
+});
+
 test('(b) buildSystemBlocks() contiene marcadores de áreas clave', () => {
   const sys = buildSystemBlocks();
   for (const marker of ['SPIN', 'B2B', 'MINVU', 'EN 12608', 'objeci', 'escal']) {

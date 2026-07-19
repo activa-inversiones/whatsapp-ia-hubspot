@@ -77,6 +77,69 @@ test("calcularCotizacion rechaza tipo:'TERMOPANEL' sin tocar la red", async () =
   );
 });
 
+test("calcular_cotizacion documenta los productos fuera de alcance y su escalación", () => {
+  const def = getToolDef('calcular_cotizacion');
+  const texto = [
+    def.function.description,
+    def.function.parameters.properties.tipo.description,
+    def.function.parameters.properties.serie.description,
+  ].join(' ');
+
+  for (const marcador of ['mosquiter', 'plegable', 'irregular', 'puerta', 'Andes', 'Zenia', 'Americana', 'Venau']) {
+    assert.match(texto, new RegExp(marcador, 'i'), marcador);
+  }
+  assert.match(texto, /notificar_marcelo/i);
+});
+
+test("calcularCotizacion rechaza serie ANDES sin tocar la red", async () => {
+  const fetchOriginal = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error('el Engine no debe llamarse para una línea no soportada');
+  };
+
+  try {
+    await assert.rejects(
+      () =>
+        calcularCotizacion({
+          tipo: 'CORREDERA',
+          serie: 'ANDES',
+          ancho_mm: 1500,
+          alto_mm: 1200,
+          glass_id: 34,
+        }),
+      /producto_fuera_de_alcance:linea_no_soportada/i,
+    );
+    assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
+
+test("runTool: PUERTA no cotiza y notifica a Marcelo por código", async () => {
+  const avisos = [];
+  const resultado = await runTool(
+    'calcular_cotizacion',
+    { tipo: 'PUERTA', medidas_texto: '900x2100 mm', cantidad: 1 },
+    {
+      notifyMarcelo: async (payload) => {
+        avisos.push(payload);
+        return { sent: true };
+      },
+    },
+  );
+
+  assert.equal(resultado.ok, false);
+  assert.equal(resultado.requiere_revision, true);
+  assert.equal(resultado.escalate, true);
+  assert.equal(resultado.reason, 'producto_fuera_de_alcance:puerta');
+  assert.equal(resultado.category, 'puerta');
+  assert.match(resultado.message, /Marcelo.*precio exacto/i);
+  assert.equal(avisos.length, 1);
+  assert.equal(avisos[0].reason, 'oliver_gpt:producto_fuera_de_alcance:puerta');
+});
+
 // (c) calcularPorArea sin glass_id rechaza.
 test('(c) calcularPorArea sin glass_id rechaza', async () => {
   await assert.rejects(
