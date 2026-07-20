@@ -717,8 +717,15 @@ export async function handleChannelTurn(
       if (_pdfCall.result.ok) newState.pending_quote = null;
     }
     // [#2 2026-06-21] Blindaje anti precio-suelto (REGLA #13): borra cualquier monto CLP del texto antes de enviar.
+    const _replyPreFiltros = reply;
     reply = stripMontos(reply);
     reply = stripAccionesFalsas(reply); // [Ronda 4] "[Enlace...]"/"[Calculando...]" jamás llegan al cliente
+    // [Ronda 4.1 — Codex] paridad con webhook.js: la historia refleja lo filtrado que
+    // el cliente recibió de verdad (guarda de identidad protege el caso PDF).
+    if (reply !== _replyPreFiltros) {
+      const _lastF = newHistory[newHistory.length - 1];
+      if (_lastF && _lastF.role === 'assistant' && _lastF.content === _replyPreFiltros) _lastF.content = reply;
+    }
 
     // ── Enviar respuesta por el canal ───────────────────────────────────
     // [2026-06-14] Capturamos el resultado: si el envío falla (ej: fuera de la ventana de

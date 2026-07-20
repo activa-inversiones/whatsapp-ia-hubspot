@@ -1463,10 +1463,19 @@ export async function handleWebhook(req, res, deps = {}) {
 
     // [#2 2026-06-21] Blindaje anti precio-suelto (REGLA #13): el monto va SOLO en el PDF. Si el LLM
     // dejó un monto CLP en el texto, lo borra antes de enviar (conservador: no toca medidas/folios).
+    const _replyPreFiltros = reply;
     reply = stripMontos(reply);
     // [Ronda 4 2026-07-20] Borrar acciones FALSAS narradas ("[Enlace a la cotización]",
     // "[Calculando...]") — casos reales 16-19 jul: el LLM las escribió pese al ⛔ del prompt.
     reply = stripAccionesFalsas(reply);
+    // [Ronda 4.1 — Codex] la HISTORIA persiste lo que el cliente REALMENTE recibió: sin
+    // esto el LLM veía su propio "[Enlace...]"/monto sin filtrar en el turno siguiente y
+    // daba por enviado un link/precio que jamás llegó. La guarda de identidad protege el
+    // caso PDF (ahí la historia guarda el texto del cerebro, no el reply reemplazado).
+    if (reply !== _replyPreFiltros) {
+      const _lastF = newHistory[newHistory.length - 1];
+      if (_lastF && _lastF.role === 'assistant' && _lastF.content === _replyPreFiltros) _lastF.content = reply;
+    }
 
     // ── (7) Enviar respuesta por WhatsApp ───────────────────────────────
     // (7a) Texto: siempre se envía (canal garantizado).
