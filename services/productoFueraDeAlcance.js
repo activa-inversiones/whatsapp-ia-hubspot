@@ -38,7 +38,9 @@ function quitarMencionesNegadas(texto) {
 // forma de", "tipo", coma). [Ronda 2.1 — Codex] Un gap arbitrario NO basta: "ventana
 // junto al arco" / "con vista al arco" describen el ENTORNO, no el producto → no escalan.
 // "ventana, redonda" (coma) y "ventana en forma de arco" sí.
-const NOUN_VENTANA = '(?:ventanas?|ventanal(?:es)?|panos?|vanos?|tragaluces?)';
+// [Ronda 3.1] + puertas?: una "puerta redonda"/"puerta en forma de arco" es forma
+// irregular (S60_FORMAS) — fuera de alcance aunque las puertas abatibles ya se coticen.
+const NOUN_VENTANA = '(?:ventanas?|ventanal(?:es)?|puertas?|panos?|vanos?|tragaluces?)';
 const FORMA_IRREG = '(?:circular(?:es)?|redond[ao]s?|ovalad[ao]s?|hexagonal(?:es)?|octogonal(?:es)?|triangular(?:es)?|semicircular(?:es)?|arcos?)';
 // [Ronda 2.3 — Codex] Heurística clave: SIN artículos en los conectores. Un artículo antes
 // de la forma ("con EL arco decorativo") señala que la forma es un OBJETO de la escena, no

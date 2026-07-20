@@ -300,8 +300,8 @@ export const TOOL_DEFS = [
             type: 'string',
             enum: [...APERTURAS], // mismo enum de apertura, SIN TERMOPANEL
             description:
-              'Apertura de la ventana. Uno de: CORREDERA, PROYECTANTE, FIJA, BATIENTE, ' +
-              'OSCILOBATIENTE. NUNCA TERMOPANEL.',
+              'Apertura. Ventanas: CORREDERA, PROYECTANTE, FIJA, BATIENTE, OSCILOBATIENTE. ' +
+              'Puertas abatibles: PUERTA / PUERTA_DOBLE / PUERTA_INTERIOR. NUNCA TERMOPANEL.',
           },
           area_m2: {
             type: 'number',

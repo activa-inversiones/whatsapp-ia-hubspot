@@ -52,12 +52,19 @@ const APERTURAS_ENGINE = new Set([
  */
 function normTipoAperturaLocal(text) {
   const t = String(text || "").toLowerCase();
-  // [Ronda 3 2026-07-20] PUERTAS ABATIBLES — PRIMERO (antes del check "abatible": una
-  // "puerta abatible" es PUERTA, no ventana BATIENTE). "puerta corredera" = puerta de
-  // patio deslizante → sigue al ramo CORREDERA/SLIDING (ese sí es el producto sliding).
-  // Cubre el enum V1 (PUERTA_1H / PUERTA_DOBLE, con "_" ya normalizado a espacio aguas
-  // arriba en la guarda, y acá por includes) y texto libre chileno.
-  if (t.includes("puerta") && !t.includes("corredera") && !t.includes("corrediz")) {
+  // [Ronda 3 2026-07-20 · afinada 3.1 por revisión Codex] PUERTAS ABATIBLES — PRIMERO
+  // (antes del check "abatible": una "puerta abatible" es PUERTA, no ventana BATIENTE).
+  // Guardas de la rama:
+  //  (a) negación: "no quiero una puerta, necesito una ventana fija" NO es puerta;
+  //  (b) sustantivo-primero: si "ventana(l)" aparece ANTES que "puerta" en la frase
+  //      ("ventana para la puerta de la cocina"), el producto es la VENTANA;
+  //      "puerta ventana" (puerta primero) sí es puerta;
+  //  (c) deslizantes: corredera/corrediza/deslizante/sliding → ramo CORREDERA/SLIDING.
+  const tPuerta = t.replace(/\b(?:no\s+(?:quiero|necesito|busco)|sin|que\s+no\s+sea)\s+(?:(?:una?|la|el)\s+)?puertas?\b/g, " ");
+  const iPuerta = tPuerta.indexOf("puerta");
+  const iVentana = tPuerta.search(/ventan/);
+  if (iPuerta >= 0 && (iVentana < 0 || iPuerta < iVentana) &&
+      !/corredera|corrediz|deslizant|desliza|sliding/.test(t)) {
     if (t.includes("interior")) return "PUERTA_INTERIOR";
     if (t.includes("doble") || /\b(?:2|dos)\s*hojas?\b/.test(t)) return "PUERTA_DOBLE";
     return "PUERTA";
@@ -393,7 +400,19 @@ export async function priceAllEngine(d, customer_id = "") {
     }
 
     // 3) Mapeo de apertura (NUNCA TERMOPANEL) + serie de perfiles + nº hojas
-    const tipo = mapAperturaToEngine(item.product);
+    let tipo = mapAperturaToEngine(item.product);
+    // [Ronda 3.1 — cinturón Codex] LA DESCRIPCIÓN MANDA (asimétrico, solo hacia puerta):
+    // si el LLM contradijo el prompt y mandó tipo de VENTANA con una descripción que
+    // dice claramente puerta abatible, se corrige al BOM de puerta — sin este cinturón
+    // el cliente recibía precio de corredera por una puerta (reproducido en revisión).
+    // Nunca opera al revés (una descripción ambigua jamás convierte ventana en puerta:
+    // normTipoAperturaLocal ya aplica negación + sustantivo-primero + deslizantes).
+    if (item.descripcion && !String(tipo).startsWith("PUERTA")) {
+      try {
+        const tipoDesc = mapAperturaToEngine(item.descripcion);
+        if (String(tipoDesc).startsWith("PUERTA")) tipo = tipoDesc;
+      } catch { /* descripción fuera de alcance: ya la habría cazado la guarda del paso 0 */ }
+    }
     const serie = mapSerieToEngine(tipo);     // CORREDERA→SLIDING, resto→S60
     const hojas = detectHojas(item.product);  // 3 hojas → triple riel; undefined → motor decide
 

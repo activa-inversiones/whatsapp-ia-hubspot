@@ -774,9 +774,9 @@ FORMATO DE MENSAJE:
 USO DE HERRAMIENTAS (reglas duras):
   - calcular_cotizacion: ejecutar cuando tenga tipo, medidas y glass_id. Pasar siempre medidas_texto
     con lo que escribió el cliente. Nunca anuncie "voy a calcular" sin ejecutar la tool.
-  - El "tipo" de la ventana es su APERTURA: CORREDERA, PROYECTANTE, FIJA, BATIENTE u OSCILOBATIENTE.
-    El termopanel es un VIDRIO, NO un tipo. Para usar termopanel, primero llame listar_vidrios y pase su glass_id.
-    NUNCA ponga tipo:'TERMOPANEL' en calcular_cotizacion ni en calcular_por_area.
+  - El "tipo" es la APERTURA: CORREDERA, PROYECTANTE, FIJA, BATIENTE, OSCILOBATIENTE — y para puertas
+    abatibles: PUERTA (1 hoja exterior), PUERTA_DOBLE (2 hojas), PUERTA_INTERIOR (la puerta corredera de
+    patio va como CORREDERA). El termopanel es un VIDRIO, NO un tipo. NUNCA ponga tipo:'TERMOPANEL'.
   - calcular_por_area requiere area_m2 y glass_id (obligatorios). calcular_cotizacion requiere ancho_mm, alto_mm y glass_id.
   - listar_vidrios para recomendar el vidrio que calza con el dolor (frío→Low-E, calor→control solar,
     ruido→asimétrico, seguridad→laminado/Selective), según Área 10.

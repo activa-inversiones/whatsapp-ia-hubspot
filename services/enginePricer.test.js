@@ -125,12 +125,13 @@ test("priceAllEngine: puerta PLEGABLE sigue escalando sin llamar al Engine", asy
 
 // [Ronda 3 2026-07-20] GOLDEN EN VIVO de puertas (mismo patrón que el golden proyectante):
 // el motor cotiza la abatible con BOM real. Falla solo sin red (como el otro golden).
-test("GOLDEN EN VIVO: priceAllEngine puerta abatible 900x2100 → ok, total>0", async () => {
+test("GOLDEN EN VIVO: priceAllEngine puerta abatible 900x2100 → ok, total>0", async (t) => {
   const d = {
     items: [{ product: "PUERTA", measures: "900x2100mm", qty: 1 }],
     comuna: "Temuco",
   };
   const res = await priceAllEngine(d, "+56900000001");
+  if (goldenSinRed(res, d)) { t.skip("Engine no disponible (sin red); golden omitido"); return; }
   console.log("GOLDEN puerta total:", res.total);
   assert.equal(res.ok, true, `esperado ok:true, fue: ${JSON.stringify(res)}`);
   assert.ok(res.total > 0, "total de puerta debe ser > 0");
@@ -138,7 +139,14 @@ test("GOLDEN EN VIVO: priceAllEngine puerta abatible 900x2100 → ok, total>0", 
   assert.ok(d.items[0].unit_price > 0);
 });
 
-test("GOLDEN EN VIVO: priceAllEngine 10× proyectante 1m² nogal Temuco → ok, total>0", async () => {
+// [Ronda 3.1] Gate offline para los goldens EN VIVO: sin red no fallan, se saltan
+// (hallazgo Codex: rompían npm test en sandboxes sin acceso al Engine).
+function goldenSinRed(res, d) {
+  const w = String((d.items?.[0]?.price_warning) || res?.error || "");
+  return !res?.ok && /motor|red|network|fetch/i.test(w);
+}
+
+test("GOLDEN EN VIVO: priceAllEngine 10× proyectante 1m² nogal Temuco → ok, total>0", async (t) => {
   const d = {
     items: [
       { product: "ventana proyectante", measures: "1000x1000", color: "nogal", qty: 10 },
@@ -147,6 +155,7 @@ test("GOLDEN EN VIVO: priceAllEngine 10× proyectante 1m² nogal Temuco → ok, 
   };
 
   const res = await priceAllEngine(d, "+56900000000");
+  if (goldenSinRed(res, d)) { t.skip("Engine no disponible (sin red); golden omitido"); return; }
 
   // Registramos el total para inspección manual vs PDF (~3.3M con IVA).
   console.log("GOLDEN total:", res.total, "| res:", JSON.stringify(res));
@@ -191,6 +200,53 @@ test("priceAllEngine: item.descripcion fuera de alcance escala SIN llamar a la r
     assert.equal(r.escalate, true);
     assert.match(String(r.reason), /producto_fuera_de_alcance/);
     assert.equal(d.items[0].price_warning, MENSAJE_PRODUCTO_FUERA_DE_ALCANCE);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// ── [Ronda 3.1 2026-07-20] Regresiones de la revisión Codex sobre la Ronda 3 ──
+
+test("Ronda 3.1: negación, sustantivo-primero y deslizantes en la rama puerta", () => {
+  // negación: el cliente RECHAZA la puerta → es ventana
+  assert.equal(mapAperturaToEngine("no quiero una puerta, necesito una ventana fija"), "FIJA");
+  // sustantivo-primero: la ventana es el producto, la puerta es ubicación
+  assert.equal(mapAperturaToEngine("ventana para la puerta de la cocina"), "CORREDERA"); // sin apertura → default
+  assert.equal(mapAperturaToEngine("ventana fija para la puerta"), "FIJA");
+  // deslizantes en todas sus formas → SLIDING, no BOM abatible
+  assert.equal(mapAperturaToEngine("puerta deslizante"), "CORREDERA");
+  assert.equal(mapAperturaToEngine("puerta sliding"), "CORREDERA");
+  assert.equal(mapAperturaToEngine("puerta que se desliza"), "CORREDERA");
+  // y las puertas de verdad siguen siendo puertas
+  assert.equal(mapAperturaToEngine("puerta ventana"), "PUERTA");
+  assert.equal(mapAperturaToEngine("abatible para puerta"), "PUERTA");
+});
+
+test("Ronda 3.1: cinturón LA DESCRIPCIÓN MANDA — tipo CORREDERA + desc puerta abatible → BOM de puerta", async () => {
+  const originalFetch = globalThis.fetch;
+  let bodyEnviado = null;
+  globalThis.fetch = async (url, opts) => {
+    bodyEnviado = JSON.parse(opts.body);
+    const payload = { ok: true, total_clp: 750000, producto_label: "Puerta abatible exterior con zapata S60" };
+    return { ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) };
+  };
+  try {
+    const d = {
+      items: [{ product: "CORREDERA", measures: "900x2100mm", qty: 1, descripcion: "una puerta abatible exterior de PVC" }],
+      comuna: "Temuco",
+    };
+    const res = await priceAllEngine(d);
+    assert.equal(res.ok, true);
+    assert.equal(bodyEnviado.tipo, "PUERTA", "la descripción de puerta abatible corrige el tipo");
+    assert.equal(bodyEnviado.serie, "S60");
+    // y el cinturón NO opera al revés: descripción ambigua no convierte ventana en puerta
+    bodyEnviado = null;
+    const d2 = {
+      items: [{ product: "FIJA", measures: "1000x1000mm", qty: 1, descripcion: "ventana fija para la puerta de la cocina" }],
+      comuna: "Temuco",
+    };
+    await priceAllEngine(d2);
+    assert.equal(bodyEnviado.tipo, "FIJA", "una ventana con 'puerta' de ubicación sigue siendo ventana");
   } finally {
     globalThis.fetch = originalFetch;
   }
