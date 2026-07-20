@@ -27,16 +27,23 @@ function normalizarCodigo(value) {
 }
 
 function quitarMencionesNegadas(texto) {
+  // [Ronda 2.1 — Codex] "sin que sea X" + compuestos primero ("puerta ventana plegable"
+  // se elimina COMPLETA; antes solo caía "puerta" y quedaba "ventana plegable" detectable).
   const productoNegado =
-    /\b(?:sin(?:\s+(?:incluir|considerar|contemplar|agregar|contar\s+con))?|no\s+(?:quiero|necesito|busco|cotizar)|que\s+no\s+sea|no)\s+(?:(?:una?|la|el)\s+)?(?:mallas?\s+mosquiteras?|mosquiter[ao]s?|puertas?|(?:ventanas?|ventanal(?:es)?)\s+plegables?|plegables?|tipo\s+acordeon|circular(?:es)?|redond[ao]s?|ovalad[ao]s?|hexagonal(?:es)?|arcos?|(?:linea|serie|sistema)\s+(?:andes|zenia|venau|american[ao]))\b/g;
+    /\b(?:sin\s+que\s+sea[ns]?|sin(?:\s+(?:incluir|considerar|contemplar|agregar|contar\s+con))?|no\s+(?:quiero|necesito|busco|cotizar)|que\s+no\s+sea|no)\s+(?:(?:una?|la|el|las|los)\s+)?(?:mallas?\s+mosquiteras?|mosquiter[ao]s?|(?:puertas?\s+)?(?:ventanas?|ventanal(?:es)?)\s+plegables?|puertas?\s+ventanas?|puertas?|plegables?|tipo\s+acordeon|circular(?:es)?|redond[ao]s?|ovalad[ao]s?|hexagonal(?:es)?|arcos?|(?:linea|serie|sistema)\s+(?:andes|zenia|venau|american[ao]))\b/g;
   return texto.replace(productoNegado, ' ');
 }
 
-// Sustantivo de ventana y formas irregulares, a ≤3 palabras de distancia (en cualquier orden).
+// Sustantivo de ventana y forma irregular unidos SOLO por conectores ("que sea", "en
+// forma de", "tipo", coma). [Ronda 2.1 — Codex] Un gap arbitrario NO basta: "ventana
+// junto al arco" / "con vista al arco" describen el ENTORNO, no el producto → no escalan.
+// "ventana, redonda" (coma) y "ventana en forma de arco" sí.
 const NOUN_VENTANA = '(?:ventanas?|ventanal(?:es)?|panos?|vanos?|tragaluces?)';
 const FORMA_IRREG = '(?:circular(?:es)?|redond[ao]s?|ovalad[ao]s?|hexagonal(?:es)?|octogonal(?:es)?|triangular(?:es)?|semicircular(?:es)?|arcos?)';
+const CONECTOR_FORMA = '(?:que|sean?|es|de|del|al|tipo|estilo|formas?|en|un[oa]?|el|la|los|las|bien|muy|medi[oa]s?)';
 const FORMA_CERCA_RE = new RegExp(
-  `\\b${NOUN_VENTANA}\\s+(?:\\S+\\s+){0,3}?${FORMA_IRREG}\\b|\\b${FORMA_IRREG}\\s+(?:\\S+\\s+){0,3}?${NOUN_VENTANA}\\b`
+  `\\b${NOUN_VENTANA}[\\s,]+(?:${CONECTOR_FORMA}[\\s,]+){0,3}${FORMA_IRREG}\\b` +
+  `|\\b${FORMA_IRREG}[\\s,]+(?:${CONECTOR_FORMA}[\\s,]+){0,3}${NOUN_VENTANA}\\b`
 );
 
 function resultado(categoria) {

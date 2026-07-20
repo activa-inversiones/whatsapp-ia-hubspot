@@ -577,7 +577,10 @@ export async function handleWebhook(req, res, deps = {}) {
       // contacto pagado mientras un humano atiende salía por este return ANTES del bloque (4b)
       // y el ctwa_clid se perdía para siempre. Solo ingesta el lead (leads.ctwa_clid vía
       // COALESCE en sales-os); NO toca la sesión ni invoca la IA (respeta el takeover).
-      safe('control.ctwaCapture', () => {
+      // [Ronda 2.1 — Codex] CON await: fire-and-forget antes de un return podía morir con
+      // un redeploy/crash inmediato y perder la captura (el ACK a Meta ya se envió arriba,
+      // así que esperar el POST no bloquea al cliente).
+      await safe('control.ctwaCapture', () => {
         const _raw = rawMessage(req.body);
         const _ref = _raw ? (deps.parseReferral || parseReferral)(_raw) : null;
         if (_ref && _ref.isCtwaAd) {
@@ -655,8 +658,11 @@ export async function handleWebhook(req, res, deps = {}) {
         );
         if (_refNuevo) {
           state.ctwaCaptured = true;
-          state.ctwa_clid = _ref.ctwaClid || null;
-          state.ad_id = _ref.adId || null;
+          // [Ronda 2.1 — Codex] PRESERVAR el ID previo cuando el referral nuevo no lo trae:
+          // un referral con solo ad_id nuevo NO debe pisar un ctwa_clid bueno con null
+          // (regresión bloqueante reproducida en la revisión cruzada).
+          state.ctwa_clid = _ref.ctwaClid || state.ctwa_clid || null;
+          state.ad_id = _ref.adId || state.ad_id || null;
           const _bridge = deps.bridge || realBridge;
           const _payload = (deps.buildCtwaLeadPayload || buildCtwaLeadPayload)(
             from, _ref, { name: state.name || '' }

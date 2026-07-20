@@ -76,6 +76,9 @@ export function detectAngle(ref, env = process.env) {
   // un typo en el env ('termcio') NO debe pisar el default ni cortar el fallback por
   // headline — sin esto, editar mal la var en Railway apagaba el saludo en silencio.
   const mapped = ref.adId ? map[String(ref.adId)] : null;
+  // [Ronda 2.1 — Codex] 'off'/'disabled' en el env = apagar EL saludo de ESE anuncio a
+  // propósito (interfaz explícita; un typo cualquiera NO apaga — cae al default de abajo).
+  if (mapped === 'off' || mapped === 'disabled') return null;
   if (mapped && Object.hasOwn(SALUDOS, mapped)) return mapped;
   // [Ronda 2 2026-07-20] Si el env pisó con un valor INVÁLIDO un ad_id que el DEFAULT sí
   // conoce, usar el default en vez de perder el saludo (el typo en Railway ya no apaga

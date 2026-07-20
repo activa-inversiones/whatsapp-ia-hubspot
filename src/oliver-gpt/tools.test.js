@@ -551,5 +551,11 @@ test('Ronda 2: descripcion_producto declarado en el schema de ambas tools (addit
   for (const name of ['calcular_cotizacion', 'calcular_por_area']) {
     const def = getToolDef(name);
     assert.ok(def.function.parameters.properties.descripcion_producto, `${name} debe declarar descripcion_producto`);
+    // [Ronda 2.1 — Codex] existir no basta: si no es required, el LLM puede omitirla
+    // válidamente y la guarda vuelve a quedar ciega.
+    assert.ok(
+      def.function.parameters.required.includes('descripcion_producto'),
+      `${name} debe EXIGIR descripcion_producto`
+    );
   }
 });

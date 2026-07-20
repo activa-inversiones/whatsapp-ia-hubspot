@@ -270,3 +270,39 @@ test('Ronda 2: referral NUEVO refresca atribución de cliente antiguo sin re-sal
   assert.ok(!JSON.stringify(last.history).includes('SALUDO_QUE_NO_DEBE_SALIR'),
     'un cliente con historial NUNCA recibe el saludo frío del anuncio');
 });
+
+// [Ronda 2.1 — Codex] Re-atribución PARCIAL: un referral con SOLO ad_id nuevo (sin
+// ctwa_clid) NO debe pisar un ctwa_clid bueno con null (regresión bloqueante reproducida
+// por la revisión cruzada sobre la primera versión de la Ronda 2).
+test('Ronda 2.1: referral con solo ad_id nuevo conserva el ctwa_clid previo', async () => {
+  const persisted = [];
+  const deps = {
+    conv: new Map(), seen: new Set(), locks: new Map(),
+    parseInbound: () => ({ ok: true, from: '56955556666', text: 'hola de nuevo', msgId: 'wamid.CTWA.PARTIAL', type: 'text' }),
+    parseLandingRef: () => ({ hasRef: false }),
+    parseReferral: () => ({ isCtwaAd: true, ctwaClid: null, adId: 'AD_NUEVO', headline: '' }),
+    sendWhatsAppText: async () => ({ ok: true }),
+    loadSession: async () => ({
+      history: [{ role: 'user', content: 'hola' }, { role: 'assistant', content: 'hola!' }],
+      state: { ctwaCaptured: true, ctwa_clid: 'CLID_BUENO', ad_id: 'AD_VIEJO' },
+    }),
+    persistSession: (fromArg, session) => { persisted.push(session); },
+    bridge: {
+      getConversationControl: async () => ({ ai_paused: false, operator_status: 'ai' }),
+      pushConversationEvent: async () => ({ ok: true }),
+      pushLeadEvent: async () => ({ ok: true }),
+      pushQuoteEvent: async () => ({ ok: true }),
+    },
+    handleTurn: async ({ history, userText, state }) => ({
+      reply: 'ok', history: [...history, { role: 'user', content: userText }], toolCalls: [], state: { ...state },
+    }),
+  };
+  const body = { entry: [{ changes: [{ value: { messages: [{ from: '56955556666', id: 'wamid.CTWA.PARTIAL', type: 'text', text: { body: 'hola de nuevo' } }] } }] }] };
+
+  await handleWebhook({ body }, makeRes(), deps);
+
+  const last = persisted[persisted.length - 1];
+  assert.ok(last, 'la sesión debe persistirse');
+  assert.equal(last.state.ctwa_clid, 'CLID_BUENO', 'el clid bueno JAMÁS se pisa con null');
+  assert.equal(String(last.state.ad_id), 'AD_NUEVO', 'el ad_id nuevo sí se actualiza');
+});

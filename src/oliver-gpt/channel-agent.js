@@ -311,18 +311,23 @@ export async function handleChannelTurn(
     //    se reconstruye desde Postgres (session-store) → Oliver NO pierde el hilo ni
     //    re-saluda a mitad de conversación. [2026-06-14] Cierra el gap in-memory de IG/FB.
     let cached = conv.get(convKey);
+    let _coldHydration = false;
     if (!cached) {
       const fromStore = await safe('loadSession', () => loadSession(convKey));
       cached = fromStore || { history: [], state: {} };
-      // [Ronda 2 2026-07-20] Poblar el cache con la sesión hidratada (paridad con webhook.js).
-      // Sin esto, el catch de error de turno lee conv.get(k) → undefined en sesión fría y
-      // persistía state:{} — borrando gclid/fbclid/ctwa_clid guardados en Postgres cuando el
-      // modelo daba timeout/429 (hallazgo high de la revisión cruzada Codex).
-      conv.set(convKey, cached);
+      _coldHydration = true;
     }
     const history = Array.isArray(cached.history) ? cached.history : [];
     const rawState = cached.state && typeof cached.state === 'object' ? cached.state : {};
     const baseState = resetIfInactive({ ...rawState, lastMessageAt: rawState.lastMessageAt || 0 });
+    if (_coldHydration) {
+      // [Ronda 2.1 — Codex] Poblar el cache con la versión YA SANEADA por resetIfInactive
+      // (no la cruda): cachear la cruda hacía que el catch de error de turno persistiera
+      // lockedData VENCIDA con timestamp fresco → zombie que ya nunca se limpiaba. El
+      // objetivo original se mantiene: en sesión fría + 429/timeout, el catch ya no
+      // persiste state:{} borrando los click-ids de Postgres.
+      conv.set(convKey, { history, state: baseState });
+    }
     const state = {
       ...baseState,
       telefono: senderId,           // identificador en el cerebro (no es teléfono real)

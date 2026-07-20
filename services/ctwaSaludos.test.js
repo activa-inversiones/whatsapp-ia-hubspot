@@ -95,3 +95,9 @@ test('SALUDO: typo del env sobre un ad_id del DEFAULT cae al default, no a null'
   const env = { CTWA_AD_ANGLE_MAP: '{"120251614379310092":"termcio"}' };
   assert.equal(detectAngle({ adId: '120251614379310092', headline: '' }, env), 'termico');
 });
+
+test('SALUDO Ronda 2.1: "off"/"disabled" en el env apaga UN anuncio a propósito (interfaz explícita)', () => {
+  const env = { CTWA_AD_ANGLE_MAP: '{"120251614381940092":"off"}' };
+  assert.equal(detectAngle({ adId: '120251614381940092', headline: '¿Fábrica o revendedor?' }, env), null);
+  assert.equal(saludoForReferral({ adId: '120251614381940092', headline: '¿Fábrica o revendedor?' }, env), null);
+});

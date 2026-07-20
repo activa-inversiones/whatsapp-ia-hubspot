@@ -133,3 +133,20 @@ test('Ronda 2: los valores legítimos del enum V1 siguen pasando', () => {
     assert.equal(detectarProductoFueraDeAlcance(p).fueraDeAlcance, false, p);
   }
 });
+
+// ── [Ronda 2.1 2026-07-20] Regresiones exigidas por la revisión Codex de la Ronda 2 ──
+
+test('Ronda 2.1: puntuación y conectores en formas (Codex)', () => {
+  assert.equal(detectarProductoFueraDeAlcance('quiero una ventana, redonda').categoria, 'forma_irregular');
+  assert.equal(detectarProductoFueraDeAlcance('una ventana en forma de arco').categoria, 'forma_irregular');
+  assert.equal(detectarProductoFueraDeAlcance('la ventana junto al arco decorativo').fueraDeAlcance, false);
+  assert.equal(detectarProductoFueraDeAlcance('una ventana con vista al arco').fueraDeAlcance, false);
+});
+
+test('Ronda 2.1: negaciones compuestas (Codex)', () => {
+  assert.equal(detectarProductoFueraDeAlcance('una ventana sin que sea redonda').fueraDeAlcance, false);
+  assert.equal(
+    detectarProductoFueraDeAlcance('cotiza la corredera, sin incluir la puerta ventana plegable').fueraDeAlcance,
+    false,
+  );
+});

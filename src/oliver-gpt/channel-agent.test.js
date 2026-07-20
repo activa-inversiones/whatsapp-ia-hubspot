@@ -280,3 +280,26 @@ test('GATE: sin nombre NO se emite PDF ni se quema folio → pide el nombre', as
   assert.match(out2.reply, /a nombre de qui[eé]n/i, 'pide el nombre del cliente');
   assert.doesNotMatch(out2.reply, /CM-FR-004-2026-0500/, 'NO quemó folio');
 });
+
+// [Ronda 2.1 — Codex] Error de turno tras hidratar una sesión VENCIDA (>7 días): el
+// catch debe persistir el estado YA SANEADO por resetIfInactive — cachear la versión
+// cruda revivía lockedData vencida con timestamp fresco (zombie que nunca se limpiaba).
+test('Ronda 2.1: error tras hidratar sesión vencida persiste lockedData LIMPIA', async () => {
+  const persistedArr = [];
+  const { deps } = mkDeps({
+    conv: new Map(),
+    loadSession: async () => ({
+      history: [{ role: 'user', content: 'hola' }, { role: 'assistant', content: 'hola!' }],
+      state: { lockedData: { producto: 'CORREDERA' }, lastMessageAt: Date.now() - 8 * 24 * 3600 * 1000 },
+    }),
+    persistSession: (k, s) => { persistedArr.push(s); },
+    handleTurn: async () => { throw new Error('429 simulado'); },
+  });
+  await handleChannelTurn(
+    { channel: 'instagram', senderId: 'IG_stale', text: 'quiero proyectantes', msgId: 'stale-1', sendFn: async () => ({ ok: true }) },
+    deps,
+  );
+  const last = persistedArr[persistedArr.length - 1];
+  assert.ok(last, 'el error-path debe persistir para no perder el mensaje del cliente');
+  assert.deepEqual(last.state.lockedData || {}, {}, 'la lockedData vencida NO debe revivir');
+});
