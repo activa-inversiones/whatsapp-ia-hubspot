@@ -40,13 +40,15 @@ function quitarMencionesNegadas(texto) {
 // "ventana, redonda" (coma) y "ventana en forma de arco" sí.
 const NOUN_VENTANA = '(?:ventanas?|ventanal(?:es)?|panos?|vanos?|tragaluces?)';
 const FORMA_IRREG = '(?:circular(?:es)?|redond[ao]s?|ovalad[ao]s?|hexagonal(?:es)?|octogonal(?:es)?|triangular(?:es)?|semicircular(?:es)?|arcos?)';
-// [Ronda 2.2 — Codex] + con/debe/ser/tenga/completamente/totalmente: "con forma de arco",
-// "completamente redonda" y "que debe ser redonda" volvían a colarse (regresión vs v1).
-// "con" NO reabre los falsos positivos: "con vista al arco" corta en "vista" (no conector).
-const CONECTOR_FORMA = '(?:que|sean?|es|ser|debe(?:n)?|tengan?|de|del|al|con|tipo|estilo|formas?|en|un[oa]?|el|la|los|las|bien|muy|medi[oa]s?|completamente|totalmente)';
+// [Ronda 2.3 — Codex] Heurística clave: SIN artículos en los conectores. Un artículo antes
+// de la forma ("con EL arco decorativo") señala que la forma es un OBJETO de la escena, no
+// el adjetivo de la ventana pedida — eso separa "con forma de arco" (producto, escala) de
+// "con el arco decorativo al fondo" (contexto, no escala). Ventana {0,4} para cadenas
+// naturales largas ("que tenga forma de", "que debe ser completamente").
+const CONECTOR_FORMA = '(?:que|sean?|es|ser|debe(?:n)?|tengan?|de|con|en|tipo|estilo|formas?|formatos?|bien|muy|medi[oa]s?|completamente|totalmente)';
 const FORMA_CERCA_RE = new RegExp(
-  `\\b${NOUN_VENTANA}[\\s,]+(?:${CONECTOR_FORMA}[\\s,]+){0,3}${FORMA_IRREG}\\b` +
-  `|\\b${FORMA_IRREG}[\\s,]+(?:${CONECTOR_FORMA}[\\s,]+){0,3}${NOUN_VENTANA}\\b`
+  `\\b${NOUN_VENTANA}[\\s,]+(?:${CONECTOR_FORMA}[\\s,]+){0,4}${FORMA_IRREG}\\b` +
+  `|\\b${FORMA_IRREG}[\\s,]+(?:${CONECTOR_FORMA}[\\s,]+){0,4}${NOUN_VENTANA}\\b`
 );
 
 function resultado(categoria) {

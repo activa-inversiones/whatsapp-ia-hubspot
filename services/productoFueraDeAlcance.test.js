@@ -159,3 +159,16 @@ test('Ronda 2.2: conectores que la 2.1 dejó fuera (regresión Codex)', () => {
   assert.equal(detectarProductoFueraDeAlcance('una ventana con vista al arco').fueraDeAlcance, false);
   assert.equal(detectarProductoFueraDeAlcance('la ventana junto al arco decorativo').fueraDeAlcance, false);
 });
+
+test('Ronda 2.3: tortura Codex — artículo = objeto de escena, no producto', () => {
+  // cadenas naturales largas SÍ escalan (ventana {0,4} + conectores sin artículo)
+  assert.equal(detectarProductoFueraDeAlcance('ventana que tenga forma de arco').categoria, 'forma_irregular');
+  assert.equal(detectarProductoFueraDeAlcance('ventana que debe ser completamente redonda').categoria, 'forma_irregular');
+  // artículo antes de la forma = objeto del entorno → NO escala
+  assert.equal(detectarProductoFueraDeAlcance('una ventana con el arco decorativo al fondo').fueraDeAlcance, false);
+  // y todo lo anterior sigue igual
+  assert.equal(detectarProductoFueraDeAlcance('ventana con forma de arco').categoria, 'forma_irregular');
+  assert.equal(detectarProductoFueraDeAlcance('ventana completamente redonda').categoria, 'forma_irregular');
+  assert.equal(detectarProductoFueraDeAlcance('una ventana con vista al arco').fueraDeAlcance, false);
+  assert.equal(detectarProductoFueraDeAlcance('la ventana junto al arco decorativo').fueraDeAlcance, false);
+});
