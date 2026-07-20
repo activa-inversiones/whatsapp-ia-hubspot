@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 import { TOOL_DEFS, runTool, resolverMedidasMm, conUnitPrice } from './tools.js';
 import { calcularCotizacion, calcularPorArea, APERTURAS } from './engine-client.js';
 
-const APERTURAS_ESPERADAS = ['CORREDERA', 'PROYECTANTE', 'FIJA', 'BATIENTE', 'OSCILOBATIENTE'];
+// [Ronda 3 2026-07-20] + puertas abatibles (BOM real S60 del motor, dato del dueño).
+const APERTURAS_ESPERADAS = ['CORREDERA', 'PROYECTANTE', 'FIJA', 'BATIENTE', 'OSCILOBATIENTE', 'PUERTA', 'PUERTA_INTERIOR', 'PUERTA_DOBLE'];
 
 function getToolDef(name) {
   const def = TOOL_DEFS.find((t) => t.function && t.function.name === name);
@@ -117,27 +118,54 @@ test("calcularCotizacion rechaza serie ANDES sin tocar la red", async () => {
   }
 });
 
-test("runTool: PUERTA no cotiza y notifica a Marcelo por código", async () => {
+// [Ronda 3 2026-07-20] PUERTA ya se cotiza (BOM real S60 del motor). El mock del fetch
+// simula la respuesta del Engine — nada de red real en este test.
+test("runTool: PUERTA cotiza vía el Engine (mock) sin escalar", async () => {
+  const originalFetch = globalThis.fetch;
+  let bodyEnviado = null;
+  globalThis.fetch = async (url, opts) => {
+    bodyEnviado = JSON.parse(opts.body);
+    const payload = { ok: true, total_clp: 750000, producto_label: 'Puerta abatible exterior con zapata S60', serie: 'S60' };
+    return {
+      ok: true, status: 200,
+      json: async () => payload,
+      text: async () => JSON.stringify(payload), // httpJson parsea res.text()
+    };
+  };
   const avisos = [];
-  const resultado = await runTool(
-    'calcular_cotizacion',
-    { tipo: 'PUERTA', medidas_texto: '900x2100 mm', cantidad: 1 },
-    {
-      notifyMarcelo: async (payload) => {
-        avisos.push(payload);
-        return { sent: true };
-      },
-    },
-  );
+  try {
+    const resultado = await runTool(
+      'calcular_cotizacion',
+      { tipo: 'PUERTA', medidas_texto: '900x2100 mm', cantidad: 1, descripcion_producto: 'una puerta abatible de PVC para la entrada' },
+      { notifyMarcelo: async (p) => { avisos.push(p); } },
+    );
+    assert.equal(resultado.ok, true, `debe cotizar, fue: ${JSON.stringify(resultado)}`);
+    assert.ok(resultado.unit_price > 0);
+    assert.equal(avisos.length, 0, 'una puerta abatible NO escala');
+    assert.equal(bodyEnviado.tipo, 'PUERTA', 'el Engine debe recibir tipo PUERTA, no CORREDERA');
+    assert.equal(bodyEnviado.serie, 'S60', 'puertas van por serie S60');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
-  assert.equal(resultado.ok, false);
-  assert.equal(resultado.requiere_revision, true);
-  assert.equal(resultado.escalate, true);
-  assert.equal(resultado.reason, 'producto_fuera_de_alcance:puerta');
-  assert.equal(resultado.category, 'puerta');
-  assert.match(resultado.message, /Marcelo.*precio exacto/i);
-  assert.equal(avisos.length, 1);
-  assert.equal(avisos[0].reason, 'oliver_gpt:producto_fuera_de_alcance:puerta');
+test("runTool: puerta PLEGABLE sigue escalando a Marcelo por código", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('RED PROHIBIDA'); };
+  const avisos = [];
+  try {
+    const resultado = await runTool(
+      'calcular_cotizacion',
+      { tipo: 'PUERTA', medidas_texto: '900x2100 mm', descripcion_producto: 'una puerta plegable tipo acordeón' },
+      { notifyMarcelo: async (p) => { avisos.push(p); } },
+    );
+    assert.equal(resultado.ok, false);
+    assert.equal(resultado.reason, 'producto_fuera_de_alcance:plegable');
+    assert.equal(avisos.length, 1);
+    assert.equal(avisos[0].reason, 'oliver_gpt:producto_fuera_de_alcance:plegable');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 // (c) calcularPorArea sin glass_id rechaza.

@@ -36,11 +36,16 @@ test("mapAperturaToEngine: desconocido → CORREDERA (default)", () => {
   assert.equal(mapAperturaToEngine(undefined), "CORREDERA");
 });
 
-test("mapAperturaToEngine: PUERTA no cae silenciosamente en CORREDERA", () => {
-  assert.throws(
-    () => mapAperturaToEngine("puerta de patio"),
-    /producto_fuera_de_alcance:puerta/i,
-  );
+// [Ronda 3 2026-07-20] Las puertas ABATIBLES ya se cotizan (BOM real S60 verificado en
+// vivo; dato del dueño). Lo prohibido sigue siendo caer a CORREDERA en silencio.
+test("mapAperturaToEngine: puertas abatibles mapean a su tipo real, JAMÁS a CORREDERA", () => {
+  assert.equal(mapAperturaToEngine("puerta de patio"), "PUERTA");
+  assert.equal(mapAperturaToEngine("puerta abatible"), "PUERTA");
+  assert.equal(mapAperturaToEngine("puerta interior"), "PUERTA_INTERIOR");
+  assert.equal(mapAperturaToEngine("puerta doble"), "PUERTA_DOBLE");
+  assert.equal(mapAperturaToEngine("puerta de dos hojas"), "PUERTA_DOBLE");
+  // la puerta CORREDERA de patio SÍ es el producto sliding:
+  assert.equal(mapAperturaToEngine("puerta corredera"), "CORREDERA");
 });
 
 test("mapAperturaToEngine: abatible → BATIENTE, fijo → FIJA, oscilo → OSCILOBATIENTE", () => {
@@ -89,16 +94,16 @@ test("mapAperturaToEngine: NUNCA devuelve TERMOPANEL y siempre es apertura váli
 // ── (b) GOLDEN EN VIVO ───────────────────────────────────────────
 // 10 × ventana proyectante 1m² (1000x1000) nogal, comuna Temuco.
 // Referencia PDF real: ~3.3M CLP con IVA.
-test("priceAllEngine: PUERTA escala sin llamar al Engine ni entregar precio", async () => {
+test("priceAllEngine: puerta PLEGABLE sigue escalando sin llamar al Engine", async () => {
   const fetchOriginal = globalThis.fetch;
   let fetchCalls = 0;
   globalThis.fetch = async () => {
     fetchCalls += 1;
-    throw new Error("el Engine no debe llamarse para una puerta");
+    throw new Error("el Engine no debe llamarse para una puerta plegable");
   };
 
   const d = {
-    items: [{ product: "puerta de patio", measures: "900x2100mm", qty: 1 }],
+    items: [{ product: "puerta plegable de patio", measures: "900x2100mm", qty: 1 }],
     comuna: "Temuco",
   };
 
@@ -107,8 +112,8 @@ test("priceAllEngine: PUERTA escala sin llamar al Engine ni entregar precio", as
     assert.equal(fetchCalls, 0);
     assert.equal(res.ok, false);
     assert.equal(res.escalate, true);
-    assert.equal(res.reason, "producto_fuera_de_alcance:puerta");
-    assert.equal(res.category, "puerta");
+    assert.equal(res.reason, "producto_fuera_de_alcance:plegable");
+    assert.equal(res.category, "plegable");
     assert.equal(res.customer_message, MENSAJE_PRODUCTO_FUERA_DE_ALCANCE);
     assert.equal(res.total, null);
     assert.equal(d.items[0].unit_price, undefined);
@@ -116,6 +121,21 @@ test("priceAllEngine: PUERTA escala sin llamar al Engine ni entregar precio", as
   } finally {
     globalThis.fetch = fetchOriginal;
   }
+});
+
+// [Ronda 3 2026-07-20] GOLDEN EN VIVO de puertas (mismo patrón que el golden proyectante):
+// el motor cotiza la abatible con BOM real. Falla solo sin red (como el otro golden).
+test("GOLDEN EN VIVO: priceAllEngine puerta abatible 900x2100 → ok, total>0", async () => {
+  const d = {
+    items: [{ product: "PUERTA", measures: "900x2100mm", qty: 1 }],
+    comuna: "Temuco",
+  };
+  const res = await priceAllEngine(d, "+56900000001");
+  console.log("GOLDEN puerta total:", res.total);
+  assert.equal(res.ok, true, `esperado ok:true, fue: ${JSON.stringify(res)}`);
+  assert.ok(res.total > 0, "total de puerta debe ser > 0");
+  assert.equal(d.items[0].source, "activa_engine");
+  assert.ok(d.items[0].unit_price > 0);
 });
 
 test("GOLDEN EN VIVO: priceAllEngine 10× proyectante 1m² nogal Temuco → ok, total>0", async () => {
@@ -145,12 +165,11 @@ test("GOLDEN EN VIVO: priceAllEngine 10× proyectante 1m² nogal Temuco → ok, 
   assert.equal(it.total_price, res.total, "suma de líneas == total");
 });
 
-// [Ronda 2 2026-07-20] El enum REAL que V1 (index.js update_quote) pasa como product:
-// antes "PUERTA_1H"/"PUERTA_DOBLE" NO gatillaban la guarda ("_" rompía \b) y el cliente
-// recibía precio de CORREDERA por una puerta. Cazado por revisión cruzada.
-test("mapAperturaToEngine: PUERTA_1H / PUERTA_DOBLE (enum V1) tampoco caen a CORREDERA", () => {
-  assert.throws(() => mapAperturaToEngine("PUERTA_1H"), /producto_fuera_de_alcance:puerta/i);
-  assert.throws(() => mapAperturaToEngine("PUERTA_DOBLE"), /producto_fuera_de_alcance:puerta/i);
+// [Ronda 2→3 2026-07-20] El enum REAL de V1 (update_quote): en Ronda 2 escalaban (guarda);
+// en Ronda 3 mapean al BOM de puerta correcto. El invariante de siempre: JAMÁS CORREDERA.
+test("mapAperturaToEngine: PUERTA_1H / PUERTA_DOBLE (enum V1) mapean a puerta real", () => {
+  assert.equal(mapAperturaToEngine("PUERTA_1H"), "PUERTA");
+  assert.equal(mapAperturaToEngine("PUERTA_DOBLE"), "PUERTA_DOBLE");
 });
 
 // [Ronda 2 2026-07-20] La descripción LITERAL del cliente (descripcion_producto del tool)

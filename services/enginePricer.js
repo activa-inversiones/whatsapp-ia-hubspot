@@ -52,6 +52,16 @@ const APERTURAS_ENGINE = new Set([
  */
 function normTipoAperturaLocal(text) {
   const t = String(text || "").toLowerCase();
+  // [Ronda 3 2026-07-20] PUERTAS ABATIBLES — PRIMERO (antes del check "abatible": una
+  // "puerta abatible" es PUERTA, no ventana BATIENTE). "puerta corredera" = puerta de
+  // patio deslizante → sigue al ramo CORREDERA/SLIDING (ese sí es el producto sliding).
+  // Cubre el enum V1 (PUERTA_1H / PUERTA_DOBLE, con "_" ya normalizado a espacio aguas
+  // arriba en la guarda, y acá por includes) y texto libre chileno.
+  if (t.includes("puerta") && !t.includes("corredera") && !t.includes("corrediz")) {
+    if (t.includes("interior")) return "PUERTA_INTERIOR";
+    if (t.includes("doble") || /\b(?:2|dos)\s*hojas?\b/.test(t)) return "PUERTA_DOBLE";
+    return "PUERTA";
+  }
   if (t.includes("abatible") || t.includes("abatir")) return "ABATIBLE";
   if (t.includes("oscilobatiente") || t.includes("oscilo")) return "OSCILOBATIENTE";
   if (t.includes("proyectante") || t.includes("proy")) return "PROYECTANTE";
@@ -90,6 +100,14 @@ export function mapAperturaToEngine(product) {
       return "FIJA";
     case "CORREDERA":
       return "CORREDERA";
+    // [Ronda 3 2026-07-20] Puertas abatibles: el motor las cotiza con BOM real S60
+    // (verificado en vivo). Pasan tal cual — mapSerieToEngine las manda a S60.
+    case "PUERTA":
+      return "PUERTA";
+    case "PUERTA_INTERIOR":
+      return "PUERTA_INTERIOR";
+    case "PUERTA_DOBLE":
+      return "PUERTA_DOBLE";
     // BASCULANTE, PLEGABLE y cualquier otro → default seguro
     default:
       return "CORREDERA";

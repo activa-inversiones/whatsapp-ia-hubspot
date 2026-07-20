@@ -82,7 +82,10 @@ export function detectarProductoFueraDeAlcance(textoCliente, normalizados = {}) 
   if (/(?:^|[ _])formas?_irregulares?(?:[ _]|$)/.test(senalEstructurada)) {
     return resultado('forma_irregular');
   }
-  if (/^puerta(?:_|$)/.test(tipo)) return resultado('puerta');
+  // [Ronda 3 2026-07-20] 'puerta' YA NO es fuera de alcance: el motor cotiza las
+  // abatibles con BOM real S60 (PUERTA / PUERTA_INTERIOR / PUERTA_DOBLE, verificado en
+  // vivo + dato del dueño). Las puertas PLEGABLES siguen cayendo por la categoría
+  // 'plegable' de abajo; mosquiteras de puerta por 'mosquitero'.
   if (/(?:^|[ _])(?:andes|zenia|venau|sistema_american[ao]|american[ao])(?:[ _]|$)/.test(senalEstructurada)) {
     return resultado('linea_no_soportada');
   }
@@ -107,13 +110,6 @@ export function detectarProductoFueraDeAlcance(textoCliente, normalizados = {}) 
   if (/\bformas?\s+irregulares?\b/.test(textoDetectable) || FORMA_CERCA_RE.test(textoDetectable)) {
     return resultado('forma_irregular');
   }
-
-  const puertaEnTexto =
-    /^\s*(?:(?:una?|la|\d+)\s+)?puertas?\b/.test(textoDetectable) ||
-    /\b(?:quiero|necesito|busco)\s+(?:cotizar\s+)?(?:(?:una?|la|dos|tres|\d+)\s+)?puertas?\b/.test(textoDetectable) ||
-    /\b(?:cotizar|cotizacion|precio|valor|fabricar|instalar)\s+(?:de\s+|para\s+)?(?:(?:una?|la|dos|tres|\d+)\s+)?puertas?\b/.test(textoDetectable);
-
-  if (puertaEnTexto) return resultado('puerta');
 
   const lineaNoSoportada =
     /\b(?:linea|serie|sistema|modelo|estilo)\s+(?:de\s+)?(?:andes|zenia|venau|american[ao])\b/.test(textoDetectable) ||

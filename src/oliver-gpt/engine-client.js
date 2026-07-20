@@ -23,12 +23,19 @@ const DEFAULT_TIMEOUT_MS = 15000;
 
 // Aperturas validas para el campo 'tipo' de /calculate y /calculate-by-area.
 // TERMOPANEL NO esta aqui a proposito: es un vidrio, no una apertura.
+// [Ronda 3 2026-07-20] + PUERTAS ABATIBLES: el motor las cotiza desde junio (BOM real
+// clonado de Winart v58692-97, quoteEngine S60_BOM_TYPES + limites 800-1970x1500-2400)
+// pero este enum las dejaba inalcanzables — verificado en vivo: PUERTA 900x2100 y
+// PUERTA_DOBLE 1400x2100 cotizan con BOM completo. Dato confirmado por el dueno.
 export const APERTURAS = Object.freeze([
   'CORREDERA',
   'PROYECTANTE',
   'FIJA',
   'BATIENTE',
   'OSCILOBATIENTE',
+  'PUERTA',           // abatible exterior con zapata, 1 hoja (default del motor)
+  'PUERTA_INTERIOR',  // abatible interior, 1 hoja
+  'PUERTA_DOBLE',     // abatible 2 hojas con zapata
 ]);
 
 // Familias de vidrio validas para listarVidrios.

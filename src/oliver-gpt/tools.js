@@ -223,7 +223,8 @@ export const TOOL_DEFS = [
         'valor que debes pasar como unit_price a generar_pdf_cotizacion. NO uses total_con_iva ' +
         'ni precio_por_m2. EL VIDRIO Y LA SERIE SE ELIGEN SOLOS (por tamaño y ambiente) — NO ' +
         'pases glass_id ni serie; NO uses listar_vidrios. Solo manda tipo + medidas_texto + (si es baño) ambiente. ' +
-        'SOLO cotiza ventanas estándar S60/SLIDING. Para mosquiteros, puertas, plegables, formas ' +
+        'Cotiza ventanas estándar S60/SLIDING y PUERTAS ABATIBLES (PUERTA 1 hoja / PUERTA_DOBLE 2 hojas / ' +
+        'PUERTA_INTERIOR). Para mosquiteros, plegables (incluida puerta plegable), formas ' +
         'irregulares o líneas Andes, Zenia, Americana y Venau, NO ejecutes esta tool: llama notificar_marcelo.',
       parameters: {
         type: 'object',
@@ -232,8 +233,9 @@ export const TOOL_DEFS = [
             type: 'string',
             enum: [...APERTURAS], // enum cerrado SIN TERMOPANEL
             description:
-              'Apertura de la ventana. Uno de: CORREDERA, PROYECTANTE, FIJA, BATIENTE, ' +
-              'OSCILOBATIENTE. NUNCA TERMOPANEL ni PUERTA: una puerta se escala a Marcelo sin cotizar.',
+              'Apertura. Ventanas: CORREDERA, PROYECTANTE, FIJA, BATIENTE, OSCILOBATIENTE. ' +
+              'Puertas abatibles: PUERTA (1 hoja exterior), PUERTA_DOBLE (2 hojas), PUERTA_INTERIOR. ' +
+              'La puerta corredera de patio va como CORREDERA. NUNCA TERMOPANEL (es vidrio).',
           },
           ancho_mm: { type: 'number', description: 'Ancho en milimetros (tu mejor estimación). El sistema RE-CONVIERTE desde medidas_texto si lo incluyes, así que prioriza enviar medidas_texto.' },
           alto_mm: { type: 'number', description: 'Alto en milimetros (tu mejor estimación). El sistema RE-CONVIERTE desde medidas_texto si lo incluyes.' },
@@ -249,9 +251,9 @@ export const TOOL_DEFS = [
             type: 'string',
             description:
               'COPIA LITERAL de las palabras del cliente describiendo QUÉ producto pide ' +
-              '(ej: "puerta ventana plegable para el quincho", "ventana corredera de 2 hojas"). ' +
+              '(ej: "ventanal plegable para el quincho", "puerta abatible de dos hojas"). ' +
               'INCLÚYELA SIEMPRE: activa una verificación determinista del alcance del catálogo ' +
-              '(mosquiteros, puertas, plegables, formas irregulares y líneas no soportadas se ' +
+              '(mosquiteros, plegables, formas irregulares y líneas no soportadas se ' +
               'escalan solas a Marcelo). No la resumas ni la traduzcas: copia al cliente.',
           },
           glass_id: {

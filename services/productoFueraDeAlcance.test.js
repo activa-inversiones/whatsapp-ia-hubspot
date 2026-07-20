@@ -8,10 +8,12 @@ import {
   MENSAJE_PRODUCTO_FUERA_DE_ALCANCE,
 } from './productoFueraDeAlcance.js';
 
-test('detecta las cinco categorías mínimas fuera del alcance', () => {
+// [Ronda 3 2026-07-20] 'puerta' dejó de ser categoría: las abatibles se cotizan con BOM
+// real S60 (dato del dueño, verificado en vivo). Quedan 4 categorías fuera de alcance.
+test('detecta las cuatro categorías fuera del alcance', () => {
   const casos = [
     ['Quiero una mosquitera para la ventana', 'mosquitero'],
-    ['Necesito cotizar una puerta de patio', 'puerta'],
+    ['Necesito una puerta plegable para el patio', 'plegable'],
     ['Busco una ventana plegable tipo acordeón', 'plegable'],
     ['Quiero una ventana circular para el living', 'forma_irregular'],
     ['Quiero cotizar una ventana de la línea Andes', 'linea_no_soportada'],
@@ -44,10 +46,9 @@ test('detecta variantes chilenas precisas sin depender del LLM', () => {
 });
 
 test('usa tipo y serie normalizados como segunda señal determinística', () => {
-  assert.equal(
-    detectarProductoFueraDeAlcance('', { tipo: 'PUERTA' }).categoria,
-    'puerta',
-  );
+  // [Ronda 3] los tipos de puerta abatible del motor YA NO son fuera de alcance:
+  assert.equal(detectarProductoFueraDeAlcance('', { tipo: 'PUERTA' }).fueraDeAlcance, false);
+  assert.equal(detectarProductoFueraDeAlcance('', { tipo: 'PUERTA_DOBLE' }).fueraDeAlcance, false);
   assert.equal(
     detectarProductoFueraDeAlcance('', { serie: 'SOLO_MOSQUITERO' }).categoria,
     'mosquitero',
@@ -104,10 +105,11 @@ test('el mensaje al cliente es honesto, comercial y no dice "no puedo"', () => {
 
 // ── [Ronda 2 2026-07-20] Regresiones de la revisión cruzada (Codex + workflow 152 agentes) ──
 
-test('Ronda 2: el enum REAL de update_quote (V1) dispara la guarda — antes era no-op', () => {
-  // "_" cuenta como \w y rompía \b: PUERTA_1H pasaba y se cotizaba como CORREDERA.
-  assert.equal(detectarProductoFueraDeAlcance('PUERTA_1H').categoria, 'puerta');
-  assert.equal(detectarProductoFueraDeAlcance('PUERTA_DOBLE').categoria, 'puerta');
+test('Ronda 3: el enum REAL de update_quote (V1) ya NO escala — las puertas se cotizan', () => {
+  // Ronda 2 las escalaba (mejor que cotizar mal); Ronda 3 abre el BOM real de puertas:
+  // ahora pasan la guarda y enginePricer las mapea a PUERTA / PUERTA_DOBLE (ver su suite).
+  assert.equal(detectarProductoFueraDeAlcance('PUERTA_1H').fueraDeAlcance, false);
+  assert.equal(detectarProductoFueraDeAlcance('PUERTA_DOBLE').fueraDeAlcance, false);
 });
 
 test('Ronda 2: falsos negativos cazados — ventanal singular y ventana americana', () => {
