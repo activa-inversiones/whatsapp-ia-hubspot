@@ -60,27 +60,39 @@ function normTipoAperturaLocal(text) {
   //      ("ventana para la puerta de la cocina"), el producto es la VENTANA;
   //      "puerta ventana" (puerta primero) sí es puerta;
   //  (c) deslizantes: corredera/corrediza/deslizante/sliding → ramo CORREDERA/SLIDING.
-  const tPuerta = t.replace(/\b(?:no\s+(?:quiero|necesito|busco)|sin|que\s+no\s+sea)\s+(?:(?:una?|la|el)\s+)?puertas?\b/g, " ");
-  const iPuerta = tPuerta.indexOf("puerta");
-  const iVentana = tPuerta.search(/ventan/);
-  if (iPuerta >= 0 && (iVentana < 0 || iPuerta < iVentana) &&
-      !/corredera|corrediz|deslizant|desliza|sliding/.test(t)) {
-    if (t.includes("interior")) return "PUERTA_INTERIOR";
-    if (t.includes("doble") || /\b(?:2|dos)\s*hojas?\b/.test(t)) return "PUERTA_DOBLE";
+  // [Ronda 3.2 — Codex] Limpiar FRASES NEGADAS COMPLETAS (sustantivo + SUS MODIFICADORES)
+  // y usar el texto limpio en TODAS las ramas: antes "no quiero puerta DOBLE, necesito
+  // puerta simple" dejaba vivo el "doble" (→ PUERTA_DOBLE mal) y "no quiero puerta
+  // ABATIBLE, necesito ventana corredera" dejaba vivo "abatible" (→ BATIENTE mal).
+  const tl = t.replace(
+    /\b(?:no\s+(?:quiero|necesito|busco)|sin|que\s+no\s+sea)\s+(?:(?:una?|la|el)\s+)?(?:puertas?|ventanas?|ventanal(?:es)?)(?:\s+(?:abatibles?|dobles?|simples?|interior(?:es)?|exterior(?:es)?|correderas?|corredizas?|deslizantes?|fij[ao]s?|batientes?|oscilobatientes?|proyectantes?|basculantes?|plegables?|de\s+(?:una|dos|1|2)\s+hojas?))*\b/g,
+    " "
+  );
+  const iPuerta = tl.indexOf("puerta");
+  const iVentana = tl.search(/ventan/);
+  // "cambiar/reemplazar X POR Y": el producto pedido es Y aunque aparezca después
+  // ("reemplazar la ventana por una puerta abatible" ES una puerta — regresión Codex).
+  const porPuerta = /\b(?:por|hacia)\s+(?:una?\s+|la\s+)?puertas?\b/.test(tl);
+  const porVentana = /\b(?:por|hacia)\s+(?:una?\s+|la\s+)?ventan/.test(tl);
+  if (iPuerta >= 0 && !porVentana &&
+      (porPuerta || iVentana < 0 || iPuerta < iVentana) &&
+      !/corredera|corrediz|deslizant|desliza|sliding/.test(tl)) {
+    if (tl.includes("interior")) return "PUERTA_INTERIOR";
+    if (tl.includes("doble") || /\b(?:2|dos)\s*hojas?\b/.test(tl)) return "PUERTA_DOBLE";
     return "PUERTA";
   }
-  if (t.includes("abatible") || t.includes("abatir")) return "ABATIBLE";
-  if (t.includes("oscilobatiente") || t.includes("oscilo")) return "OSCILOBATIENTE";
-  if (t.includes("proyectante") || t.includes("proy")) return "PROYECTANTE";
+  if (tl.includes("abatible") || tl.includes("abatir")) return "ABATIBLE";
+  if (tl.includes("oscilobatiente") || tl.includes("oscilo")) return "OSCILOBATIENTE";
+  if (tl.includes("proyectante") || tl.includes("proy")) return "PROYECTANTE";
   // [FIX 2026-06-24 — BUG RAÍZ COTIZADOR] El enum real del bot es "FIJA"/"BATIENTE", pero antes
   // solo se matcheaba "fijo"/"abatible" → "FIJA" y "BATIENTE" caían al fallback CORREDERA y se
   // cotizaban (y rotulaban serie SLIDING) como CORREDERA: precio ~2x. Explica el caso 0064/0065/0066.
   // Probado: _test-apertura-bug.mjs (RED→GREEN). Ahora cubre fija/fijas/fijo/fijos y batiente.
-  if (/\bfij[ao]s?\b/.test(t) || t.includes("marco fijo")) return "FIJO";
-  if (t.includes("corredera") || t.includes("corrediz") || t.includes("sliding") || t.includes("deslizan")) return "CORREDERA";
-  if (t.includes("batiente")) return "ABATIBLE"; // (oscilobatiente ya capturado arriba)
-  if (t.includes("basculante")) return "BASCULANTE";
-  if (t.includes("plegable")) return "PLEGABLE";
+  if (/\bfij[ao]s?\b/.test(tl) || tl.includes("marco fijo")) return "FIJO";
+  if (tl.includes("corredera") || tl.includes("corrediz") || tl.includes("sliding") || tl.includes("deslizan")) return "CORREDERA";
+  if (tl.includes("batiente")) return "ABATIBLE"; // (oscilobatiente ya capturado arriba)
+  if (tl.includes("basculante")) return "BASCULANTE";
+  if (tl.includes("plegable")) return "PLEGABLE";
   return "CORREDERA"; // más común
 }
 
@@ -378,8 +390,24 @@ export async function priceAllEngine(d, customer_id = "") {
       return { escalada: true };
     }
 
-    // 2) Validación de fabricación (igual que priceAll → marca y escala)
-    const dim = validateDimensionsLocal(item.product, m.ancho_mm, m.alto_mm);
+    // 2a) [Ronda 3.2 — Codex] Resolver el TIPO (con cinturón de descripción) ANTES de
+    // validar medidas: una puerta 900x2200 con product=CORREDERA se clampaba al máximo
+    // de VENTANA (2150) y después se cotizaba como PUERTA — límites equivocados.
+    let tipo = mapAperturaToEngine(item.product);
+    // Cinturón asimétrico LA DESCRIPCIÓN MANDA (solo hacia puerta): si el LLM contradijo
+    // el prompt (tipo de ventana + descripción "puerta abatible"), se corrige al BOM de
+    // puerta. Nunca al revés (normTipoAperturaLocal ya trae negación + sustantivo-primero
+    // + regla "por X" + deslizantes).
+    if (item.descripcion && !String(tipo).startsWith("PUERTA")) {
+      try {
+        const tipoDesc = mapAperturaToEngine(item.descripcion);
+        if (String(tipoDesc).startsWith("PUERTA")) tipo = tipoDesc;
+      } catch { /* descripción fuera de alcance: la guarda del paso 0 ya la habría cazado */ }
+    }
+
+    // 2) Validación de fabricación (igual que priceAll → marca y escala) — con el TIPO
+    // resuelto, no con el texto crudo (límites de puerta ≠ límites de ventana).
+    const dim = validateDimensionsLocal(tipo, m.ancho_mm, m.alto_mm);
     if (dim && dim.escalate) {
       item.price_warning = dim.message;
       item.source = "activa_engine"; item.confidence = "manual";
@@ -399,20 +427,7 @@ export async function priceAllEngine(d, customer_id = "") {
       if (dim.clampMinAlto)  m.alto_mm  = Math.max(m.alto_mm,  dim.clampMinAlto);
     }
 
-    // 3) Mapeo de apertura (NUNCA TERMOPANEL) + serie de perfiles + nº hojas
-    let tipo = mapAperturaToEngine(item.product);
-    // [Ronda 3.1 — cinturón Codex] LA DESCRIPCIÓN MANDA (asimétrico, solo hacia puerta):
-    // si el LLM contradijo el prompt y mandó tipo de VENTANA con una descripción que
-    // dice claramente puerta abatible, se corrige al BOM de puerta — sin este cinturón
-    // el cliente recibía precio de corredera por una puerta (reproducido en revisión).
-    // Nunca opera al revés (una descripción ambigua jamás convierte ventana en puerta:
-    // normTipoAperturaLocal ya aplica negación + sustantivo-primero + deslizantes).
-    if (item.descripcion && !String(tipo).startsWith("PUERTA")) {
-      try {
-        const tipoDesc = mapAperturaToEngine(item.descripcion);
-        if (String(tipoDesc).startsWith("PUERTA")) tipo = tipoDesc;
-      } catch { /* descripción fuera de alcance: ya la habría cazado la guarda del paso 0 */ }
-    }
+    // 3) Serie de perfiles + nº hojas (el tipo ya quedó resuelto en 2a)
     const serie = mapSerieToEngine(tipo);     // CORREDERA→SLIDING, resto→S60
     const hojas = detectHojas(item.product);  // 3 hojas → triple riel; undefined → motor decide
 

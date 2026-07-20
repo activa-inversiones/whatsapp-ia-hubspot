@@ -130,8 +130,8 @@ test("GOLDEN EN VIVO: priceAllEngine puerta abatible 900x2100 → ok, total>0", 
     items: [{ product: "PUERTA", measures: "900x2100mm", qty: 1 }],
     comuna: "Temuco",
   };
+  if (!(await engineVivo())) { t.skip("Engine no alcanzable (sin red); golden omitido"); return; }
   const res = await priceAllEngine(d, "+56900000001");
-  if (goldenSinRed(res, d)) { t.skip("Engine no disponible (sin red); golden omitido"); return; }
   console.log("GOLDEN puerta total:", res.total);
   assert.equal(res.ok, true, `esperado ok:true, fue: ${JSON.stringify(res)}`);
   assert.ok(res.total > 0, "total de puerta debe ser > 0");
@@ -139,11 +139,26 @@ test("GOLDEN EN VIVO: priceAllEngine puerta abatible 900x2100 → ok, total>0", 
   assert.ok(d.items[0].unit_price > 0);
 });
 
-// [Ronda 3.1] Gate offline para los goldens EN VIVO: sin red no fallan, se saltan
-// (hallazgo Codex: rompían npm test en sandboxes sin acceso al Engine).
-function goldenSinRed(res, d) {
-  const w = String((d.items?.[0]?.price_warning) || res?.error || "");
-  return !res?.ok && /motor|red|network|fetch/i.test(w);
+// [Ronda 3.2 — Codex] Gate por SONDA de red real (no por texto del warning): la versión
+// anterior también tragaba HTTP 500 y totales inválidos porque sus warnings contienen
+// "motor". Ahora: si la sonda alcanza el Engine, el golden corre COMPLETO y un 500 o un
+// total inválido FALLAN (como corresponde); solo la falta de conectividad hace skip.
+let _engineVivo = null;
+async function engineVivo() {
+  if (_engineVivo !== null) return _engineVivo;
+  try {
+    const base = (process.env.ACTIVA_ENGINE_URL || "https://ops.activalabs.ai").replace(/\/$/, "");
+    const r = await fetch(`${base}/api/quotes/calculate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tipo: "FIJA", ancho_mm: 1000, alto_mm: 1000, glass_id: 34 }),
+      signal: AbortSignal.timeout(6000),
+    });
+    _engineVivo = r.ok;
+  } catch {
+    _engineVivo = false;
+  }
+  return _engineVivo;
 }
 
 test("GOLDEN EN VIVO: priceAllEngine 10× proyectante 1m² nogal Temuco → ok, total>0", async (t) => {
@@ -154,8 +169,8 @@ test("GOLDEN EN VIVO: priceAllEngine 10× proyectante 1m² nogal Temuco → ok, 
     comuna: "Temuco",
   };
 
+  if (!(await engineVivo())) { t.skip("Engine no alcanzable (sin red); golden omitido"); return; }
   const res = await priceAllEngine(d, "+56900000000");
-  if (goldenSinRed(res, d)) { t.skip("Engine no disponible (sin red); golden omitido"); return; }
 
   // Registramos el total para inspección manual vs PDF (~3.3M con IVA).
   console.log("GOLDEN total:", res.total, "| res:", JSON.stringify(res));
@@ -247,6 +262,42 @@ test("Ronda 3.1: cinturón LA DESCRIPCIÓN MANDA — tipo CORREDERA + desc puert
     };
     await priceAllEngine(d2);
     assert.equal(bodyEnviado.tipo, "FIJA", "una ventana con 'puerta' de ubicación sigue siendo ventana");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// ── [Ronda 3.2 2026-07-20] Torturas de la 3ª revisión Codex ──
+
+test("Ronda 3.2: la negación limpia el sustantivo Y SUS MODIFICADORES", () => {
+  assert.equal(mapAperturaToEngine("no quiero puerta doble, necesito puerta simple"), "PUERTA");
+  assert.equal(mapAperturaToEngine("no quiero puerta abatible, necesito ventana corredera"), "CORREDERA");
+  assert.equal(mapAperturaToEngine("no quiero ventana fija, quiero una corredera"), "CORREDERA");
+});
+
+test('Ronda 3.2: "cambiar/reemplazar X por Y" — el producto es Y en ambas direcciones', () => {
+  assert.equal(mapAperturaToEngine("reemplazar la ventana por una puerta abatible exterior"), "PUERTA");
+  assert.equal(mapAperturaToEngine("cambiar la puerta por una ventana corredera"), "CORREDERA");
+  assert.equal(mapAperturaToEngine("cambiar la puerta vieja por una puerta doble"), "PUERTA_DOBLE");
+});
+
+test("Ronda 3.2: el cinturón usa límites de PUERTA al validar medidas (no clampa a 2150)", async () => {
+  const originalFetch = globalThis.fetch;
+  let bodyEnviado = null;
+  globalThis.fetch = async (url, opts) => {
+    bodyEnviado = JSON.parse(opts.body);
+    const payload = { ok: true, total_clp: 800000, producto_label: "Puerta abatible exterior con zapata S60" };
+    return { ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) };
+  };
+  try {
+    const d = {
+      items: [{ product: "CORREDERA", measures: "900x2200mm", qty: 1, descripcion: "una puerta abatible exterior" }],
+      comuna: "Temuco",
+    };
+    const res = await priceAllEngine(d);
+    assert.equal(res.ok, true);
+    assert.equal(bodyEnviado.tipo, "PUERTA");
+    assert.equal(bodyEnviado.alto_mm, 2200, "2200 cabe en el límite de puerta (2400): NO debe clamparse a 2150 de ventana");
   } finally {
     globalThis.fetch = originalFetch;
   }
