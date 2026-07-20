@@ -154,7 +154,12 @@ async function engineVivo() {
       body: JSON.stringify({ tipo: "FIJA", ancho_mm: 1000, alto_mm: 1000, glass_id: 34 }),
       signal: AbortSignal.timeout(6000),
     });
-    _engineVivo = r.ok;
+    // [3.3 — Codex] Sonda de CONECTIVIDAD pura: CUALQUIER respuesta HTTP (incluido un
+    // 500) significa que el Engine es alcanzable → los goldens CORREN y un 500 real
+    // los hace FALLAR. Solo la falta de red (catch) hace skip. Antes `r.ok` marcaba
+    // "sin red" ante un 500 y el verde de la suite escondía un motor caído.
+    void r;
+    _engineVivo = true;
   } catch {
     _engineVivo = false;
   }
@@ -301,4 +306,14 @@ test("Ronda 3.2: el cinturón usa límites de PUERTA al validar medidas (no clam
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("Ronda 3.3: negación POSPUESTA chilena (torturas Codex 4ª ronda)", () => {
+  assert.equal(mapAperturaToEngine("quiero puerta simple, no puerta doble"), "PUERTA");
+  assert.equal(mapAperturaToEngine("puerta doble no; puerta simple sí"), "PUERTA");
+  // "como no, puerta doble" = afirmación chilena — la coma la protege del strip
+  assert.equal(mapAperturaToEngine("como no, puerta doble"), "PUERTA_DOBLE");
+  // y las negaciones previas siguen bien
+  assert.equal(mapAperturaToEngine("no quiero puerta doble, necesito puerta simple"), "PUERTA");
+  assert.equal(mapAperturaToEngine("no quiero puerta abatible, necesito ventana corredera"), "CORREDERA");
 });

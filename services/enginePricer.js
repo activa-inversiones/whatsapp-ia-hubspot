@@ -64,10 +64,18 @@ function normTipoAperturaLocal(text) {
   // y usar el texto limpio en TODAS las ramas: antes "no quiero puerta DOBLE, necesito
   // puerta simple" dejaba vivo el "doble" (→ PUERTA_DOBLE mal) y "no quiero puerta
   // ABATIBLE, necesito ventana corredera" dejaba vivo "abatible" (→ BATIENTE mal).
-  const tl = t.replace(
-    /\b(?:no\s+(?:quiero|necesito|busco)|sin|que\s+no\s+sea)\s+(?:(?:una?|la|el)\s+)?(?:puertas?|ventanas?|ventanal(?:es)?)(?:\s+(?:abatibles?|dobles?|simples?|interior(?:es)?|exterior(?:es)?|correderas?|corredizas?|deslizantes?|fij[ao]s?|batientes?|oscilobatientes?|proyectantes?|basculantes?|plegables?|de\s+(?:una|dos|1|2)\s+hojas?))*\b/g,
-    " "
-  );
+  // [3.3] La negación también viene POSPUESTA en chileno: "…, no puerta doble" (sin
+  // verbo) y "puerta doble no; puerta simple sí" (negación después del sustantivo).
+  const MODS = '(?:\\s+(?:abatibles?|dobles?|simples?|interior(?:es)?|exterior(?:es)?|correderas?|corredizas?|deslizantes?|fij[ao]s?|batientes?|oscilobatientes?|proyectantes?|basculantes?|plegables?|de\\s+(?:una|dos|1|2)\\s+hojas?))*';
+  const tl = t
+    .replace(
+      new RegExp(`\\b(?:no\\s+(?:quiero|necesito|busco)|no|sin|que\\s+no\\s+sea)\\s+(?:(?:una?|la|el)\\s+)?(?:puertas?|ventanas?|ventanal(?:es)?)${MODS}\\b`, 'g'),
+      " "
+    )
+    .replace(
+      new RegExp(`\\b(?:puertas?|ventanas?|ventanal(?:es)?)${MODS}[\\s,;]*\\b(?:no|tampoco)\\b`, 'g'),
+      " "
+    );
   const iPuerta = tl.indexOf("puerta");
   const iVentana = tl.search(/ventan/);
   // "cambiar/reemplazar X POR Y": el producto pedido es Y aunque aparezca después
