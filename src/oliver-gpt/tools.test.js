@@ -504,3 +504,52 @@ test('(u-6) unidad_confirmada acepta separador "por" ("350 por 600")', () => {
   assert.equal(r.ancho_mm, 350);
   assert.equal(r.alto_mm, 600);
 });
+
+// ── [Ronda 2 2026-07-20] descripcion_producto → guarda determinista de alcance ──
+// El LLM copia las palabras LITERALES del cliente; la guarda las ve ANTES del Engine.
+// Sin red: fetch prohibido demuestra que la escalación es previa a cualquier llamada.
+
+test('Ronda 2: calcular_cotizacion con descripcion_producto fuera de alcance escala a Marcelo sin red', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('RED PROHIBIDA EN ESTE TEST'); };
+  const avisos = [];
+  try {
+    const r = await runTool('calcular_cotizacion', {
+      tipo: 'CORREDERA',
+      medidas_texto: '120x100 cm',
+      descripcion_producto: 'una puerta ventana plegable para el quincho',
+    }, { notifyMarcelo: async (x) => { avisos.push(x); } });
+    assert.equal(r.ok, false);
+    assert.equal(r.requiere_revision, true);
+    assert.equal(avisos.length, 1, 'notifyMarcelo debe dispararse exactamente 1 vez');
+    assert.match(String(avisos[0].reason), /producto_fuera_de_alcance/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Ronda 2: calcular_por_area con descripcion_producto fuera de alcance escala ANTES de derivar medidas (sin red)', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('RED PROHIBIDA EN ESTE TEST'); };
+  const avisos = [];
+  try {
+    const r = await runTool('calcular_por_area', {
+      tipo: 'CORREDERA',
+      area_m2: 2,
+      glass_id: 34,
+      descripcion_producto: 'quiero una mosquitera para la corredera',
+    }, { notifyMarcelo: async (x) => { avisos.push(x); } });
+    assert.equal(r.ok, false);
+    assert.equal(avisos.length, 1);
+    assert.match(String(avisos[0].reason), /producto_fuera_de_alcance:mosquitero/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Ronda 2: descripcion_producto declarado en el schema de ambas tools (additionalProperties:false lo exige)', () => {
+  for (const name of ['calcular_cotizacion', 'calcular_por_area']) {
+    const def = getToolDef(name);
+    assert.ok(def.function.parameters.properties.descripcion_producto, `${name} debe declarar descripcion_producto`);
+  }
+});

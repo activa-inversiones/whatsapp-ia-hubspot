@@ -225,3 +225,48 @@ test('una salida temprana de escalacion espera la atribucion antes de persistir 
   assert.equal(deps.conv.get('56911112222').state.gclid, 'gclid-before-early-return');
   assert.equal(deps.conv.get('56911112222').state.landingRefCaptured, true);
 });
+
+// ── [Ronda 2 2026-07-20] Re-atribución: un cliente ANTIGUO que vuelve clickeando OTRO
+// anuncio refresca ctwa_clid/ad_id (antes ctwaCaptured congelaba el click viejo para
+// siempre — hallazgo high de la revisión cruzada Codex). El saludo frío JAMÁS sale
+// (history no vacío). El lead se re-ingesta para que sales-os actualice por COALESCE.
+test('Ronda 2: referral NUEVO refresca atribución de cliente antiguo sin re-saludar', async () => {
+  const persisted = [];
+  const leadEvents = [];
+  const deps = {
+    conv: new Map(), seen: new Set(), locks: new Map(),
+    parseInbound: () => ({ ok: true, from: '56933334444', text: 'vengo del otro anuncio', msgId: 'wamid.CTWA.NEW', type: 'text' }),
+    parseLandingRef: () => ({ hasRef: false }),
+    parseReferral: () => ({ isCtwaAd: true, ctwaClid: 'CLID_NUEVO', adId: 'AD_NUEVO', headline: '' }),
+    saludoForReferral: () => ({ angle: 'fabrica', saludo: 'SALUDO_QUE_NO_DEBE_SALIR' }),
+    sendWhatsAppText: async () => ({ ok: true }),
+    loadSession: async () => ({
+      history: [{ role: 'user', content: 'hola' }, { role: 'assistant', content: 'hola, soy Oliver' }],
+      state: { ctwaCaptured: true, ctwa_clid: 'CLID_VIEJO', ad_id: 'AD_VIEJO' },
+    }),
+    persistSession: (fromArg, session) => { persisted.push(session); },
+    bridge: {
+      getConversationControl: async () => ({ ai_paused: false, operator_status: 'ai' }),
+      pushConversationEvent: async () => ({ ok: true }),
+      pushLeadEvent: async (p) => { leadEvents.push(p); return { ok: true }; },
+      pushQuoteEvent: async () => ({ ok: true }),
+    },
+    handleTurn: async ({ history, userText, state }) => ({
+      reply: 'sigo con tu cotización',
+      history: [...history, { role: 'user', content: userText }, { role: 'assistant', content: 'ok' }],
+      toolCalls: [],
+      state: { ...state },
+    }),
+  };
+  const body = { entry: [{ changes: [{ value: { messages: [{ from: '56933334444', id: 'wamid.CTWA.NEW', type: 'text', text: { body: 'vengo del otro anuncio' } }] } }] }] };
+
+  await handleWebhook({ body }, makeRes(), deps);
+
+  const last = persisted[persisted.length - 1];
+  assert.ok(last, 'la sesión debe persistirse al final del turno');
+  assert.equal(last.state.ctwa_clid, 'CLID_NUEVO', 'el click nuevo debe pisar al viejo');
+  assert.equal(String(last.state.ad_id), 'AD_NUEVO');
+  assert.ok(leadEvents.length >= 1, 'el lead debe re-ingestarse con el click nuevo');
+  assert.ok(!JSON.stringify(last.history).includes('SALUDO_QUE_NO_DEBE_SALIR'),
+    'un cliente con historial NUNCA recibe el saludo frío del anuncio');
+});

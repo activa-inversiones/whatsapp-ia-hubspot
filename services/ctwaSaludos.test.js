@@ -63,8 +63,12 @@ test('SALUDO: env CTWA_AD_ANGLE_MAP con JSON roto → se ignora, default sigue',
 test('SALUDO: [tribunal] typo en el env sobre un ID de Ronda 1 NO apaga el saludo — cae al fallback por headline', () => {
   const env = { CTWA_AD_ANGLE_MAP: '{"120251614379310092":"termcio"}' }; // typo humano en Railway
   assert.equal(detectAngle({ adId: '120251614379310092', headline: '¿Sus ventanas lloran en invierno?' }, env), 'termico');
-  // sin headline rescatable → null limpio (saludo normal), nunca basura
-  assert.equal(saludoForReferral({ adId: '120251614379310092' }, env), null);
+  // [Ronda 2 2026-07-20] sin headline rescatable, un ID que el DEFAULT conoce cae al
+  // DEFAULT (antes: null → el typo apagaba ese anuncio). Un ad_id desconocido con typo
+  // y sin headline sigue dando null limpio (nunca basura).
+  assert.deepEqual(saludoForReferral({ adId: '120251614379310092' }, env),
+    { angle: 'termico', saludo: SALUDOS.termico });
+  assert.equal(saludoForReferral({ adId: '999888777' }, { CTWA_AD_ANGLE_MAP: '{"999888777":"termcio"}' }), null);
 });
 
 test('SALUDO: [tribunal] orden de patrones es load-bearing — doble match gana termico sobre fabrica', () => {
@@ -82,4 +86,12 @@ test('SALUDO: los 3 IDs del default calzan con RUTA-ANUNCIOS (anti-typo)', () =>
   assert.deepEqual(Object.keys(DEFAULT_AD_ANGLE_MAP).sort(), [
     '120251614379310092', '120251614381940092', '120251614384990092',
   ]);
+});
+
+// [Ronda 2 2026-07-20] Un typo del env sobre un ad_id que el DEFAULT sí conoce ya no
+// apaga el saludo de ese anuncio (antes el merge pisaba el default y, sin headline
+// reconocible, terminaba en null — hallazgo de la revisión cruzada Codex).
+test('SALUDO: typo del env sobre un ad_id del DEFAULT cae al default, no a null', () => {
+  const env = { CTWA_AD_ANGLE_MAP: '{"120251614379310092":"termcio"}' };
+  assert.equal(detectAngle({ adId: '120251614379310092', headline: '' }, env), 'termico');
 });

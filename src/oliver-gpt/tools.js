@@ -21,6 +21,7 @@ import {
 } from '../sales-agent/whatsapp-adapter.js';
 import { generatePremiumQuotePdf } from '../../services/quotePdf.js';
 import { priceAllEngine } from '../../services/enginePricer.js'; // [2026-06-14] pricer completo de V1 (serie SLIDING+hojas+vidrio auto)
+import { detectarProductoFueraDeAlcance } from '../../services/productoFueraDeAlcance.js'; // [Ronda 2] guarda temprana en calcular_por_area
 
 // Rango plausible de una ventana/puerta en mm. Fuera de esto = dato dudoso (no cotizar a ciegas).
 const MEDIDA_MIN_MM = 150;
@@ -244,6 +245,15 @@ export const TOOL_DEFS = [
               'INCLÚYELO SIEMPRE: el sistema lo convierte a milímetros de forma determinista (NO confíes en tu propia conversión). ' +
               'No inventes números: copia lo que dijo el cliente.',
           },
+          descripcion_producto: {
+            type: 'string',
+            description:
+              'COPIA LITERAL de las palabras del cliente describiendo QUÉ producto pide ' +
+              '(ej: "puerta ventana plegable para el quincho", "ventana corredera de 2 hojas"). ' +
+              'INCLÚYELA SIEMPRE: activa una verificación determinista del alcance del catálogo ' +
+              '(mosquiteros, puertas, plegables, formas irregulares y líneas no soportadas se ' +
+              'escalan solas a Marcelo). No la resumas ni la traduzcas: copia al cliente.',
+          },
           glass_id: {
             type: 'integer',
             description: 'IGNORADO — el vidrio se elige AUTOMÁTICAMENTE por tamaño/ambiente. No lo pases.',
@@ -302,6 +312,12 @@ export const TOOL_DEFS = [
           proporcion: {
             type: 'string',
             description: 'Proporcion ancho:alto deseada, p. ej. "1.5:1". Opcional.',
+          },
+          descripcion_producto: {
+            type: 'string',
+            description:
+              'COPIA LITERAL de las palabras del cliente describiendo QUÉ producto pide. ' +
+              'INCLÚYELA SIEMPRE: activa la verificación determinista de alcance del catálogo.',
           },
           color: { type: 'string', description: 'Color del perfil. Opcional.' },
           comuna: { type: 'string', description: 'Comuna de despacho/instalacion. Opcional.' },
@@ -645,7 +661,10 @@ export async function runTool(name, input = {}, ctx = {}) {
       const d = {
         // [2026-07-06 LOTE2] Sufijo "mm": medidas YA resueltas acá → normMeasuresLocal (priceAllEngine)
         // las toma LITERALES y no re-aplica su heurística ×10 (doble normalización cazada por el abogado).
-        items: [{ measures: `${med.ancho_mm}x${med.alto_mm}mm`, product: input.tipo, qty, color: input.color || '', ambiente: input.ambiente || '' }],
+        items: [{ measures: `${med.ancho_mm}x${med.alto_mm}mm`, product: input.tipo, qty, color: input.color || '', ambiente: input.ambiente || '',
+          // [Ronda 2 2026-07-20] texto LITERAL del cliente → la guarda de alcance del
+          // catálogo (enginePricer paso 0) por fin VE el producto real, no solo el enum.
+          descripcion: input.descripcion_producto || '' }],
         comuna: input.comuna || '',
         default_color: input.color || '',
       };
@@ -672,6 +691,18 @@ export async function runTool(name, input = {}, ctx = {}) {
     }
 
     case 'calcular_por_area': {
+      // [Ronda 2 2026-07-20] Guarda de alcance ANTES de derivar medidas: la derivación
+      // llama a la red y no tiene sentido para un producto que igual se escala.
+      const _guardArea = detectarProductoFueraDeAlcance(input.descripcion_producto || '', {
+        tipo: input.tipo, serie: input.serie,
+      });
+      if (_guardArea.fueraDeAlcance) {
+        return falloDeCotizacion(
+          { ok: false, escalate: true, reason: _guardArea.razon, category: _guardArea.categoria, error: _guardArea.mensajeCliente },
+          { price_warning: _guardArea.mensajeCliente },
+          ctx
+        );
+      }
       // [2026-06-14 FIX] Mismo criterio que calcular_cotizacion. El endpoint by-area del
       // motor cotiza con serie S60 (llamada incompleta, sin serie) → SUB-cotiza ~40%
       // (VERIFICADO en vivo: corredera 1.5m² da $207k vs $352k correcto). Por eso usamos
@@ -699,7 +730,8 @@ export async function runTool(name, input = {}, ctx = {}) {
       }
       const qtyArea = Math.max(1, Number(input.cantidad) || 1);   // [FIX 2026-06-19 COB-05] antes qty:1 fijo → cobraba 1/3 si pedían 3 iguales
       const d = {
-        items: [{ measures: `${ancho}x${alto}mm`, product: input.tipo, qty: qtyArea, color: input.color || '', ambiente: input.ambiente || '' }], // [LOTE2] sufijo mm = literal aguas abajo
+        items: [{ measures: `${ancho}x${alto}mm`, product: input.tipo, qty: qtyArea, color: input.color || '', ambiente: input.ambiente || '',
+          descripcion: input.descripcion_producto || '' }], // [LOTE2] sufijo mm = literal aguas abajo · [Ronda 2] descripcion → guarda de alcance
         comuna: input.comuna || '',
         default_color: input.color || '',
       };

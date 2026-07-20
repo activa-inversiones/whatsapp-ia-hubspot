@@ -105,5 +105,5 @@ test('pass1: system viaja con caché de prompt (cache_control ephemeral)', async
   await anthropicPass1({ system: 'PROMPT GRANDE', messages: [{ role: 'user', content: 'hi' }], tools: [], _client: fake });
   assert.ok(Array.isArray(captured.system));
   assert.equal(captured.system[0].cache_control.type, 'ephemeral');
-  assert.equal(captured.max_tokens, 1800); // obligatorio (subido de 1000 para no truncar el JSON del tool)
+  assert.equal(captured.max_tokens, 4096); // [2026-07-20] alineado con el default real (engine-anthropic.js:163, subido por abf0ca9; env OLIVER_PASS1_MAX_TOKENS lo pisa)
 });

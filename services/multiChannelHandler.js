@@ -548,6 +548,10 @@ function channelRateOk(convKey) {
 
 // Purga periódica — evita memory leak (mismo espíritu que el cleanup de
 // index.js líneas 2585-2600: sin esto, los Map crecen sin límite).
+// [Ronda 2 2026-07-20] .unref(): el interval NO mantiene vivo el proceso — en producción
+// corre igual (el server siempre está vivo), pero cualquier test que importe este módulo
+// (vía channel-agent) ya no queda colgado esperando un interval de 5 min (causa real de
+// que `npm test` NUNCA terminara solo, cazada en la auditoría cruzada).
 setInterval(() => {
   const now = Date.now();
   for (const [id, ts] of _seenChannelMsgIds) {
@@ -556,7 +560,7 @@ setInterval(() => {
   for (const [id, r] of _rateByChannelSender) {
     if (now - r.resetAt > _RATE_WINDOW_MS * 5) _rateByChannelSender.delete(id);
   }
-}, 5 * 60_000);
+}, 5 * 60_000).unref();
 
 // ═══════════════════════════════════════════════════════════════════
 // 6c. REDACTAR ADJUNTOS ANTES DE LOGUEAR — [2026-07-13 sec]

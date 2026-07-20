@@ -77,6 +77,11 @@ export function detectAngle(ref, env = process.env) {
   // headline — sin esto, editar mal la var en Railway apagaba el saludo en silencio.
   const mapped = ref.adId ? map[String(ref.adId)] : null;
   if (mapped && Object.hasOwn(SALUDOS, mapped)) return mapped;
+  // [Ronda 2 2026-07-20] Si el env pisó con un valor INVÁLIDO un ad_id que el DEFAULT sí
+  // conoce, usar el default en vez de perder el saludo (el typo en Railway ya no apaga
+  // un anuncio de la Ronda 1; el fallback por headline sigue cubriendo al resto).
+  const porDefecto = ref.adId ? DEFAULT_AD_ANGLE_MAP[String(ref.adId)] : null;
+  if (porDefecto && Object.hasOwn(SALUDOS, porDefecto)) return porDefecto;
 
   // 2) keywords del headline (acento-insensible).
   const h = normalize(ref.headline);

@@ -12,9 +12,12 @@ const SIN_DETECCION = Object.freeze({
 });
 
 function normalizar(value) {
+  // El "_" cuenta como \w y rompe \b: "PUERTA_1H" (enum real de update_quote en V1)
+  // no matcheaba \bpuertas?\b y la guarda era un no-op para el enum. Se separa ac\u00e1.
   return String(value || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/_/g, ' ')
     .toLowerCase()
     .trim();
 }
@@ -25,9 +28,16 @@ function normalizarCodigo(value) {
 
 function quitarMencionesNegadas(texto) {
   const productoNegado =
-    /\b(?:sin|no\s+(?:quiero|necesito|busco|cotizar)|que\s+no\s+sea|no)\s+(?:(?:una?|la|el)\s+)?(?:mallas?\s+mosquiteras?|mosquiter[ao]s?|puertas?|(?:ventanas?|ventanales?)\s+plegables?|plegables?|tipo\s+acordeon|circular(?:es)?|redond[ao]s?|ovalad[ao]s?|hexagonal(?:es)?|arcos?|(?:linea|serie|sistema)\s+(?:andes|zenia|venau|american[ao]))\b/g;
+    /\b(?:sin(?:\s+(?:incluir|considerar|contemplar|agregar|contar\s+con))?|no\s+(?:quiero|necesito|busco|cotizar)|que\s+no\s+sea|no)\s+(?:(?:una?|la|el)\s+)?(?:mallas?\s+mosquiteras?|mosquiter[ao]s?|puertas?|(?:ventanas?|ventanal(?:es)?)\s+plegables?|plegables?|tipo\s+acordeon|circular(?:es)?|redond[ao]s?|ovalad[ao]s?|hexagonal(?:es)?|arcos?|(?:linea|serie|sistema)\s+(?:andes|zenia|venau|american[ao]))\b/g;
   return texto.replace(productoNegado, ' ');
 }
+
+// Sustantivo de ventana y formas irregulares, a ≤3 palabras de distancia (en cualquier orden).
+const NOUN_VENTANA = '(?:ventanas?|ventanal(?:es)?|panos?|vanos?|tragaluces?)';
+const FORMA_IRREG = '(?:circular(?:es)?|redond[ao]s?|ovalad[ao]s?|hexagonal(?:es)?|octogonal(?:es)?|triangular(?:es)?|semicircular(?:es)?|arcos?)';
+const FORMA_CERCA_RE = new RegExp(
+  `\\b${NOUN_VENTANA}\\s+(?:\\S+\\s+){0,3}?${FORMA_IRREG}\\b|\\b${FORMA_IRREG}\\s+(?:\\S+\\s+){0,3}?${NOUN_VENTANA}\\b`
+);
 
 function resultado(categoria) {
   return {
@@ -72,15 +82,17 @@ export function detectarProductoFueraDeAlcance(textoCliente, normalizados = {}) 
   }
 
   const productoPlegable =
-    /\b(?:ventanas?|ventanales?|puertas?)\s+plegables?\b/.test(textoDetectable) ||
-    /\bplegables?\s+(?:ventanas?|ventanales?|puertas?)\b/.test(textoDetectable) ||
+    /\b(?:ventanas?|ventanal(?:es)?|puertas?)\s+plegables?\b/.test(textoDetectable) ||
+    /\bplegables?\s+(?:ventanas?|ventanal(?:es)?|puertas?)\b/.test(textoDetectable) ||
     /\b(?:tipo|sistema)\s+acordeon\b/.test(textoDetectable) ||
     /\b(?:linea|serie|sistema)\s+(?:s60\s+)?plegables?\b/.test(textoDetectable);
   if (productoPlegable) return resultado('plegable');
 
-  const contextoVentana = /\b(?:ventanas?|ventanales?|panos?|vanos?|tragaluces?)\b/.test(textoDetectable);
-  const formaEspecifica = /\b(?:circular(?:es)?|redond[ao]s?|ovalad[ao]s?|hexagonal(?:es)?|octogonal(?:es)?|triangular(?:es)?|semicircular(?:es)?|arcos?)\b/.test(textoDetectable);
-  if (/\bformas?\s+irregulares?\b/.test(textoDetectable) || (contextoVentana && formaEspecifica)) {
+  // [Ronda 2 2026-07-20] Proximidad ≤3 palabras entre sustantivo y forma: antes bastaba
+  // que ambos aparecieran en CUALQUIER parte de la frase → "ventana proyectante al lado
+  // de un arco decorativo" escalaba una ventana cotizable (falso positivo de la revisión
+  // cruzada). "ventana redonda" y "una ventana que sea redonda" siguen detectando.
+  if (/\bformas?\s+irregulares?\b/.test(textoDetectable) || FORMA_CERCA_RE.test(textoDetectable)) {
     return resultado('forma_irregular');
   }
 
@@ -92,8 +104,11 @@ export function detectarProductoFueraDeAlcance(textoCliente, normalizados = {}) 
   if (puertaEnTexto) return resultado('puerta');
 
   const lineaNoSoportada =
-    /\b(?:linea|serie|sistema|modelo)\s+(?:de\s+)?(?:andes|zenia|venau|american[ao])\b/.test(textoDetectable) ||
-    /\b(?:andes|zenia|venau|american[ao])\s+(?:linea|serie|sistema|modelo)\b/.test(textoDetectable);
+    /\b(?:linea|serie|sistema|modelo|estilo)\s+(?:de\s+)?(?:andes|zenia|venau|american[ao])\b/.test(textoDetectable) ||
+    /\b(?:andes|zenia|venau|american[ao])\s+(?:linea|serie|sistema|modelo|estilo)\b/.test(textoDetectable) ||
+    // "ventana americana" a secas también es la línea no soportada (falso negativo cazado
+    // en revisión cruzada). "americana" sola SIN sustantivo de ventana no gatilla (ambigua).
+    /\b(?:ventanas?|ventanal(?:es)?)\s+american[ao]s?\b/.test(textoDetectable);
   if (lineaNoSoportada) return resultado('linea_no_soportada');
 
   return SIN_DETECCION;

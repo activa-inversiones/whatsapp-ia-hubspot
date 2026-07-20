@@ -328,10 +328,14 @@ export async function priceAllEngine(d, customer_id = "") {
     // 0) Alcance real del catálogo automático. Esta guarda corre ANTES de
     // normalizar apertura, validar medidas o llamar al Engine: nunca convierte
     // silenciosamente un producto desconocido en una ventana CORREDERA.
-    const fueraDeAlcance = detectarProductoFueraDeAlcance(item.product, {
-      tipo: item.tipo,
-      serie: item.serie,
-    });
+    // [Ronda 2 2026-07-20] item.descripcion = palabras LITERALES del cliente (llegan del
+    // tool vía descripcion_producto). Sin esto la guarda solo veía el enum ya colapsado
+    // (CORREDERA/...) y era inalcanzable para mosquitero/plegable/forma irregular/líneas
+    // en el camino GPT (hallazgo confirmado por revisión cruzada Codex+workflow).
+    const fueraDeAlcance = detectarProductoFueraDeAlcance(
+      [item.product, item.descripcion].filter(Boolean).join(' '),
+      { tipo: item.tipo, serie: item.serie }
+    );
     if (fueraDeAlcance.fueraDeAlcance) {
       item.price_warning = fueraDeAlcance.mensajeCliente;
       item.source = "activa_engine";

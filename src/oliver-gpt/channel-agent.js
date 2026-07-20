@@ -168,10 +168,13 @@ async function resolveInboundMediaEvent(mediaEntrante) {
     if (!mediaEntrante || !mediaEntrante.tipo || !mediaEntrante.guardado) return null;
     // saveMedia (mediaStore.js) nunca lanza y tiene timeout propio de 10s; el race de
     // 12s es solo un cinturón extra para que el persist jamás quede colgado por esto.
+    // [Ronda 2 2026-07-20] guardar el id y limpiar: sin esto cada media dejaba un timer
+    // de 12s vivo aunque saveMedia resolviera al tiro (misma familia que el de 50s).
+    let _mediaTimer = null;
     const saved = await Promise.race([
       Promise.resolve(mediaEntrante.guardado).catch(() => null),
-      new Promise((resolve) => setTimeout(resolve, 12000, null)),
-    ]);
+      new Promise((resolve) => { _mediaTimer = setTimeout(resolve, 12000, null); }),
+    ]).finally(() => { if (_mediaTimer) clearTimeout(_mediaTimer); });
     const mediaId = saved && saved.media && saved.media.id;
     if (!mediaId) return null;
     return {
@@ -311,6 +314,11 @@ export async function handleChannelTurn(
     if (!cached) {
       const fromStore = await safe('loadSession', () => loadSession(convKey));
       cached = fromStore || { history: [], state: {} };
+      // [Ronda 2 2026-07-20] Poblar el cache con la sesión hidratada (paridad con webhook.js).
+      // Sin esto, el catch de error de turno lee conv.get(k) → undefined en sesión fría y
+      // persistía state:{} — borrando gclid/fbclid/ctwa_clid guardados en Postgres cuando el
+      // modelo daba timeout/429 (hallazgo high de la revisión cruzada Codex).
+      conv.set(convKey, cached);
     }
     const history = Array.isArray(cached.history) ? cached.history : [];
     const rawState = cached.state && typeof cached.state === 'object' ? cached.state : {};
@@ -668,10 +676,14 @@ export async function handleChannelTurn(
     // [2026-06-14] Si el turno se cuelga (ej: 429 acumulados de OpenAI), no dejamos al
     // cliente esperando minutos: a los TURN_TIMEOUT_MS lanzamos → catch → fallback amable.
     const TURN_TIMEOUT_MS = Number(process.env.CHANNEL_TURN_TIMEOUT_MS) || 50000;
+    // [Ronda 2 2026-07-20] clearTimeout en finally: antes cada turno dejaba vivo hasta 50s
+    // un Timeout+Promise aunque el cerebro respondiera en 2s (fuga diagnosticada 07-19;
+    // sin doble-envío, pero acumulaba handles bajo tráfico y colgaba las suites de test).
+    let _turnTimer = null;
     const turn = await Promise.race([
       handleTurn({ history, userText: text, state, toolCtx }),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('turn_timeout')), TURN_TIMEOUT_MS)),
-    ]);
+      new Promise((_, rej) => { _turnTimer = setTimeout(() => rej(new Error('turn_timeout')), TURN_TIMEOUT_MS); }),
+    ]).finally(() => { if (_turnTimer) clearTimeout(_turnTimer); });
     let reply = turn?.reply || '';
     const newHistory = Array.isArray(turn?.history) ? turn.history : history;
     const newState = turn?.state && typeof turn.state === 'object' ? turn.state : state;

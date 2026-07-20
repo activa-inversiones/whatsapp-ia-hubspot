@@ -144,3 +144,35 @@ test("GOLDEN EN VIVO: priceAllEngine 10× proyectante 1m² nogal Temuco → ok, 
   assert.ok(it.unit_price > 0, "unit_price del item debe ser > 0");
   assert.equal(it.total_price, res.total, "suma de líneas == total");
 });
+
+// [Ronda 2 2026-07-20] El enum REAL que V1 (index.js update_quote) pasa como product:
+// antes "PUERTA_1H"/"PUERTA_DOBLE" NO gatillaban la guarda ("_" rompía \b) y el cliente
+// recibía precio de CORREDERA por una puerta. Cazado por revisión cruzada.
+test("mapAperturaToEngine: PUERTA_1H / PUERTA_DOBLE (enum V1) tampoco caen a CORREDERA", () => {
+  assert.throws(() => mapAperturaToEngine("PUERTA_1H"), /producto_fuera_de_alcance:puerta/i);
+  assert.throws(() => mapAperturaToEngine("PUERTA_DOBLE"), /producto_fuera_de_alcance:puerta/i);
+});
+
+// [Ronda 2 2026-07-20] La descripción LITERAL del cliente (descripcion_producto del tool)
+// llega a la guarda vía item.descripcion: un enum válido (CORREDERA) ya no la tapa.
+// Sin red: la guarda corre ANTES de llamar al Engine (fetch prohibido lo prueba).
+test("priceAllEngine: item.descripcion fuera de alcance escala SIN llamar a la red", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("RED PROHIBIDA EN ESTE TEST"); };
+  try {
+    const d = {
+      items: [{
+        measures: "1200x1000mm", product: "CORREDERA", qty: 1, color: "", ambiente: "",
+        descripcion: "una puerta ventana plegable para el quincho",
+      }],
+      comuna: "", default_color: "",
+    };
+    const r = await priceAllEngine(d);
+    assert.equal(r.ok, false);
+    assert.equal(r.escalate, true);
+    assert.match(String(r.reason), /producto_fuera_de_alcance/);
+    assert.equal(d.items[0].price_warning, MENSAJE_PRODUCTO_FUERA_DE_ALCANCE);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

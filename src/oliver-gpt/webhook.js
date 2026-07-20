@@ -573,6 +573,20 @@ export async function handleWebhook(req, res, deps = {}) {
           attachInboundToDeal(from, buffer, filename, mime).catch(() => {});
         });
       }
+      // [Ronda 2 2026-07-20] Capturar la atribución CTWA TAMBIÉN durante takeover: el primer
+      // contacto pagado mientras un humano atiende salía por este return ANTES del bloque (4b)
+      // y el ctwa_clid se perdía para siempre. Solo ingesta el lead (leads.ctwa_clid vía
+      // COALESCE en sales-os); NO toca la sesión ni invoca la IA (respeta el takeover).
+      safe('control.ctwaCapture', () => {
+        const _raw = rawMessage(req.body);
+        const _ref = _raw ? (deps.parseReferral || parseReferral)(_raw) : null;
+        if (_ref && _ref.isCtwaAd) {
+          const _bridge = deps.bridge || realBridge;
+          return _bridge.pushLeadEvent(
+            (deps.buildCtwaLeadPayload || buildCtwaLeadPayload)(from, _ref, { name: '' })
+          );
+        }
+      });
       log('info', 'control', `IA pausada (takeover humano) para ${from}; inbound persistido`);
       return;
     }
@@ -612,6 +626,10 @@ export async function handleWebhook(req, res, deps = {}) {
       fbclid: baseState.fbclid || null,
       ttclid: baseState.ttclid || null,
     };
+    // [Ronda 2 2026-07-20] Higiene: el flag one-shot del saludo JAMÁS debe venir hidratado
+    // de Postgres (vive en variable local este turno). Si una versión vieja lo persistió,
+    // se descarta acá — mata el "saludo tardío fantasma" señalado en revisión cruzada.
+    delete state.ctwa_saludo_pending;
 
     // ── (4b) CTWA — Captura atribución Meta Ads (Click-to-WhatsApp). ────────
     // Solo en el primer mensaje con referral de la sesión (flag ctwaCaptured,
@@ -625,7 +643,17 @@ export async function handleWebhook(req, res, deps = {}) {
       const _rawMsg = rawMessage(req.body);
       if (_rawMsg) {
         const _ref = (deps.parseReferral || parseReferral)(_rawMsg);
-        if (_ref && _ref.isCtwaAd && !state.ctwaCaptured) {
+        // [Ronda 2 2026-07-20] Re-atribución: un cliente que VUELVE clickeando OTRO anuncio
+        // (ctwa_clid o ad_id distinto) refresca la atribución — antes ctwaCaptured congelaba
+        // el click viejo para siempre y la cotización nueva se atribuía al anuncio antiguo
+        // (hallazgo cruzado Codex). El saludo sigue gateado por history vacío más abajo:
+        // el cliente antiguo NUNCA recibe re-saludo, solo se actualiza la atribución.
+        const _refNuevo = _ref && _ref.isCtwaAd && (
+          !state.ctwaCaptured ||
+          (_ref.ctwaClid && _ref.ctwaClid !== state.ctwa_clid) ||
+          (_ref.adId && String(_ref.adId) !== String(state.ad_id || ''))
+        );
+        if (_refNuevo) {
           state.ctwaCaptured = true;
           state.ctwa_clid = _ref.ctwaClid || null;
           state.ad_id = _ref.adId || null;
@@ -718,7 +746,10 @@ export async function handleWebhook(req, res, deps = {}) {
     const { userText, mediaResolved } = await resolveUserText(inbound, req.body, deps);
     if (!userText) {
       await landingAttributionReady;
-      if (state.landingRefCaptured) {
+      // [Ronda 2 2026-07-20] También persistir cuando la captura fue CTWA (antes solo
+      // landing-ref): un primer mensaje de anuncio SIN texto útil (imagen sin caption con
+      // visión caída) perdía el ctwa_clid recién capturado — reproducido en revisión cruzada.
+      if (state.landingRefCaptured || state.ctwaCaptured) {
         const attributionOnly = { history, state: { ...state, lastMessageAt: Date.now() } };
         conv.set(from, attributionOnly);
         persistSessionFn(from, attributionOnly, deps);
@@ -1407,6 +1438,10 @@ export async function handleWebhook(req, res, deps = {}) {
     const _pdfCall = toolCalls.find((t) => t.name === 'generar_pdf_cotizacion' && t.result && t.result.message);
     if (_pdfCall) {
       reply = _pdfCall.result.message;                       // entrega exitosa O "dame un momentito" si el folio no salió
+      // [Ronda 2 2026-07-20] Primer turno CTWA que ya genera PDF: anteponer el saludo aprobado
+      // del anuncio en vez de tragárselo. No viola el anti-re-saludo del [FIX 2026-06-19]:
+      // _ctwaSaludoTurn solo existe con history VACÍO (primera interacción de un lead pagado).
+      if (_ctwaSaludoTurn) reply = `${_ctwaSaludoTurn}\n\n${reply}`;
       if (_pdfCall.result.ok) newState.pending_quote = null; // solo limpiar si realmente se entregó (si falló, dejar para reintento)
     }
 

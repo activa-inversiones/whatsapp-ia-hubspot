@@ -101,3 +101,35 @@ test('el mensaje al cliente es honesto, comercial y no dice "no puedo"', () => {
   assert.match(MENSAJE_PRODUCTO_FUERA_DE_ALCANCE, /Marcelo.*personalmente.*precio exacto/i);
   assert.doesNotMatch(MENSAJE_PRODUCTO_FUERA_DE_ALCANCE, /no puedo/i);
 });
+
+// ── [Ronda 2 2026-07-20] Regresiones de la revisión cruzada (Codex + workflow 152 agentes) ──
+
+test('Ronda 2: el enum REAL de update_quote (V1) dispara la guarda — antes era no-op', () => {
+  // "_" cuenta como \w y rompía \b: PUERTA_1H pasaba y se cotizaba como CORREDERA.
+  assert.equal(detectarProductoFueraDeAlcance('PUERTA_1H').categoria, 'puerta');
+  assert.equal(detectarProductoFueraDeAlcance('PUERTA_DOBLE').categoria, 'puerta');
+});
+
+test('Ronda 2: falsos negativos cazados — ventanal singular y ventana americana', () => {
+  assert.equal(detectarProductoFueraDeAlcance('un ventanal plegable para el quincho').categoria, 'plegable');
+  assert.equal(detectarProductoFueraDeAlcance('quiero una ventana americana').categoria, 'linea_no_soportada');
+});
+
+test('Ronda 2: negación con verbo NO escala — "sin incluir malla mosquitera"', () => {
+  const r = detectarProductoFueraDeAlcance('una corredera de 2 hojas sin incluir malla mosquitera');
+  assert.equal(r.fueraDeAlcance, false);
+});
+
+test('Ronda 2: proximidad de forma — adyacente y cercana detectan, lejana NO', () => {
+  assert.equal(detectarProductoFueraDeAlcance('una ventana que sea redonda').categoria, 'forma_irregular');
+  assert.equal(
+    detectarProductoFueraDeAlcance('ventana proyectante al lado de un arco decorativo').fueraDeAlcance,
+    false,
+  );
+});
+
+test('Ronda 2: los valores legítimos del enum V1 siguen pasando', () => {
+  for (const p of ['CORREDERA', 'PROYECTANTE', 'ABATIBLE', 'OSCILOBATIENTE', 'MARCO_FIJO']) {
+    assert.equal(detectarProductoFueraDeAlcance(p).fueraDeAlcance, false, p);
+  }
+});

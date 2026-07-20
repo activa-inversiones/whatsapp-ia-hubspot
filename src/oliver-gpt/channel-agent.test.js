@@ -31,6 +31,10 @@ function mkDeps(overrides = {}) {
     sendChannelDocument: async (...a) => { log.attachments.push(a); return { ok: true, messageId: 'mid1' }; },
     upsertZohoDeal: async () => 'deal1',
     addZohoNote: async () => {},
+    // [Ronda 2 2026-07-20] SIN este mock, cada test con PDF llamaba a la API REAL de Zoho
+    // (channel-agent.js:220 default = zohoCommercial.attachPdfToDeal) → gastaba cuota de
+    // producción y dejaba el proceso colgado ("too many requests" visto en revisión cruzada).
+    attachPdfToDeal: async () => true,
     loadSession: async () => null,
     persistSession: (k, s) => { log.persisted.push([k, s]); },
     conv: new Map(),
