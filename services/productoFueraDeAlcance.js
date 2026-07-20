@@ -40,7 +40,10 @@ function quitarMencionesNegadas(texto) {
 // "ventana, redonda" (coma) y "ventana en forma de arco" sí.
 const NOUN_VENTANA = '(?:ventanas?|ventanal(?:es)?|panos?|vanos?|tragaluces?)';
 const FORMA_IRREG = '(?:circular(?:es)?|redond[ao]s?|ovalad[ao]s?|hexagonal(?:es)?|octogonal(?:es)?|triangular(?:es)?|semicircular(?:es)?|arcos?)';
-const CONECTOR_FORMA = '(?:que|sean?|es|de|del|al|tipo|estilo|formas?|en|un[oa]?|el|la|los|las|bien|muy|medi[oa]s?)';
+// [Ronda 2.2 — Codex] + con/debe/ser/tenga/completamente/totalmente: "con forma de arco",
+// "completamente redonda" y "que debe ser redonda" volvían a colarse (regresión vs v1).
+// "con" NO reabre los falsos positivos: "con vista al arco" corta en "vista" (no conector).
+const CONECTOR_FORMA = '(?:que|sean?|es|ser|debe(?:n)?|tengan?|de|del|al|con|tipo|estilo|formas?|en|un[oa]?|el|la|los|las|bien|muy|medi[oa]s?|completamente|totalmente)';
 const FORMA_CERCA_RE = new RegExp(
   `\\b${NOUN_VENTANA}[\\s,]+(?:${CONECTOR_FORMA}[\\s,]+){0,3}${FORMA_IRREG}\\b` +
   `|\\b${FORMA_IRREG}[\\s,]+(?:${CONECTOR_FORMA}[\\s,]+){0,3}${NOUN_VENTANA}\\b`

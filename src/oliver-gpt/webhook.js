@@ -578,18 +578,28 @@ export async function handleWebhook(req, res, deps = {}) {
       // y el ctwa_clid se perdía para siempre. Solo ingesta el lead (leads.ctwa_clid vía
       // COALESCE en sales-os); NO toca la sesión ni invoca la IA (respeta el takeover).
       // [Ronda 2.1 — Codex] CON await: fire-and-forget antes de un return podía morir con
-      // un redeploy/crash inmediato y perder la captura (el ACK a Meta ya se envió arriba,
-      // así que esperar el POST no bloquea al cliente).
-      await safe('control.ctwaCapture', () => {
-        const _raw = rawMessage(req.body);
-        const _ref = _raw ? (deps.parseReferral || parseReferral)(_raw) : null;
-        if (_ref && _ref.isCtwaAd) {
-          const _bridge = deps.bridge || realBridge;
-          return _bridge.pushLeadEvent(
-            (deps.buildCtwaLeadPayload || buildCtwaLeadPayload)(from, _ref, { name: '' })
-          );
-        }
-      });
+      // un redeploy/crash inmediato y perder la captura (el ACK a Meta ya se envió arriba).
+      // [Ronda 2.2 — Codex] tope de 5s: sin él, los retries del bridge retenían el mutex
+      // del teléfono hasta ~21,5s y el operador veía el mensaje SIGUIENTE con retraso.
+      // El POST típico cierra <1s; si excede el tope, el envío SIGUE en background (safe
+      // no se cancela) y solo se libera el lock — degrada al comportamiento anterior.
+      {
+        const _capture = safe('control.ctwaCapture', () => {
+          const _raw = rawMessage(req.body);
+          const _ref = _raw ? (deps.parseReferral || parseReferral)(_raw) : null;
+          if (_ref && _ref.isCtwaAd) {
+            const _bridge = deps.bridge || realBridge;
+            return _bridge.pushLeadEvent(
+              (deps.buildCtwaLeadPayload || buildCtwaLeadPayload)(from, _ref, { name: '' })
+            );
+          }
+        });
+        let _capTimer = null;
+        await Promise.race([
+          _capture,
+          new Promise((resolve) => { _capTimer = setTimeout(resolve, 5000); }),
+        ]).finally(() => { if (_capTimer) clearTimeout(_capTimer); });
+      }
       log('info', 'control', `IA pausada (takeover humano) para ${from}; inbound persistido`);
       return;
     }

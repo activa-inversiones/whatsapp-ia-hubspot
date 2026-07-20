@@ -150,3 +150,12 @@ test('Ronda 2.1: negaciones compuestas (Codex)', () => {
     false,
   );
 });
+
+test('Ronda 2.2: conectores que la 2.1 dejó fuera (regresión Codex)', () => {
+  assert.equal(detectarProductoFueraDeAlcance('ventana con forma de arco').categoria, 'forma_irregular');
+  assert.equal(detectarProductoFueraDeAlcance('ventana completamente redonda').categoria, 'forma_irregular');
+  assert.equal(detectarProductoFueraDeAlcance('ventana que debe ser redonda').categoria, 'forma_irregular');
+  // y los negativos de la 2.1 siguen sin escalar ("con" no reabre el falso positivo)
+  assert.equal(detectarProductoFueraDeAlcance('una ventana con vista al arco').fueraDeAlcance, false);
+  assert.equal(detectarProductoFueraDeAlcance('la ventana junto al arco decorativo').fueraDeAlcance, false);
+});
