@@ -86,7 +86,25 @@ export function quoteDataComplete(input = {}, state = {}) {
  */
 export function stripMontos(text) {
   if (!text) return text;
-  const RX = /\$\s?\d{1,3}(?:\.\d{3})+(?:\s?(?:CLP|clp|pesos?))?|\d{1,3}(?:\.\d{3})+\s?(?:CLP|clp|pesos?)|\d{1,3}(?:\.\d{3}){2,}/g;
+  // [Ronda 4 2026-07-20] Separador [.,]: el LLM escribió "$291,158 c/u" (coma gringa) y
+  // el regex solo entendía punto chileno → el precio LLEGÓ al cliente (caso real 07-19,
+  // conversation_messages, reportado por el dueño). Mismo diseño conservador: la coma
+  // exige grupo de EXACTAMENTE 3 dígitos, así "1,5 metros" / "120x150" no se tocan.
+  const RX = /\$\s?\d{1,3}(?:[.,]\d{3})+(?:\s?(?:CLP|clp|pesos?))?|\d{1,3}(?:[.,]\d{3})+\s?(?:CLP|clp|pesos?)|\d{1,3}(?:[.,]\d{3}){2,}/g;
   const out = text.replace(RX, '(valor en la propuesta formal)');
   return out === text ? text : out.replace(/\s{2,}/g, ' ').trim();
+}
+
+/**
+ * [Ronda 4 2026-07-20] Borra ACCIONES FALSAS que el LLM narra en vez de ejecutar:
+ * "[Enlace a la cotización]", "[Calculando propuesta...]", "[PDF adjunto]" — casos
+ * reales del 16-19 jul (el prompt las prohíbe pero el modelo las escribió igual).
+ * Determinista y conservador: solo corchetes que EMPIEZAN con esos verbos/sustantivos.
+ * Si el reply queda vacío, el fallback de respuesta-vacía existente toma el control.
+ */
+export function stripAccionesFalsas(text) {
+  if (!text) return text;
+  const RX = /\[\s*(?:enlace|link|url|calculando|generando|preparando|procesando|adjunto|pdf|documento|descarga)[^\]\n]*\]/gi;
+  const out = text.replace(RX, '');
+  return out === text ? text : out.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 }

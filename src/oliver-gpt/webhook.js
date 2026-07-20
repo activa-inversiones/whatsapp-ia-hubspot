@@ -54,7 +54,7 @@ import {
 } from '../../services/voiceBridge.js'; // [F4] voz saliente
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
-import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, quoteDataComplete } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent
+import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, stripAccionesFalsas, quoteDataComplete } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
 import { toFile as realToFile } from 'openai/uploads';
 import {
   loadSession as realLoadSession,
@@ -1464,6 +1464,9 @@ export async function handleWebhook(req, res, deps = {}) {
     // [#2 2026-06-21] Blindaje anti precio-suelto (REGLA #13): el monto va SOLO en el PDF. Si el LLM
     // dejó un monto CLP en el texto, lo borra antes de enviar (conservador: no toca medidas/folios).
     reply = stripMontos(reply);
+    // [Ronda 4 2026-07-20] Borrar acciones FALSAS narradas ("[Enlace a la cotización]",
+    // "[Calculando...]") — casos reales 16-19 jul: el LLM las escribió pese al ⛔ del prompt.
+    reply = stripAccionesFalsas(reply);
 
     // ── (7) Enviar respuesta por WhatsApp ───────────────────────────────
     // (7a) Texto: siempre se envía (canal garantizado).

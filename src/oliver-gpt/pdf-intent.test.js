@@ -1,7 +1,7 @@
 // node --test src/oliver-gpt/pdf-intent.test.js
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos } from './pdf-intent.js';
+import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, stripAccionesFalsas } from './pdf-intent.js';
 
 test('isPdfAffirmative: afirmaciones cortas y explícitas', () => {
   for (const t of ['sí', 'Si', 'dale', 'ok', 'perfecto', 'listo', 'envíamela', 'quiero el pdf', 'mándamela', 'la propuesta formal'])
@@ -105,4 +105,27 @@ test('itemsFromQuoteCalls: preserva referencial:true de la ventana fuera de est�
   const items = itemsFromQuoteCalls(calls, 'BLANCO');
   assert.equal(items[0].referencial, true, 'la fuera de estándar marca referencial');
   assert.equal(items[1].referencial, false, 'la normal NO');
+});
+
+// ── [Ronda 4 2026-07-20] Casos REALES del 16-19 jul (conversation_messages, BD viva) ──
+
+test('stripMontos Ronda 4: coma gringa — el "$291,158 c/u" real del 07-19 se borra', () => {
+  const out = stripMontos('- 3 Ventanas de 120x120 cm: $291,158 c/u');
+  assert.ok(!out.includes('291,158'), `el monto con coma debe borrarse, fue: "${out}"`);
+  assert.ok(out.includes('(valor en la propuesta formal)'));
+  // formato chileno sigue cubierto y los NO-montos siguen intactos
+  assert.ok(!stripMontos('total $1.234.567').includes('1.234.567'));
+  for (const t of ['mide 1,5 metros', 'ventana de 120x150', 'son 2,400 mm de alto', 'N° 0021']) {
+    assert.equal(stripMontos(t), t, `NO debió cambiar: "${t}"`);
+  }
+});
+
+test('stripAccionesFalsas: los corchetes falsos reales del 16-19 jul se borran', () => {
+  assert.equal(stripAccionesFalsas('Aquí tienes el documento:\n\n[Enlace a la cotización]'), 'Aquí tienes el documento:');
+  assert.ok(!stripAccionesFalsas('Un momento.\n\n[Calculando propuesta...]\n\nListo').includes('Calculando'));
+  assert.ok(!stripAccionesFalsas('[PDF adjunto]').includes('PDF adjunto'));
+  // corchetes LEGÍTIMOS no se tocan (folios, referencias, aclaraciones)
+  for (const t of ['su folio es [CM-FR-004-2026-0169]', 'medida [ancho x alto]', 'sin corchetes']) {
+    assert.equal(stripAccionesFalsas(t), t, `NO debió cambiar: "${t}"`);
+  }
 });

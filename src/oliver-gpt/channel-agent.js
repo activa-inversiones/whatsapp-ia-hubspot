@@ -36,7 +36,7 @@ import { loadSession as realLoadSession, persistSession as realPersistSession, r
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
 import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal } from '../../services/zohoCommercial.js';
 import { sendChannelDocument as realSendChannelDocument } from '../../services/multiChannelHandler.js';
-import { stripMontos, quoteDataComplete } from './pdf-intent.js'; // [#2] filtro anti precio-suelto + [PDF-RACE] guard de completitud (compartidos con webhook.js)
+import { stripMontos, stripAccionesFalsas, quoteDataComplete } from './pdf-intent.js'; // [#2] filtro anti precio-suelto + [PDF-RACE] guard de completitud + [Ronda 4] anti acciones-falsas (compartidos con webhook.js)
 // [2026-07-02 dedupe] escalación desde el módulo COMPARTIDO — las copias locales causaron el bug
 // del título viejo de Marcelo en IG/FB (se actualizó escalation.js y las copias quedaron atrás).
 import { escalationMessage, isEscalationRequest, sendEscalationTemplate } from './escalation.js';
@@ -718,6 +718,7 @@ export async function handleChannelTurn(
     }
     // [#2 2026-06-21] Blindaje anti precio-suelto (REGLA #13): borra cualquier monto CLP del texto antes de enviar.
     reply = stripMontos(reply);
+    reply = stripAccionesFalsas(reply); // [Ronda 4] "[Enlace...]"/"[Calculando...]" jamás llegan al cliente
 
     // ── Enviar respuesta por el canal ───────────────────────────────────
     // [2026-06-14] Capturamos el resultado: si el envío falla (ej: fuera de la ventana de
