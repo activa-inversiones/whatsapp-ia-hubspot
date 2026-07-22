@@ -1154,10 +1154,17 @@ async function logOliverEvent(eventType, payload = {}) {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 2500);
-    await fetch(`${SALES_OS_URL}/internal/oliver-event/log`, {
+    const r = await fetch(`${SALES_OS_URL}/internal/oliver-event/log`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        // [FIX 2026-07-22] Faltaba x-api-key: sales-os lee el token SOLO de x-api-key,
+        // query.token o Authorization Bearer (utils/security.js:73-77). Mandando únicamente
+        // x-internal-token, TODAS estas llamadas volvían 401 y el catch vacío las tragaba.
+        // Verificado en BD: los 91.769 registros de oliver_events son internos de sales-os
+        // (checkNewLeads.ok, eventDispatcher.init) — ni uno solo vino del bot.
+        // Se mandan los DOS headers, igual que ya lo hacen las llamadas de las líneas ~1185 y ~1206.
+        "x-api-key": SALES_OS_INGEST_TOKEN,
         "x-internal-token": SALES_OS_INGEST_TOKEN,
       },
       body: JSON.stringify({
@@ -1169,6 +1176,10 @@ async function logOliverEvent(eventType, payload = {}) {
       signal: ctrl.signal,
     });
     clearTimeout(timer);
+    // [FIX 2026-07-22] Se loguea el rechazo del servidor (401/403/500) porque eso es un bug
+    // de configuración que hay que ver. El catch de abajo sigue mudo a propósito: un timeout
+    // de red es ruido esperable y esta función se llama cientos de veces al día.
+    if (!r.ok) logErr("logOliverEvent", new Error(`sales-os respondió ${r.status}`));
   } catch {
     // silencioso, no bloqueamos flujo del bot por logging
   }
@@ -1877,14 +1888,27 @@ async function markLeadResponded(phone) {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 3000);
-    await fetch(`${SALES_OS_URL}/internal/lead-responded/${encodeURIComponent(phone)}`, {
+    // [FIX 2026-07-22] Mismo bug que en logOliverEvent: iba SOLO con x-internal-token y
+    // sales-os lee el token de x-api-key / query.token / Bearer (utils/security.js:73-77).
+    // Resultado: 401 en cada respuesta de Oliver → first_response_at nunca se marcaba
+    // (2 de 827 leads lo tienen) → el motor de SLA avisaba de leads YA respondidos.
+    // Es el mismo síntoma que el "SLA fantasma" del 2026-07-06 (caso Jorge Rios, 14 alertas
+    // con el PDF ya entregado): esa vez se arregló el lado del servidor, pero el llamado
+    // del bot seguía sin llegar. Se mandan los dos headers para no depender de uno solo.
+    const r = await fetch(`${SALES_OS_URL}/internal/lead-responded/${encodeURIComponent(phone)}`, {
       method: "POST",
-      headers: { "x-internal-token": SALES_OS_OPERATOR_TOKEN },
+      headers: {
+        "x-api-key": SALES_OS_OPERATOR_TOKEN,
+        "x-internal-token": SALES_OS_OPERATOR_TOKEN,
+      },
       signal: ctrl.signal,
     });
     clearTimeout(timer);
-  } catch {
-    // silencioso
+    // [FIX 2026-07-22] Antes esto era `catch {}` mudo y por eso el 401 pasó desapercibido
+    // durante semanas. Un fallo silencioso se ve igual que un sistema sano: ahora grita.
+    if (!r.ok) logErr("markLeadResponded", new Error(`sales-os respondió ${r.status}`));
+  } catch (e) {
+    logErr("markLeadResponded", e);
   }
 }
 
