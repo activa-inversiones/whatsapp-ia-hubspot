@@ -1147,6 +1147,16 @@ async function sendTemplateSolicitudResena(to, nombreCliente = "") {
   );
 }
 
+// [2026-07-23] Cadencia de seguimiento GRUPO 5 — recordatorio de vigencia de la cotización.
+// Plantilla "vigencia_precio" APROBADA en Meta (Marketing, es_CL) con {{1}} = primer nombre.
+// SIEMPRE 1 param con fallback → nunca falla por mismatch. La usa /internal/cadence del sales-os (paso 3).
+async function sendTemplateVigenciaPrecio(to, nombreCliente = "") {
+  const nombre = (String(nombreCliente || "").trim().split(/\s+/)[0]) || "cliente";
+  return _sendMetaTemplate(to, "vigencia_precio", "es_CL",
+    [{ type: "body", parameters: [{ type: "text", text: nombre }] }]
+  );
+}
+
 // v11.5-10: LOGGING ESTRUCTURADO de eventos críticos para Optimizer Etapa 2B
 // Bridge a tabla oliver_events vía /internal/oliver-event/log (a crear en server.js)
 async function logOliverEvent(eventType, payload = {}) {
@@ -5035,8 +5045,11 @@ app.post("/admin/send-template", express.json(), async (req, res) => {
       case "resena":
         result = await sendTemplateSolicitudResena(phone, customer_name);
         break;
+      case "vigencia_precio":
+        result = await sendTemplateVigenciaPrecio(phone, customer_name);
+        break;
       default:
-        return res.status(400).json({ ok: false, error: "unknown_template", available: ["recontacto_lead","seguimiento_cotizacion","confirmacion_cotizacion","envio_cotizacion","apertura_por_llamada","bienvenida_activa_inversiones","escalamiento_marcelo","informe_diario","solicitud_resena"] });
+        return res.status(400).json({ ok: false, error: "unknown_template", available: ["recontacto_lead","seguimiento_cotizacion","confirmacion_cotizacion","envio_cotizacion","apertura_por_llamada","bienvenida_activa_inversiones","escalamiento_marcelo","informe_diario","solicitud_resena","vigencia_precio"] });
     }
 
     fireAndForget("logOliverEvent.template_sent", logOliverEvent("template_sent_admin", { phone, template, ok: result.ok }));
@@ -5075,6 +5088,7 @@ app.post("/admin/send-template-bulk", express.json({ limit: "1mb" }), async (req
         case "bienvenida": single = await sendTemplateBienvenidaActiva(r.phone, r.customer_name); break;
         case "solicitud_resena":
         case "resena": single = await sendTemplateSolicitudResena(r.phone, r.customer_name); break;
+        case "vigencia_precio": single = await sendTemplateVigenciaPrecio(r.phone, r.customer_name); break;
         default: single = { ok: false, error: "unknown_template" };
       }
       results.push({ phone: r.phone, ok: single.ok, error: single.error });
