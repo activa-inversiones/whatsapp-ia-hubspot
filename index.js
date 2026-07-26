@@ -785,7 +785,7 @@ const ESCALATION_EMAIL = process.env.ESCALATION_EMAIL || "";
 // [ADMIN] OLIVER MODE — Control remoto + Cubicación Automática
 // ═══════════════════════════════════════════════════════════════════
 const ADMIN_PHONE = process.env.ADMIN_PHONE || "+56957296035";
-const ADMIN_PIN = process.env.ADMIN_PIN || "1976";
+const ADMIN_PIN = process.env.ADMIN_PIN || ""; // fail-closed: sin env, modo admin deshabilitado (#134)
 
 // ═══ Reglas dinámicas admin (editables desde WhatsApp) ═══
 const adminDynamicRules = [];
@@ -1328,6 +1328,7 @@ function normalizeAdminPhone(phone) {
 const cubicacionPendientes = new Map(); // { waId: { items, timestamp, tries } }
 
 function adminCheckAuth(phone, pin) {
+  if (!ADMIN_PIN) return false; // fail-closed (#134)
   const phoneNorm = normalizeWaId(phone);
   const adminNorm = normalizeAdminPhone(ADMIN_PHONE);
   return phoneNorm === adminNorm && pin === ADMIN_PIN;
@@ -1361,7 +1362,7 @@ const COMANDOS_HELP = `📋 *COMANDOS DE OLIVER (dueño)*
 function parseAdminCmd(text) {
   const s = String(text || "").trim().toUpperCase();
   
-  // OLIVER IN 1976 | OLIVER OFF 1976
+  // OLIVER IN <PIN> | OLIVER OFF <PIN>
   if (/^OLIVER\s+(IN|ON)\s+(\d+)/.test(s)) {
     const m = s.match(/^OLIVER\s+(IN|ON)\s+(\d+)/);
     return { type: "admin_in", pin: m[2] };
@@ -5008,6 +5009,7 @@ app.post("/internal/operator-send-catalog", async (req, res) => {
 app.post("/admin/send-template", express.json(), async (req, res) => {
   try {
     const pin = req.query.pin || req.body?.pin;
+    if (!ADMIN_PIN) return res.status(500).json({ ok: false, error: "ADMIN_PIN_missing" });
     if (pin !== ADMIN_PIN) return res.status(401).json({ ok: false, error: "invalid_pin" });
 
     const { template, phone, customer_name, quote_num, motivo, fecha, resumen, linea3, linea4 } = req.body || {};
@@ -5066,6 +5068,7 @@ app.post("/admin/send-template", express.json(), async (req, res) => {
 app.post("/admin/send-template-bulk", express.json({ limit: "1mb" }), async (req, res) => {
   try {
     const pin = req.query.pin || req.body?.pin;
+    if (!ADMIN_PIN) return res.status(500).json({ ok: false, error: "ADMIN_PIN_missing" });
     if (pin !== ADMIN_PIN) return res.status(401).json({ ok: false, error: "invalid_pin" });
 
     const { template, recipients } = req.body || {};

@@ -38,10 +38,11 @@
 
 ## CRITICA
 
-### [CON-01] ADMIN_PIN hardcodeado '1976' en prod: cualquiera puede disparar plantillas o escalaciones falsas
+### [CON-01] ADMIN_PIN hardcodeado '<pin-viejo>' en prod: cualquiera puede disparar plantillas o escalaciones falsas
+> ✅ 2026-07-25 (#134): fallback eliminado — `ADMIN_PIN` ahora es fail-closed desde env (index.js:788 + guard en adminCheckAuth y /admin/send-template[-bulk]). La rotación del PIN vivo en Railway queda a cargo del dueño (#67/#135).
 - **Archivo:** `C:/Users/mcifu/activa/temp-wa/index.js:780`
-- **Evidencia:** `const ADMIN_PIN = process.env.ADMIN_PIN || "1976";`
-- **Impacto:** El PIN por defecto '1976' es fijo y conocible. Permite a cualquiera con la URL pública llamar `POST /admin/send-template?pin=1976` y enviar plantillas WhatsApp a cualquier número (recontacto, escalación, informe diario). Sin restricción de IP, sin middleware, sin rate-limit — solo el check `pin !== ADMIN_PIN`. Si el PIN de producción NO fue sobreescrito en Railway, el endpoint admin está completamente abierto. Riesgo de ban de cuenta Meta y responsabilidad legal.
+- **Evidencia:** `const ADMIN_PIN = process.env.ADMIN_PIN || "<pin-viejo>";`
+- **Impacto:** El PIN por defecto '<pin-viejo>' es fijo y conocible. Permite a cualquiera con la URL pública llamar `POST /admin/send-template?pin=<pin-viejo>` y enviar plantillas WhatsApp a cualquier número (recontacto, escalación, informe diario). Sin restricción de IP, sin middleware, sin rate-limit — solo el check `pin !== ADMIN_PIN`. Si el PIN de producción NO fue sobreescrito en Railway, el endpoint admin está completamente abierto. Riesgo de ban de cuenta Meta y responsabilidad legal.
 - **Fix:** Verificar en Railway que `ADMIN_PIN` esté seteado con valor secreto fuerte. Agregar alerta de arranque: `if (!process.env.ADMIN_PIN) console.error('[CRITICO] ADMIN_PIN no configurado, usando default inseguro');`
 - **Confianza:** Alta. Verificado directamente en código de producción. Los endpoints `/admin/send-template` (L4505-4508) y `/admin/send-template-bulk` (L4557-4560) son públicamente alcanzables en `https://whatsapp-ia-hubspot-production.up.railway.app`. Los callers internos V2 (`escalation.js:46-48`) usan correctamente `|| ''` con guard, por lo que el riesgo real está en el HTTP endpoint V1.
 
@@ -410,7 +411,7 @@
 
 ### Prioridad 1 — Arreglar HOY (CRITICA + ALTA de seguridad/dinero)
 
-1. **[CON-01] ADMIN_PIN=1976** — Verificar Railway + agregar alerta de arranque. Máximo 10 minutos.
+1. **[CON-01] ADMIN_PIN=<pin-viejo>** — Verificar Railway + agregar alerta de arranque. Máximo 10 minutos.
 2. **[COB-01] normMeasuresLocal <=300 → <400** — 1 línea de cambio en `enginePricer.js:169-170`. Cotiza 3-4× más barato en fallback. Máximo 5 minutos.
 3. **[CLI-05] Pass2 max_tokens=350** — Subir a 600-700 + check `finish_reason`. Trunca respuestas complejas al cliente. 10 minutos.
 4. **[COB-04] Pass1 max_tokens=500** — Subir a 900-1000 + log en catch de JSON.parse. 5 minutos.
