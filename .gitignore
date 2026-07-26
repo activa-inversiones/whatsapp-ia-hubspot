@@ -164,3 +164,7 @@ backups/
 aplicar-*.ps1
 cerrar-*.ps1
 
+
+# [2026-07-26] Config LOCAL de Claude Code — NUNCA versionar: settings.local.json ya tuvo
+# una credencial de WordPress en texto plano (hallazgo 25-jul). Es config de maquina, no trabajo.
+.claude/
