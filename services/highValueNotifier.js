@@ -33,6 +33,10 @@ const URGENCY_KEYWORDS = [
 const alertCooldown = new Map();
 const COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 horas
 
+// [FIX 2026-07-26 · tablero #58] Rango de tiers para permitir que un ascenso de
+// tier ROMPA el cooldown — ver notifyHighValue().
+const TIER_RANK = { STANDARD: 0, MEDIUM: 1, HIGH: 2 };
+
 /**
  * Evalúa si un lead es de alto valor basado en múltiples señales
  */
@@ -104,6 +108,16 @@ function evaluateLeadValue(session) {
   else if (score.value >= 35) score.tier = "MEDIUM";
   else score.tier = "STANDARD";
 
+  // [FIX 2026-07-26 · tablero #58] GATE anti-falso-positivo: sin monto real
+  // (grand_total $0/null), el puntaje puede llegar a HIGH solo con señales
+  // blandas (items+keyword+urgencia+comuna+nombre+stage = 80 pts exactos,
+  // reproducido con grand_total=0). HIGH es la etiqueta que le dice a Marcelo
+  // "cotización de alto valor real" — nunca debe salir de señales blandas sin
+  // evidencia de $ > 0. Tope a MEDIUM si no hay monto.
+  if (score.tier === "HIGH" && !(total > 0)) {
+    score.tier = "MEDIUM";
+  }
+
   return score;
 }
 
@@ -163,15 +177,22 @@ async function notifyHighValue(waSendFn, customerPhone, session, reason = "auto"
     return { sent: false, reason: "no_owner_phone" };
   }
 
-  // Cooldown check
+  const score = evaluateLeadValue(session);
+
+  // Cooldown check.
+  // [FIX 2026-07-26 · tablero #58] un ASCENSO DE TIER ROMPE EL COOLDOWN: antes,
+  // la key era solo `${phone}:${reason}` (típicamente ":auto"), así que una
+  // alerta previa de menor tier (ej. un falso HIGH/MEDIUM por señales blandas
+  // con $0) dejaba la MISMA key seteada y silenciaba 2h la alerta REAL de mayor
+  // tier que llegaba después (el caso que justifica la feature). Ahora solo
+  // aplica el cooldown si el tier NO subió respecto de la última alerta enviada
+  // para esa key.
   const cooldownKey = `${customerPhone}:${reason}`;
   const lastAlert = alertCooldown.get(cooldownKey);
-  if (lastAlert && (Date.now() - lastAlert) < COOLDOWN_MS) {
-    return { sent: false, reason: "cooldown" };
+  if (lastAlert && (Date.now() - lastAlert.at) < COOLDOWN_MS && TIER_RANK[score.tier] <= TIER_RANK[lastAlert.tier]) {
+    return { sent: false, reason: "cooldown", score };
   }
 
-  const score = evaluateLeadValue(session);
-  
   // Solo bloquear si es STANDARD y es un chequeo automático ('auto').
   // Las escalaciones explícitas del LLM llegan con reason que empieza con
   // 'oliver_gpt:' — NUNCA deben bloquearse aquí, sin importar el tier (sí respetan el cooldown de arriba).
@@ -219,7 +240,7 @@ async function notifyHighValue(waSendFn, customerPhone, session, reason = "auto"
 
   try {
     await waSendFn(OWNER_PHONE, alertMsg);
-    alertCooldown.set(cooldownKey, Date.now());
+    alertCooldown.set(cooldownKey, { at: Date.now(), tier: score.tier });
     console.log(`[highValueNotifier] Alerta ${tierLabel} enviada para ${customerPhone}`);
     return { sent: true, score, tier: score.tier };
   } catch (e) {
