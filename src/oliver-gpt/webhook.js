@@ -33,7 +33,12 @@
 import { handleTurn as realHandleTurn } from './agent.js';
 import { mantenerEscribiendo, conPausaHumana, enviarComoPersona } from '../../services/presenciaHumana.js';
 // [2026-08-08] Cotizar a nombre de un cliente que le hablo directo al duenio.
-import { obtener as obtenerAtribucion, normalizar as normalizarTel } from '../../services/atribucionCotizacion.js';
+import {
+  obtener as obtenerAtribucion,
+  limpiar as limpiarAtribucion,
+  registrarQueNosEscribio,
+  normalizar as normalizarTel,
+} from '../../services/atribucionCotizacion.js';
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import {
@@ -463,6 +468,11 @@ export async function handleWebhook(req, res, deps = {}) {
   // corte el "escribiendo…" ante cualquier return intermedio o excepción. Si no, el cliente
   // ve a Oliver "escribiendo" hasta que Meta lo apaga a los 25 s — peor que no mostrarlo.
   let _detenerEscribiendo = () => {};
+  // [2026-08-08] Mismo motivo que releaseLock: el finally tiene que verlas. Si el turno se
+  // cae después de emitir el PDF, la atribución ya se gastó y hay que borrarla igual — si
+  // no, la cotización siguiente se le carga al cliente equivocado.
+  let atribucionConsumida = false;
+  let _fromParaAtribucion = '';
   try {
     const parseInbound    = deps.parseInbound    || realParseInbound;
     // [2026-08-08] conPausaHumana: espera lo que un humano tardaría en tipear ese texto
@@ -632,6 +642,21 @@ export async function handleWebhook(req, res, deps = {}) {
     if (atribucion) {
       log('info', 'atribucion', `cotización atribuida a ${atribucion.phone} (${atribucion.name || 'sin nombre'}) en vez de ${from}`);
     }
+    // [2026-08-08] La atribución se CONSUME al emitirse la propuesta formal, y recién ahí
+    // se borra. Las 2 h quedan solo como tope de arriba.
+    // Por qué: Gemini marcó que un plazo fijo es una trampa cuando el dueño atiende a tres
+    // clientes en paralelo — cotiza para Juan, lo interrumpe Pedro, y la cotización de
+    // Pedro se le carga a Juan. Consumir al cotizar hace que el comando valga para UNA
+    // cotización, que es como el dueño lo va a usar de verdad.
+    // No se borra al primer turno porque cotizar lleva varios (medidas, color, vidrio):
+    // se borra cuando sale el PDF, que es el momento en que la cotización existe.
+    _fromParaAtribucion = from;
+
+    // [2026-08-08] Si esta persona estaba marcada como "cargada por el dueño y nunca nos
+    // escribió", el hecho de que ESTÉ ESCRIBIENDO AHORA levanta la restricción: ya hay una
+    // conversación iniciada por ella y el re-enganche pasa a ser normal. Sin esto, un
+    // cliente cargado a mano quedaría bloqueado para siempre aunque después nos hablara.
+    try { registrarQueNosEscribio(from); } catch { /* nunca puede tumbar el turno */ }
 
     // ── (3b) "escribiendo…" + doble check azul ──────────────────────────
     // [2026-08-08] Arranca ACÁ y no antes, a propósito: recién en este punto sabemos que
@@ -931,12 +956,17 @@ export async function handleWebhook(req, res, deps = {}) {
             stage: leadState.stageKey || 'oliver_gpt',
             items: leadState.items || [],
             value: leadState.grand_total || null,
-            ctwa_clid: leadState.ctwa_clid || state.ctwa_clid || null,
-            ad_id: leadState.ad_id || state.ad_id || null,
-            gclid: leadState.gclid || state.gclid || null,
-            fbclid: leadState.fbclid || state.fbclid || null,
-            ttclid: leadState.ttclid || state.ttclid || null,
-            landing_ref: leadState.landing_ref || leadState.landing_lead_id || state.landing_lead_id || null,
+            // [2026-08-08] Con atribución activa NO se copian los click-id de la sesión.
+            // Son del DUEÑO —de cómo llegó él a su propio chat—, no del cliente. Pegárselos
+            // al lead de un recomendado le atribuiría esa venta a un anuncio que nunca vio,
+            // y el ROAS con el que se decide el gasto quedaría inflado.
+            // Es el problema opuesto al que este comando vino a resolver. (Codex, 08-ago.)
+            ctwa_clid: atribucion ? null : (leadState.ctwa_clid || state.ctwa_clid || null),
+            ad_id: atribucion ? null : (leadState.ad_id || state.ad_id || null),
+            gclid: atribucion ? null : (leadState.gclid || state.gclid || null),
+            fbclid: atribucion ? null : (leadState.fbclid || state.fbclid || null),
+            ttclid: atribucion ? null : (leadState.ttclid || state.ttclid || null),
+            landing_ref: atribucion ? null : (leadState.landing_ref || leadState.landing_lead_id || state.landing_lead_id || null),
             // [2026-08-08] Trazabilidad ISO: queda escrito que este lead lo cargó el dueño
             // a nombre del cliente, y desde qué número. Sin esto, dentro de un mes nadie
             // sabría por qué hay un lead sin conversación asociada.
@@ -1240,6 +1270,8 @@ export async function handleWebhook(req, res, deps = {}) {
             // sendWaDocument NO lanza: devuelve {ok:false} si Meta rechaza → hay que leerlo.
             docSent = !!(sendRes && sendRes.ok);
             if (docSent) {
+              // La propuesta formal salió: la atribución ya cumplió su función.
+              if (atribucion) atribucionConsumida = true;
               log('info', 'generarPdf.wa', `PDF enviado a ${from} media_id=${waDocMediaId} msgId=${sendRes.msgId || '?'}`);
             } else {
               log('error', 'generarPdf.wa', `Documento NO entregado a ${from}: ${sendRes?.error || 'sin detalle'}`);
@@ -1717,6 +1749,15 @@ export async function handleWebhook(req, res, deps = {}) {
     // [2026-08-08] Cortar el "escribiendo…" pase lo que pase. Si el turno se cae, Oliver
     // no puede quedar "escribiendo" un mensaje que nunca va a llegar.
     try { _detenerEscribiendo(); } catch { /* ya detenido */ }
+    // [2026-08-08] Consumir la atribución acá y no antes: si el turno se cayó DESPUÉS de
+    // mandar el PDF, la atribución igual se gastó (la cotización ya existe y ya es del
+    // cliente). Dejarla viva sería peor: la siguiente cotización se le cargaría a él.
+    try {
+      if (atribucionConsumida && _fromParaAtribucion) {
+        limpiarAtribucion(_fromParaAtribucion);
+        log('info', 'atribucion', `consumida: la próxima cotización vuelve a nombre del dueño`);
+      }
+    } catch { /* no puede tumbar el turno */ }
   }
 }
 

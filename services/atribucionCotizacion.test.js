@@ -5,7 +5,10 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseComandoCliente, normalizar, fijar, obtener, limpiar, _reset } from './atribucionCotizacion.js';
+import {
+  parseComandoCliente, pareceComando, normalizar, fijar, obtener, limpiar,
+  marcarSinConsentimiento, sinConsentimiento, registrarQueNosEscribio, _reset,
+} from './atribucionCotizacion.js';
 
 test('parsea nombre y teléfono en cualquier formato chileno', () => {
   const casos = [
@@ -45,11 +48,51 @@ test('CLIENTE OFF limpia la atribución', () => {
   assert.equal(r.limpiar, true);
 });
 
-test('normalizar no inventa países', () => {
-  assert.equal(normalizar('912345678'), '56912345678');   // celular sin código
-  assert.equal(normalizar('12345678'), '56912345678');    // sin el 9
+test('normalizar no inventa países ni completa números a medias', () => {
+  assert.equal(normalizar('912345678'), '56912345678');   // celular chileno sin código
   assert.equal(normalizar('56912345678'), '56912345678'); // ya completo
   assert.equal(normalizar('+1 650 555 1234'), '16505551234'); // extranjero: se respeta
+  // 8 dígitos NO se completan con "569": eso convertía un typo en el número de otra
+  // persona y le mandaba la cotización a un desconocido. (Codex, compuerta del 08-ago.)
+  assert.equal(normalizar('12345678'), '12345678', 'no debe anteponer 569 a 8 dígitos');
+});
+
+test('rechaza teléfonos de menos de 9 dígitos en vez de completarlos', () => {
+  const r = parseComandoCliente('CLIENTE Juan Pérez 12345678');
+  assert.equal(r.ok, false);
+  assert.match(r.error, /9 d[íi]gitos|completo/i);
+});
+
+test('exige nombre: sin él la propuesta formal saldría con el nombre del dueño', () => {
+  const r = parseComandoCliente('CLIENTE +56912345678');
+  assert.equal(r.ok, false);
+  assert.match(r.error, /nombre/i);
+});
+
+test('pareceComando NO se traga mensajes normales que empiezan con "cliente"', () => {
+  // El bug: "Cliente me pidió otra medida" era interceptado y nunca llegaba a Oliver.
+  const normales = [
+    'Cliente me pidió otra medida',
+    'cliente nuevo por instagram, ¿le cotizamos?',
+    'clientes de Pucón preguntan por termopanel',
+  ];
+  for (const t of normales) assert.equal(pareceComando(t), false, `se tragó: ${t}`);
+
+  const comandos = ['CLIENTE Juan Pérez +56912345678', 'CLIENTE', 'cliente off', '/CLIENTE Ana 912345678'];
+  for (const t of comandos) assert.equal(pareceComando(t), true, `no reconoció: ${t}`);
+});
+
+test('consentimiento: se marca al cargar y se levanta cuando la persona escribe', () => {
+  _reset();
+  marcarSinConsentimiento('912345678');
+  assert.equal(sinConsentimiento('56912345678'), true, 'debe quedar marcado (normalizado)');
+  registrarQueNosEscribio('56912345678');
+  assert.equal(sinConsentimiento('912345678'), false, 'al escribirnos, se levanta la marca');
+});
+
+test('a quien nunca cargamos a mano no se le pone ninguna marca', () => {
+  _reset();
+  assert.equal(sinConsentimiento('56999999999'), false);
 });
 
 test('fijar y obtener: lo que se guarda es lo que sale', () => {

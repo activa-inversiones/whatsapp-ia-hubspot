@@ -136,6 +136,24 @@ export async function reengage({ phone, motivo, quote_number } = {}, deps = {}) 
   }
   const dentroVentana = isWithinMetaWindow(session, nowMs);
 
+  // ── LLAVE 4 [2026-08-08]: no escribirle a quien NUNCA nos escribió ──
+  // Con el comando CLIENTE el dueño carga leads de gente que le habló a ÉL directo y que
+  // jamás escribió al bot. Mandarle una plantilla a ese número es dos problemas a la vez:
+  //   · legal (Ley 21.719, vigente 2026-12-01): no consintió que le ESCRIBAMOS. Que exista
+  //     su ficha porque pidió una cotización es otra cosa y sí es legítimo.
+  //   · Meta: plantillas a números sin opt-in bajan la calificación, y un número mal
+  //     calificado deja de poder escribir.
+  // (Lo levantó Gemini en la compuerta del 08-ago.)
+  //
+  // ⚠️ NO se usa "no tiene sesión" como señal: el primer intento hizo eso y rompió 7 tests
+  // que documentan lo contrario a propósito — un cliente REAL de hace un mes tampoco tiene
+  // sesión (se pierde en cada redeploy) y bloquearlo mataría el re-enganche legítimo.
+  // La señal correcta es la marca explícita que deja el comando CLIENTE, y se borra sola en
+  // cuanto esa persona escribe al bot por primera vez.
+  if (typeof deps.sinConsentimientoFn === 'function' && deps.sinConsentimientoFn(phone)) {
+    return { ok: false, reason: 'sin_consentimiento_nunca_escribio' };
+  }
+
   let result;
   if (dentroVentana) {
     // ── LLAVE 2a: dentro de 24h → mensaje determinista, SIN LLM ──

@@ -306,8 +306,11 @@ import { partirEnBurbujas } from "./services/burbujas.js";
 // [2026-08-08] Cotizar a nombre de un cliente que le habló directo al dueño.
 import {
   parseComandoCliente,
+  pareceComando as pareceComandoCliente,
   fijar as fijarAtribucion,
   limpiar as limpiarAtribucion,
+  marcarSinConsentimiento,
+  sinConsentimiento,
 } from "./services/atribucionCotizacion.js";
 // [2026-06-14] Cerebro de Oliver para IG/FB (mismo handleTurn que WhatsApp, toolCtx adaptado).
 import { handleChannelTurn } from "./src/oliver-gpt/channel-agent.js";
@@ -4752,6 +4755,12 @@ app.post("/internal/reengage", express.json(), async (req, res) => {
       { phone: cleanPhone, motivo: motivo || "", quote_number: quote_number || null },
       {
         loadSessionFn: (p) => loadOliverGptSession(p),
+        // [2026-08-08] Freno de consentimiento: si este teléfono lo cargó el dueño con el
+        // comando CLIENTE y esa persona nunca le escribió al bot, NO se le manda plantilla.
+        // No consintió que le escribiéramos (Ley 21.719) y Meta castiga las plantillas sin
+        // opt-in bajando la calificación del número. La marca se borra sola en cuanto esa
+        // persona escribe una vez. (Lo levantó Gemini en la compuerta del 08-ago.)
+        sinConsentimientoFn: (p) => sinConsentimiento(p),
         sendTextFn: (to, body) => waSendH(to, body, false, { source: "zero_leaks_reengage" }),
         // sendTemplateFn: self-call a /admin/send-template (mismo patrón que sendEscalationTemplate
         // en src/oliver-gpt/escalation.js). Solo se invoca si REENGAGE_TEMPLATE_NAME está seteada.
@@ -5092,7 +5101,11 @@ app.post("/webhook", async (req, res) => {
     const _atInc = extractMsg(req.body);
     if (_atInc?.ok && _atInc.type === "text" && verifySig(req) &&
         normalizeWaId(_atInc.waId) === normalizeAdminPhone(ADMIN_PHONE) &&
-        /^\s*cliente\b/i.test(_atInc.text || "")) {
+        // [2026-08-08] pareceComandoCliente y NO /^cliente\b/: interceptar todo lo que
+        // empieza con "cliente" se comía mensajes reales del dueño ("Cliente me pidió otra
+        // medida") que nunca llegaban a Oliver, sin explicación visible. Ahora solo entra
+        // si trae un teléfono o es la forma corta exacta. (Codex, compuerta del 08-ago.)
+        pareceComandoCliente(_atInc.text || "")) {
       res.sendStatus(200);
       if (!isDup(_atInc.msgId)) {
         const r = parseComandoCliente(_atInc.text || "");
@@ -5104,10 +5117,17 @@ app.post("/webhook", async (req, res) => {
           msg = "✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.";
         } else {
           fijarAtribucion(_atInc.waId, r.phone, r.name);
-          msg = `✅ Cotizando para *${r.name || "(sin nombre)"}* (+${r.phone}).\n\n` +
-            `Lo que cotices ahora queda a nombre de ese cliente: el lead, el seguimiento y el CRM. ` +
-            `El PDF te llega igual a vos para que se lo mandes.\n\n` +
-            `Vence en 2 horas. Para cancelar antes: *CLIENTE OFF*.`;
+          // Ese cliente nunca le escribio al bot: queda marcado para que el re-enganche
+          // automatico NO le mande una plantilla sin su consentimiento.
+          marcarSinConsentimiento(r.phone);
+          msg = `✅ Cotizando para *${r.name}* (+${r.phone}).\n\n` +
+            `La próxima propuesta queda a su nombre: el lead, el seguimiento y el CRM. ` +
+            `El PDF te llega a vos para que se lo mandes.\n\n` +
+            `Se usa UNA vez: cuando salga el PDF vuelve solo a tu nombre. ` +
+            `Igual vence a las 2 h. Para cancelar antes: *CLIENTE OFF*.\n\n` +
+            `⚠️ Como nunca escribió al bot, el seguimiento automático NO le va a llegar ` +
+            `hasta que él te escriba por acá. Es a propósito: no podemos mandarle mensajes ` +
+            `sin que él haya iniciado la conversación.`;
         }
         try { await waSendH(_atInc.waId, msg, true); } catch (e) { try { logErr("cliente_atribucion_send", e); } catch {} }
       }

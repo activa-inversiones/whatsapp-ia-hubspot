@@ -51,10 +51,27 @@ export function parseComandoCliente(texto) {
   let crudo = '';
   for (const c of candidatos) if (soloDigitos(c).length > soloDigitos(crudo).length) crudo = c;
   const phone = soloDigitos(crudo);
-  if (phone.length < 8) {
-    return { ok: false, error: 'No encontré un teléfono válido. Ej: CLIENTE Juan Pérez +56912345678' };
+  // ⚠️ 9 dígitos mínimo, NO 8. La primera versión aceptaba 8 y les anteponía "569" sola:
+  // un typo se convertía en el teléfono de OTRA persona, y la cotización le llegaba a un
+  // desconocido. Es exactamente la regla anti-alucinación del proyecto: si falta un dato,
+  // se pide — no se rellena en silencio. (Lo marcó Codex en la compuerta del 08-ago.)
+  if (phone.length < 9) {
+    return {
+      ok: false,
+      error: 'Ese teléfono no me cuadra. Escribilo completo, con los 9 dígitos: ' +
+             'CLIENTE Juan Pérez +56912345678',
+    };
   }
   const name = resto.replace(crudo, ' ').replace(/\s+/g, ' ').trim();
+  // El nombre es obligatorio: sin él, el PDF formal salía con el nombre del DUEÑO tomado
+  // de su propia sesión — una propuesta con identidad equivocada. (Codex, misma pasada.)
+  if (!name || name.length < 2) {
+    return {
+      ok: false,
+      error: 'Me falta el nombre del cliente. Va en la propuesta formal, así que no lo puedo inventar: ' +
+             'CLIENTE Juan Pérez +56912345678',
+    };
+  }
   return { ok: true, phone: normalizar(phone), name };
 }
 
@@ -66,8 +83,28 @@ export function normalizar(raw) {
   const d = soloDigitos(raw);
   if (!d) return '';
   if (d.length === 9 && d.startsWith('9')) return '56' + d;   // celular chileno sin código
-  if (d.length === 8) return '569' + d;                        // sin el 9 inicial
+  // ⚠️ El caso de 8 dígitos ("569" + d) se ELIMINÓ: adivinaba el número de otra persona a
+  // partir de un typo. Ahora parseComandoCliente rechaza menos de 9 y pide que lo escriba
+  // completo. Ver el comentario de allá.
   return d;
+}
+
+/**
+ * ¿Este texto es de verdad el comando, o el dueño solo está escribiendo la palabra
+ * "cliente" en una frase normal?
+ *
+ * [2026-08-08] Codex encontró que interceptar todo lo que empieza con "cliente" se comía
+ * mensajes reales: "Cliente me pidió otra medida" nunca llegaba a Oliver, y el dueño no
+ * tenía forma de saber por qué. Se intercepta SOLO si trae un teléfono largo o si es la
+ * forma corta exacta (CLIENTE / CLIENTE OFF). Cualquier otra cosa sigue de largo al bot.
+ */
+export function pareceComando(texto) {
+  const t = String(texto || '').trim();
+  if (!/^\/?\s*cliente\b/i.test(t)) return false;
+  const resto = t.replace(/^\/?\s*cliente\b/i, '').trim();
+  if (!resto) return true;                                  // "CLIENTE" a secas → ayuda
+  if (/^(off|no|ninguno|salir|listo|fin)$/i.test(resto)) return true;
+  return soloDigitos(resto).length >= 8;                    // trae algo que parece teléfono
 }
 
 /** 🔒 El llamador DEBE haber verificado que es el dueño. */
@@ -92,7 +129,32 @@ export function limpiar(telefonoDuenio) {
   return ATRIBUCIONES.delete(soloDigitos(telefonoDuenio));
 }
 
+// ── Consentimiento de contacto ───────────────────────────────────────────────
+// [2026-08-08] Teléfonos cargados con el comando CLIENTE que NUNCA le escribieron al bot.
+// A esa gente no se le puede mandar una plantilla de re-enganche: no consintió que le
+// escribiéramos (Ley 21.719, vigente 2026-12-01) y Meta baja la calificación del número
+// por mandar plantillas sin opt-in.
+// Que su ficha exista es otra cosa y sí es legítimo: pidió una cotización.
+// La marca se borra SOLA en cuanto esa persona escribe al bot por primera vez — ahí ya
+// hay conversación iniciada por ella y el re-enganche pasa a ser normal.
+const SIN_CONSENTIMIENTO = new Set();
+
+export function marcarSinConsentimiento(phone) {
+  const p = normalizar(phone);
+  if (p) SIN_CONSENTIMIENTO.add(p);
+  return p;
+}
+
+/** Se llama cuando entra un mensaje: si esa persona nos habló, ya hay consentimiento. */
+export function registrarQueNosEscribio(phone) {
+  return SIN_CONSENTIMIENTO.delete(normalizar(phone));
+}
+
+export function sinConsentimiento(phone) {
+  return SIN_CONSENTIMIENTO.has(normalizar(phone));
+}
+
 /** Para tests. */
-export function _reset() { ATRIBUCIONES.clear(); }
+export function _reset() { ATRIBUCIONES.clear(); SIN_CONSENTIMIENTO.clear(); }
 
 export default { parseComandoCliente, fijar, obtener, limpiar, normalizar, VIGENCIA_MS };
