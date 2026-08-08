@@ -1474,7 +1474,17 @@ export async function handleWebhook(req, res, deps = {}) {
             quote_number: quoteNumber,
             pdf_sent:     docSent,   // ← entrega REAL (sendWaDocument.ok), no solo el upload
             media_id:     waDocMediaId,
-            message:      `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF). Cualquier duda la vemos.`,
+            // [2026-08-08] ESTE MENSAJE ES EL MOMENTO MÁS IMPORTANTE DE LA VENTA: el cliente
+            // acaba de recibir el precio. Decía "Cualquier duda la vemos", que es exactamente
+            // el cierre pasivo que el paso 8 del prompt prohíbe — y el paso 8 NUNCA lo iba a
+            // corregir, porque este texto está en CÓDIGO y no pasa por el cerebro.
+            // Medido el 08-ago: de las 5 cotizaciones emitidas tras desplegar el paso 8,
+            // TRES terminaron con este cierre pasivo, dos de ellas con este texto literal.
+            // Ahora ofrece un paso siguiente concreto entre cosas que EXISTEN de verdad:
+            // el link de agenda (donde el cliente elige día y hora) o que lo llame Marcelo.
+            // No propone horarios: Oliver no tiene calendario y no puede reservar nada.
+            message:      `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF).\n\n` +
+                          `Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?`,
           };
         }),
     };
@@ -1490,8 +1500,11 @@ export async function handleWebhook(req, res, deps = {}) {
         name: state.name || '', phone: state.telefono || from, comuna: state.comuna || '',
         items: pq.items, grand_total: pq.grand_total,
       }));
+      // [2026-08-08] El fallback también cierra con paso siguiente. Si sale por acá es
+      // porque generarPdf no devolvió mensaje: no puede quedar más flojo que el camino normal.
       const replyMsg = (pdfRes && pdfRes.message) ||
-        `Listo ✅ Te preparé tu Propuesta Técnica Económica${pdfRes?.quote_number ? ` N° ${pdfRes.quote_number}` : ''} acá mismo (PDF).`;
+        `Listo ✅ Te preparé tu Propuesta Técnica Económica${pdfRes?.quote_number ? ` N° ${pdfRes.quote_number}` : ''} acá mismo (PDF).\n\n` +
+        `Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?`;
       await safe('pdf.det.send', () => sendWhatsAppText(from, replyMsg));
       await safe('pdf.det.persistIn', () => bridge.pushConversationEvent({
         channel: 'whatsapp', external_id: from, direction: 'inbound', actor_type: 'customer',

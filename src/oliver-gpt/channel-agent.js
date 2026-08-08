@@ -637,7 +637,12 @@ export async function handleChannelTurn(
           state.last_quote = { quote_number: quoteNumber, at: Date.now(),
             deliveryAttempts: 0, escalated: false, pdf_sent: true };
           return { ok: true, quote_number: quoteNumber, pdf_sent: true,
-            message: `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF). Cualquier duda la vemos.` };
+            // [2026-08-08] Mismo cierre activo que en webhook.js: este mensaje llega justo
+            // cuando el cliente ve el precio, y decia "Cualquier duda la vemos" — el cierre
+            // pasivo que el paso 8 prohibe. Esta en CODIGO, asi que el prompt no lo tocaba.
+            message: `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF).
+
+Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?` };
         }),
     };
 
@@ -653,7 +658,9 @@ export async function handleChannelTurn(
         items: pq.items, grand_total: pq.grand_total,
       }));
       const replyMsg = (pdfRes && pdfRes.message) ||
-        `Listo ✅ Te envié tu Propuesta Técnica Económica${pdfRes?.quote_number ? ` N° ${pdfRes.quote_number}` : ''} acá mismo (PDF).`;
+        `Listo ✅ Te envié tu Propuesta Técnica Económica${pdfRes?.quote_number ? ` N° ${pdfRes.quote_number}` : ''} acá mismo (PDF).
+
+Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?`;
       await safe('pdf.send', () => sendFn(senderId, replyMsg));
       // [2026-07-14 media→inbox] Un AUDIO transcrito "sí" (confirmación de PDF) cae acá:
       // paridad con el persist principal para no perder la burbuja del audio original.
