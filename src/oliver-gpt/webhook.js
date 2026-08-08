@@ -31,6 +31,8 @@
 // ESM, Node 18+.
 
 import { handleTurn as realHandleTurn } from './agent.js';
+// [2026-08-08] Quien contesto el turno (Claude o GPT) — ver engine.js ultimoProveedor().
+import { ultimoProveedor } from './engine.js';
 import { mantenerEscribiendo, conPausaHumana, enviarComoPersona } from '../../services/presenciaHumana.js';
 // [2026-08-08] Cotizar a nombre de un cliente que le hablo directo al duenio.
 import {
@@ -453,6 +455,23 @@ function extractQuote(toolCalls = []) {
  *     loadSession, persistSession,
  *     conv (Map), seen (Set), rateMap (Map), locks (Map) }.
  */
+/**
+ * [2026-08-08] Datos del cerebro que respondió, listos para meter en metadata.
+ * Se lee JUSTO después del turno. Si no hay dato (el turno no llamó al modelo: comando
+ * determinista, takeover, PDF por código), devuelve {} y la metadata queda como antes.
+ */
+function proveedorDelTurno() {
+  try {
+    const p = ultimoProveedor();
+    if (!p || !p.proveedor) return {};
+    return {
+      cerebro: p.proveedor,
+      cerebro_respaldo: p.fue_respaldo === true,
+      ...(p.fue_respaldo && p.motivo ? { cerebro_motivo: p.motivo } : {}),
+    };
+  } catch { return {}; }
+}
+
 export async function handleWebhook(req, res, deps = {}) {
   // ── (1) ACK INMEDIATO a Meta. Nada antes de esto puede lanzar. ──────────
   try {
@@ -1710,7 +1729,15 @@ export async function handleWebhook(req, res, deps = {}) {
           actor_name: 'Oliver',
           message_type: outboundType,
           body: reply,
-          metadata: { source: 'oliver_gpt_webhook' },
+          // [2026-08-08] QUÉ CEREBRO CONTESTÓ ESTE MENSAJE.
+          // Pregunta del dueño: "¿pudo pasar a GPT porque se terminó el saldo de Claude?".
+          // No se podía responder — nadie lo registraba. Y su razón de fondo es mejor que
+          // el diagnóstico: "en algún momento podría ser indistinto quién atienda, y
+          // deberían contestar bien ambos, no solo Claude Sonnet".
+          // Con esto se puede medir la CALIDAD POR PROVEEDOR: cotizaciones, repeticiones y
+          // cierres pasivos de cada uno. Sin el dato, "los dos contestan bien" es una
+          // creencia; con el dato, es una consulta.
+          metadata: { source: 'oliver_gpt_webhook', ...proveedorDelTurno() },
         })
       );
     }

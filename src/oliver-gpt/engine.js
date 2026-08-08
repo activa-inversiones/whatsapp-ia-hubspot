@@ -105,18 +105,50 @@ export async function withRetry(fn, label = 'openai') {
  * ========================================================================= */
 const FALLBACK_ON = () => (process.env.AI_FALLBACK ?? '1') !== '0';
 
+/* [2026-08-08] QUIÉN CONTESTÓ EL ÚLTIMO TURNO.
+ *
+ * El dueño preguntó si Oliver podía estar corriendo con GPT porque a Claude se le acabó el
+ * saldo. NO SE PODÍA RESPONDER: ningún registro decía qué modelo respondió cada turno. Se
+ * detectó un comportamiento degradado en producción (el mismo PDF enviado 3 veces) y no
+ * había forma de saber si era el modelo o el código.
+ *
+ * Esto lo cierra. Se guarda el proveedor de la ÚLTIMA llamada y su motivo, para que el
+ * webhook lo persista junto al mensaje. Si el respaldo está actuando, se ve en la ficha del
+ * cliente en vez de descubrirse cuando alguien se queja.
+ *
+ * ⚠️ Es un valor global: con turnos concurrentes de clientes distintos podría mezclarse.
+ * Se lee INMEDIATAMENTE después del turno, que es cuando vale, y se acepta ese margen a
+ * propósito — la alternativa era enhebrar el dato por seis funciones para un log. Si algún
+ * día hace falta exactitud por turno, se pasa a un contexto por request.
+ */
+let _ultimoProveedor = { proveedor: null, fue_respaldo: false, motivo: null, at: null };
+
+/** @returns {{proveedor:string|null, fue_respaldo:boolean, motivo:string|null, at:number|null}} */
+export function ultimoProveedor() { return { ..._ultimoProveedor }; }
+
 // Ejecuta el proveedor primario; si lanza, reintenta con el secundario. Exportada para tests.
 export async function runWithFallback(label, primaryIsAnthropic, anthropicFn, openaiFn) {
   const primary = primaryIsAnthropic ? 'anthropic' : 'openai';
   const secondary = primaryIsAnthropic ? 'openai' : 'anthropic';
   try {
-    return await (primaryIsAnthropic ? anthropicFn() : openaiFn());
+    const r = await (primaryIsAnthropic ? anthropicFn() : openaiFn());
+    _ultimoProveedor = { proveedor: primary, fue_respaldo: false, motivo: null, at: Date.now() };
+    return r;
   } catch (primaryErr) {
     if (!FALLBACK_ON()) throw primaryErr;
     const status = primaryErr?.status || primaryErr?.response?.status || '';
     console.error(`[engine] ${label} proveedor PRIMARIO ${primary} falló (${status} ${primaryErr?.message || primaryErr}). Fallback → ${secondary}.`);
     try {
       const r = await (primaryIsAnthropic ? openaiFn() : anthropicFn());
+      // Queda registrado POR QUÉ entró el respaldo: sin el motivo, "contestó GPT" no dice
+      // si fue por saldo, por un 500 de Anthropic o por un prompt inválido — y cada uno
+      // se arregla distinto.
+      _ultimoProveedor = {
+        proveedor: secondary,
+        fue_respaldo: true,
+        motivo: `${primary} falló${status ? ` (${status})` : ''}: ${String(primaryErr?.message || primaryErr).slice(0, 120)}`,
+        at: Date.now(),
+      };
       console.warn(`[engine] ${label} respondido por FALLBACK ${secondary} — el cliente NO se quedó sin respuesta.`);
       return r;
     } catch (secondaryErr) {
@@ -192,4 +224,4 @@ export async function orchestratorPass2({ system, messages = [] }) {
     () => openaiPass2({ system, messages }));
 }
 
-export default { getClient, orchestratorPass1, orchestratorPass2, runWithFallback };
+export default { getClient, orchestratorPass1, orchestratorPass2, runWithFallback, ultimoProveedor };
