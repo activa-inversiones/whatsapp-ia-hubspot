@@ -76,11 +76,14 @@ test("conPausaHumana espera ANTES de enviar, y manda el mismo texto intacto", as
   assert.ok(transcurrido >= 500, `envió a los ${transcurrido} ms: no esperó`);
 });
 
-// [2026-08-08] Este test existe por un susto real: se usó AbortSignal.any(), que es de
-// Node 20.3, mientras producción corre `node:18-slim` (Dockerfile:1). No habría roto nada
-// visible — la llamada vive en un try/catch — simplemente el "escribiendo…" no habría
-// aparecido NUNCA, y se deployaba el arreglo creyendo que funcionaba. El local corre
-// Node 24 y todos los tests pasaban.
+// [2026-08-08] Este test nació de un susto que resultó ser MEDIO falso: se creyó que
+// AbortSignal.any() era de Node 20.3 y que rompería en producción (`node:18-slim`). Lo
+// corrigió Codex y se verificó en el changelog: entró en 18.17.0, así que habría andado.
+//
+// El test se deja igual, y vale más que el susto: el local corre Node 24 mientras
+// producción corre 18, y una API nueva acá falla EN SILENCIO (la llamada vive en un
+// try/catch ⇒ el "escribiendo…" simplemente no aparecería, sin un error a la vista).
+// Sin este test, esa diferencia de versiones no la vigila nadie.
 test("no usa APIs que falten en el Node de producción (node:18-slim)", async () => {
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");
@@ -89,26 +92,38 @@ test("no usa APIs que falten en el Node de producción (node:18-slim)", async ()
   // advertencia hacía fallar al test. Se mira el código que se ejecuta, no lo que se explica.
   const fuente = bruto.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 
-  // API → versión de Node en que aparece. Ampliar la lista al agregar código.
-  const PROHIBIDAS = [
-    ["AbortSignal.any", "20.3"],
-    ["Array.prototype.toSorted", "20"],
-    ["structuredClone", "17"], // ok en 18, se deja de ejemplo del formato
+  // API → primera versión de Node que la tiene. Ampliar al agregar código.
+  // (AbortSignal.any NO va acá: está desde 18.17 — ese fue el error de la primera versión.)
+  const MINIMA_DE_PRODUCCION = 18;
+  const APIS = [
+    [".toSorted(", 20],
+    [".toReversed(", 20],
+    [".findLast(", 18],       // ok, queda de ejemplo del formato
+    ["Object.groupBy", 21],
+    ["Array.fromAsync", 22],
+    ["process.getBuiltinModule", 22],
   ];
-  for (const [api, desde] of PROHIBIDAS) {
-    if (Number(desde) <= 18) continue;
+  for (const [api, desde] of APIS) {
+    if (desde <= MINIMA_DE_PRODUCCION) continue;
     assert.ok(
       !fuente.includes(api),
-      `${api} necesita Node ${desde} y el Dockerfile usa node:18-slim: fallaría en silencio`
+      `${api} necesita Node ${desde} y producción corre ${MINIMA_DE_PRODUCCION}: fallaría en silencio`
     );
   }
 });
 
 test("el Dockerfile sigue en Node 18 — si sube, revisar la lista de arriba", async () => {
+  // Codex marcó que la versión anterior solo verificaba "FROM node:<número>" sin exigir
+  // que ese número fuera 18: pasaba igual con node:22. Ahora se afirma la versión.
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");
   const df = readFileSync(fileURLToPath(new URL("../Dockerfile", import.meta.url)), "utf8");
-  assert.match(df, /FROM node:(\d+)/, "no se pudo leer la versión de Node del Dockerfile");
+  const m = df.match(/FROM\s+node:(\d+)/i);
+  assert.ok(m, "no se pudo leer la versión de Node del Dockerfile");
+  assert.equal(
+    Number(m[1]), 18,
+    "el Dockerfile cambió de versión de Node: revisar la lista de APIs del test anterior"
+  );
 });
 
 test("si la función envuelta falla, el error sigue llegando al llamador", async () => {

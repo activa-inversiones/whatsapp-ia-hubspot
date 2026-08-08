@@ -928,7 +928,10 @@ export async function handleWebhook(req, res, deps = {}) {
       notifyMarcelo: (payload = {}) =>
         safe('notifyMarcelo', () =>
           notifyHighValue(
-            sendWhatsAppText, // waSendFn(to, body) — firma compatible
+            // [2026-08-08] enviarSinPausa: esto termina en el celular de Marcelo
+            // (ESCALATION_PHONE/OWNER_PHONE). Se le escapó a la primera corrección — los
+            // otros 6 llamados sí se cambiaron y este quedó (P2 de Codex, 2ª pasada).
+            enviarSinPausa, // waSendFn(to, body) — firma compatible
             from,
             {
               data: { ...state, ...(payload.data || {}) },
@@ -1526,6 +1529,12 @@ export async function handleWebhook(req, res, deps = {}) {
       }
     }
     if (reply) {
+      // [2026-08-08] Cortar el "escribiendo…" JUSTO acá y no recién en el finally: entre
+      // este envío y el final del handler todavía corren el TTS y las persistencias, y un
+      // refresco del loop podía aterrizar en esa ventana y volver a encender los puntitos
+      // DESPUÉS de que el cliente ya recibió la respuesta (P1 de Codex, 2ª pasada).
+      // El finally sigue como respaldo: detener dos veces es inofensivo.
+      try { _detenerEscribiendo(); } catch { /* ya detenido */ }
       await safe('sendWhatsAppText', () => sendWhatsAppText(from, reply));
     }
 

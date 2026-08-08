@@ -63,12 +63,16 @@ export function pausaPara(texto) {
 /**
  * Combina el corte del llamador con un timeout propio, SIN AbortSignal.any().
  *
- * ⚠️ NO usar AbortSignal.any(): existe desde Node 20.3 y producción corre `node:18-slim`
- * (Dockerfile:1). Peor todavía, el fallo habría sido silencioso: la llamada vive dentro de
- * un try/catch, así que el TypeError se tragaba y el "escribiendo…" simplemente no aparecía
- * nunca — se deployaba el arreglo y quedaba todo igual, sin un solo error a la vista.
- * (Encontrado al verificar el Dockerfile, 2026-08-08. El local corre Node 24 y los tests
- * pasaban.)
+ * Se evita AbortSignal.any() por margen, no por necesidad. CORRECCIÓN 2026-08-08: se creyó
+ * que era de Node 20.3 y que rompería en producción (`node:18-slim`, Dockerfile:1). Es
+ * FALSO: entró en Node 18.17.0, y el tag flotante `18-slim` hoy trae 18.20.x. Lo corrigió
+ * Codex y se verificó en el changelog oficial de Node.
+ *
+ * Igual se deja el combinador manual: `18-slim` es un tag FLOTANTE sin digest ni patch fijo,
+ * así que la versión exacta que corre no está garantizada por el repo. Esto funciona en
+ * cualquier Node 18.x y no cuesta nada. Lo que sí era cierto del susto original: un fallo
+ * acá sería SILENCIOSO — la llamada vive dentro de un try/catch, así que un TypeError se
+ * tragaría y el "escribiendo…" simplemente no aparecería, sin un solo error a la vista.
  */
 function combinarSeñales(señal, timeoutMs) {
   const ctrl = new AbortController();
