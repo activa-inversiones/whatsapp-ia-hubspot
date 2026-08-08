@@ -3,14 +3,23 @@ import assert from 'node:assert/strict';
 
 import { handleWebhook } from './webhook.js';
 
+
 function makeRes() {
   return { sendStatus() { return this; } };
 }
 
 function makeDeps(quoteEvents) {
+  // Uno por invocacion: compartido, los tests reusan el msgId y se descartarian entre si.
+  const _kv = new Map();
   return {
     conv: new Map(),
     seen: new Set(),
+    // [2026-08-08] Estado persistente falso y propio de cada test: el dedupe ahora se
+    // respalda en Postgres para que un redeploy no deje pasar un reintento de Meta. Sin
+    // esto los tests comparten el cache del modulo, reusan el msgId y se descartan solos.
+    leerEstado: async (k) => _kv.get(k) ?? null,
+    escribirEstado: (k, v) => _kv.set(k, v),
+
     locks: new Map(),
     parseInbound: () => ({
       ok: true,
@@ -233,8 +242,15 @@ test('una salida temprana de escalacion espera la atribucion antes de persistir 
 test('Ronda 2: referral NUEVO refresca atribución de cliente antiguo sin re-saludar', async () => {
   const persisted = [];
   const leadEvents = [];
+  const _kv = new Map();
   const deps = {
     conv: new Map(), seen: new Set(), locks: new Map(),
+    // [2026-08-08] Estado persistente falso y propio de cada test: el dedupe ahora se
+    // respalda en Postgres para que un redeploy no deje pasar un reintento de Meta. Sin
+    // esto los tests comparten el cache del modulo, reusan el msgId y se descartan solos.
+    leerEstado: async (k) => _kv.get(k) ?? null,
+    escribirEstado: (k, v) => _kv.set(k, v),
+
     parseInbound: () => ({ ok: true, from: '56933334444', text: 'vengo del otro anuncio', msgId: 'wamid.CTWA.NEW', type: 'text' }),
     parseLandingRef: () => ({ hasRef: false }),
     parseReferral: () => ({ isCtwaAd: true, ctwaClid: 'CLID_NUEVO', adId: 'AD_NUEVO', headline: '' }),
@@ -276,8 +292,15 @@ test('Ronda 2: referral NUEVO refresca atribución de cliente antiguo sin re-sal
 // por la revisión cruzada sobre la primera versión de la Ronda 2).
 test('Ronda 2.1: referral con solo ad_id nuevo conserva el ctwa_clid previo', async () => {
   const persisted = [];
+  const _kv = new Map();
   const deps = {
     conv: new Map(), seen: new Set(), locks: new Map(),
+    // [2026-08-08] Estado persistente falso y propio de cada test: el dedupe ahora se
+    // respalda en Postgres para que un redeploy no deje pasar un reintento de Meta. Sin
+    // esto los tests comparten el cache del modulo, reusan el msgId y se descartan solos.
+    leerEstado: async (k) => _kv.get(k) ?? null,
+    escribirEstado: (k, v) => _kv.set(k, v),
+
     parseInbound: () => ({ ok: true, from: '56955556666', text: 'hola de nuevo', msgId: 'wamid.CTWA.PARTIAL', type: 'text' }),
     parseLandingRef: () => ({ hasRef: false }),
     parseReferral: () => ({ isCtwaAd: true, ctwaClid: null, adId: 'AD_NUEVO', headline: '' }),

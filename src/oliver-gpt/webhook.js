@@ -39,6 +39,8 @@ import {
   registrarQueNosEscribio,
   normalizar as normalizarTel,
 } from '../../services/atribucionCotizacion.js';
+// [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
+import { leer as leerEstado, escribir as escribirEstado } from '../../services/estadoPersistente.js';
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import {
@@ -517,8 +519,25 @@ export async function handleWebhook(req, res, deps = {}) {
         log('info', 'dedupe', `msgId repetido ignorado: ${msgId}`);
         return;
       }
+      // [2026-08-08] El dedupe vivía SOLO en memoria y Railway lo borra en cada deploy:
+      // si Meta reintregaba un mensaje justo después (lo hace durante varios minutos), el
+      // cliente recibía la respuesta DUPLICADA. Se consulta el respaldo en Postgres solo
+      // cuando el id no está en memoria — o sea, prácticamente solo tras un reinicio.
+      // Fail-safe: si sales-os no responde, se degrada al comportamiento anterior.
+      // Inyectable como todo lo demás en este handler: meterlo como global escondido rompió
+      // 7 tests que comparten proceso y reusan el mismo msgId — y una dependencia que los
+      // tests no pueden sustituir es una dependencia que nadie puede verificar.
+      const leerEstadoFn = deps.leerEstado || leerEstado;
+      let repetidoTrasReinicio = false;
+      try { repetidoTrasReinicio = (await leerEstadoFn(`msg:${msgId}`)) === true; } catch { /* red caída */ }
+      if (repetidoTrasReinicio) {
+        log('info', 'dedupe', `msgId repetido tras redeploy, ignorado: ${msgId}`);
+        return;
+      }
       if (seen.size >= SEEN_MAX) seen.clear();
       seen.add(msgId);
+      // 15 min cubre de sobra la ventana de reintentos de Meta sin llenar la tabla.
+      (deps.escribirEstado || escribirEstado)(`msg:${msgId}`, true, 15 * 60);
     }
 
     // ── (2b) MUTEX — adquirir lock antes de cualquier I/O. Serializa ─────

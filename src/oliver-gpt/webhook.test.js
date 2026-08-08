@@ -54,10 +54,19 @@ function makeDeps(overrides = {}) {
     controlCalls: 0,
   };
 
+  // Estado persistente falso, uno por test (mismo criterio que conv/seen).
+  const _estadoTest = new Map();
+
   const deps = {
     // Aislamos el estado por test: cache y dedupe propios.
     conv: new Map(),
     seen: new Set(),
+    // [2026-08-08] El dedupe ahora tiene respaldo en Postgres para que un redeploy no
+    // deje pasar un reintento de Meta como mensaje nuevo. Acá se sustituye por un Map
+    // propio: sin esto, los tests comparten el caché del módulo, reusan el mismo msgId
+    // y el segundo en adelante se descarta como repetido.
+    leerEstado: async (k) => _estadoTest.get(k) ?? null,
+    escribirEstado: (k, v) => _estadoTest.set(k, v),
 
     parseInbound: (body) =>
       body?.__inbound || {

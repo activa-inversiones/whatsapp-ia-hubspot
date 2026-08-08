@@ -8,14 +8,23 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { handleWebhook } from './webhook.js';
 
+
 function makeRes() { return { sentStatus: undefined, sendStatus(c) { this.sentStatus = c; return this; } }; }
 function makeReq(text) {
   return { body: { __inbound: { ok: true, from: '56988887777', text, msgId: 'wamid.ESC.' + Math.random().toString(36).slice(2), type: 'text' } } };
 }
 function makeDeps(overrides = {}) {
+  // Uno por test: compartido, los tests reusan el msgId y se descartarian entre si.
+  const _kv = new Map();
   const spy = { handleTurnCalls: 0, sendCalls: [], notifyCalls: [], convEvents: [], templateCalls: [] };
   const deps = {
     conv: new Map(), seen: new Set(),
+    // [2026-08-08] Estado persistente falso y propio de cada test: el dedupe ahora se
+    // respalda en Postgres para que un redeploy no deje pasar un reintento de Meta. Sin
+    // esto los tests comparten el cache del modulo, reusan el msgId y se descartan solos.
+    leerEstado: async (k) => _kv.get(k) ?? null,
+    escribirEstado: (k, v) => _kv.set(k, v),
+
     parseInbound: (body) => body.__inbound,
     sendWhatsAppText: async (to, text) => { spy.sendCalls.push({ to, text }); return { ok: true }; },
     handleTurn: async ({ state }) => { spy.handleTurnCalls += 1; return { reply: 'cotizando…', history: [], toolCalls: [], state }; },

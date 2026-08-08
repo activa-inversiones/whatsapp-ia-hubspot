@@ -21,6 +21,13 @@
 // escribir el comando — preferible a inventar una tabla para algo que dura una charla.
 // Mismo criterio que CONV/RATE_MAP en webhook.js.
 
+import {
+  leer as leerEstado,
+  leerLocal as leerEstadoLocal,
+  escribir as escribirEstado,
+  borrar as borrarEstado,
+} from './estadoPersistente.js';
+
 const ATRIBUCIONES = new Map(); // telefonoDelDuenio -> { phone, name, ts }
 
 // Se vence sola: si el dueño fijó un cliente hace 3 horas y se olvidó, lo que cotice
@@ -137,21 +144,48 @@ export function limpiar(telefonoDuenio) {
 // Que su ficha exista es otra cosa y sí es legítimo: pidió una cotización.
 // La marca se borra SOLA en cuanto esa persona escribe al bot por primera vez — ahí ya
 // hay conversación iniciada por ella y el re-enganche pasa a ser normal.
+// [2026-08-08] Se respalda en Postgres: es lo ÚNICO de este módulo que no puede perderse
+// en un redeploy. Si se pierde, el re-enganche le manda una plantilla a alguien que nunca
+// consintió — y eso no se arregla después. La atribución, en cambio, dura minutos: si se
+// pierde, el dueño repite el comando y no pasa nada.
 const SIN_CONSENTIMIENTO = new Set();
+const CLAVE_CONSENT = (p) => `consent:${p}`;
+const TTL_CONSENT_S = 180 * 24 * 3600; // 180 días: dura lo que dure el lead
 
 export function marcarSinConsentimiento(phone) {
   const p = normalizar(phone);
-  if (p) SIN_CONSENTIMIENTO.add(p);
+  if (!p) return p;
+  SIN_CONSENTIMIENTO.add(p);
+  escribirEstado(CLAVE_CONSENT(p), true, TTL_CONSENT_S);
   return p;
 }
 
 /** Se llama cuando entra un mensaje: si esa persona nos habló, ya hay consentimiento. */
 export function registrarQueNosEscribio(phone) {
-  return SIN_CONSENTIMIENTO.delete(normalizar(phone));
+  const p = normalizar(phone);
+  const habia = SIN_CONSENTIMIENTO.delete(p);
+  // Se borra siempre, no solo si estaba en memoria: tras un redeploy la marca vive en
+  // Postgres y no en este Set, y esa es justamente la que hay que levantar.
+  borrarEstado(CLAVE_CONSENT(p));
+  return habia;
 }
 
+/** Síncrono, para el camino caliente del webhook. */
 export function sinConsentimiento(phone) {
-  return SIN_CONSENTIMIENTO.has(normalizar(phone));
+  const p = normalizar(phone);
+  return SIN_CONSENTIMIENTO.has(p) || leerEstadoLocal(CLAVE_CONSENT(p)) === true;
+}
+
+/**
+ * Versión que SÍ consulta Postgres. La usa el re-enganche, que corre por cron y puede
+ * pagar la ida a la red — y es el único lugar donde equivocarse tiene costo real.
+ * Tras un redeploy, la marca está en la base y no en memoria: sin esto, el guardarraíl
+ * no serviría justo cuando más se necesita.
+ */
+export async function sinConsentimientoAsync(phone) {
+  const p = normalizar(phone);
+  if (SIN_CONSENTIMIENTO.has(p)) return true;
+  return (await leerEstado(CLAVE_CONSENT(p))) === true;
 }
 
 /** Para tests. */

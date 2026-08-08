@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 
 import { handleWebhook } from './webhook.js';
 
+
 /* =========================================================================
  * HELPERS
  * ========================================================================= */
@@ -33,6 +34,9 @@ function makeReq(body = {}) { return { body }; }
  * @param {object} overrides
  */
 function makeDeps(overrides = {}) {
+  // Uno por test: si fuera de módulo, los tests de este archivo comparten el msgId y a
+  // partir del segundo el handler los descartaría como repetidos.
+  const _kv = new Map();
   const spy = {
     sendTextCalls: [],
     synthesizeCalls: [],
@@ -45,6 +49,12 @@ function makeDeps(overrides = {}) {
   const deps = {
     conv: new Map(),
     seen: new Set(),
+    // [2026-08-08] Estado persistente falso y propio de cada test: el dedupe ahora se
+    // respalda en Postgres para que un redeploy no deje pasar un reintento de Meta. Sin
+    // esto los tests comparten el cache del modulo, reusan el msgId y se descartan solos.
+    leerEstado: async (k) => _kv.get(k) ?? null,
+    escribirEstado: (k, v) => _kv.set(k, v),
+
 
     parseInbound: (body) =>
       body?.__inbound || {

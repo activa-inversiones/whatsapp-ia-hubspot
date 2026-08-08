@@ -128,6 +128,14 @@ export async function reengage({ phone, motivo, quote_number } = {}, deps = {}) 
   if (isLocked(phone, lockStore, nowMs)) {
     return { ok: false, reason: 'candado_24h' };
   }
+  // [2026-08-08] El candado en memoria se borra en cada redeploy: sin esto, un deploy en
+  // medio del día permitía mandarle DOS re-enganches al mismo cliente. Se consulta también
+  // el respaldo en Postgres. Inyectable para no tocar los tests del módulo puro.
+  if (typeof deps.candadoVigenteFn === 'function') {
+    let vigente = false;
+    try { vigente = await deps.candadoVigenteFn(phone); } catch { vigente = false; }
+    if (vigente) return { ok: false, reason: 'candado_24h_persistido' };
+  }
 
   // ── ¿Sesión activa dentro de la ventana de Meta (<24h)? ──
   let session = null;
@@ -189,6 +197,10 @@ export async function reengage({ phone, motivo, quote_number } = {}, deps = {}) 
 
   // Éxito → marca el candado y registra en la conversación (bitácora auditable ISO).
   lock(phone, lockStore, nowMs);
+  // [2026-08-08] Y el respaldo, para que un redeploy no habilite un segundo envío.
+  if (typeof deps.marcarCandadoFn === 'function') {
+    try { deps.marcarCandadoFn(phone); } catch { /* best-effort: nunca bloquea */ }
+  }
   if (typeof pushConversationEventFn === 'function') {
     try {
       await pushConversationEventFn({

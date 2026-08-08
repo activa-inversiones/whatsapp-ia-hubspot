@@ -310,8 +310,10 @@ import {
   fijar as fijarAtribucion,
   limpiar as limpiarAtribucion,
   marcarSinConsentimiento,
-  sinConsentimiento,
+  sinConsentimientoAsync,
 } from "./services/atribucionCotizacion.js";
+// [2026-08-08] Estado del bot que sobrevive a un redeploy (respaldo en Postgres).
+import { leer as leerEstado, escribir as escribirEstado } from "./services/estadoPersistente.js";
 // [2026-06-14] Cerebro de Oliver para IG/FB (mismo handleTurn que WhatsApp, toolCtx adaptado).
 import { handleChannelTurn } from "./src/oliver-gpt/channel-agent.js";
 // [2026-06-13] import de cotizadorWinhouseBridge.js ELIMINADO (pricer cotizador_winhouse muerto). Archivo borrado.
@@ -4760,7 +4762,14 @@ app.post("/internal/reengage", express.json(), async (req, res) => {
         // No consintió que le escribiéramos (Ley 21.719) y Meta castiga las plantillas sin
         // opt-in bajando la calificación del número. La marca se borra sola en cuanto esa
         // persona escribe una vez. (Lo levantó Gemini en la compuerta del 08-ago.)
-        sinConsentimientoFn: (p) => sinConsentimiento(p),
+        // [2026-08-08] Versión async: tras un redeploy la marca vive en Postgres y no en
+        // memoria, y es justo cuando el guardarraíl tiene que funcionar. Este camino corre
+        // por cron, así que puede pagar la ida a la base.
+        sinConsentimientoFn: (p) => sinConsentimientoAsync(p),
+        // Candado de 24 h respaldado: un deploy a mitad del día no puede habilitar un
+        // segundo re-enganche al mismo cliente.
+        candadoVigenteFn: async (p) => (await leerEstado(`reengage:${String(p).replace(/\D/g, '')}`)) === true,
+        marcarCandadoFn: (p) => escribirEstado(`reengage:${String(p).replace(/\D/g, '')}`, true, 24 * 3600),
         sendTextFn: (to, body) => waSendH(to, body, false, { source: "zero_leaks_reengage" }),
         // sendTemplateFn: self-call a /admin/send-template (mismo patrón que sendEscalationTemplate
         // en src/oliver-gpt/escalation.js). Solo se invoca si REENGAGE_TEMPLATE_NAME está seteada.
