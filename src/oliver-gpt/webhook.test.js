@@ -366,3 +366,39 @@ test('inbound no válido — parseInbound ok:false → no procesa ni responde', 
   assert.equal(spy.handleTurnCalls, 0, 'no hay mensaje → no invoca al cerebro');
   assert.equal(spy.convEvents.length, 0, 'no persiste nada');
 });
+
+// ── Anti-repetición ───────────────────────────────────────────────────────
+// [2026-08-08] Auditoría del módulo Oliver: en 60 días mandó el mensaje IDÉNTICO al
+// anterior 73 veces a 26 clientes (2% de los envíos). El peor repitió "Aquí estoy cuando
+// me necesite. 👍" ocho veces seguidas a alguien cuyo dictado por voz llegaba como ruido.
+// La REGLA #12 del prompt se cumplía al pie de la letra y el resultado era absurdo.
+test('no manda dos veces seguidas la misma respuesta', async () => {
+  const { deps, spy } = makeDeps();
+  // conv compartido entre los dos turnos: el estado del cliente tiene que persistir.
+  deps.handleTurn = async () => ({ reply: 'Aquí estoy cuando me necesite. 👍', state: {}, history: [] });
+
+  // Turno 1: el cliente escribe, Oliver responde.
+  deps.parseInbound = () => ({ ok: true, from: '56941373454', text: 'Chao. Yo. No.', msgId: 'wamid.R1', type: 'text' });
+  await handleWebhook(makeReq(), makeRes(), deps);
+  const tras1 = spy.sendCalls.length;
+  assert.equal(tras1, 1, 'la primera respuesta sí se manda');
+
+  // Turno 2: el cliente manda más ruido y el cerebro devuelve LO MISMO.
+  deps.parseInbound = () => ({ ok: true, from: '56941373454', text: 'Yo. No. Nasa.', msgId: 'wamid.R2', type: 'text' });
+  await handleWebhook(makeReq(), makeRes(), deps);
+  assert.equal(spy.sendCalls.length, tras1, 'la repetición NO se manda');
+});
+
+test('sí manda una respuesta distinta al turno siguiente', async () => {
+  // El freno corta repeticiones, no la conversación.
+  const { deps, spy } = makeDeps();
+  let n = 0;
+  deps.handleTurn = async () => ({ reply: n++ === 0 ? 'Primera' : 'Segunda, distinta', state: {}, history: [] });
+
+  deps.parseInbound = () => ({ ok: true, from: '56941373455', text: 'hola', msgId: 'wamid.D1', type: 'text' });
+  await handleWebhook(makeReq(), makeRes(), deps);
+  deps.parseInbound = () => ({ ok: true, from: '56941373455', text: 'y cuánto sale', msgId: 'wamid.D2', type: 'text' });
+  await handleWebhook(makeReq(), makeRes(), deps);
+
+  assert.equal(spy.sendCalls.length, 2, 'dos respuestas distintas se mandan las dos');
+});

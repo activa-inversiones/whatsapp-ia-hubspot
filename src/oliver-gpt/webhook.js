@@ -1604,6 +1604,25 @@ export async function handleWebhook(req, res, deps = {}) {
             'oliver_gpt:respuesta_vacia — el cerebro devolvió texto vacío (ver log turn.reply_empty); el cliente recibió un fallback'));
       }
     }
+    // [2026-08-08] NO REPETIR LA MISMA FRASE DOS VECES SEGUIDAS.
+    // Auditoría del módulo Oliver: en 60 días mandó el mensaje IDÉNTICO al anterior 73
+    // veces, a 26 clientes — el 2 % de todos los envíos. El peor caso repitió "Aquí estoy
+    // cuando me necesite. 👍" OCHO veces seguidas a un cliente cuyo dictado por voz llegaba
+    // como ruido ("Ya. Ahora. Balla. Ojo. Pelea."). Cada repetición es un mensaje de
+    // WhatsApp real, cuesta plata y es lo más delator que puede hacer un bot.
+    // La REGLA #12 del prompt dice "no mandes otro mensaje hasta que el cliente escriba de
+    // nuevo" — y el cliente SÍ escribía, así que la regla se cumplía al pie de la letra
+    // mientras el resultado era absurdo. Por eso el freno va acá, en código, y no en el
+    // prompt: una instrucción que se cumple y aun así falla necesita un tope determinista.
+    // Una persona no repite la misma despedida ocho veces: se calla.
+    if (reply && String(reply).trim() && String(reply).trim() === String(state.ultimaRespuesta || '').trim()) {
+      log('info', 'anti_repeticion', `respuesta idéntica a la anterior, no se reenvía a ${from}`);
+      newState.ultimaRespuesta = state.ultimaRespuesta;
+      reply = '';
+    } else if (reply && String(reply).trim()) {
+      newState.ultimaRespuesta = String(reply).trim();
+    }
+
     if (reply) {
       // [2026-08-08] Cortar el loop de "escribiendo…" JUSTO acá y no recién en el finally:
       // entre este envío y el final del handler todavía corren el TTS y las persistencias,
@@ -1650,7 +1669,16 @@ export async function handleWebhook(req, res, deps = {}) {
         actor_name: 'Cliente',
         message_type: inbound.type || 'text',
         body: inbound.text || userText,
-        metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, resolved_text: userText },
+        // [2026-08-08] enviado_at = hora REAL en que el cliente escribió, según Meta.
+        // `created_at` es cuándo guardamos la fila, y el inbound y el outbound del mismo
+        // turno se persisten juntos (~50 ms) ⇒ medir la respuesta con created_at daba
+        // "mediana 0 s", que no significaba nada. Con esto el SLA se puede medir de verdad.
+        metadata: {
+          source: 'oliver_gpt_webhook',
+          msg_id: msgId,
+          resolved_text: userText,
+          ...(inbound.enviadoAt ? { enviado_at: inbound.enviadoAt } : {}),
+        },
       })
     );
 

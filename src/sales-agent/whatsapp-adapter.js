@@ -68,7 +68,14 @@ export function parseInbound(body) {
     text = `[${type}]`;
   }
 
-  return { ok: true, from: msg.from, text, msgId: msg.id, type, push_name: pushName };
+  // [2026-08-08] enviadoAt: el momento REAL en que el cliente mandó el mensaje, según Meta
+  // (unix en segundos). Sin esto no se puede medir cuánto tarda Oliver en contestar: el
+  // `created_at` de conversation_messages es la hora en que GUARDAMOS la fila, y el inbound
+  // y el outbound de un mismo turno se persisten juntos con ~50 ms de diferencia. Medir con
+  // eso daba "mediana 0 segundos", que no significaba nada.
+  // Es un requisito de la 9001 §9.1.1: no se puede vigilar lo que no se registra.
+  const enviadoAt = Number(msg.timestamp) > 0 ? new Date(Number(msg.timestamp) * 1000).toISOString() : null;
+  return { ok: true, from: msg.from, text, msgId: msg.id, type, push_name: pushName, enviadoAt };
 }
 
 /**
