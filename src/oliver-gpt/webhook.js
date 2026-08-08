@@ -31,6 +31,7 @@
 // ESM, Node 18+.
 
 import { handleTurn as realHandleTurn } from './agent.js';
+import { mantenerEscribiendo, conPausaHumana } from '../../services/presenciaHumana.js';
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import {
@@ -456,9 +457,18 @@ export async function handleWebhook(req, res, deps = {}) {
   // releaseLock declarado AQUÍ (fuera del try) para que el finally lo libere
   // SIEMPRE, ante cualquier return intermedio o excepción (ajuste abogado).
   let releaseLock = null;
+  // [2026-08-08] Mismo motivo que releaseLock: declarado FUERA del try para que el finally
+  // corte el "escribiendo…" ante cualquier return intermedio o excepción. Si no, el cliente
+  // ve a Oliver "escribiendo" hasta que Meta lo apaga a los 25 s — peor que no mostrarlo.
+  let _detenerEscribiendo = () => {};
   try {
     const parseInbound    = deps.parseInbound    || realParseInbound;
-    const sendWhatsAppText = deps.sendWhatsAppText || realSendWhatsAppText;
+    // [2026-08-08] conPausaHumana: espera lo que un humano tardaría en tipear ese texto
+    // antes de mandarlo. Se envuelve ACÁ, en la constante local, porque los ~15 puntos de
+    // envío del handler pasan todos por ella — un solo wrap los cubre a todos.
+    // Un cliente notó que era IA "porque contestaron en el mismo momento". Ver
+    // services/presenciaHumana.js. Apagable con OLIVER_PRESENCIA_HUMANA=false.
+    const sendWhatsAppText = conPausaHumana(deps.sendWhatsAppText || realSendWhatsAppText);
     const uploadWaAudio   = deps.uploadWaAudio   || realUploadWaAudio;
     const sendWaAudio     = deps.sendWaAudio     || realSendWaAudio;
     const uploadWaDocument = deps.uploadWaDocument || realUploadWaDocument;
@@ -493,6 +503,16 @@ export async function handleWebhook(req, res, deps = {}) {
       if (seen.size >= SEEN_MAX) seen.clear();
       seen.add(msgId);
     }
+
+    // ── (2a·bis) "escribiendo…" + doble check azul ──────────────────────
+    // [2026-08-08] Arranca ACÁ: después del dedupe (no queremos mostrarlo dos veces por
+    // un reenvío de Meta) y ANTES del lock, que puede tardar si el cliente mandó dos
+    // mensajes seguidos — justo cuando más raro se ve el silencio. Meta lo apaga solo a
+    // los 25 s; el loop lo refresca. El stop() va en el finally del handler.
+    // Nota: el mismo POST lleva status:"read" ⇒ también le deja el doble check azul.
+    let detenerEscribiendo = () => {};
+    try { detenerEscribiendo = mantenerEscribiendo(msgId); } catch { /* cosmético */ }
+    _detenerEscribiendo = detenerEscribiendo;
 
     // ── (2b) MUTEX — adquirir lock antes de cualquier I/O. Serializa ─────
     // mensajes concurrentes del mismo número (doble-tap). El release se llama
@@ -1652,6 +1672,9 @@ export async function handleWebhook(req, res, deps = {}) {
     // Liberar SIEMPRE el lock: cubre returns intermedios (rate-limit, takeover,
     // sin userText) y excepciones. Sin esto un takeover dejaba el lock colgado.
     if (releaseLock) { try { releaseLock(); } catch { /* ya liberado */ } }
+    // [2026-08-08] Cortar el "escribiendo…" pase lo que pase. Si el turno se cae, Oliver
+    // no puede quedar "escribiendo" un mensaje que nunca va a llegar.
+    try { _detenerEscribiendo(); } catch { /* ya detenido */ }
   }
 }
 
