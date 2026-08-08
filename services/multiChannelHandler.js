@@ -16,6 +16,8 @@
 //   META_IG_BUSINESS_ID=<ID cuenta IG business>
 // ═══════════════════════════════════════════════════════════════════
 
+import { textoDeReaccion } from "./reactionText.js";
+
 const PAGE_TOKEN = process.env.META_PAGE_ACCESS_TOKEN || process.env.WHATSAPP_TOKEN || "";
 const PAGE_ID = process.env.META_PAGE_ID || "";
 const IG_ID = process.env.META_IG_BUSINESS_ID || "";
@@ -125,14 +127,9 @@ export function extractText(channel, message) {
       const ir = message.interactive;
       return ir?.button_reply?.title || ir?.list_reply?.title || JSON.stringify(ir);
     }
-    // [2026-08-08] La reacción caía en el cajón de sastre de abajo y se guardaba como
-    // "[reaction]", tirando el emoji. Dos daños: el dueño no ve QUÉ le reaccionaron, y
-    // Oliver — cuyo prompt dice "ante emoji asuma conformidad y avance" — leía igual un
-    // 👍 que un 😢. Emoji vacío = el cliente RETIRÓ la reacción, no es conformidad.
-    if (message.type === "reaction") {
-      const e = message.reaction?.emoji;
-      return e ? `${e} (reaccionó)` : "(retiró su reacción)";
-    }
+    // [2026-08-08] Ver services/reactionText.js: la reacción caía en el cajón de sastre
+    // de abajo y se guardaba como "[reaction]", tirando el emoji.
+    if (message.type === "reaction") return textoDeReaccion(message);
     return `[${message.type || "media"}]`;
   }
 

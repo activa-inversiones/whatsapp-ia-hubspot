@@ -301,6 +301,7 @@ import {
   buildLeadPayload as buildMultiChannelPayload,
   registerMultiChannelRoutes,
 } from "./services/multiChannelHandler.js";
+import { textoDeReaccion } from "./services/reactionText.js";
 // [2026-06-14] Cerebro de Oliver para IG/FB (mismo handleTurn que WhatsApp, toolCtx adaptado).
 import { handleChannelTurn } from "./src/oliver-gpt/channel-agent.js";
 // [2026-06-13] import de cotizadorWinhouseBridge.js ELIMINADO (pricer cotizador_winhouse muerto). Archivo borrado.
@@ -2702,6 +2703,9 @@ function extractMsg(body) {
   if (type === "text") text = msg.text?.body || "";
   else if (type === "button") text = msg.button?.text || "";
   else if (type === "interactive") text = safeJson(msg.interactive || {});
+  // [2026-08-08] Ver services/reactionText.js: sin esto la reacción caía al `[${type}]`
+  // de abajo y el emoji se perdía en la ingesta.
+  else if (type === "reaction") text = textoDeReaccion(msg);
   else text = `[${type}]`;
   return {
     ok: true,

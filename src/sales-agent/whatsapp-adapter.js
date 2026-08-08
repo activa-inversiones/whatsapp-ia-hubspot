@@ -8,6 +8,7 @@
 // Estas ya existen en el entorno de Railway; NO inventar nombres nuevos.
 
 import axios from "axios";
+import { textoDeReaccion } from "../../services/reactionText.js";
 
 const META = {
   VER: process.env.META_GRAPH_VERSION || "v22.0",
@@ -57,6 +58,11 @@ export function parseInbound(body) {
       it.list_reply?.title ||
       it.nfm_reply?.response_json ||
       `[${type}]`;
+  } else if (type === "reaction") {
+    // [2026-08-08] Ver services/reactionText.js. Este parser es el del webhook de
+    // Oliver GPT: es el que venía guardando "[reaction]" y tirando el emoji, dejando
+    // ciega a la REGLA #9 del prompt (que distingue 👍 de 😢).
+    text = textoDeReaccion(msg);
   } else {
     // audio, image, document, location, sticker, etc.
     text = `[${type}]`;
