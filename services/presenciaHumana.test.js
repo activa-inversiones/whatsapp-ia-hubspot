@@ -30,14 +30,32 @@ test("un texto largo tarda más que uno corto", () => {
 });
 
 test("la pausa tiene techo: el cliente no espera de verdad", () => {
+  // El techo de 6500 ms se respeta INCLUSO en el peor caso del azar: la base se divide
+  // por 1,2 antes de aplicarlo. Se prueba muchas veces porque el azar hace que un solo
+  // intento pueda no tocar el extremo.
   const biblia = "x".repeat(5000);
-  assert.ok(pausaPara(biblia) <= 7000, `${pausaPara(biblia)} ms es demasiado`);
+  for (let i = 0; i < 300; i++) {
+    const ms = pausaPara(biblia);
+    assert.ok(ms <= 6500, `${ms} ms supera el techo prometido`);
+  }
 });
 
 test("la pausa varía: un valor siempre idéntico delata igual que no tener pausa", () => {
-  const vistos = new Set();
-  for (let i = 0; i < 40; i++) vistos.add(pausaPara("Hola, ¿cómo está?"));
-  assert.ok(vistos.size > 1, "la pausa es constante");
+  // ⚠️ Este test medía SOLO un texto corto y por eso pasó mientras el azar estaba roto:
+  // el techo se aplicaba después del jitter, así que desde ~329 caracteres TODA respuesta
+  // esperaba exactamente 6500 ms. Y las respuestas de venta de Oliver superan ese largo
+  // seguido — o sea que el azar no existía justo donde más importaba. Lo cazó Codex.
+  // Ahora se prueban los tres tamaños, incluido uno por encima del techo.
+  const textos = {
+    corto: "Hola, ¿cómo está?",
+    medio: "x".repeat(200),
+    largo: "x".repeat(1200), // por encima del techo: acá vivía el bug
+  };
+  for (const [nombre, t] of Object.entries(textos)) {
+    const vistos = new Set();
+    for (let i = 0; i < 60; i++) vistos.add(pausaPara(t));
+    assert.ok(vistos.size > 1, `la pausa es constante para el texto ${nombre}`);
+  }
 });
 
 test("conPausaHumana espera ANTES de enviar, y manda el mismo texto intacto", async () => {

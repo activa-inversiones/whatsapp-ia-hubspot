@@ -42,9 +42,17 @@ const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
  */
 export function pausaPara(texto) {
   const largo = String(texto || "").length;
-  const base = PAUSA_MINIMA_MS + largo * MS_POR_CARACTER;
+  // ⚠️ El techo se aplica ANTES del azar, no después. Al revés (como estaba), desde ~329
+  // caracteres hasta el extremo -20 % superaba el techo ⇒ TODA respuesta larga esperaba
+  // exactamente 6500 ms, constante. Justo lo que el azar existe para evitar, y justo el
+  // largo que tienen las respuestas de venta de Oliver. Lo cazó Codex (2026-08-08); el
+  // test propio no lo vio porque medía con un texto corto.
+  // El techo se aplica sobre la base DIVIDIDA por el máximo del azar (1,2), para que ni
+  // el peor caso supere PAUSA_MAXIMA_MS. Recortar después del azar mataba la variación;
+  // recortar sin dividir dejaba un techo real de 7,8 s, más de lo prometido.
+  const base = Math.min(PAUSA_MINIMA_MS + largo * MS_POR_CARACTER, PAUSA_MAXIMA_MS / 1.2);
   const conAzar = base * (0.8 + Math.random() * 0.4); // ±20 %
-  return Math.round(Math.min(conAzar, PAUSA_MAXIMA_MS));
+  return Math.round(Math.min(Math.max(conAzar, PAUSA_MINIMA_MS), PAUSA_MAXIMA_MS));
 }
 
 /**
@@ -52,8 +60,9 @@ export function pausaPara(texto) {
  * Nunca lanza: es cosmético, jamás puede tumbar una respuesta.
  * @param {string} msgId  El wamid del mensaje ENTRANTE del cliente.
  */
-export async function mostrarEscribiendo(msgId) {
+export async function mostrarEscribiendo(msgId, señal) {
   if (!PRESENCIA_ACTIVA || !msgId || !META.TOKEN || !META.PHONE_ID) return false;
+  if (señal?.aborted) return false;
   try {
     const r = await fetch(`https://graph.facebook.com/${META.VER}/${META.PHONE_ID}/messages`, {
       method: "POST",
@@ -64,7 +73,10 @@ export async function mostrarEscribiendo(msgId) {
         message_id: msgId,
         typing_indicator: { type: "text" },
       }),
-      signal: AbortSignal.timeout(8000),
+      // Se combinan dos señales: el timeout propio y el corte del llamador. Sin la segunda,
+      // un POST ya lanzado podía aterrizar DESPUÉS del mensaje final y volver a encender los
+      // puntitos sobre una conversación ya respondida (P1 de Codex, 2026-08-08).
+      signal: señal ? AbortSignal.any([señal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000),
     });
     return r.ok;
   } catch {
@@ -79,11 +91,15 @@ export async function mostrarEscribiendo(msgId) {
  */
 export function mantenerEscribiendo(msgId, cadaMs = 18000) {
   if (!PRESENCIA_ACTIVA || !msgId) return () => {};
-  let vivo = true;
-  mostrarEscribiendo(msgId);
-  const id = setInterval(() => { if (vivo) mostrarEscribiendo(msgId); }, cadaMs);
+  const corte = new AbortController();
+  mostrarEscribiendo(msgId, corte.signal);
+  const id = setInterval(() => {
+    if (!corte.signal.aborted) mostrarEscribiendo(msgId, corte.signal);
+  }, cadaMs);
   if (typeof id.unref === "function") id.unref(); // no retener el proceso
-  return () => { vivo = false; clearInterval(id); };
+  // El stop corta el intervalo Y aborta cualquier POST en vuelo. Solo clearInterval
+  // dejaba una llamada ya lanzada viva hasta su timeout de 8 s.
+  return () => { corte.abort(); clearInterval(id); };
 }
 
 /**

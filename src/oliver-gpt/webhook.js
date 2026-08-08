@@ -469,6 +469,11 @@ export async function handleWebhook(req, res, deps = {}) {
     // Un cliente notó que era IA "porque contestaron en el mismo momento". Ver
     // services/presenciaHumana.js. Apagable con OLIVER_PRESENCIA_HUMANA=false.
     const sendWhatsAppText = conPausaHumana(deps.sendWhatsAppText || realSendWhatsAppText);
+    // [2026-08-08] SIN pausa: para lo que NO va a un cliente. Las alertas de
+    // notifyHighValue van al celular de Marcelo (OWNER_PHONE, ver
+    // services/highValueNotifier.js:241) — simular que un humano las tipea le retrasa
+    // 5-6 s un aviso urgente sin engañar a nadie. (P2 de Codex, 2026-08-08.)
+    const enviarSinPausa = deps.sendWhatsAppText || realSendWhatsAppText;
     const uploadWaAudio   = deps.uploadWaAudio   || realUploadWaAudio;
     const sendWaAudio     = deps.sendWaAudio     || realSendWaAudio;
     const uploadWaDocument = deps.uploadWaDocument || realUploadWaDocument;
@@ -503,16 +508,6 @@ export async function handleWebhook(req, res, deps = {}) {
       if (seen.size >= SEEN_MAX) seen.clear();
       seen.add(msgId);
     }
-
-    // ── (2a·bis) "escribiendo…" + doble check azul ──────────────────────
-    // [2026-08-08] Arranca ACÁ: después del dedupe (no queremos mostrarlo dos veces por
-    // un reenvío de Meta) y ANTES del lock, que puede tardar si el cliente mandó dos
-    // mensajes seguidos — justo cuando más raro se ve el silencio. Meta lo apaga solo a
-    // los 25 s; el loop lo refresca. El stop() va en el finally del handler.
-    // Nota: el mismo POST lleva status:"read" ⇒ también le deja el doble check azul.
-    let detenerEscribiendo = () => {};
-    try { detenerEscribiendo = mantenerEscribiendo(msgId); } catch { /* cosmético */ }
-    _detenerEscribiendo = detenerEscribiendo;
 
     // ── (2b) MUTEX — adquirir lock antes de cualquier I/O. Serializa ─────
     // mensajes concurrentes del mismo número (doble-tap). El release se llama
@@ -623,6 +618,16 @@ export async function handleWebhook(req, res, deps = {}) {
       log('info', 'control', `IA pausada (takeover humano) para ${from}; inbound persistido`);
       return;
     }
+
+    // ── (3b) "escribiendo…" + doble check azul ──────────────────────────
+    // [2026-08-08] Arranca ACÁ y no antes, a propósito: recién en este punto sabemos que
+    // la IA VA a responder. Puesto antes del chequeo de takeover, un cliente atendido por
+    // Marcelo veía a Oliver "escribiendo…" y el doble check azul, y no llegaba nada nunca
+    // — peor que no mostrar nada. (P1 de Codex, 2026-08-08.)
+    // Meta lo apaga solo a los 25 s; el loop lo refresca cada 18. El stop() va en el
+    // finally del handler y aborta también cualquier POST en vuelo.
+    // Nota: el mismo POST lleva status:"read" ⇒ también le deja el doble check azul.
+    try { _detenerEscribiendo = mantenerEscribiendo(msgId); } catch { /* cosmético */ }
 
     // ── (4) HIDRATACIÓN DE SESIÓN — cache in-memory o Postgres ──────────
     //
@@ -830,7 +835,7 @@ export async function handleWebhook(req, res, deps = {}) {
       let imgLoopMsg = null;
       if (state.unreadable_streak === 2) {
         const esc = await safe('imgloop.notify', () =>
-          notifyHighValue(sendWhatsAppText, from, { data: { ...state }, history },
+          notifyHighValue(enviarSinPausa, from, { data: { ...state }, history },
             'oliver_gpt:imagenes_ilegibles — el cliente mandó varias fotos que la IA no pudo leer; las fotos SÍ están guardadas en el panel (media), cotizar desde ahí'));
         imgLoopMsg = (esc && esc.sent)
           ? 'Sus fotos SÍ quedaron guardadas de mi lado 👍 — se las paso a Marcelo para que le prepare la propuesta desde ahí. Si prefiere avanzar al tiro, también puede escribirme las medidas por texto (ancho × alto y tipo).'
@@ -866,7 +871,7 @@ export async function handleWebhook(req, res, deps = {}) {
     const escalationTemplateFn = deps.sendEscalationTemplate || sendEscalationTemplate;
     if (isEscalationRequest(userText)) {
       await safe('escalate.notify', () =>
-        notifyHighValue(sendWhatsAppText, from, { data: { ...state }, history },
+        notifyHighValue(enviarSinPausa, from, { data: { ...state }, history },
           'cliente pidió hablar con un humano / molesto'));
       await safe('escalate.template', () =>
         escalationTemplateFn(state.name || '', 'cliente pide hablar con humano'));
@@ -1157,7 +1162,7 @@ export async function handleWebhook(req, res, deps = {}) {
             // sepa que ya viene. Igual que channel-agent.js (IG/FB).
             log('error', 'generarPdf.correlativo', 'correlativo ISO no disponible — NO se emite PDF, se escala a Marcelo');
             await safe('generarPdf.correlativo.escalate', () =>
-              notifyHighValue(sendWhatsAppText, from, { data: { ...state }, history },
+              notifyHighValue(enviarSinPausa, from, { data: { ...state }, history },
                 '[whatsapp] cliente pidió su Propuesta Técnica Económica pero el correlativo ISO no respondió — emitirla desde el inbox (ops.activalabs.ai)'));
             return { ok: false, requiere_revision: true, reason: 'correlativo_no_disponible',
               message: 'Dame un momentito para emitir tu Propuesta Técnica Económica con su folio; si se demora, Marcelo te la hace llegar enseguida.' };
@@ -1361,7 +1366,7 @@ export async function handleWebhook(req, res, deps = {}) {
               .map((it) => `• ${it.producto_label || it.product || 'Ventana'} (${it.measures_original || it.measures || 's/medida'})`)
               .join('\n');
             await safe('generarPdf.referencial.escalate', () =>
-              notifyHighValue(sendWhatsAppText, from,
+              notifyHighValue(enviarSinPausa, from,
                 { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber, grand_total: grandTotal, items: input.items }, history },
                 `oliver_gpt:ventana_fuera_estandar — 🔧 REVISIÓN DE INGENIERÍA: ${_refItems.length} ventana(s) fuera del estándar de fábrica en el folio ${quoteNumber}. Confirmar medida y precio final antes de fabricar:\n${_lista}`));
           }
@@ -1373,7 +1378,7 @@ export async function handleWebhook(req, res, deps = {}) {
             state.last_quote = { quote_number: quoteNumber, at: Date.now(), pdf_sent: false,
               descuento_mercado_pct: descuentoMercadoPct };
             await safe('generarPdf.escalate', () =>
-              notifyHighValue(sendWhatsAppText, from,
+              notifyHighValue(enviarSinPausa, from,
                 { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
                 `[whatsapp] PDF ${quoteNumber} no se pudo entregar al cliente — enviarlo desde el inbox (ops.activalabs.ai)`));
             return {
@@ -1516,7 +1521,7 @@ export async function handleWebhook(req, res, deps = {}) {
       if (_lastH && _lastH.role === 'assistant' && !String(_lastH.content || '').trim()) _lastH.content = reply;
       if (replyEmptyAlertAllowed()) {
         await safe('replyEmpty.notify', () =>
-          notifyHighValue(sendWhatsAppText, from, { data: { ...newState }, history: newHistory },
+          notifyHighValue(enviarSinPausa, from, { data: { ...newState }, history: newHistory },
             'oliver_gpt:respuesta_vacia — el cerebro devolvió texto vacío (ver log turn.reply_empty); el cliente recibió un fallback'));
       }
     }
