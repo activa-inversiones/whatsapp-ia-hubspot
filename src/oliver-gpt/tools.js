@@ -160,7 +160,21 @@ export async function posponerSeguimiento({ phone, dias, motivo } = {}) {
     agenda = { ok: false, error: e.message || String(e) };
   }
 
-  return { ok: !!(freeze && freeze.ok !== false), freeze, agenda, dias: diasNum };
+  // [2026-08-08] `agendado` explícito: antes `ok` salía true si el FREEZE funcionaba, aunque
+  // /internal/agenda/add hubiera fallado. O sea que Oliver podía decirle al cliente "le
+  // escribo el lunes" con el compromiso sin anotar en ninguna parte — exactamente el
+  // silencio que el paso 8 existe para eliminar. Lo marcó Codex (2026-08-08).
+  const agendado = !!(agenda && agenda.ok !== false && !agenda.error);
+  return {
+    ok: !!(freeze && freeze.ok !== false),
+    agendado,
+    aviso: agendado
+      ? null
+      : 'NO se pudo anotar el seguimiento en la agenda: no le prometas al cliente que le vas a escribir tal día. Usá notificar_marcelo.',
+    freeze,
+    agenda,
+    dias: diasNum,
+  };
 }
 
 /**
