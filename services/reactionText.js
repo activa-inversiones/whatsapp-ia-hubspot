@@ -27,7 +27,11 @@ export function textoDeReaccion(msg) {
   const r = msg?.reaction;
   // Sin objeto `reaction` el payload está incompleto: NO es un retiro, es algo que no
   // entendemos. Decirlo así evita que un evento roto se lea como una decisión del cliente.
-  if (!r || typeof r.emoji === "undefined" || r.emoji === null) return "[reaction]";
+  //
+  // ⚠️ NO devolver "[reaction]" acá. La REGLA #9 del prompt dice textualmente
+  // "o recibís un mensaje [reaction]" → asumí conformidad y avanzá: un evento roto
+  // haría avanzar la venta sola. Lo cazó la revisión semántica de Gemini (2026-08-08).
+  if (!r || typeof r.emoji === "undefined" || r.emoji === null) return "[reacción incompleta]";
   const emoji = String(r.emoji).trim();
   if (!emoji) return "(retiró su reacción)";
   return `${emoji} (reaccionó)`;

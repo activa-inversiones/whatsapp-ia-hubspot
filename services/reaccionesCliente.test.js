@@ -57,6 +57,13 @@ for (const [nombre, parsear] of PARSERS) {
     assert.doesNotMatch(parsear(reaccion(undefined)), /retir/i);
   });
 
+  test(`${nombre}: un payload roto NO devuelve "[reaction]"`, () => {
+    // La REGLA #9 del prompt dice "o recibís un mensaje [reaction]" → asumí conformidad
+    // y avanzá. Si un evento incompleto devolviera ese token exacto, un error de Meta
+    // haría avanzar la venta sola. Lo cazó la revisión semántica, no la estructural.
+    assert.notEqual(parsear(reaccion(undefined)), "[reaction]");
+  });
+
   test(`${nombre}: texto e imagen siguen igual (sin regresión)`, () => {
     assert.equal(parsear({ id: "w", from: "569", type: "text", text: { body: "Son las q le mencioné" } }), "Son las q le mencioné");
     assert.equal(parsear({ id: "w", from: "569", type: "image", image: { id: "1" } }), "[image]");
