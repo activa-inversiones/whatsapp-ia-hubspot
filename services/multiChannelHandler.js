@@ -125,6 +125,14 @@ export function extractText(channel, message) {
       const ir = message.interactive;
       return ir?.button_reply?.title || ir?.list_reply?.title || JSON.stringify(ir);
     }
+    // [2026-08-08] La reacción caía en el cajón de sastre de abajo y se guardaba como
+    // "[reaction]", tirando el emoji. Dos daños: el dueño no ve QUÉ le reaccionaron, y
+    // Oliver — cuyo prompt dice "ante emoji asuma conformidad y avance" — leía igual un
+    // 👍 que un 😢. Emoji vacío = el cliente RETIRÓ la reacción, no es conformidad.
+    if (message.type === "reaction") {
+      const e = message.reaction?.emoji;
+      return e ? `${e} (reaccionó)` : "(retiró su reacción)";
+    }
     return `[${message.type || "media"}]`;
   }
 
