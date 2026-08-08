@@ -60,9 +60,41 @@ export function pausaPara(texto) {
  * Nunca lanza: es cosmético, jamás puede tumbar una respuesta.
  * @param {string} msgId  El wamid del mensaje ENTRANTE del cliente.
  */
+/**
+ * Combina el corte del llamador con un timeout propio, SIN AbortSignal.any().
+ *
+ * ⚠️ NO usar AbortSignal.any(): existe desde Node 20.3 y producción corre `node:18-slim`
+ * (Dockerfile:1). Peor todavía, el fallo habría sido silencioso: la llamada vive dentro de
+ * un try/catch, así que el TypeError se tragaba y el "escribiendo…" simplemente no aparecía
+ * nunca — se deployaba el arreglo y quedaba todo igual, sin un solo error a la vista.
+ * (Encontrado al verificar el Dockerfile, 2026-08-08. El local corre Node 24 y los tests
+ * pasaban.)
+ */
+function combinarSeñales(señal, timeoutMs) {
+  const ctrl = new AbortController();
+  const abortar = () => ctrl.abort();
+  const timer = setTimeout(abortar, timeoutMs);
+  if (typeof timer.unref === "function") timer.unref();
+  if (señal) {
+    if (señal.aborted) abortar();
+    else señal.addEventListener("abort", abortar, { once: true });
+  }
+  return {
+    signal: ctrl.signal,
+    limpiar() {
+      clearTimeout(timer);
+      if (señal) { try { señal.removeEventListener("abort", abortar); } catch {} }
+    },
+  };
+}
+
 export async function mostrarEscribiendo(msgId, señal) {
   if (!PRESENCIA_ACTIVA || !msgId || !META.TOKEN || !META.PHONE_ID) return false;
   if (señal?.aborted) return false;
+  // Timeout propio + corte del llamador. Sin lo segundo, un POST ya lanzado podía aterrizar
+  // DESPUÉS del mensaje final y volver a encender los puntitos sobre una conversación ya
+  // respondida (P1 de Codex, 2026-08-08).
+  const corte = combinarSeñales(señal, 8000);
   try {
     const r = await fetch(`https://graph.facebook.com/${META.VER}/${META.PHONE_ID}/messages`, {
       method: "POST",
@@ -73,14 +105,13 @@ export async function mostrarEscribiendo(msgId, señal) {
         message_id: msgId,
         typing_indicator: { type: "text" },
       }),
-      // Se combinan dos señales: el timeout propio y el corte del llamador. Sin la segunda,
-      // un POST ya lanzado podía aterrizar DESPUÉS del mensaje final y volver a encender los
-      // puntitos sobre una conversación ya respondida (P1 de Codex, 2026-08-08).
-      signal: señal ? AbortSignal.any([señal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000),
+      signal: corte.signal,
     });
     return r.ok;
   } catch {
     return false;
+  } finally {
+    corte.limpiar();
   }
 }
 
