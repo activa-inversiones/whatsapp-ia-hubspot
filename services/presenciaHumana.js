@@ -156,4 +156,54 @@ export function conPausaHumana(enviar) {
   };
 }
 
+// Tope de TODA la respuesta, sumando burbujas. Sin esto, 3 burbujas × 6,5 s = ~20 s de
+// espera: se arregla una señal de robot creando una peor (un vendedor que no contesta).
+const TOPE_TOTAL_MS = Number(process.env.OLIVER_TOPE_TOTAL_MS || 9000);
+
+/**
+ * Manda la respuesta como la mandaría una persona: partida en 2-3 burbujas cortas, con
+ * "escribiendo…" antes de cada una y una pausa proporcional.
+ *
+ * Por qué así: un vendedor real escribe "Le cuento", manda, sigue escribiendo, manda. No
+ * suelta un párrafo de 600 caracteres de una. Era la señal que quedaba viva después de
+ * arreglar los puntitos y la pausa.
+ *
+ * El tiempo TOTAL está acotado: si la suma de las pausas se pasa de TOPE_TOTAL_MS, se
+ * escalan todas hacia abajo en proporción — nunca se recorta la última, que es la que
+ * suele llevar la pregunta de cierre.
+ *
+ * @param {(to:string, body:string, ...r:any)=>Promise<any>} enviarCrudo  SIN pausa (la pone esta función).
+ * @param {string} to
+ * @param {string} texto
+ * @param {string|null} msgId  Para refrescar el "escribiendo…" entre burbujas.
+ * @returns {Promise<any>} el resultado del ÚLTIMO envío.
+ */
+export async function enviarComoPersona(enviarCrudo, to, texto, msgId = null) {
+  const { partirEnBurbujas } = await import("./burbujas.js");
+  const burbujas = partirEnBurbujas(texto).filter((b) => b && b.trim());
+  if (!burbujas.length) return enviarCrudo(to, texto);
+  if (!PRESENCIA_ACTIVA || burbujas.length === 1) {
+    if (PRESENCIA_ACTIVA) await dormir(pausaPara(burbujas[0]));
+    return enviarCrudo(to, burbujas[0]);
+  }
+
+  // Las burbujas 2ª en adelante van más rápido: quien ya empezó a escribir sigue de corrido.
+  const pausas = burbujas.map((b, i) => (i === 0 ? pausaPara(b) : Math.round(pausaPara(b) * 0.45)));
+  const total = pausas.reduce((a, b) => a + b, 0);
+  if (total > TOPE_TOTAL_MS) {
+    const factor = TOPE_TOTAL_MS / total;
+    for (let i = 0; i < pausas.length; i++) pausas[i] = Math.round(pausas[i] * factor);
+  }
+
+  let ultimo;
+  for (let i = 0; i < burbujas.length; i++) {
+    // Enviar apaga el "escribiendo…" en WhatsApp, así que se vuelve a encender para la
+    // burbuja siguiente: es exactamente lo que se ve cuando una persona sigue tecleando.
+    if (i > 0 && msgId) { try { await mostrarEscribiendo(msgId); } catch { /* cosmético */ } }
+    try { await dormir(pausas[i]); } catch { /* una pausa que falla no bloquea el envío */ }
+    ultimo = await enviarCrudo(to, burbujas[i]);
+  }
+  return ultimo;
+}
+
 export default { mostrarEscribiendo, mantenerEscribiendo, conPausaHumana, pausaPara, PRESENCIA_ACTIVA };

@@ -31,7 +31,7 @@
 // ESM, Node 18+.
 
 import { handleTurn as realHandleTurn } from './agent.js';
-import { mantenerEscribiendo, conPausaHumana } from '../../services/presenciaHumana.js';
+import { mantenerEscribiendo, conPausaHumana, enviarComoPersona } from '../../services/presenciaHumana.js';
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import {
@@ -1529,13 +1529,15 @@ export async function handleWebhook(req, res, deps = {}) {
       }
     }
     if (reply) {
-      // [2026-08-08] Cortar el "escribiendo…" JUSTO acá y no recién en el finally: entre
-      // este envío y el final del handler todavía corren el TTS y las persistencias, y un
-      // refresco del loop podía aterrizar en esa ventana y volver a encender los puntitos
+      // [2026-08-08] Cortar el loop de "escribiendo…" JUSTO acá y no recién en el finally:
+      // entre este envío y el final del handler todavía corren el TTS y las persistencias,
+      // y un refresco podía aterrizar en esa ventana y volver a encender los puntitos
       // DESPUÉS de que el cliente ya recibió la respuesta (P1 de Codex, 2ª pasada).
       // El finally sigue como respaldo: detener dos veces es inofensivo.
       try { _detenerEscribiendo(); } catch { /* ya detenido */ }
-      await safe('sendWhatsAppText', () => sendWhatsAppText(from, reply));
+      // La respuesta principal va como la mandaría una persona: 2-3 burbujas cortas, con
+      // "escribiendo…" entre medio. enviarSinPausa porque el ritmo lo pone esta función.
+      await safe('sendWhatsAppText', () => enviarComoPersona(enviarSinPausa, from, reply, msgId));
     }
 
     // (7b) Voz saliente (F4): si el inbound fue audio Y VOICE_ENABLED, sintetizar

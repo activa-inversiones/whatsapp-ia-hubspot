@@ -302,6 +302,7 @@ import {
   registerMultiChannelRoutes,
 } from "./services/multiChannelHandler.js";
 import { textoDeReaccion } from "./services/reactionText.js";
+import { partirEnBurbujas } from "./services/burbujas.js";
 // [2026-06-14] Cerebro de Oliver para IG/FB (mismo handleTurn que WhatsApp, toolCtx adaptado).
 import { handleChannelTurn } from "./src/oliver-gpt/channel-agent.js";
 // [2026-06-13] import de cotizadorWinhouseBridge.js ELIMINADO (pricer cotizador_winhouse muerto). Archivo borrado.
@@ -1767,79 +1768,12 @@ function startTypingLoop(to, ms = 8000) {
 }
 
 /* ─── [PROD] Smart WhatsApp Message Split ─────────────────────────
-   Divide respuestas largas en burbujas de WhatsApp legibles.
-   Máx ~300 chars por burbuja (2-3 líneas en móvil).
-   Prioridad: párrafos > oraciones > largo forzado.
+   [2026-08-08] La implementacion se MOVIO a services/burbujas.js para que el
+   cerebro nuevo (src/oliver-gpt) use LA MISMA y no una cuarta copia. Este alias
+   conserva el nombre para los ~1 llamados del V1 (linea ~6380).
    ────────────────────────────────────────────────────────────── */
-const WA_MAX_BUBBLE_CHARS = 320;
+const smartSplitForWhatsApp = partirEnBurbujas;
 
-function smartSplitForWhatsApp(text) {
-  if (!text || text.length <= WA_MAX_BUBBLE_CHARS) return [text];
-
-  // 1) Split por párrafos (doble newline)
-  const paragraphs = text.split(/\n\n+/).filter(Boolean);
-  if (paragraphs.length > 1) {
-    // Re-merge paragraphs that are too short
-    const merged = [];
-    let current = "";
-    for (const p of paragraphs) {
-      if (current && (current.length + p.length + 2) > WA_MAX_BUBBLE_CHARS) {
-        merged.push(current.trim());
-        current = p;
-      } else {
-        current = current ? current + "\n\n" + p : p;
-      }
-    }
-    if (current.trim()) merged.push(current.trim());
-    if (merged.length > 1) return merged;
-  }
-
-  // 2) Split por oraciones
-  const sentences = text.match(/[^.!?]+[.!?]+\s*/g);
-  if (sentences && sentences.length > 1) {
-    const result = [];
-    let current = "";
-    for (const s of sentences) {
-      if (current && (current.length + s.length) > WA_MAX_BUBBLE_CHARS) {
-        result.push(current.trim());
-        current = s;
-      } else {
-        current += s;
-      }
-    }
-    if (current.trim()) result.push(current.trim());
-    if (result.length > 1) return result;
-  }
-
-  // 3) Split por salto de línea simple
-  const lines = text.split(/\n/).filter(Boolean);
-  if (lines.length > 1) {
-    const result = [];
-    let current = "";
-    for (const l of lines) {
-      if (current && (current.length + l.length + 1) > WA_MAX_BUBBLE_CHARS) {
-        result.push(current.trim());
-        current = l;
-      } else {
-        current = current ? current + "\n" + l : l;
-      }
-    }
-    if (current.trim()) result.push(current.trim());
-    return result;
-  }
-
-  // 4) Fallback: cortar en el último espacio antes del límite
-  const result = [];
-  let remaining = text;
-  while (remaining.length > WA_MAX_BUBBLE_CHARS) {
-    let cut = remaining.lastIndexOf(" ", WA_MAX_BUBBLE_CHARS);
-    if (cut < 100) cut = WA_MAX_BUBBLE_CHARS;
-    result.push(remaining.slice(0, cut).trim());
-    remaining = remaining.slice(cut).trim();
-  }
-  if (remaining.trim()) result.push(remaining.trim());
-  return result;
-}
 
 function humanMs(text) {
   const w = String(text || "")
