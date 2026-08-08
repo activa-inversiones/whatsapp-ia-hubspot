@@ -32,6 +32,8 @@
 
 import { handleTurn as realHandleTurn } from './agent.js';
 import { mantenerEscribiendo, conPausaHumana, enviarComoPersona } from '../../services/presenciaHumana.js';
+// [2026-08-08] Cotizar a nombre de un cliente que le hablo directo al duenio.
+import { obtener as obtenerAtribucion, normalizar as normalizarTel } from '../../services/atribucionCotizacion.js';
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import {
@@ -619,6 +621,18 @@ export async function handleWebhook(req, res, deps = {}) {
       return;
     }
 
+    // ── (3a·bis) ¿ESTA COTIZACIÓN ES PARA OTRO? ─────────────────────────
+    // [2026-08-08] Si el dueño escribió antes "CLIENTE Juan Pérez +569…", el lead y la
+    // cotización de este turno se atribuyen a Juan, no a él. La CONVERSACIÓN sigue siendo
+    // suya (pasó de verdad con él): lo que cambia es de quién es el cliente y la venta.
+    // Solo aplica a su propio número; para cualquier otro es null y no cambia nada.
+    const esDuenio = normalizarTel(from) === normalizarTel(process.env.OWNER_PHONE || process.env.ADMIN_PHONE || '56957296035');
+    const atribucion = esDuenio ? obtenerAtribucion(from) : null;
+    const telefonoCliente = atribucion?.phone || from;
+    if (atribucion) {
+      log('info', 'atribucion', `cotización atribuida a ${atribucion.phone} (${atribucion.name || 'sin nombre'}) en vez de ${from}`);
+    }
+
     // ── (3b) "escribiendo…" + doble check azul ──────────────────────────
     // [2026-08-08] Arranca ACÁ y no antes, a propósito: recién en este punto sabemos que
     // la IA VA a responder. Puesto antes del chequeo de takeover, un cliente atendido por
@@ -906,9 +920,13 @@ export async function handleWebhook(req, res, deps = {}) {
         safe('saveLead', async () => {
           await landingAttributionReady;
           return bridge.pushLeadEvent({
-            phone: from,
+            // [2026-08-08] telefonoCliente, no `from`: si el dueño fijó "CLIENTE Juan
+            // +569…", el lead es de Juan. Sin atribución activa, telefonoCliente === from
+            // y esto se comporta exactamente igual que antes.
+            phone: telefonoCliente,
             channel: 'whatsapp',
-            name: leadState.name || state.name || '',
+            // El nombre del comando manda: el dueño lo escribió a propósito.
+            name: atribucion?.name || leadState.name || state.name || '',
             comuna: leadState.comuna || state.comuna || '',
             stage: leadState.stageKey || 'oliver_gpt',
             items: leadState.items || [],
@@ -919,7 +937,12 @@ export async function handleWebhook(req, res, deps = {}) {
             fbclid: leadState.fbclid || state.fbclid || null,
             ttclid: leadState.ttclid || state.ttclid || null,
             landing_ref: leadState.landing_ref || leadState.landing_lead_id || state.landing_lead_id || null,
-            metadata: { source: 'oliver_gpt' },
+            // [2026-08-08] Trazabilidad ISO: queda escrito que este lead lo cargó el dueño
+            // a nombre del cliente, y desde qué número. Sin esto, dentro de un mes nadie
+            // sabría por qué hay un lead sin conversación asociada.
+            metadata: atribucion
+              ? { source: 'oliver_gpt', atribuido_por: from, atribuido_at: new Date().toISOString(), via: 'comando_CLIENTE' }
+              : { source: 'oliver_gpt' },
           });
         }),
 
@@ -1176,8 +1199,10 @@ export async function handleWebhook(req, res, deps = {}) {
           if (RECENT_QUOTES.size > 500) RECENT_QUOTES.clear(); // backstop de memoria
 
           // ── Paso 2: Generar PDF premium ──────────────────────────────────────
-          const clientName  = input.name  || state.name  || push_name || 'Cliente';
-          const clientPhone = input.phone || state.telefono || from;
+          const clientName  = atribucion?.name || input.name  || state.name  || push_name || 'Cliente';
+          // [2026-08-08] La atribución del dueño manda por encima de todo: si escribió
+          // "CLIENTE Juan +569…", la cotización es de Juan aunque la charla sea con él.
+          const clientPhone = atribucion?.phone || input.phone || state.telefono || from;
           const clientComuna = input.comuna || state.comuna || '';
           const pdfData = {
             name:    clientName,
@@ -1605,9 +1630,10 @@ export async function handleWebhook(req, res, deps = {}) {
       copyAttributionState(newState, state);
       await safe('persist.quote', () =>
         bridge.pushQuoteEvent({
-          phone: from,
+          // [2026-08-08] Idem: si hay atribucion activa, el borrador es del cliente.
+          phone: telefonoCliente,
           channel: 'whatsapp',
-          customer_name: newState.name || push_name || 'Cliente WhatsApp',
+          customer_name: atribucion?.name || newState.name || push_name || 'Cliente WhatsApp',
           amount_total: quote.total || quote.grand_total || null,
           currency: 'CLP',
           status: 'draft',

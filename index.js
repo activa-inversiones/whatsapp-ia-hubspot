@@ -303,6 +303,12 @@ import {
 } from "./services/multiChannelHandler.js";
 import { textoDeReaccion } from "./services/reactionText.js";
 import { partirEnBurbujas } from "./services/burbujas.js";
+// [2026-08-08] Cotizar a nombre de un cliente que le habló directo al dueño.
+import {
+  parseComandoCliente,
+  fijar as fijarAtribucion,
+  limpiar as limpiarAtribucion,
+} from "./services/atribucionCotizacion.js";
 // [2026-06-14] Cerebro de Oliver para IG/FB (mismo handleTurn que WhatsApp, toolCtx adaptado).
 import { handleChannelTurn } from "./src/oliver-gpt/channel-agent.js";
 // [2026-06-13] import de cotizadorWinhouseBridge.js ELIMINADO (pricer cotizador_winhouse muerto). Archivo borrado.
@@ -1345,6 +1351,11 @@ const COMANDOS_HELP = `📋 *COMANDOS DE OLIVER (dueño)*
 • LISTO <nombre o fono> [: nota] — marcar hecho
 • POSPONER <nombre o fono> <días> — posponer (sin nº = 7)
 • AGENDÁ <texto> [EN N DÍAS] — crear recordatorio
+
+*Cotizar para un cliente que te habló directo a vos:*
+• CLIENTE Juan Pérez +56912345678 — lo que cotices después queda a nombre de ÉL
+  (el lead, el seguimiento y el CRM). El PDF te llega igual a vos para reenviarlo.
+• CLIENTE OFF — volver a cotizar a tu nombre. Vence solo a las 2 horas.
 
 *Registrar venta/cotización (manual):*
 • VENTA Juan Pérez 912345678 1500000 facebook — todo en una línea
@@ -5068,6 +5079,41 @@ app.post("/webhook", async (req, res) => {
       return;
     }
   } catch (e) { try { logErr("comandos_help_outer", e); } catch {} }
+
+  // [2026-08-08 ATRIBUCIÓN] "CLIENTE Juan Pérez +56912345678" → lo que el dueño cotice a
+  // continuación se registra a nombre de ESE cliente, no del suyo.
+  // Pedido del dueño: los clientes que le hablan directo a él quedaban registrados con SU
+  // teléfono ⇒ el seguimiento automático nunca les llegaba, la atribución de ads se
+  // ensuciaba, y en /mi-agenda aparecía él en vez del cliente.
+  // 🔒 SOLO desde el número del dueño y con firma de Meta verificada: si cualquiera pudiera
+  // atribuir cotizaciones a terceros, se abre a cargarle una cotización a otra persona.
+  // Intercept temprano y determinista (mismo patrón que "comandos"): no pasa por el LLM.
+  try {
+    const _atInc = extractMsg(req.body);
+    if (_atInc?.ok && _atInc.type === "text" && verifySig(req) &&
+        normalizeWaId(_atInc.waId) === normalizeAdminPhone(ADMIN_PHONE) &&
+        /^\s*cliente\b/i.test(_atInc.text || "")) {
+      res.sendStatus(200);
+      if (!isDup(_atInc.msgId)) {
+        const r = parseComandoCliente(_atInc.text || "");
+        let msg;
+        if (!r.ok) {
+          msg = `⚠️ ${r.error}`;
+        } else if (r.limpiar) {
+          limpiarAtribucion(_atInc.waId);
+          msg = "✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.";
+        } else {
+          fijarAtribucion(_atInc.waId, r.phone, r.name);
+          msg = `✅ Cotizando para *${r.name || "(sin nombre)"}* (+${r.phone}).\n\n` +
+            `Lo que cotices ahora queda a nombre de ese cliente: el lead, el seguimiento y el CRM. ` +
+            `El PDF te llega igual a vos para que se lo mandes.\n\n` +
+            `Vence en 2 horas. Para cancelar antes: *CLIENTE OFF*.`;
+        }
+        try { await waSendH(_atInc.waId, msg, true); } catch (e) { try { logErr("cliente_atribucion_send", e); } catch {} }
+      }
+      return;
+    }
+  } catch (e) { try { logErr("cliente_atribucion_outer", e); } catch {} }
 
   // [AGENDA FASE 1] Interceptar comandos de agenda del CEO (AGENDA/LISTO/POSPONER) ANTES del
   // routing a Oliver v2. El número CEO está en OLIVER_V2_NUMBERS y v2 NO tiene estos comandos
