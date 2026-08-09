@@ -62,6 +62,27 @@ test("tipo: OSCILOBATIENTE gana sobre BATIENTE (contiene la palabra)", () => {
   assert.equal(tipoDe({ product: "Ventana Oscilobatiente" }), "OSCILOBATIENTE");
 });
 
+test("PUERTAS: no se dibujan como paño fijo (bug cazado por Codex)", () => {
+  // El bot emite PUERTA_1H y PUERTA_DOBLE (index.js:3530). Caían al default => una puerta
+  // salía en la cotización como un vidrio sin apertura.
+  assert.equal(tipoDe({ product: "PUERTA_1H" }), "PUERTA");
+  assert.equal(tipoDe({ product: "PUERTA_DOBLE" }), "PUERTA_DOBLE");
+  assert.equal(hojasDe({ product: "PUERTA_DOBLE" }), 2, "la puerta doble lleva 2 hojas");
+  assert.equal(hojasDe({ product: "PUERTA_1H" }), 1);
+  // Y llevan símbolo de apertura, como cualquier batiente.
+  assert.ok(simboloApertura(tipoDe({ product: "PUERTA_1H" }), { x: 0, y: 0, w: 10, h: 10 }).length > 0);
+  assert.ok(simboloApertura(tipoDe({ product: "PUERTA_DOBLE" }), { x: 0, y: 0, w: 10, h: 10 }).length > 0);
+});
+
+test("MARCO_FIJO (nombre real del enum del bot) se dibuja como fijo", () => {
+  assert.equal(tipoDe({ product: "MARCO_FIJO" }), "FIJA");
+  assert.equal(simboloApertura("FIJA", { x: 0, y: 0, w: 10, h: 10 }).length, 0);
+});
+
+test("ABATIBLE (nombre real del enum) se clasifica como batiente", () => {
+  assert.equal(tipoDe({ product: "ABATIBLE" }), "BATIENTE");
+});
+
 test("hojas: nunca menos de 1, aunque el dato venga en 0", () => {
   assert.equal(hojasDe({ corredera: { hojas: 0 } }), 1);
   assert.equal(hojasDe({}), 1);

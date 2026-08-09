@@ -62,8 +62,14 @@ function medidas(m) {
   return { ancho: Math.round(a), alto: Math.round(b) };
 }
 
+// Los tipos que el bot puede emitir están en index.js:3530 (enum de la tool de cotización):
+// CORREDERA · PROYECTANTE · ABATIBLE · OSCILOBATIENTE · MARCO_FIJO · PUERTA_1H · PUERTA_DOBLE.
+// Las PUERTAS estaban cayendo al default y se dibujaban como paño fijo: una puerta salía en la
+// cotización como un vidrio sin apertura. Van primero porque "PUERTA_DOBLE" no contiene ninguna
+// de las otras palabras, pero el orden importa para no depender de eso.
 function tipoDe(it) {
   const p = String(it?.product || it?.producto_label || "").toUpperCase();
+  if (p.includes("PUERTA")) return p.includes("DOBLE") || p.includes("2H") ? "PUERTA_DOBLE" : "PUERTA";
   if (p.includes("CORREDERA") || p.includes("SLIDING")) return "CORREDERA";
   if (p.includes("OSCILO")) return "OSCILOBATIENTE";
   if (p.includes("PROYECT")) return "PROYECTANTE";
@@ -75,7 +81,9 @@ function hojasDe(it) {
   if (it?.corredera?.hojas) return Math.max(1, Number(it.corredera.hojas) || 1);
   const m = String(it?.product || "").toLowerCase().match(/(\d)\s*hoja/);
   if (m) return Math.max(1, Number(m[1]));
-  return tipoDe(it) === "CORREDERA" ? 2 : 1;
+  const t = tipoDe(it);
+  if (t === "PUERTA_DOBLE") return 2;
+  return t === "CORREDERA" ? 2 : 1;
 }
 
 // Encaja el rectángulo ancho×alto dentro de la caja disponible SIN deformarlo.
@@ -106,6 +114,8 @@ function simboloApertura(tipo, r, manoDerecha = true) {
         { x1: izq, y1: arr, x2: x + w / 2, y2: aba },
         { x1: der, y1: arr, x2: x + w / 2, y2: aba },
       ];
+    case "PUERTA":
+    case "PUERTA_DOBLE":
     case "BATIENTE": {
       // Bisagra a un costado: vértice en el centro del borde opuesto.
       const bx = manoDerecha ? izq : der;
