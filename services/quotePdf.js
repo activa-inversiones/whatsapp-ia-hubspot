@@ -6,75 +6,9 @@
 //         measures, color, qty, unit_price, glass_label, ambiente }], quote_num }
 // NO inventa precios: usa it.unit_price tal cual viene del motor.
 
+import { dibujarVentana, medidas, claveColor, COLORES } from "./dibujoVentana.js";
+
 const NAVY = "#0B3D6F", GOLD = "#C4993B", GRAY = "#6B7B8D", DARK = "#1A2332", LINE = "#E2E8F0";
-
-const COLORS = {
-  blanco:  { f: "#EEF1F4", e: "#C2CCD6", name: "Blanco" },
-  nogal:   { f: "#7A4A20", e: "#3F2410", name: "Nogal" },
-  roble:   { f: "#B88F53", e: "#7D5E34", name: "Roble" },
-  grafito: { f: "#3C4856", e: "#222A35", name: "Grafito" },
-  newblack:{ f: "#1F2024", e: "#0B0C0E", name: "New Black" },
-  gris:    { f: "#3C4856", e: "#222A35", name: "Grafito" },
-};
-function colKey(c) {
-  const t = String(c || "").toLowerCase();
-  if (t.includes("nogal") || t.includes("roble") || t.includes("madera")) return t.includes("roble") ? "roble" : "nogal";
-  if (t.includes("grafito") || t.includes("gris") || t.includes("antracita")) return "grafito";
-  if (t.includes("negro") || t.includes("black")) return "newblack";
-  return "blanco";
-}
-function parseMeasures(m) {
-  const s = String(m || "");
-  const mm = s.match(/(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i);
-  if (!mm) return { ancho: 1000, alto: 1000 };
-  let a = parseFloat(mm[1].replace(",", ".")), b = parseFloat(mm[2].replace(",", "."));
-  if (a <= 6) a *= 1000; if (b <= 6) b *= 1000;
-  return { ancho: Math.round(a), alto: Math.round(b) };
-}
-function tipoFrom(it) {
-  const p = String(it.product || it.producto_label || "").toUpperCase();
-  if (p.includes("CORREDERA") || p.includes("SLIDING")) return "CORREDERA";
-  if (p.includes("PROYECT")) return "PROYECTANTE";
-  if (p.includes("OSCILO")) return "OSCILOBATIENTE";
-  if (p.includes("ABAT") || p.includes("BATIENTE")) return "BATIENTE";
-  return "FIJA";
-}
-function hojasFrom(it) {
-  if (it.corredera && it.corredera.hojas) return Number(it.corredera.hojas);
-  const m = String(it.product || "").toLowerCase().match(/(\d)\s*hoja/);
-  if (m) return Number(m[1]);
-  return tipoFrom(it) === "CORREDERA" ? 2 : 1;
-}
-
-// Dibuja la ventana (elevación 2D a escala) dentro del rect (bx,by,bw,bh)
-function drawWindow(doc, bx, by, bw, bh, it) {
-  const { ancho, alto } = parseMeasures(it.measures);
-  const col = COLORS[colKey(it.color)] || COLORS.blanco;
-  const tipo = tipoFrom(it), n = Math.max(1, hojasFrom(it));
-  const ratio = ancho / alto;
-  let dw = bw - 8, dh = dw / ratio;
-  if (dh > bh - 18) { dh = bh - 18; dw = dh * ratio; }
-  const x = bx + (bw - dw) / 2, y = by + 2;
-  const fr = Math.max(3, dw * 0.05);
-  doc.save();
-  // marco
-  doc.rect(x, y, dw, dh).fillAndStroke(col.f, col.e);
-  const iw = dw - 2 * fr, pw = iw / n, ih = dh - 2 * fr;
-  for (let i = 0; i < n; i++) {
-    const px = x + fr + i * pw, sf = Math.max(2, pw * 0.08);
-    doc.rect(px, y + fr, pw, ih).lineWidth(0.5).fillAndStroke(col.f, col.e);
-    doc.rect(px + sf, y + fr + sf, pw - 2 * sf, ih - 2 * sf).fillAndStroke("#BCDCF3", col.e);
-    if (tipo === "CORREDERA") {
-      const cy = y + dh / 2, cx = px + pw / 2, d = i % 2 === 0 ? 1 : -1;
-      const a = Math.min(5, pw * 0.14);   // flecha CHICA, centrada en su hoja (no llega al centro)
-      doc.polygon([cx - a * d, cy - 1.8], [cx + a * 0.25 * d, cy - 1.8], [cx + a * 0.25 * d, cy - 3.6],
-                  [cx + a * 1.05 * d, cy], [cx + a * 0.25 * d, cy + 3.6], [cx + a * 0.25 * d, cy + 1.8], [cx - a * d, cy + 1.8])
-         .fillAndStroke("#FFFFFF", DARK);
-    }
-  }
-  doc.fillColor(GRAY).fontSize(6.5).font("Helvetica").text(`${ancho}×${alto} mm`, bx, by + bh - 8, { width: bw, align: "center" });
-  doc.restore();
-}
 
 function fmt(n) { return "$" + Math.round(Number(n) || 0).toLocaleString("es-CL"); }
 
@@ -140,16 +74,16 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         const bg = idx % 2 === 0 ? "#F7F9FC" : "#FFFFFF";
         doc.rect(50, y, doc.page.width - 100, rowH).fill(bg);
         // dibujo ventana
-        drawWindow(doc, 54, y + 4, 100, rowH - 8, it);
+        dibujarVentana(doc, { x: 54, y: y + 4, w: 100, h: rowH - 8 }, it);
         // descripción
-        const col = COLORS[colKey(it.color)] || COLORS.blanco;
+        const col = COLORES[claveColor(it.color)] || COLORES.blanco;
         const label = it.producto_label || (it.product || "Ventana").replace(/_/g, " ");
-        const ms = parseMeasures(it.measures);
+        const ms = medidas(it.measures);
         const m2 = ((ms.ancho / 1000) * (ms.alto / 1000)).toFixed(2);
         const vidrio = it.glass_label || "Termopanel DVH";
         doc.fillColor(DARK).fontSize(9).font("Helvetica-Bold").text(`V${idx + 1} · ${label}`, 165, y + 7, { width: 190 });
         doc.fillColor(GRAY).fontSize(7.5).font("Helvetica")
-           .text(`${ms.ancho}×${ms.alto} mm · ${m2} m² · ${col.name} · ${vidrio}`, 165, y + 22, { width: 190 });
+           .text(`${ms.ancho}×${ms.alto} mm · ${m2} m² · ${col.nombre} · ${vidrio}`, 165, y + 22, { width: 190 });
         // [thermal] Uw discreto bajo la descripción — SOLO si vino del motor (null=H98 → nada)
         if (it.termico && Number(it.termico.uw) > 0) {
           doc.fillColor(GRAY).fontSize(6.8).font("Helvetica-Oblique")
