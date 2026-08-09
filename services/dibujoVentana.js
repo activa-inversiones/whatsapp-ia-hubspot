@@ -161,9 +161,16 @@ function planoDeVentana(it, caja) {
   const intX = x + marco, intY = y + marco;
   const intW = Math.max(1, w - 2 * marco), intH = Math.max(1, h - 2 * marco);
   const hojas = repartirHojas(intX, intY, intW, intH, n).map((r) => {
+    // El perfil de la hoja NO puede ser más grueso que la hoja misma. Con un piso fijo en el
+    // ancho del vidrio (max(0.5, …)) pero la posición corrida por el perfil, una hoja angosta
+    // dejaba el vidrio dibujado FUERA de su hoja, derramado sobre el marco. Se ve en una
+    // ventana alta y angosta de 3 hojas. (Bug cazado por Codex; mi test usaba una ventana
+    // ancha y por eso pasaba.) Se acota el perfil a un tercio de la hoja en cada eje.
+    const insetX = Math.min(perfilHoja, r.w / 3);
+    const insetY = Math.min(perfilHoja, r.h / 3);
     const vidrioRect = {
-      x: r.x + perfilHoja, y: r.y + perfilHoja,
-      w: Math.max(0.5, r.w - 2 * perfilHoja), h: Math.max(0.5, r.h - 2 * perfilHoja),
+      x: r.x + insetX, y: r.y + insetY,
+      w: Math.max(0, r.w - 2 * insetX), h: Math.max(0, r.h - 2 * insetY),
     };
     // En una corredera las hojas alternan el sentido de deslizamiento.
     // En batiente/oscilo, con 2 hojas se abren simétricas hacia afuera (bisagras a los extremos).

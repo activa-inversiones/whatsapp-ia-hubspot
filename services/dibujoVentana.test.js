@@ -148,6 +148,33 @@ test("plano: el vidrio queda DENTRO de su hoja, y la hoja dentro del marco", () 
   }
 });
 
+test("el vidrio NUNCA se sale de su hoja, en ninguna medida (bug cazado por Codex)", () => {
+  // El test de arriba usaba UNA ventana cómoda y por eso pasaba. Con una hoja angosta el
+  // vidrio se dibujaba fuera de la hoja, derramado sobre el marco. Se barren medidas y cajas.
+  const casos = [];
+  for (const med of ["300x1290", "400x2400", "2930x400", "600x600", "4000x300", "1500x1200"]) {
+    for (const n of [1, 2, 3, 4]) {
+      for (const caja of [{ x: 0, y: 0, w: 12, h: 42 }, { x: 0, y: 0, w: 100, h: 52 }, { x: 0, y: 0, w: 240, h: 190 }]) {
+        casos.push({ med, n, caja });
+      }
+    }
+  }
+  for (const c of casos) {
+    const p = planoDeVentana(
+      { product: `Corredera ${c.n} hojas`, measures: c.med, corredera: { hojas: c.n } },
+      c.caja
+    );
+    for (const h of p.hojas) {
+      const v = h.vidrioRect;
+      const dentro = v.x >= h.x - 1e-9 && v.y >= h.y - 1e-9 &&
+                     v.x + v.w <= h.x + h.w + 1e-9 && v.y + v.h <= h.y + h.h + 1e-9;
+      assert.ok(dentro, `vidrio fuera de la hoja en ${c.med}, ${c.n} hojas, caja ${c.caja.w}x${c.caja.h}`);
+      assert.ok(v.w >= 0 && v.h >= 0, "vidrio con dimensión negativa");
+      assert.ok(Number.isFinite(v.x) && Number.isFinite(v.w), "NaN en la geometría del vidrio");
+    }
+  }
+});
+
 test("plano: una ventana MUY chica no colapsa el marco a cero", () => {
   // Con escala mínima, marco y perfil tienen piso en px; si no, el dibujo sale sin marco.
   const p = planoDeVentana({ product: "Fija", measures: "300x300" }, { x: 0, y: 0, w: 20, h: 20 });
