@@ -1225,10 +1225,20 @@ export async function handleWebhook(req, res, deps = {}) {
           // cliente = REVISIÓN del MISMO folio, no correlativo nuevo (antes: 0081→0085→0086 en una
           // sola sesión = 3 folios ISO quemados para la misma propuesta).
           const QUOTE_REUSE_MS = 48 * 60 * 60 * 1000;
+          // [2026-08-08] esRevision: ¿este PDF es la PRIMERA propuesta o una corrección de
+          // una que el cliente YA recibió? Caso real del 08-ago (Jessica, +56965340471): en
+          // 5 minutos recibió TRES PDF del folio 0258 —mientras todavía daba las medidas— y
+          // los tres decían "Listo ✅ Te envié tu Propuesta N° 0258" como si fuera nueva.
+          // Desde afuera se lee como un bot trabado mandando el mismo archivo. El centinela
+          // lo reportó como "bot en loop", y tenía razón en el síntoma aunque la causa era ésta.
+          // El folio se reusa bien (una corrección es una revisión, no un correlativo nuevo);
+          // lo que estaba mal era CONTARLO como envío nuevo.
+          let esRevision = false;
           const _lq = state.last_quote;
           if (_lq && _lq.quote_number && (Date.now() - (_lq.at || 0)) < QUOTE_REUSE_MS) {
             quoteNumber = _lq.quote_number;
             descuentoMercadoPct = Number(_lq.descuento_mercado_pct) || 0;
+            esRevision = _lq.pdf_sent === true; // solo es revisión si el cliente ya recibió uno
             log('info', 'generarPdf.folio', `Reusando folio de la sesión ${quoteNumber} para ${from} (revisión, no folio nuevo)`);
           }
           if (!quoteNumber) try {
@@ -1502,8 +1512,15 @@ export async function handleWebhook(req, res, deps = {}) {
             // Ahora ofrece un paso siguiente concreto entre cosas que EXISTEN de verdad:
             // el link de agenda (donde el cliente elige día y hora) o que lo llame Marcelo.
             // No propone horarios: Oliver no tiene calendario y no puede reservar nada.
-            message:      `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF).\n\n` +
-                          `Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?`,
+            // [2026-08-10] Acá se USA `esRevision`, que había quedado declarada y sin usar:
+            // media corrección no arregla nada. Si el cliente YA recibió un PDF de este folio,
+            // el mensaje dice que es una CORRECCIÓN — no "te envié tu propuesta" de nuevo, que
+            // es lo que hizo que Jessica leyera tres envíos iguales como un bot trabado. Y no
+            // se le repite la pregunta del cierre: ya se la hicimos hace cinco minutos.
+            message:      esRevision
+              ? `Le corregí la propuesta N° ${quoteNumber} con esos datos y se la mando acá mismo (PDF). Es la misma propuesta actualizada, no una nueva.`
+              : `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF).\n\n` +
+                `Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?`,
           };
         }),
     };
