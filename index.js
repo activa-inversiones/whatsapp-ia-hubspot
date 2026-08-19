@@ -314,6 +314,8 @@ import {
 } from "./services/atribucionCotizacion.js";
 // [2026-08-08] Estado del bot que sobrevive a un redeploy (respaldo en Postgres).
 import { leer as leerEstado, escribir as escribirEstado } from "./services/estadoPersistente.js";
+// [2026-08-19] Candado único de seguimiento (módulo puro, 9 tests). Ver services/candadoSeguimiento.js.
+import { puedeEnviar as puedeEnviarSeguimiento, marcarEnviado as marcarSeguimientoEnviado } from "./services/candadoSeguimiento.js";
 // [2026-06-14] Cerebro de Oliver para IG/FB (mismo handleTurn que WhatsApp, toolCtx adaptado).
 import { handleChannelTurn } from "./src/oliver-gpt/channel-agent.js";
 // [2026-06-13] import de cotizadorWinhouseBridge.js ELIMINADO (pricer cotizador_winhouse muerto). Archivo borrado.
@@ -4094,6 +4096,19 @@ async function generateLocalQuotePdf(data, quoteNumber) {
   return new Promise(async (resolve, reject) => {
     try {
       const doc = new PDFDocument({ size: "A4", margin: 50 });
+      // [2026-08-19] PAGINACION AUTOMATICA APAGADA — a proposito.
+      // Esta funcion posiciona TODO con coordenadas absolutas (doc.text(txt, x, y)). Cuando una
+      // `y` calculada caia por debajo del margen inferior (792 en A4), pdfkit lo interpretaba
+      // como desborde de texto y agregaba una pagina POR CADA LLAMADA. Resultado medido contra
+      // HEAD: una cotizacion de UNA ventana salia en 4 paginas (1 util + 3 en blanco) y una de
+      // 14 salia en 15. Eso se le envio a los clientes durante meses.
+      // Con el margen en 0, pdfkit no pagina solo; los saltos los decidimos nosotros, y estan
+      // explicitos mas abajo: en la tabla de items y antes del bloque CONDICIONES.
+      // Cada pagina nueva nace con los margenes originales, asi que el margen hay que
+      // reponerlo en CADA salto. Por eso todo salto pasa por este helper y nunca por
+      // doc.addPage() suelto.
+      const nuevaPagina = () => { doc.addPage(); doc.page.margins.bottom = 0; return 60; };
+      doc.page.margins.bottom = 0;
       const chunks = [];
       doc.on("data", c => chunks.push(c));
       doc.on("end", () => resolve(Buffer.concat(chunks)));
@@ -4145,7 +4160,24 @@ async function generateLocalQuotePdf(data, quoteNumber) {
 
       let grandTotal = 0;
       const items = data.items || [];
+      // [2026-08-19] Dibuja la cabecera de la tabla. Se extrae para poder repetirla al saltar
+      // de pagina: una tabla que sigue en la hoja 2 sin encabezado no se entiende.
+      const dibujarCabeceraTabla = (yy) => {
+        doc.rect(50, yy, doc.page.width - 100, 20).fill(navy);
+        doc.fillColor("#fff").fontSize(9).font("Helvetica-Bold");
+        doc.text("PRODUCTO", 55, yy + 6);
+        doc.text("MEDIDAS", 200, yy + 6);
+        doc.text("CANT.", 290, yy + 6, { width: 40, align: "center" });
+        doc.text("PRECIO UNIT.", 340, yy + 6, { width: 80, align: "right" });
+        doc.text("SUBTOTAL", 440, yy + 6, { width: 100, align: "right" });
+        return yy + 20;
+      };
       items.forEach((it, idx) => {
+        // Cada fila mide 30 px y el pie ocupa los ultimos 60. Sin este corte, pdfkit paginaba
+        // solo y en desorden: 14 ventanas daban 15 paginas.
+        if (y + 30 > doc.page.height - 80) {
+          y = dibujarCabeceraTabla(nuevaPagina());
+        }
         const bg = idx % 2 === 0 ? "#F7F9FC" : "#FFFFFF";
         doc.rect(50, y, doc.page.width - 100, 30).fill(bg);
         doc.fillColor(dark).fontSize(9).font("Helvetica");
@@ -4182,21 +4214,43 @@ async function generateLocalQuotePdf(data, quoteNumber) {
       y += 40;
 
       // CONDICIONES
+      // [2026-08-19] GUARDIAN DE PAGINA: el bloque mide ~9 lineas + titulo (~130 px) y el pie
+      // arranca en page.height-60. Sin esto, una cotizacion con muchas ventanas empujaba las
+      // condiciones ENCIMA del pie. No habia ningun control de salto en toda la funcion.
+      if (y + 130 > doc.page.height - 70) { y = nuevaPagina(); }
+
       doc.fillColor(dark).fontSize(10).font("Helvetica-Bold").text("CONDICIONES", 50, y);
       y += 15;
       doc.fontSize(8).font("Helvetica").fillColor(gray);
       doc.text("• Precios netos + IVA (19%). Válidos por 15 días hábiles.", 50, y); y += 12;
+      // [2026-08-19] Las 2 lineas siguientes NO estaban y son las que destraban la decision:
+      // el cliente recibia un precio sin saber CUANDO llega ni COMO se paga, y tenia que
+      // preguntarlo por WhatsApp. Datos del dueno (plazo confirmado 19-ago).
+      doc.text("• Plazo de entrega: 8 a 10 días hábiles desde la confirmación de la propuesta.", 50, y); y += 12;
+      doc.text("• Forma de pago: 50% de abono para iniciar fabricación · 50% contra entrega.", 50, y); y += 12;
+      doc.text("  Transferencia o tarjeta de crédito (las cuotas las define su banco).", 50, y); y += 12;
       doc.text("• Instalación profesional por equipo propio certificado.", 50, y); y += 12;
       doc.text("• Perfiles WinHouse línea europea · Vidrio DVH termopanel.", 50, y); y += 12;
       doc.text("• Cumple normativa OGUC 4.1.10 — Acondicionamiento térmico.", 50, y); y += 12;
       doc.text("• Garantía: 5 años en estructura · 1 año en herrajes.", 50, y); y += 12;
-      doc.text("• Sujeto a rectificación técnica en terreno.", 50, y); y += 20;
+      doc.text("• Sujeto a rectificación técnica en terreno.", 50, y); y += 16;
+      // Proximo paso: el documento tampoco decia que hacer para avanzar.
+      doc.fillColor(dark).font("Helvetica-Bold");
+      doc.text("Para avanzar: confirme por WhatsApp y coordinamos la visita técnica de medición,", 50, y); y += 11;
+      doc.text("sin costo. El plazo empieza a correr desde su confirmación.", 50, y); y += 20;
+      doc.fillColor(gray).font("Helvetica");
 
       // FOOTER
+      // [2026-08-19] `lineBreak: false` EN LAS 3 LINEAS — arregla un bug viejo que metia
+      // 3 PAGINAS EN BLANCO en TODAS las cotizaciones enviadas. El pie se dibuja en
+      // page.height-48/-32/-18 (794, 810, 824 en A4), o sea POR DEBAJO del margen inferior
+      // (842-50 = 792). pdfkit lo lee como desborde de texto y agrega una pagina por linea.
+      // Medido: 1 ventana daba 4 paginas (1 util + 3 vacias). Con esto da 1.
+      const pie = { align: "center", width: doc.page.width - 100, lineBreak: false };
       doc.rect(0, doc.page.height - 60, doc.page.width, 60).fill(navy);
-      doc.fillColor("#fff").fontSize(9).font("Helvetica-Bold").text("Activa Inversiones · Ventanas PVC certificadas", 50, doc.page.height - 48, { align: "center", width: doc.page.width - 100 });
-      doc.fillColor(gold).fontSize(8).font("Helvetica").text("WhatsApp: +56 9 8441 2961   ·   www.activaspa.cl", 50, doc.page.height - 32, { align: "center", width: doc.page.width - 100 });
-      doc.fillColor("#fff").fontSize(7).text("Contacto directo: Marcelo Cifuentes — +56 9 5729 6035", 50, doc.page.height - 18, { align: "center", width: doc.page.width - 100 });
+      doc.fillColor("#fff").fontSize(9).font("Helvetica-Bold").text("Activa Inversiones · Ventanas PVC certificadas", 50, doc.page.height - 48, pie);
+      doc.fillColor(gold).fontSize(8).font("Helvetica").text("WhatsApp: +56 9 8441 2961   ·   www.activaspa.cl", 50, doc.page.height - 32, pie);
+      doc.fillColor("#fff").fontSize(7).text("Contacto directo: Marcelo Cifuentes — +56 9 5729 6035", 50, doc.page.height - 18, pie);
 
       doc.end();
     } catch (e) {
@@ -4989,6 +5043,21 @@ app.post("/admin/send-template", express.json(), async (req, res) => {
     const { template, phone, customer_name, quote_num, motivo, fecha, resumen, linea3, linea4 } = req.body || {};
     if (!template || !phone) return res.status(400).json({ ok: false, error: "template_and_phone_required" });
 
+    // ── [2026-08-19] CANDADO ÚNICO DE SEGUIMIENTO ────────────────────────────────────
+    // La decisión vive en services/candadoSeguimiento.js (módulo puro, 9 tests): los DOS
+    // motores de seguimiento —followupService del CXM y reengagement.js de Oliver— pasan por
+    // este endpoint, y hasta hoy cada uno llevaba su propio dedupe sin ver al otro.
+    const telLimpio = String(phone).replace(/\D/g, "");
+    const candado = await puedeEnviarSeguimiento(
+      { template, phone },
+      { leer: leerEstado, onError: (e) => logErr("send-template.candado.leer", e) },
+    );
+    if (!candado.permitido) {
+      fireAndForget("logOliverEvent.template_dedupe", logOliverEvent("template_dedupe", { phone, template, motivo: candado.razon }));
+      return res.json({ ok: true, template, phone, sent: false, reason: candado.razon,
+        detalle: "Ya se le envió una plantilla de seguimiento en las últimas 48h (candado compartido entre el followup del CXM y el re-engagement de Oliver)." });
+    }
+
     let result;
     switch (String(template).toLowerCase()) {
       case "recontacto_lead":
@@ -5026,6 +5095,29 @@ app.post("/admin/send-template", express.json(), async (req, res) => {
         break;
       default:
         return res.status(400).json({ ok: false, error: "unknown_template", available: ["recontacto_lead","seguimiento_cotizacion","confirmacion_cotizacion","envio_cotizacion","apertura_por_llamada","bienvenida_activa_inversiones","escalamiento_marcelo","informe_diario","solicitud_resena","vigencia_precio"] });
+    }
+
+    // [2026-08-19] Los dos motores de seguimiento pasan por ACA, y hasta hoy ninguno dejaba
+    // rastro en la conversacion: el ultimo template visible en el inbox era del 13-jul aunque
+    // se habian enviado 141 en 90 dias. Consecuencias medidas: (1) el dueno no podia saber a
+    // quien ya se le habia escrito; (2) Oliver tampoco, y saludaba como si nada; (3) el
+    // analisis de "quien hablo ultimo" daba 19 dias de silencio que en realidad no lo eran.
+    // Se registra DESPUES del envio y sin bloquear: si el log falla, el mensaje ya salio.
+    // El candado se marca SOLO si el envío salió bien: si Meta rechazó, el otro motor
+    // debe poder reintentar. (clave === null cuando la plantilla es transaccional.)
+    if (result?.ok && candado.clave) {
+      await marcarSeguimientoEnviado(candado.clave,
+        { escribir: escribirEstado, onError: (err) => logErr("send-template.candado.escribir", err) });
+    }
+
+    if (result?.ok) {
+      fireAndForget("pushConversationEvent.template", pushConversationEvent({
+        channel: "whatsapp", external_id: telLimpio,
+        customer_name: String(customer_name || "").trim(),
+        direction: "outbound", actor_type: "ai", actor_name: "Oliver", message_type: "template",
+        body: `[plantilla ${template}${quote_num ? ` · ${quote_num}` : ""}]`,
+        metadata: { template, quote_num: quote_num || null, via: "admin/send-template" },
+      }));
     }
 
     fireAndForget("logOliverEvent.template_sent", logOliverEvent("template_sent_admin", { phone, template, ok: result.ok }));

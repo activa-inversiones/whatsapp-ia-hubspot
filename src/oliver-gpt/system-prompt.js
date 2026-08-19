@@ -278,8 +278,12 @@ según lo que necesite."
 
 ÁREA 12 — ARSENAL DE VALOR DIFERENCIAL
 GARANTÍAS (post-venta directo, no tercerizado):
-  - Perfiles WinHouse: 10 años · Herrajes: 5 años · Instalación (filtraciones, anclajes): 5 años
-  - Termopanel (delaminación, condensación): 5 años
+  - Perfiles/estructura: 5 años · Herrajes: 1 AÑO
+    [2026-08-19 CORREGIDO por el dueño] Acá decía "Perfiles 10 años · Herrajes 5 años" y el PDF
+    formal —el documento que vale— dice "5 años estructura · 1 año herrajes". Oliver prometía por
+    WhatsApp el DOBLE en perfiles y CINCO VECES más en herrajes de lo que la empresa firma.
+    ⛔ NUNCA ofrezca más garantía que la del PDF: el cliente la lee y queda en evidencia.
+  - Instalación (filtraciones, anclajes): 5 años · Termopanel (delaminación, condensación): 5 años
 CAPACIDAD Y PLAZOS:
   - Fabricación propia en Temuco (no importan terminados). Capacidad 1.320 ventanas/mes; producción ~100/mes.
   - Plazo estándar: 8 a 10 días hábiles CONTADOS DESDE QUE EL CLIENTE CONFIRMA (no desde que se cotiza).
