@@ -33,17 +33,38 @@
 
 export const VERSION = '1.0.0';
 
-const contadores = { enviados: 0, sin_configurar: 0, sin_uso: 0, fallidos: 0 };
+// [2026-08-20 · revisión cruzada de Copilot] Los nombres importan acá.
+// `disparados` = veces que se llegó a llamar a fetch. `fallidos` es un SUBCONJUNTO de
+// disparados (la llamada salió y después falló). Antes se llamaba `enviados`, y como el
+// fallo asíncrono incrementa los dos, "enviados" mentía: una llamada que fracasó figuraba
+// como enviada. Los contadores no son un ranking, son un desglose.
+const contadores = { disparados: 0, sin_configurar: 0, sin_uso: 0, fallidos: 0 };
 let avisoDado = false;
 
-/** Estado para /health y para saber si el reporte está vivo. */
+/**
+ * Estado para /health.
+ *
+ * ⚠️ `configurado` es de TRES estados, no dos (hallazgo de la revisión cruzada de Copilot,
+ * 20-ago). Antes era `sin_configurar === 0 || enviados > 0`, que al arrancar el proceso
+ * —con todos los contadores en 0— daba **true sin que se hubiera intentado nada**. O sea
+ * /health decía "configurado" justo en el escenario que este módulo vino a destapar.
+ *   null  = todavía no se intentó reportar (no se sabe)
+ *   true  = se intentó y había URL + token
+ *   false = se intentó y faltaba configuración → el gasto NO se está registrando
+ */
 export function estadoReporteCosto() {
-  return { ...contadores, configurado: contadores.sin_configurar === 0 || contadores.enviados > 0 };
+  const intentos = contadores.disparados + contadores.sin_configurar;
+  return {
+    ...contadores,
+    ok: contadores.disparados - contadores.fallidos,
+    intentos,
+    configurado: intentos === 0 ? null : contadores.sin_configurar === 0,
+  };
 }
 
 /** Solo para tests: vuelve a cero. */
 export function _resetReporteCosto() {
-  contadores.enviados = 0; contadores.sin_configurar = 0; contadores.sin_uso = 0; contadores.fallidos = 0;
+  contadores.disparados = 0; contadores.sin_configurar = 0; contadores.sin_uso = 0; contadores.fallidos = 0;
   avisoDado = false;
 }
 
@@ -94,9 +115,16 @@ export function reportarCosto({ modulo, modelo, usage, cacheTtl } = {}, cfg = {}
     return 'sin_configurar';
   }
 
+  let timer = null;
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    // [2026-08-20 · 2ª pasada de Copilot] Contar el intento ANTES de llamar a fetch.
+    // Estaba después, así que si fetchFn tiraba sincrónicamente el catch sumaba `fallidos`
+    // sin que `disparados` se hubiera sumado nunca: `ok = disparados - fallidos` daba -1.
+    // Un contador negativo en /health no es un detalle estético: es la señal de salud
+    // mintiendo justo cuando algo se rompió.
+    contadores.disparados++;
     // Sin await a propósito: la respuesta al cliente no espera a la telemetría.
     Promise.resolve(fetchFn(`${String(url).replace(/\/+$/, '')}/api/ingest/ai-cost`, {
       method: 'POST',
@@ -115,11 +143,15 @@ export function reportarCosto({ modulo, modelo, usage, cacheTtl } = {}, cfg = {}
     }))
       .catch(() => { contadores.fallidos++; })
       .finally(() => clearTimeout(timer));
-    contadores.enviados++;
     return 'enviado';
   } catch {
-    // Armar la llamada fallo (fetchFn rompio, AbortController no existe, etc.). Es un FALLO,
-    // no un "no habia nada que reportar": devolver 'sin_uso' aca escondia el problema.
+    // Armar la llamada falló (fetchFn rompió, AbortController no existe, etc.). Es un FALLO,
+    // no un "no había nada que reportar": devolver 'sin_uso' acá escondía el problema.
+    // [2026-08-20 · Copilot] Limpiar el timer también acá: si fetchFn tira sincrónicamente,
+    // el `.finally` nunca corre y quedaba un setTimeout huérfano por cada fallo, que 2,5 s
+    // después aborta un controller ya muerto. Inofensivo pero es basura acumulándose en un
+    // proceso que vive semanas.
+    if (timer) clearTimeout(timer);
     contadores.fallidos++;
     return 'fallido';
   }

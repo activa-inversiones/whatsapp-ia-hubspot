@@ -108,3 +108,35 @@ test("si una burbuja falla al enviarse, el error llega al llamador", async () =>
     /meta_caida/
   );
 });
+
+test("REGRESION Copilot: una burbuja que YA pasa el techo se trocea, no se deja pasar", () => {
+  // Antes: el corte solo actuaba con `cola` no vacia, asi que la primera burbuja entraba
+  // con cola="" y salia intacta. Reproducido: 5.000 chars -> Meta lo rechaza.
+  const gigante = "x".repeat(5000);
+  const b = aplicarTope([gigante, "chica"], 2);
+  for (const x of b) assert.ok(x.length <= LIMITE_DURO_WA, `quedo una burbuja de ${x.length}`);
+  assert.equal(b.join("").replace(/\n/g, ""), gigante + "chica", "no se puede perder ni un caracter");
+});
+
+test("REGRESION Copilot: trocear corta en espacios cuando los hay", () => {
+  const texto = ("palabra ".repeat(900)).trim();   // ~7.200 chars con espacios
+  const b = aplicarTope([texto, "fin"], 2);
+  for (const x of b) assert.ok(x.length <= LIMITE_DURO_WA);
+  assert.equal(b.join(" ").replace(/\s+/g, " ").trim(), (texto + " fin").replace(/\s+/g, " "),
+    "el texto tiene que sobrevivir palabra por palabra");
+});
+
+test("REGRESION Copilot: un texto gigante SIN espacios igual respeta el techo", () => {
+  const b = aplicarTope(["y".repeat(9000), "z"], 2);
+  for (const x of b) assert.ok(x.length <= LIMITE_DURO_WA, `burbuja de ${x.length}`);
+  assert.equal(b.join("").replace(/\n/g, ""), "y".repeat(9000) + "z");
+});
+
+test("REGRESION Copilot 3a pasada: un valor que no es string no tumba el envio", () => {
+  // aplicarTope es exportada y en el camino de re-union el flatMap corre sobre TODO el
+  // arreglo: con un null adentro, texto.length tiraba TypeError y se caia el mensaje.
+  for (const raro of [null, undefined, 42, {}, []]) {
+    assert.doesNotThrow(() => aplicarTope(["a", "b", raro, "c"], 2), `reventó con ${JSON.stringify(raro)}`);
+  }
+  assert.doesNotThrow(() => aplicarTope([null, "x".repeat(5000)], 2));
+});

@@ -79,8 +79,9 @@ test('EL SILENCIO QUE COSTO 3 SEMANAS: sin token avisa UNA vez y lo deja contado
   assert.match(avisos[0], /NO se esta registrando/);
   const e = estadoReporteCosto();
   assert.equal(e.sin_configurar, 50, 'el contador si tiene que ver los 50');
-  assert.equal(e.enviados, 0);
+  assert.equal(e.disparados, 0);
   assert.equal(e.configurado, false, '/health debe poder decir que esto no esta configurado');
+  assert.equal(e.intentos, 50);
 });
 
 test('sin URL tambien cuenta como sin_configurar', () => {
@@ -120,8 +121,60 @@ test('los contadores separan los 4 desenlaces', async () => {
   reportarCosto({ modulo: 'c', usage: {} }, { url: 'https://x', token: 't' });
   reportarCosto({ modulo: 'd', usage }, { url: 'https://x', token: 't', fetchFn: () => { throw new Error('x'); } });
   const e = estadoReporteCosto();
-  assert.equal(e.enviados, 1);
+  // 'a' (async ok) y 'd' (throw sincronico) son los DOS intentos que llegaron a fetch.
+  // 'd' ademas cuenta como fallido: `fallidos` es subconjunto de `disparados`.
+  assert.equal(e.disparados, 2);
+  assert.equal(e.fallidos, 1);
+  assert.equal(e.ok, 1, 'solo una llego de verdad');
   assert.equal(e.sin_configurar, 1);
   assert.equal(e.sin_uso, 1, 'solo el usage vacio');
+  assert.equal(e.intentos, 3, 'disparados + sin_configurar; el usage vacio no es un intento');
+});
+
+// ── Regresiones de la revisión cruzada (Copilot, 2026-08-20) ────────────────
+
+test('REGRESION Copilot: al arrancar, `configurado` NO puede ser true', () => {
+  // Antes: `sin_configurar === 0 || enviados > 0` daba TRUE con todos los contadores en 0,
+  // o sea /health decia "configurado" sin haber intentado nada — justo el escenario que
+  // este modulo vino a destapar.
+  const e = estadoReporteCosto();
+  assert.equal(e.intentos, 0);
+  assert.equal(e.configurado, null, 'sin intentos la respuesta honesta es "no se sabe", no "si"');
+});
+
+test('REGRESION Copilot: configurado pasa a true recien tras un intento con URL+token', () => {
+  reportarCosto({ modulo: 'x', usage: { input_tokens: 5 } },
+    { url: 'https://x', token: 't', fetchFn: async () => ({ ok: true }) });
+  const e = estadoReporteCosto();
+  assert.equal(e.configurado, true);
+  assert.equal(e.intentos, 1);
+});
+
+test('REGRESION Copilot: `fallidos` es SUBCONJUNTO de `disparados`, no otra categoria', async () => {
+  reportarCosto({ modulo: 'x', usage: { input_tokens: 5 } },
+    { url: 'https://x', token: 't', fetchFn: async () => { throw new Error('502'); } });
+  await new Promise((r) => setImmediate(r));
+  const e = estadoReporteCosto();
+  assert.equal(e.disparados, 1, 'se disparo una');
+  assert.equal(e.fallidos, 1, 'y esa misma fallo');
+  assert.equal(e.ok, 0, 'ok = disparados - fallidos: ninguna llego');
+});
+
+test('REGRESION Copilot 2a pasada: `ok` NUNCA puede ser negativo', () => {
+  // Si fetchFn tiraba sincronicamente, el catch sumaba `fallidos` pero `disparados` se
+  // sumaba DESPUES del fetch y nunca se ejecutaba => ok = 0 - 1 = -1. Un contador negativo
+  // en /health es la senal de salud mintiendo justo cuando algo se rompio.
+  reportarCosto({ modulo: 'x', usage: { input_tokens: 5 } },
+    { url: 'https://x', token: 't', fetchFn: () => { throw new Error('sync'); } });
+  const e = estadoReporteCosto();
+  assert.equal(e.disparados, 1, 'el intento existio, aunque haya muerto al instante');
   assert.equal(e.fallidos, 1);
+  assert.equal(e.ok, 0, 'ok = disparados - fallidos');
+  assert.ok(e.ok >= 0, 'ok jamas puede ser negativo');
+});
+
+test('REGRESION: un fallo sincronico no infla `disparados` dos veces', () => {
+  reportarCosto({ modulo: 'x', usage: { input_tokens: 5 } },
+    { url: 'https://x', token: 't', fetchFn: async () => ({ ok: true }) });
+  assert.equal(estadoReporteCosto().disparados, 1, 'una llamada, un disparo');
 });

@@ -39,7 +39,17 @@ export const LIMITE_DURO_WA = 3500;
  * problema; un mensaje que no se entrega es perder al cliente.
  */
 export function aplicarTope(burbujas, tope = MAX_BURBUJAS) {
-  if (!Array.isArray(burbujas) || tope <= 0 || burbujas.length <= tope) return burbujas;
+  if (!Array.isArray(burbujas)) return burbujas;
+
+  // El techo de WhatsApp vale SIEMPRE, incluso cuando no hay nada que re-unir y cuando el
+  // tope está desactivado: no es una política de costo, es un límite de entrega. Al escribir
+  // los tests de regresión del hallazgo de Copilot apareció que los dos `return` tempranos de
+  // acá abajo se saltaban el troceo — aplicarTope(['x'.repeat(5000), 'chica'], 2) tiene
+  // largo 2 y tope 2, así que salía por el atajo con el mensaje gigante intacto.
+  const algunaSePasa = burbujas.some((b) => typeof b === "string" && b.length > LIMITE_DURO_WA);
+  if (tope <= 0 || burbujas.length <= tope) {
+    return algunaSePasa ? burbujas.flatMap(trocearSiPasaElTecho) : burbujas;
+  }
 
   const res = burbujas.slice(0, tope - 1);
   let cola = "";
@@ -53,7 +63,32 @@ export function aplicarTope(burbujas, tope = MAX_BURBUJAS) {
     }
   }
   if (cola) res.push(cola);
-  return res;
+  // [2026-08-20 · hallazgo de la revisión cruzada de Copilot] El bucle de arriba solo corta
+  // cuando `cola` YA tiene algo: una burbuja que por sí sola pasa el techo entraba con
+  // cola="" y salía intacta. Reproducido: aplicarTope(['x'.repeat(5000)], 2) devolvía un
+  // mensaje de 5.000 caracteres, que Meta rechaza. Hoy no pasa por el camino normal
+  // —partirEnBurbujas nunca entrega piezas > 320— pero aplicarTope es una función
+  // EXPORTADA, y una invariante que depende de quién la llame no es una invariante.
+  return res.flatMap(trocearSiPasaElTecho);
+}
+
+/** Parte una burbuja que supere el techo de WhatsApp. Corta en espacio; nunca pierde texto. */
+function trocearSiPasaElTecho(texto) {
+  // [2026-08-20 · 3ª pasada de Copilot] El typeof no es paranoia: `aplicarTope` es exportada
+  // y en el camino de re-unión el flatMap corre sobre TODO el arreglo. Con un null adentro,
+  // `texto.length` tira TypeError y se cae el envío del mensaje — la telemetría de costos no
+  // puede tumbar una conversación, y esto es la misma regla aplicada al texto.
+  if (typeof texto !== "string" || texto.length <= LIMITE_DURO_WA) return [texto];
+  const partes = [];
+  let resto = texto;
+  while (resto.length > LIMITE_DURO_WA) {
+    let corte = resto.lastIndexOf(" ", LIMITE_DURO_WA);
+    if (corte < LIMITE_DURO_WA / 2) corte = LIMITE_DURO_WA;  // sin espacios útiles: corte duro
+    partes.push(resto.slice(0, corte));
+    resto = resto.slice(corte).replace(/^ /, "");
+  }
+  if (resto) partes.push(resto);
+  return partes;
 }
 
 /**
