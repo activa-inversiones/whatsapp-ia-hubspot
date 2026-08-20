@@ -17,8 +17,26 @@
 
 import OpenAI from 'openai';
 import { anthropicPass1, anthropicPass2 } from './engine-anthropic.js';
+import { reportarCosto as reportarCostoCompartido } from '../../services/reporteCosto.js';
 
 const MODEL = () => process.env.AI_MODEL_OPENAI || 'gpt-4o';
+
+// [2026-08-20] REPORTE DE COSTO DEL RESPALDO GPT — antes NO existía.
+// openaiPass1/openaiPass2 descartaban `r.usage` entero, así que el camino de GPT no dejaba
+// rastro en ai_cost_tracking. Y GPT no es el camino raro: es el RESPALDO que entra cuando se
+// agotan los tokens de Anthropic, o sea justo el momento que más importa medir. Verificado
+// contra la BD viva el 19-ago: 0 filas de Oliver, de los dos motores.
+// Mismo módulo compartido y misma regla dura que Anthropic: fire-and-forget, nunca puede
+// tumbar una conversación.
+const COSTO_URL_GPT = () => (process.env.SALES_OS_URL || '').replace(/\/+$/, '');
+const COSTO_TOKEN_GPT = () => process.env.SALES_OS_INGEST_TOKEN || '';
+
+function reportarCostoOpenAI(tag, r) {
+  reportarCostoCompartido(
+    { modulo: `oliver_${tag}_gpt`, modelo: r?.model || MODEL(), usage: r?.usage, cacheTtl: null },
+    { url: COSTO_URL_GPT(), token: COSTO_TOKEN_GPT(), timeoutMs: Number(process.env.COSTO_REPORT_TIMEOUT_MS || 2500) },
+  );
+}
 
 // [2026-06-19] SWITCH DE PROVEEDOR DEL CEREBRO.
 //   AI_PROVIDER=anthropic  → Claude Sonnet 4.6 (vía engine-anthropic.js, misma interfaz).
@@ -174,6 +192,7 @@ async function openaiPass1({ system, messages = [], tools = [] }) {
     // [FIX 2026-06-19 COB-04] 500 truncaba el JSON de tool_call → input={} silencioso.
     max_tokens: Number(process.env.OLIVER_PASS1_MAX_TOKENS) > 0 ? Number(process.env.OLIVER_PASS1_MAX_TOKENS) : 4096,
   }), 'pass1');
+  reportarCostoOpenAI('pass1', r);
   const choice1 = r.choices?.[0] || {};
   if (choice1.finish_reason === 'length') console.warn('[engine] pass1 truncado (max_tokens) — el JSON de tool_call puede venir incompleto');
   const msg = choice1.message || {};
@@ -192,6 +211,7 @@ async function openaiPass2({ system, messages = [] }) {
     temperature: 0.4,
     max_tokens: 650,   // [FIX 2026-06-19 CLI-05] 350 cortaba respuestas multi-ítem + disclaimer + precio a mitad de frase
   }), 'pass2');
+  reportarCostoOpenAI('pass2', r);
   const choice2 = r.choices?.[0] || {};
   if (choice2.finish_reason === 'length') console.warn('[engine] pass2 truncado (max_tokens) — respuesta al cliente puede quedar cortada');
   return (choice2.message?.content || '').trim();

@@ -314,6 +314,7 @@ import {
 } from "./services/atribucionCotizacion.js";
 // [2026-08-08] Estado del bot que sobrevive a un redeploy (respaldo en Postgres).
 import { leer as leerEstado, escribir as escribirEstado } from "./services/estadoPersistente.js";
+import { estadoReporteCosto } from "./services/reporteCosto.js";
 // [2026-08-19] Candado único de seguimiento (módulo puro, 9 tests). Ver services/candadoSeguimiento.js.
 import { puedeEnviar as puedeEnviarSeguimiento, marcarEnviado as marcarSeguimientoEnviado } from "./services/candadoSeguimiento.js";
 // [2026-06-14] Cerebro de Oliver para IG/FB (mismo handleTurn que WhatsApp, toolCtx adaptado).
@@ -4417,6 +4418,10 @@ app.get("/health", async (_req, res) => {
     sessions_active: sessions.size,
     seen_size: seen.size,
     rate_size: rateM.size,
+    // [2026-08-20] Que el reporte de costo de Oliver se pueda MIRAR sin entrar a los logs.
+    // Si `configurado` viene false, el gasto de IA no se esta registrando en ai_cost_tracking
+    // — que es exactamente lo que paso en silencio entre el 28-jul y el 19-ago.
+    reporte_costo: estadoReporteCosto(),
   });
 });
 // Multi-channel routes (Instagram DM + Facebook Messenger)

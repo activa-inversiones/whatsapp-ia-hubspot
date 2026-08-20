@@ -23,6 +23,10 @@
 // ESM, Node 18+.
 
 import Anthropic from '@anthropic-ai/sdk';
+// [2026-08-20] El reporte de costo se mudó a services/reporteCosto.js: lo comparten los DOS
+// motores (acá y engine.js/GPT) y ahora avisa cuando no está configurado. La copia local
+// solo servía a Anthropic y callaba para siempre. Ver el encabezado de ese archivo.
+import { reportarCosto as reportarCostoCompartido } from '../../services/reporteCosto.js';
 
 const MODEL = () => process.env.AI_MODEL_ANTHROPIC || 'claude-sonnet-4-6';
 const EFFORT = () => (process.env.AI_EFFORT ?? 'medium').trim();   // [2026-06-21] default medium (low loopeaba/no encadenaba PDF); '' => no enviar
@@ -50,59 +54,21 @@ function logUsage(tag, resp) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// [2026-07-28] REPORTE DE COSTO a Sales OS — que Oliver deje de ser invisible
+// [2026-07-28 · reescrito 2026-08-20] REPORTE DE COSTO — ahora en un módulo compartido
 // ════════════════════════════════════════════════════════════════════════════
-// POR QUÉ: hasta hoy estos tokens se imprimían acá arriba y MORÍAN en la consola de
-// Railway. La tabla `ai_cost_tracking` registra 1 módulo de ~30, y Oliver no está.
-// El dueño estima que la API le cuesta ~US$200/mes (~21% de todo su gasto mensual,
-// pauta incluida) y NADIE puede decir cuánto de eso es Oliver: sin este dato, decidir
-// qué mover al plan Max 20x y qué dejar en la API es adivinar.
-//
-// 🔒 REGLA DURA: **esto no puede afectar la conversación con el cliente, nunca.**
-// Mismo patrón que `ingestCtwaLead` (index.js:1201) — fire-and-forget, timeout corto,
-// catch silencioso, sin `await` en el camino de la respuesta. Si Sales OS está caído o
-// el token no está, Oliver ni se entera. Se manda un HECHO (los contadores que
-// devolvió la API); el PRECIO lo calcula Sales OS con su tabla única.
+// La lógica vive en services/reporteCosto.js (12 tests). Acá queda solo el cableado de
+// env vars. Se movió porque esta copia (a) solo cubría Anthropic, dejando fuera el
+// respaldo GPT, y (b) hacía `return` mudo sin URL/token: 3 semanas sin una sola fila en
+// ai_cost_tracking y nadie se enteró.
 const COSTO_URL = () => (process.env.SALES_OS_URL || '').replace(/\/+$/, '');
 const COSTO_TOKEN = () => process.env.SALES_OS_INGEST_TOKEN || '';
 const COSTO_TIMEOUT_MS = Number(process.env.COSTO_REPORT_TIMEOUT_MS || 2500);
 
 function reportarCosto(tag, resp) {
-  try {
-    const u = resp?.usage;
-    const url = COSTO_URL();
-    const token = COSTO_TOKEN();
-    // Sin URL o sin token no se intenta: ni un log de error por turno (serían ~75/día).
-    if (!u || !url || !token) return;
-
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), COSTO_TIMEOUT_MS);
-
-    // Sin `await` a propósito: la respuesta al cliente no espera a la telemetría.
-    fetch(`${url}/api/ingest/ai-cost`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-internal-token': token,
-        'x-api-key': token,
-      },
-      body: JSON.stringify({
-        module: `oliver_${tag}`,          // oliver_pass1 / oliver_pass2: se ve cuál pesa
-        model: resp?.model || MODEL(),    // el modelo REAL que respondió, no el pedido
-        input_tokens: u.input_tokens || 0,
-        output_tokens: u.output_tokens || 0,
-        cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
-        cache_read_input_tokens: u.cache_read_input_tokens || 0,
-        cache_ttl: CACHE_TTL(),           // '1h' vale 2x, '5m' vale 1.25x: cambia el precio
-        status: 'ok',
-      }),
-      signal: ctrl.signal,
-    })
-      .catch(() => {})
-      .finally(() => clearTimeout(timer));
-  } catch {
-    // Silencioso por diseño: la telemetría no puede tirar una conversación.
-  }
+  reportarCostoCompartido(
+    { modulo: `oliver_${tag}`, modelo: resp?.model || MODEL(), usage: resp?.usage, cacheTtl: CACHE_TTL() },
+    { url: COSTO_URL(), token: COSTO_TOKEN(), timeoutMs: COSTO_TIMEOUT_MS },
+  );
 }
 
 /* Cliente Anthropic singleton (lazy). Importar este módulo NO exige la API key:

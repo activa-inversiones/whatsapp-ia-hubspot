@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { partirEnBurbujas, MAX_CARACTERES_BURBUJA } from "./burbujas.js";
+import { partirEnBurbujas, MAX_CARACTERES_BURBUJA, MAX_BURBUJAS, LIMITE_DURO_WA, aplicarTope } from "./burbujas.js";
 import { enviarComoPersona } from "./presenciaHumana.js";
 
 test("un mensaje corto sale en UNA burbuja, sin trocear de más", () => {
@@ -35,7 +35,46 @@ test("un texto sin puntuación ni saltos igual se parte (último recurso)", () =
   const t = "palabra ".repeat(200);
   const b = partirEnBurbujas(t);
   assert.ok(b.length > 1);
-  for (const x of b) assert.ok(x.length <= MAX_CARACTERES_BURBUJA);
+  // [2026-08-20] El contrato CAMBIÓ con el tope de burbujas: antes se exigía que TODAS
+  // midieran <= MAX_CARACTERES_BURBUJA. Ahora las primeras sí, pero la última puede venir
+  // más larga porque absorbe a las que pasan del tope — un mensaje largo sale más barato
+  // que tres cobrados (Meta cobra por mensaje desde el 1-oct-2026). Lo que sigue siendo
+  // inviolable es el techo de WhatsApp.
+  for (const x of b.slice(0, -1)) assert.ok(x.length <= MAX_CARACTERES_BURBUJA);
+  for (const x of b) assert.ok(x.length <= LIMITE_DURO_WA, "ninguna burbuja puede pasar el techo de WhatsApp");
+});
+
+test("TOPE: nunca más de MAX_BURBUJAS, aunque el texto dé para siete", () => {
+  const t = Array.from({ length: 7 }, (_, i) => `Parrafo numero ${i} con texto suficiente. `.repeat(12)).join("\n\n");
+  const b = partirEnBurbujas(t);
+  assert.ok(b.length <= MAX_BURBUJAS, `salieron ${b.length} burbujas, el tope es ${MAX_BURBUJAS}`);
+});
+
+test("TOPE: no se pierde ni una palabra al re-unir", () => {
+  const partes = ["Uno alfa.", "Dos beta.", "Tres gamma.", "Cuatro delta.", "Cinco epsilon."];
+  const original = partes.join(" ");
+  const b = aplicarTope(partes, 2);
+  assert.equal(b.length, 2);
+  assert.equal(b.join(" ").replace(/\n\n/g, " "), original, "el texto completo tiene que sobrevivir");
+});
+
+test("TOPE: el techo de WhatsApp le gana al tope de burbujas", () => {
+  // 5 bloques de 2.000 caracteres: re-unirlos daría 10.000 y Meta rechazaría el body.
+  const gordas = Array.from({ length: 5 }, (_, i) => String.fromCharCode(97 + i).repeat(2000));
+  const b = aplicarTope(gordas, 2);
+  assert.ok(b.length > 2, "prefiere pasarse del tope antes que armar un mensaje que no se entrega");
+  for (const x of b) assert.ok(x.length <= LIMITE_DURO_WA, `una burbuja quedó en ${x.length}`);
+  assert.equal(b.join("").replace(/\n/g, ""), gordas.join(""), "tampoco acá se puede perder texto");
+});
+
+test("TOPE: WA_MAX_BUBBLES=0 lo desactiva (válvula de escape)", () => {
+  const partes = ["a", "b", "c", "d"];
+  assert.deepEqual(aplicarTope(partes, 0), partes);
+});
+
+test("TOPE: si ya viene bajo el tope, no toca nada", () => {
+  const partes = ["hola", "chao"];
+  assert.equal(aplicarTope(partes, 2), partes, "misma referencia: no rearma al pedo");
 });
 
 test("enviarComoPersona manda las burbujas EN ORDEN y completas", async () => {
