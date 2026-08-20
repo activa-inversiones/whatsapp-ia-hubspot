@@ -202,6 +202,26 @@ export async function enviarComoPersona(enviarCrudo, to, texto, msgId = null) {
     if (i > 0 && msgId) { try { await mostrarEscribiendo(msgId); } catch { /* cosmético */ } }
     try { await dormir(pausas[i]); } catch { /* una pausa que falla no bloquea el envío */ }
     ultimo = await enviarCrudo(to, burbujas[i]);
+
+    // 🔴 [2026-08-20] UN RECHAZO DE META SE PERDÍA EN SILENCIO Y LA BD LO DABA POR ENTREGADO.
+    // sendWhatsAppText (src/sales-agent/whatsapp-adapter.js:115) atrapa el error de axios y
+    // devuelve {ok:false, error} — NUNCA lanza. Acá se ignoraba el retorno, y arriba
+    // webhook.js lo envuelve en safe(), que solo caza throws. Resultado: un 130429 (rate
+    // limit), un 500 transitorio o un timeout dejaban al cliente sin el mensaje mientras el
+    // historial y el cockpit decían "entregado".
+    // El tope de 2 burbujas AGRAVÓ el radio: antes una burbuja perdida costaba ~14% del
+    // texto; ahora la última se lleva ~75%, con el precio y la pregunta de cierre adentro.
+    // Se lanza para que el llamador reaccione — mismo criterio que webhook.js:1319, que ya
+    // hace `docSent = !!(sendRes && sendRes.ok)` para el PDF.
+    // ⚠️ La condición es `ok === false` a propósito, NO `!ok`: hay llamadores legítimos que
+    // devuelven undefined (tests, y el emisor del V1). Un undefined no es un fallo.
+    if (ultimo && ultimo.ok === false) {
+      const err = new Error(`wa_send_failed burbuja ${i + 1}/${burbujas.length}: ${ultimo.error || 'sin detalle'}`);
+      err.burbuja = i + 1;
+      err.totalBurbujas = burbujas.length;
+      err.parcial = i > 0;   // ya salió al menos una: el cliente vio parte del mensaje
+      throw err;
+    }
   }
   return ultimo;
 }

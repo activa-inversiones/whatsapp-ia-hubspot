@@ -66,7 +66,10 @@ const COSTO_TIMEOUT_MS = Number(process.env.COSTO_REPORT_TIMEOUT_MS || 2500);
 
 function reportarCosto(tag, resp) {
   reportarCostoCompartido(
-    { modulo: `oliver_${tag}`, modelo: resp?.model || MODEL(), usage: resp?.usage, cacheTtl: CACHE_TTL() },
+    // [2026-08-20] Ver el comentario gemelo en engine.js: se tarifa con el alias
+    // configurado (que si esta en la tabla de precios) y el eco de la API viaja aparte.
+    { modulo: `oliver_${tag}`, modelo: MODEL(), modeloApi: resp?.model || null,
+      proveedor: 'anthropic', usage: resp?.usage, cacheTtl: CACHE_TTL() },
     { url: COSTO_URL(), token: COSTO_TOKEN(), timeoutMs: COSTO_TIMEOUT_MS },
   );
 }

@@ -109,6 +109,73 @@ test("si una burbuja falla al enviarse, el error llega al llamador", async () =>
   );
 });
 
+// ── Regresiones de la pasada propia (2026-08-20) ───────────────────────────
+
+test("REGRESION: el emisor REAL devuelve {ok:false} y NO tira — igual tiene que llegar el fallo", async () => {
+  // El test de arriba usaba `throw`, pero sendWhatsAppText (whatsapp-adapter.js:115) atrapa
+  // el error de axios y devuelve {ok:false}. O sea el test certificaba un contrato que el
+  // codigo de produccion NO cumple: un rechazo de Meta pasaba invisible y la BD lo anotaba
+  // como entregado.
+  const texto = "Hola. ".repeat(150);
+  await assert.rejects(
+    () => enviarComoPersona(async () => ({ ok: false, error: "(#130429) rate limit" }), "569", texto, null),
+    /wa_send_failed/,
+  );
+});
+
+test("REGRESION: si falla la SEGUNDA burbuja, el error dice que fue parcial", async () => {
+  let n = 0;
+  const texto = "Primera parte del mensaje con bastante texto. ".repeat(10);
+  await assert.rejects(
+    () => enviarComoPersona(async () => (++n === 1 ? { ok: true } : { ok: false, error: "500" }), "569", texto, null),
+    (e) => {
+      assert.equal(e.parcial, true, "el cliente ya recibio la primera: el fallo es PARCIAL");
+      assert.equal(e.burbuja, 2);
+      return true;
+    },
+  );
+});
+
+test("REGRESION: un emisor que devuelve undefined NO se toma como fallo", async () => {
+  // Hay llamadores legitimos que no devuelven nada. Un undefined no es un error.
+  const texto = "Hola. ".repeat(150);
+  await assert.doesNotReject(() => enviarComoPersona(async () => undefined, "569", texto, null));
+});
+
+test("🔴 REGRESION: NO se pierde el texto que va despues del ultimo . ! ?", async () => {
+  // Estaba ROTO EN PRODUCCION: el camino de oraciones usa .match(), que descarta la cola
+  // posterior al ultimo signo. Pega justo en el cierre del mensaje: el link de la agenda,
+  // el precio, el emoji. Reproducido contra el commit 3db74db.
+  // ⚠️ Los tres casos estan CALIBRADOS: cada uno se comprobo que FALLA con el arreglo
+  // removido (mutacion quirurgica). Un caso mas corto cae por el camino 4, que si preserva
+  // el texto, y el test pasaria siempre — que es como se cuela un test decorativo.
+  const casos = [
+    // A) el repro original: link de agenda al final, 340 chars
+    "Le cuento que la ventana proyectante en termopanel le baja la condensacion bastante, que es lo que mas molesta en Temuco durante el invierno. El perfil es PVC con refuerzo interior de acero galvanizado. Para afinar los numeros lo ideal es medir en terreno, sin costo. Puede elegir el dia que le acomode aca: https://ops.activalabs.ai/agenda",
+    // B) precio al final sin punto: lo que mas duele perder
+    "Perfecto, le explico con calma como funciona. El perfil europeo tiene cuatro camaras de aire y un refuerzo interior de acero galvanizado, por eso aisla de verdad y no se deforma. El termopanel corta la condensacion que tanto molesta en invierno aca en Temuco. Con instalacion incluida y garantia, su ventana le queda en $389.900",
+    // C) pregunta de cierre con emoji, sin signo final
+    "Primera oracion suficientemente larga como para pasar sin problema el limite de trescientos veinte caracteres que usa el modulo. Segunda oracion igual de larga para forzar el corte por el camino de oraciones y no por otro. Tercera oracion que suma el resto del texto ¿Le agendo la visita tecnica 😊",
+  ];
+  // Se compara SIN espacios: cada burbuja es un mensaje aparte y se le hace .trim(), así que
+  // los espacios de junta desaparecen legítimamente. Lo que no puede faltar es un solo
+  // carácter con contenido. El bug original comía "ai/agenda", así que esta aserción lo caza
+  // igual — se verificó ejecutándola contra el commit 3db74db y falla.
+  const sinEspacios = (x) => x.replace(/\s+/g, "");
+  for (const t of casos) {
+    const entregado = partirEnBurbujas(t).join("");
+    assert.equal(sinEspacios(entregado), sinEspacios(t),
+      `se perdio contenido. Final entregado: ${JSON.stringify(entregado.slice(-45))}`);
+  }
+});
+
+test("🔴 REGRESION: un link al final del mensaje llega ENTERO", () => {
+  const t = "Le explico el detalle del perfil europeo con cuatro camaras de aire y refuerzo interior de acero. El termopanel reduce la condensacion de forma notoria en invierno. Para dejar los numeros finos hay que medir en terreno, sin costo alguno para usted. Agende aca: https://ops.activalabs.ai/agenda";
+  const entregado = partirEnBurbujas(t).join("");
+  assert.ok(entregado.includes("https://ops.activalabs.ai/agenda"),
+    `el link llego cortado: ${JSON.stringify(entregado.slice(-45))}`);
+});
+
 test("REGRESION Copilot: una burbuja que YA pasa el techo se trocea, no se deja pasar", () => {
   // Antes: el corte solo actuaba con `cola` no vacia, asi que la primera burbuja entraba
   // con cola="" y salia intacta. Reproducido: 5.000 chars -> Meta lo rechaza.

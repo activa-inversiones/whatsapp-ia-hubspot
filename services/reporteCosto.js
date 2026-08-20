@@ -39,7 +39,23 @@ export const VERSION = '1.0.0';
 // fallo asíncrono incrementa los dos, "enviados" mentía: una llamada que fracasó figuraba
 // como enviada. Los contadores no son un ranking, son un desglose.
 const contadores = { disparados: 0, sin_configurar: 0, sin_uso: 0, fallidos: 0 };
+// [2026-08-20] DOS latches, no uno. El de `sin_configurar` no servía para el otro modo de
+// falla: con las env vars puestas pero el token equivocado, la única rama que logueaba era
+// inalcanzable y el fallo no dejaba NI UNA LÍNEA. Un contador que nadie mira y que se borra
+// en cada deploy no es un detector.
 let avisoDado = false;
+let avisoFalloDado = false;
+let ultimoMotivoFallo = null;
+
+/** Cuenta el fallo y lo grita UNA vez por proceso, con el motivo real. */
+function anotarFallo(motivo, log = console.error) {
+  contadores.fallidos++;
+  ultimoMotivoFallo = motivo;
+  if (!avisoFalloDado) {
+    avisoFalloDado = true;
+    log(`[reporteCosto] el reporte de costo esta FALLANDO (${motivo}). El gasto de IA de Oliver NO se esta registrando. Se avisa una vez por proceso; el detalle vive en /health -> reporte_costo.`);
+  }
+}
 
 /**
  * Estado para /health.
@@ -59,13 +75,17 @@ export function estadoReporteCosto() {
     ok: contadores.disparados - contadores.fallidos,
     intentos,
     configurado: intentos === 0 ? null : contadores.sin_configurar === 0,
+    // [2026-08-20] Sin el motivo, /health decia "algo falla" y no que. Con el token
+    // equivocado hay que poder distinguir un 401 de un timeout SIN entrar a Railway.
+    ultimo_fallo: ultimoMotivoFallo,
+    sano: intentos > 0 && contadores.sin_configurar === 0 && contadores.fallidos === 0,
   };
 }
 
 /** Solo para tests: vuelve a cero. */
 export function _resetReporteCosto() {
   contadores.disparados = 0; contadores.sin_configurar = 0; contadores.sin_uso = 0; contadores.fallidos = 0;
-  avisoDado = false;
+  avisoDado = false; avisoFalloDado = false; ultimoMotivoFallo = null;
 }
 
 /**
@@ -99,7 +119,7 @@ export function normalizarUso(usage) {
  * @param {{url:string, token:string, timeoutMs?:number, fetchFn?:Function, log?:Function}} cfg
  * @returns {'enviado'|'sin_configurar'|'sin_uso'|'fallido'}
  */
-export function reportarCosto({ modulo, modelo, usage, cacheTtl } = {}, cfg = {}) {
+export function reportarCosto({ modulo, modelo, modeloApi, proveedor, usage, cacheTtl } = {}, cfg = {}) {
   const { url, token, timeoutMs = 2500, fetchFn = globalThis.fetch, log = console.warn } = cfg;
 
   const uso = normalizarUso(usage);
@@ -132,6 +152,13 @@ export function reportarCosto({ modulo, modelo, usage, cacheTtl } = {}, cfg = {}
       body: JSON.stringify({
         module: modulo,
         model: modelo || 'desconocido',
+        // [2026-08-20] El proveedor viaja EXPLICITO. Sin esto el sales-os lo adivinaba y
+        // guardaba engine='anthropic' para TODO, incluido el respaldo GPT: la tabla no podia
+        // cortar por proveedor, que es justo la pregunta que el dueno quiere responder
+        // ("cuanto me cuesta cada cerebro"). Ademas OpenAI cobra el cache read a 0,50x y
+        // Anthropic a 0,10x: sin proveedor, el respaldo GPT se valoraba 5 veces mas barato.
+        provider: proveedor || null,
+        model_api: modeloApi || null,
         input_tokens: uso.input,
         output_tokens: uso.output,
         cache_creation_input_tokens: uso.cacheWrite,
@@ -141,7 +168,26 @@ export function reportarCosto({ modulo, modelo, usage, cacheTtl } = {}, cfg = {}
       }),
       signal: ctrl.signal,
     }))
-      .catch(() => { contadores.fallidos++; })
+      // 🔴 [2026-08-20] ACÁ EL MÓDULO REINSTALABA EL SILENCIO QUE VINO A MATAR.
+      // Solo había `.catch()`, y **fetch NO rechaza ante un error HTTP**: un 401, un 404 o
+      // un 500 RESUELVEN. Así que el catch no corría, `fallidos` quedaba en 0 y
+      // `ok = disparados - fallidos` contaba todas como buenas.
+      // REPRODUCIDO con fetch real contra un servidor real que devuelve 401: /health decía
+      // `ok:20, fallidos:0, configurado:true` con CERO filas guardadas en ai_cost_tracking.
+      // Eso es peor que el bug original: antes el silencio era ausencia de señal; así había
+      // una señal afirmando activamente que todo funcionaba. Un verde falso engaña.
+      // El escenario NO es exótico: SALES_OS_INGEST_TOKEN (bot) e INGEST_TOKEN (sales-os)
+      // son dos nombres distintos en dos servicios de Railway, y ya hubo una rotación.
+      .then((r) => {
+        // El receptor devuelve HTTP 200 con {ok:false} a propósito cuando falla el INSERT
+        // (temp-sales-os/src/server.js:1505). Mirar solo el status dejaría pasar eso.
+        if (r && r.ok === false) { anotarFallo(`HTTP ${r.status}`); return; }
+        if (r && typeof r.json === 'function') {
+          return r.json().then((j) => { if (j && j.ok === false) anotarFallo(`receptor: ${j.error || 'ok:false'}`); })
+            .catch(() => { /* body no-JSON con status 2xx: se da por bueno */ });
+        }
+      })
+      .catch((e) => anotarFallo(e?.name === 'AbortError' ? 'timeout' : (e?.message || 'error de red')))
       .finally(() => clearTimeout(timer));
     return 'enviado';
   } catch {
@@ -152,7 +198,7 @@ export function reportarCosto({ modulo, modelo, usage, cacheTtl } = {}, cfg = {}
     // después aborta un controller ya muerto. Inofensivo pero es basura acumulándose en un
     // proceso que vive semanas.
     if (timer) clearTimeout(timer);
-    contadores.fallidos++;
+    anotarFallo('fallo al armar la llamada');
     return 'fallido';
   }
 }

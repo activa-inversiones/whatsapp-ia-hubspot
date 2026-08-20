@@ -33,7 +33,12 @@ const COSTO_TOKEN_GPT = () => process.env.SALES_OS_INGEST_TOKEN || '';
 
 function reportarCostoOpenAI(tag, r) {
   reportarCostoCompartido(
-    { modulo: `oliver_${tag}_gpt`, modelo: r?.model || MODEL(), usage: r?.usage, cacheTtl: null },
+    // [2026-08-20] Se tarifa con el ALIAS CONFIGURADO, no con el eco de la API.
+    // El eco puede traer una version con fecha (ej '-2026-08-01') que NO esta en la tabla
+    // de precios del sales-os, y ahi el precio cae a un fallback MUDO: numero equivocado sin
+    // una sola alerta. El modelo real viaja aparte, en `modelo_api`, para trazabilidad.
+    { modulo: `oliver_${tag}_gpt`, modelo: MODEL(), modeloApi: r?.model || null,
+      proveedor: 'openai', usage: r?.usage, cacheTtl: null },
     { url: COSTO_URL_GPT(), token: COSTO_TOKEN_GPT(), timeoutMs: Number(process.env.COSTO_REPORT_TIMEOUT_MS || 2500) },
   );
 }

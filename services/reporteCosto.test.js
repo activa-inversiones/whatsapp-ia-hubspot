@@ -178,3 +178,76 @@ test('REGRESION: un fallo sincronico no infla `disparados` dos veces', () => {
     { url: 'https://x', token: 't', fetchFn: async () => ({ ok: true }) });
   assert.equal(estadoReporteCosto().disparados, 1, 'una llamada, un disparo');
 });
+
+// ── Regresiones de la pasada propia (2026-08-20) ────────────────────────────
+// El informe lo dijo sin anestesia: NINGUNO de los 11 fetchFn mockeados devolvia un status
+// de error, y el que se llamaba '502' en realidad usaba throw. La suite certificaba un
+// contrato que el codigo no cumplia.
+
+const respuesta = (status, body) => ({
+  ok: status >= 200 && status < 300,
+  status,
+  json: async () => body,
+});
+
+test('🔴 REGRESION: un 401 NO puede contar como exito (fetch no rechaza ante error HTTP)', async () => {
+  for (let i = 0; i < 5; i++) {
+    reportarCosto({ modulo: 'oliver_pass1', usage: { input_tokens: 100, output_tokens: 50 } },
+      { url: 'https://x', token: 'malo', fetchFn: async () => respuesta(401, { error: 'invalid' }), log: () => {} });
+  }
+  await new Promise((r) => setImmediate(r));
+  const e = estadoReporteCosto();
+  assert.equal(e.fallidos, 5, 'las 5 fueron rechazadas por el servidor');
+  assert.equal(e.ok, 0);
+  assert.equal(e.sano, false, '/health NO puede decir que esto esta sano');
+  assert.match(e.ultimo_fallo, /401/);
+});
+
+test('🔴 REGRESION: un 500 tampoco', async () => {
+  reportarCosto({ modulo: 'x', usage: { input_tokens: 10 } },
+    { url: 'https://x', token: 't', fetchFn: async () => respuesta(500, {}), log: () => {} });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(estadoReporteCosto().fallidos, 1);
+});
+
+test('🔴 REGRESION: HTTP 200 con {ok:false} es FALLO (asi responde el receptor real)', async () => {
+  // temp-sales-os/src/server.js:1505 devuelve 200 con ok:false A PROPOSITO cuando falla el
+  // INSERT, para no afectar al bot. Mirar solo el status dejaria pasar justo ese caso.
+  reportarCosto({ modulo: 'x', usage: { input_tokens: 10 } },
+    { url: 'https://x', token: 't', fetchFn: async () => respuesta(200, { ok: false, error: 'insert fallo' }), log: () => {} });
+  await new Promise((r) => setImmediate(r));
+  const e = estadoReporteCosto();
+  assert.equal(e.fallidos, 1, 'el receptor dijo que no lo guardo');
+  assert.match(e.ultimo_fallo, /insert fallo/);
+});
+
+test('un 200 con ok:true si es exito, y deja `sano` en true', async () => {
+  reportarCosto({ modulo: 'x', usage: { input_tokens: 10 } },
+    { url: 'https://x', token: 't', fetchFn: async () => respuesta(200, { ok: true }) });
+  await new Promise((r) => setImmediate(r));
+  const e = estadoReporteCosto();
+  assert.equal(e.fallidos, 0);
+  assert.equal(e.sano, true);
+  assert.equal(e.ultimo_fallo, null);
+});
+
+test('REGRESION: el fallo grita UNA vez por proceso, no una por turno', async () => {
+  const gritos = [];
+  for (let i = 0; i < 30; i++) {
+    reportarCosto({ modulo: 'x', usage: { input_tokens: 10 } },
+      { url: 'https://x', token: 't', fetchFn: async () => respuesta(401, {}), log: (m) => gritos.push(m) });
+  }
+  await new Promise((r) => setImmediate(r));
+  assert.equal(estadoReporteCosto().fallidos, 30, 'las 30 se cuentan');
+  assert.ok(gritos.length <= 1, `logueo ${gritos.length} veces; deberia ser 1`);
+});
+
+test('el proveedor y el modelo de la API viajan en el payload', () => {
+  let body = null;
+  reportarCosto({ modulo: 'oliver_pass1_gpt', modelo: 'gpt-4o', modeloApi: 'gpt-4o-2026-05-13', proveedor: 'openai',
+                  usage: { prompt_tokens: 1000, completion_tokens: 100 } },
+    { url: 'https://x', token: 't', fetchFn: async (u, o) => { body = JSON.parse(o.body); return respuesta(200, { ok: true }); } });
+  assert.equal(body.provider, 'openai', 'sin esto el sales-os guarda todo como anthropic');
+  assert.equal(body.model, 'gpt-4o', 'se tarifa con el ALIAS, que si esta en la tabla de precios');
+  assert.equal(body.model_api, 'gpt-4o-2026-05-13', 'el eco de la API viaja aparte, para trazabilidad');
+});

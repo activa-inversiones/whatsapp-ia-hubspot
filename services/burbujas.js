@@ -10,15 +10,27 @@
 
 export const MAX_CARACTERES_BURBUJA = Number(process.env.WA_MAX_BUBBLE_CHARS || 320);
 
-// [2026-08-20] TOPE DE BURBUJAS POR TURNO — nace de un cambio de precios de Meta.
-// Desde el 1-oct-2026 Meta cobra POR MENSAJE también los de servicio (las respuestas libres
-// dentro de la ventana de 24h), que hoy son gratis. O sea: cada burbuja extra pasa a ser
-// plata. Medido sobre 30 días de conversaciones reales: 1.711 turnos → 2.719 mensajes
-// (1,59 por turno), con turnos de hasta SIETE burbujas.
-// El tope no mata la humanidad —2 burbujas siguen sonando a persona, que era el objetivo del
-// 08-ago— pero corta la cola larga, que además de cara se lee como spam.
+// [2026-08-20] TOPE DE BURBUJAS POR TURNO.
+//
+// ⚠️ ESTO NO ES UNA MEDIDA DE AHORRO. Se presentó como tal al proponerlo y el dueño lo cazó:
+// *"para qué calcularemos el costo de burbuja"*. Tenía razón. La cuenta completa, con la
+// tarifa real de Chile (US$0,0200 por mensaje de utility/servicio):
+//     323 mensajes/mes × US$0,0200 = US$6,46/mes ≈ $6.200 CLP.
+// Sobre un gasto mensual del orden de US$950 (API + pauta), eso es medio punto porcentual:
+// ruido. Y ni siquiera existe hoy — recién desde el 1-oct-2026 Meta cobra por mensaje los de
+// servicio (las respuestas libres dentro de la ventana de 24h), que hoy son gratis.
+// **Si alguna vez hay que elegir entre este tope y la calidad de la conversación, gana la
+// conversación. El ahorro no es un argumento.**
+//
+// LA RAZÓN REAL POR LA QUE EXISTE: medido sobre 30 días de conversaciones reales, 1.711 turnos
+// dieron 2.719 mensajes (1,59 por turno) — pero había turnos de hasta SIETE burbujas seguidas.
+// Siete mensajes al hilo no se leen como una persona, se leen como spam, y eso es lo que hace
+// que un cliente silencie el chat. Dos burbujas siguen sonando a persona (el objetivo del
+// 08-ago) y la cola larga se corta. Es una guarda de CALIDAD; la plata es un efecto lateral
+// de tercer orden.
+//
 // Se corta re-uniendo las sobrantes en la última, NO tirándolas: perder texto sería peor que
-// pagar un mensaje. WA_MAX_BUBBLES=0 desactiva el tope.
+// mandar un mensaje más. WA_MAX_BUBBLES=0 desactiva el tope.
 export const MAX_BURBUJAS = (() => {
   const v = Number(process.env.WA_MAX_BUBBLES);
   return Number.isFinite(v) && v >= 0 ? v : 2;
@@ -128,6 +140,19 @@ export function partirEnBurbujas(texto) {
         actual += o;
       }
     }
+    // 🔴 [2026-08-20] ACÁ SE PERDÍA TEXTO, Y ESTABA EN PRODUCCIÓN.
+    // `.match()` devuelve SOLO lo que calza con el patrón: todo lo que va después del
+    // último . ! ? NO entra en `oraciones`, y desde la línea de arriba la función trabaja
+    // solo sobre `oraciones` — nunca vuelve a mirar `texto`. La cola se evaporaba.
+    // Pega justo en el FINAL del mensaje, que es donde Oliver pone el cierre: el link de
+    // la agenda, el emoji, la pregunta de cierre, el precio.
+    // REPRODUCIDO contra el commit 3db74db (lo que corre hoy en producción): una respuesta
+    // de 340 chars terminada en "https://ops.activalabs.ai/agenda" se entrega cortada como
+    // "https://ops.activalabs." — el cliente recibe un link MUERTO, sin ninguna señal de
+    // error. Y el test que dice cubrir esto usa "Uno. ".repeat(200), que termina en punto:
+    // es estructuralmente incapaz de fallar por esta clase de bug.
+    const consumido = oraciones.join("").length;
+    if (consumido < texto.length) actual += texto.slice(consumido);
     if (actual.trim()) res.push(actual.trim());
     if (res.length > 1) return aplicarTope(res);
   }
