@@ -158,3 +158,64 @@ test('wiring: loop de tools corta y produce reply + history', async () => {
   // history conserva el userText limpio + el reply.
   assert.equal(out.history.length, 2, 'history debe tener el user y el assistant del turno');
 });
+
+// ── [2026-08-20] EL MECANISMO POR EL QUE GPT NO COTIZABA COMO CLAUDE ────────
+// El dueno lo noto en produccion: "algo pasa que al parecer no cotiza como claude".
+// Medido: Claude entrego el PDF en 7,42% de sus turnos, GPT en 3,35%.
+// Causa: OpenAI iba con parallel_tool_calls:false => UNA tool por vuelta. Con el tope de
+// MAX_TOOL_ITERATIONS el bucle se agota antes del PDF. Claude pide todas de una pasada.
+
+function motorQueCotiza({ ventanas, unaPorVuelta }) {
+  let cotizadas = 0, pdfHecho = false;
+  return {
+    async orchestratorPass1() {
+      const faltan = ventanas - cotizadas;
+      if (faltan > 0) {
+        const cuantas = unaPorVuelta ? 1 : faltan;
+        const calls = Array.from({ length: cuantas }, (_, i) => ({
+          id: `c${cotizadas + i}`, type: 'function',
+          function: { name: 'calcular_cotizacion', arguments: '{"ancho_mm":1200,"alto_mm":1000}' },
+        }));
+        cotizadas += cuantas;
+        return { tool_calls: calls, content: null };
+      }
+      if (!pdfHecho) {
+        pdfHecho = true;
+        return { tool_calls: [{ id: 'pdf', type: 'function',
+          function: { name: 'generar_pdf_cotizacion', arguments: '{}' } }], content: null };
+      }
+      return { tool_calls: [], content: null };
+    },
+    async orchestratorPass2() { return 'Listo, te envie tu propuesta.'; },
+  };
+}
+
+const toolFalsa = async (name) =>
+  name === 'calcular_cotizacion' ? { ok: true, unit_price: 421560 } : { ok: true, quote_number: 'CM-TEST' };
+
+async function cotizar(ventanas, unaPorVuelta) {
+  const r = await handleTurn({
+    userText: `Necesito ${ventanas} ventanas para mi casa en Temuco`,
+    toolCtx: { engine: motorQueCotiza({ ventanas, unaPorVuelta }), runTool: toolFalsa },
+  });
+  const usadas = (r.toolCalls || []).map((t) => t.name || t);
+  return { pdf: usadas.includes('generar_pdf_cotizacion'),
+           calc: usadas.filter((n) => n === 'calcular_cotizacion').length };
+}
+
+test('pidiendo TODAS las tools de una vez, el PDF sale aunque sean 12 ventanas', async () => {
+  for (const n of [1, 3, 5, 6, 8, 12]) {
+    const r = await cotizar(n, false);
+    assert.equal(r.calc, n, `cotizo ${r.calc} de ${n} ventanas`);
+    assert.equal(r.pdf, true, `con ${n} ventanas NO alcanzo a mandar el PDF`);
+  }
+});
+
+test('EL BUG: con UNA tool por vuelta, a las 6 ventanas el bucle se agota SIN mandar el PDF', async () => {
+  // Documenta el comportamiento viejo, para que quede claro por que se cambio el flag.
+  assert.equal((await cotizar(5, true)).pdf, true, 'con 5 ventanas llegaba JUSTO (6 vueltas)');
+  assert.equal((await cotizar(6, true)).pdf, false, 'con 6 ya no: aca se perdia la cotizacion');
+  const ocho = await cotizar(8, true);
+  assert.equal(ocho.pdf, false);
+  assert.ok(ocho.calc < 8, `ni siquiera alcanzo a cotizarlas todas: ${ocho.calc} de 8`);
+});
