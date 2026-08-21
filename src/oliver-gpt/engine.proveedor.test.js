@@ -56,3 +56,34 @@ test('el motivo se recorta: un stacktrace largo no puede inflar la metadata de c
   await runWithFallback('t', true, cae('x'.repeat(900), 500), ok('openai'));
   assert.ok(ultimoProveedor().motivo.length < 200);
 });
+
+// ── [2026-08-20] Paridad GPT ↔ Claude en el camino de cotizar ───────────────
+// El dueno lo noto en produccion sin ver el codigo: "algo pasa que al parecer no cotiza
+// como claude". Medido sobre 60 dias de turnos reales: Claude entrego el PDF en el 7,42%
+// de sus turnos y GPT en el 3,35% — menos de la mitad.
+// Los dos contratos de abajo se verifican sobre la FUENTE porque son parametros de la
+// llamada al SDK: no hay forma de leerlos sin pegarle a la API de verdad.
+
+import { readFile } from 'node:fs/promises';
+
+test('GPT pide TODAS las tools de una pasada — sin eso no alcanza a cotizar y mandar el PDF', async () => {
+  const src = await readFile(new URL('./engine.js', import.meta.url), 'utf8');
+  assert.match(src, /parallel_tool_calls:\s*true/,
+    'con `false` OpenAI emite UNA tool por vuelta; el bucle de agent.js corta en 6 iteraciones, '
+    + 'y la Regla #13 exige calcular_cotizacion POR VENTANA + generar_pdf en el MISMO turno. '
+    + 'Con 6 ventanas el bucle se agota ANTES del PDF.');
+  assert.doesNotMatch(src, /parallel_tool_calls:\s*false/);
+});
+
+test('los dos cerebros pueden escribir lo mismo: el techo de pass2 es 900 en ambos', async () => {
+  const [gpt, claude] = await Promise.all([
+    readFile(new URL('./engine.js', import.meta.url), 'utf8'),
+    readFile(new URL('./engine-anthropic.js', import.meta.url), 'utf8'),
+  ]);
+  const tGpt = Number((gpt.match(/OLIVER_PASS2_MAX_TOKENS\) : (\d+)/) || [])[1]);
+  const tClaude = Number((claude.match(/max_tokens: (\d+), \/\/ \[2026-06-21\]/) || [])[1]);
+  assert.equal(tClaude, 900, 'referencia: el lado de Claude, subido el 21-jun');
+  assert.equal(tGpt, 900,
+    `GPT quedo en ${tGpt}. El 14,13% de sus mensajes llegaba a 620+ chars (contra 0,38% de `
+    + 'Claude): se cortaba la entrega de la propuesta a mitad de frase.');
+});

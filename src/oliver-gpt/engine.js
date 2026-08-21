@@ -6,9 +6,9 @@
 // (~líneas 1920-1992) a un módulo aislado y reutilizable para Oliver GPT.
 // NO toca producción: es una pieza nueva, sin estado de sesión propio.
 //
-// Pass1: GPT decide acciones (tool calling). temp 0.3, max_tokens 500,
-//        tool_choice:'auto', parallel_tool_calls:false.
-// Pass2: GPT genera el texto final al cliente. temp 0.4, max_tokens 350.
+// Pass1: GPT decide acciones (tool calling). temp 0.3, max_tokens 4096,
+//        tool_choice:'auto', parallel_tool_calls:TRUE (ver el porque en el propio flag).
+// Pass2: GPT genera el texto final al cliente. temp 0.4, max_tokens 900.
 //
 // Modelo: process.env.AI_MODEL_OPENAI || 'gpt-4o'.
 // API key: process.env.OPENAI_API_KEY.
@@ -189,7 +189,19 @@ async function openaiPass1({ system, messages = [], tools = [] }) {
     messages: [{ role: 'system', content: system }, ...messages],
     tools,
     tool_choice: 'auto',
-    parallel_tool_calls: false,
+    // 🔴 [2026-08-20] ERA `false`, Y POR ESO GPT NO COTIZABA COMO CLAUDE.
+    // Con `false`, OpenAI emite UNA sola tool por pasada. El bucle de agent.js tiene tope de
+    // MAX_TOOL_ITERATIONS (6), asi que GPT podia hacer 6 llamadas por turno COMO MAXIMO.
+    // La REGLA #13 exige calcular_cotizacion (UNA POR VENTANA) + generar_pdf_cotizacion EN EL
+    // MISMO TURNO: con 5 ventanas son 6 llamadas justas, y con 6 ventanas el bucle se agota
+    // ANTES del PDF. Claude no tiene el problema — emite ~15 tool_use en una sola pasada
+    // (ver el comentario de engine-anthropic.js:185).
+    // MEDIDO sobre 60 dias: Claude entrego el PDF en el 7,42% de sus turnos y GPT en el
+    // 3,35% — menos de la mitad. El dueno lo noto sin ver el codigo: "no cotiza como claude".
+    // ⚠️ Esto YA estaba diagnosticado en _oliver-review.md y se arreglo A MEDIAS: se subio
+    // MAX_TOOL_ITERATIONS de 3 a 6 y se dejo este flag en false. Subir el tope no alcanza
+    // cuando el problema es que solo entra una tool por vuelta.
+    parallel_tool_calls: true,
     temperature: 0.3,
     // [2026-07-14] 1000 -> 4096 (env OLIVER_PASS1_MAX_TOKENS): mismo fix que engine-anthropic
     // pass1 — este es el camino de RESPALDO (GPT) cuando se agotan los tokens de Anthropic;
@@ -214,7 +226,11 @@ async function openaiPass2({ system, messages = [] }) {
     model: MODEL(),
     messages: [{ role: 'system', content: system }, ...messages],
     temperature: 0.4,
-    max_tokens: 650,   // [FIX 2026-06-19 CLI-05] 350 cortaba respuestas multi-ítem + disclaimer + precio a mitad de frase
+    // [2026-08-20] 650 -> 900, igualando a Anthropic. El lado de Claude ya se habia subido a
+    // 900 el 21-jun "para evitar cortar respuestas/entrega de propuesta" y este lado quedo
+    // atras. MEDIDO: el 14,13% de los mensajes de GPT llegan a 620+ chars (rozando el tope de
+    // 650) contra el 0,38% de Claude — 37 veces mas. Se cortaba la entrega de la propuesta.
+    max_tokens: Number(process.env.OLIVER_PASS2_MAX_TOKENS) > 0 ? Number(process.env.OLIVER_PASS2_MAX_TOKENS) : 900,
   }), 'pass2');
   reportarCostoOpenAI('pass2', r);
   const choice2 = r.choices?.[0] || {};
