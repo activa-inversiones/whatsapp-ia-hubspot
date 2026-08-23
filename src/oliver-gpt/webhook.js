@@ -44,7 +44,8 @@ import {
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
 import { leer as leerEstado, escribir as escribirEstado } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
-import { informeParaComuna, esperarAntesDeEnviar } from '../../services/informeTermico.js';
+import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA } from '../../services/informeTermico.js';
+import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import {
@@ -995,16 +996,40 @@ export async function handleWebhook(req, res, deps = {}) {
       //      milisegundo por esto — es la regla dura del proyecto.
       //   3. si THERMAL no responde o no hay dato verificado, NO se manda nada.
       //      Jamás se inventa un número: son citas normativas.
-      enviarInformeTermico: (comuna) => {
+      enviarInformeTermico: (comuna, { forzar = false } = {}) => {
         const clave = `informe_termico:${String(from).replace(/\D/g, '')}`;
         safe('informeTermico', async () => {
+          // `forzar` llega desde la tool enviar_informe_termico: si el cliente lo PIDE, se le
+          // manda aunque ya lo tenga. El candado existe para no spamear, no para negarle algo
+          // a alguien que lo esta pidiendo.
           let yaSeMando = false;
-          try { yaSeMando = (await (deps.leerEstado || leerEstado)(clave)) === true; }
-          catch { /* si el estado no se puede leer, se sigue: el candado de abajo igual corre */ }
+          if (!forzar) {
+            try { yaSeMando = (await (deps.leerEstado || leerEstado)(clave)) === true; }
+            catch { /* si el estado no se puede leer, se sigue */ }
+          }
           if (yaSeMando) return;
 
-          const msg = await informeParaComuna(comuna, { nombre: state.name || '' });
-          if (!msg) return;   // sin dato verificado no hay informe
+          // Se pide la comuna del cliente; si THERMAL no la reconoce (pasa con los SECTORES:
+          // Labranza, Cajon, Metrenco…) se cae a la referencia regional, anunciada como tal.
+          const norm = normalizarComuna(comuna);
+          let datos = norm ? await pedirInformeComuna(norm) : null;
+          let esRef = false;
+          if (!datos) { datos = await pedirInformeComuna(COMUNA_REFERENCIA); esRef = true; }
+          if (!datos) return;   // sin dato verificado no hay informe
+
+          // El catálogo de vidrios enriquece el informe, pero NO es obligatorio: si falla,
+          // el informe sale igual sin esa sección.
+          let vidrios = null;
+          try {
+            const rv = await fetch(`${process.env.THERMAL_API_URL || 'https://activa-thermal-production.up.railway.app'}/api/v1/vidrios`,
+              { signal: AbortSignal.timeout(3000) });
+            if (rv.ok) vidrios = (await rv.json())?.vidrios || null;
+          } catch { /* opcional */ }
+
+          const pdfBuf = await generarInformeTermicoPdf(datos, {
+            nombre: state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios,
+          });
+          if (!pdfBuf) return;
 
           // [2026-08-21] La demora es a proposito (pedido del dueno: "la idea es demorarse
           // un poco"). Sin ella el informe sale pegado al "deme un momento que calculo" y
@@ -1013,9 +1038,22 @@ export async function handleWebhook(req, res, deps = {}) {
           // demora la cotizacion: el precio sigue su camino en paralelo.
           await esperarAntesDeEnviar({ dormir: deps.dormir || null });
 
-          // Se manda CRUDO, sin partir en burbujas: un informe firmado por un profesional
-          // se lee como un documento, no como tres mensajitos sueltos.
-          await enviarSinPausa(from, msg);
+          // Un mensaje corto que ANUNCIA el documento, y el PDF. El dueño lo pidió así:
+          // "esperaba un archivo de PDF más formal". Un PDF firmado se guarda y se reenvía
+          // —al marido, al arquitecto, al maestro—; un mensaje se pierde en el scroll.
+          const nom = String(state.name || '').trim().split(/\s+/)[0];
+          await enviarSinPausa(from,
+            `Le cuento algo mientras termino su propuesta${nom ? `, ${nom}` : ''}.
+
+` +
+            `Le preparé el informe térmico de ${esRef ? 'la región' : datos.comuna}: qué exige la norma ` +
+            `en su zona y a qué temperatura condensa una ventana. Se lo mando acá 👇`);
+
+          // Reusa el mismo par upload+send que ya usa el PDF de la propuesta: subir el
+          // documento a Meta y mandarlo por su media_id. Cero maquinaria nueva.
+          const nombreArchivo = `Informe-Termico-${String(datos.comuna).replace(/\s+/g, '-')}.pdf`;
+          const mediaId = await uploadWaDocument(pdfBuf, nombreArchivo);
+          if (mediaId) await sendWaDocument(from, mediaId, nombreArchivo, `Informe térmico — ${datos.comuna}`);
           // Se marca DESPUÉS de que salió: si el envío falla, el próximo turno reintenta.
           try { await (deps.escribirEstado || escribirEstado)(clave, true, 30 * 24 * 3600); }
           catch { /* no bloquea: el mensaje ya llegó */ }

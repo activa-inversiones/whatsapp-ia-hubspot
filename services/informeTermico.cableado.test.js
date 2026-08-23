@@ -45,7 +45,7 @@ test('el disparo va DESPUES de que la cotizacion salio bien, no antes', async ()
 
 test('webhook.js PROVEE el hook, con candado de una sola vez por cliente', async () => {
   const src = await leer('../src/oliver-gpt/webhook.js');
-  assert.match(src, /enviarInformeTermico: \(comuna\) =>/, 'el hook tiene que estar en toolCtx');
+  assert.match(src, /enviarInformeTermico: \(comuna, \{ forzar/, 'el hook tiene que estar en toolCtx');
   assert.match(src, /informe_termico:\$\{String\(from\)/, 'el candado va por telefono');
   assert.match(src, /30 \* 24 \* 3600/, 'candado de 30 dias: un informe repetido es spam');
 });
@@ -53,23 +53,53 @@ test('webhook.js PROVEE el hook, con candado de una sola vez por cliente', async
 test('🔒 el candado se marca DESPUES del envio, no antes', async () => {
   // Si se marcara antes y el envio fallara, el cliente se quedaria sin informe para siempre.
   const src = await leer('../src/oliver-gpt/webhook.js');
-  const i = src.indexOf('enviarInformeTermico: (comuna) =>');
-  const bloque = src.slice(i, i + 1600);
-  const iEnvio = bloque.indexOf('await enviarSinPausa(from, msg)');
+  const i = src.indexOf('enviarInformeTermico: (comuna,');
+  const bloque = src.slice(i, i + 4200);
+  const iEnvio = bloque.indexOf('sendWaDocument(from, mediaId');
   const iMarca = bloque.indexOf('escribirEstado)(clave, true');
-  assert.ok(iEnvio > 0, 'no se encontro el envio');
+  assert.ok(iEnvio > 0, 'no se encontro el envio del PDF');
   assert.ok(iMarca > iEnvio, 'el candado se marca despues de enviar: si falla, se reintenta');
 });
 
 test('🔒 sin dato verificado NO se manda nada — son citas normativas', async () => {
   const src = await leer('../src/oliver-gpt/webhook.js');
-  const i = src.indexOf('enviarInformeTermico: (comuna) =>');
-  const bloque = src.slice(i, i + 1600);
-  assert.match(bloque, /if \(!msg\) return;/, 'si no hay informe valido, se calla');
+  const i = src.indexOf('enviarInformeTermico: (comuna,');
+  const bloque = src.slice(i, i + 4200);
+  assert.match(bloque, /if \(!datos\) return;/, 'sin datos de THERMAL no se emite documento');
+  assert.match(bloque, /if \(!pdfBuf\) return;/, 'si el PDF no se pudo armar, no se manda nada');
+});
+
+test('🔴 el informe se manda SIEMPRE al cotizar — es parte del proceso de venta', async () => {
+  // Decision del dueno, textual: "no, siempre debe entregarlo — es parte del proceso de
+  // venta". Estuvo un rato como tool a pedido y se revirtio a proposito.
+  const src = await leer('../src/oliver-gpt/tools.js');
+  const bloque = src.slice(src.indexOf("case 'calcular_cotizacion'"), src.indexOf("case 'calcular_por_area'"));
+  assert.match(bloque, /ctx\.enviarInformeTermico\(input\.comuna \|\| ''\)/,
+    'sin esto el informe solo saldria si alguien lo pide, y el dueno lo quiere SIEMPRE');
+});
+
+test('la tool de re-envio existe y SALTA el candado', async () => {
+  // El candado de 30 dias evita spamear. Pero si el cliente PIDE el informe de nuevo
+  // —"no me llego"— negarselo por el candado seria absurdo.
+  const tools = await leer('../src/oliver-gpt/tools.js');
+  assert.match(tools, /name: 'enviar_informe_termico'/);
+  assert.match(tools, /ctx\.enviarInformeTermico\(input\.comuna \|\| '', \{ forzar: true \}\)/);
+  const wh = await leer('../src/oliver-gpt/webhook.js');
+  assert.match(wh, /enviarInformeTermico: \(comuna, \{ forzar = false \} = \{\}\) =>/);
+  assert.match(wh, /if \(!forzar\) \{/, 'el candado solo aplica al envio automatico');
+});
+
+test('se manda un PDF, no un mensaje de texto', async () => {
+  const src = await leer('../src/oliver-gpt/webhook.js');
+  const i = src.indexOf('enviarInformeTermico: (comuna,');
+  const bloque = src.slice(i, i + 4200);
+  assert.match(bloque, /generarInformeTermicoPdf/);
+  assert.match(bloque, /uploadWaDocument\(pdfBuf, nombreArchivo\)/);
+  assert.match(bloque, /sendWaDocument\(from, mediaId/);
 });
 
 test('el hook usa el nombre del cliente si lo hay', async () => {
   const src = await leer('../src/oliver-gpt/webhook.js');
-  const i = src.indexOf('enviarInformeTermico: (comuna) =>');
-  assert.match(src.slice(i, i + 1600), /nombre: state\.name \|\| ''/);
+  const i = src.indexOf('enviarInformeTermico: (comuna,');
+  assert.match(src.slice(i, i + 4200), /nombre: state\.name \|\| ''/);
 });

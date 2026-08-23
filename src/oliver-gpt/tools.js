@@ -524,6 +524,34 @@ export const TOOL_DEFS = [
       },
     },
   },
+  // ── enviar_informe_termico ────────────────────────────────────────────────
+  // [2026-08-21] El informe termico de la comuna, EN PDF FIRMADO. Va A PEDIDO, no
+  // automatico: decision del dueno ("dejalo para que cuando pidan se lo envien").
+  // Se arma con la comuna que ya se capturo y con datos de ACTIVA THERMAL — cero tokens,
+  // fisica determinista sobre nuestro propio Railway.
+  {
+    type: 'function',
+    function: {
+      name: 'enviar_informe_termico',
+      description:
+        'Envia al cliente un INFORME TERMICO en PDF de su comuna: que Uw exige la norma ahi, '
+        + 'a que temperatura condensa una ventana, y la tabla de vidrios con su Ug. Va FIRMADO '
+        + 'por el Ing. Marcelo Cifuentes, Evaluador Energetico acreditado MINVU. '
+        + 'USELO cuando el cliente: (a) lo pida explicitamente; (b) pregunte por la norma, el '
+        + 'decreto, la exigencia termica o el subsidio; (c) hable de condensacion, humedad en '
+        + 'los vidrios o frio; (d) dude de la calidad o compare con otra cotizacion. '
+        + 'OJO: el informe se manda SOLO al cotizar, automaticamente. Esta tool es para '
+        + 'RE-ENVIARLO cuando el cliente lo pide de nuevo o dice que no le llego. '
+        + 'NO contiene precios.',
+      parameters: {
+        type: 'object',
+        properties: {
+          comuna: { type: 'string', description: 'Comuna del cliente. Si no la sabe, omitala: se usa Temuco como referencia regional.' },
+        },
+      },
+    },
+  },
+
   // ── posponer_seguimiento ──────────────────────────────────────────────────
   // [2026-07-07 ZL-F2] Motor Zero-Leaks: drift contextual. Cuando el cliente
   // POSTERGA explícitamente ("el próximo mes", "más adelante", "aún no decido"),
@@ -690,14 +718,13 @@ export async function runTool(name, input = {}, ctx = {}) {
         return falloDeCotizacion(r, it, ctx);
       }
 
-      // [2026-08-21] EL INFORME TERMICO SALE ACA, no en el PDF.
-      // Este es el instante en que el cliente queda esperando: Oliver dijo "deme un
-      // momento que calculo" y todavia no hay precio. Mandarle el dato normativo de su
-      // comuna JUSTO ahora es lo que el dueno pidio — "para que lo lea mientras le
-      // decimos preparamos la propuesta".
-      // fire-and-forget A PROPOSITO: sin await. La cotizacion no espera a la telemetria
-      // ni a un mensaje de cortesia. Si ctx no lo trae cableado (tests, simulador), no
-      // pasa nada. El candado de "una sola vez por cliente" vive del lado del webhook.
+      // [2026-08-21] EL INFORME TERMICO SALE SIEMPRE, no a pedido.
+      // El dueno lo definio asi: "no, siempre debe entregarlo — es parte del proceso de
+      // venta". Se dispara ACA, que es el instante en que el cliente queda esperando el
+      // precio, y NO en el PDF (ya seria tarde). Va DESPUES del guard de fallo: si no se
+      // le puede cotizar, no se le promete nada.
+      // fire-and-forget A PROPOSITO, sin await: la cotizacion no espera al informe.
+      // El candado de "una sola vez por cliente" vive del lado del webhook.
       if (typeof ctx?.enviarInformeTermico === 'function') {
         try { ctx.enviarInformeTermico(input.comuna || ''); } catch { /* nunca frena la cotizacion */ }
       }
@@ -839,6 +866,18 @@ export async function runTool(name, input = {}, ctx = {}) {
         return { ok: false, reason: 'saveLead_not_wired' };
       }
       return ctx.saveLead(input);
+    }
+
+    case 'enviar_informe_termico': {
+      // El envio real lo hace el webhook (necesita subir el PDF a Meta). Aca solo se
+      // delega, igual que generar_pdf_cotizacion con ctx.generarPdf.
+      if (typeof ctx?.enviarInformeTermico !== 'function') {
+        return { ok: false, reason: 'no_cableado' };
+      }
+      // `forzar` salta el candado de una-sola-vez: si el cliente lo pide, se le manda
+      // aunque ya lo haya recibido. El candado existe para no spamear, no para negarle
+      // algo a alguien que lo pide.
+      return ctx.enviarInformeTermico(input.comuna || '', { forzar: true });
     }
 
     case 'posponer_seguimiento': {
