@@ -689,6 +689,19 @@ export async function runTool(name, input = {}, ctx = {}) {
       if (!r.ok || !(Number(it.unit_price) > 0)) {
         return falloDeCotizacion(r, it, ctx);
       }
+
+      // [2026-08-21] EL INFORME TERMICO SALE ACA, no en el PDF.
+      // Este es el instante en que el cliente queda esperando: Oliver dijo "deme un
+      // momento que calculo" y todavia no hay precio. Mandarle el dato normativo de su
+      // comuna JUSTO ahora es lo que el dueno pidio — "para que lo lea mientras le
+      // decimos preparamos la propuesta".
+      // fire-and-forget A PROPOSITO: sin await. La cotizacion no espera a la telemetria
+      // ni a un mensaje de cortesia. Si ctx no lo trae cableado (tests, simulador), no
+      // pasa nada. El candado de "una sola vez por cliente" vive del lado del webhook.
+      if (typeof ctx?.enviarInformeTermico === 'function') {
+        try { ctx.enviarInformeTermico(input.comuna || ''); } catch { /* nunca frena la cotizacion */ }
+      }
+
       return {
         ok: true,
         unit_price: it.unit_price,            // NETO (sin IVA) — camino V1

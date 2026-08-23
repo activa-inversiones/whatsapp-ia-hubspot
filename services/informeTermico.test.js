@@ -98,7 +98,7 @@ test('con PDA se dice "obligatorio" y se cita el decreto', () => {
   assert.match(m, /obligatorio/);
   assert.match(m, /3,2 W\/m²K/);
   assert.match(m, /DO 07-03-2025/, 'sin la fuente es marketing, no un informe');
-  assert.match(m, /^Mientras le preparo la propuesta, Jorge,/, 'usa solo el primer nombre');
+  assert.match(m, /^Le cuento algo mientras termino su propuesta, Jorge\./, 'usa solo el primer nombre');
 });
 
 test('SIN PDA no se afirma que sea obligatorio — seria falso', () => {
@@ -120,15 +120,28 @@ test('los decimales van con COMA, como se escribe en Chile', () => {
   assert.match(m, /14,5 °C/);
 });
 
-test('el mensaje entra en una burbuja de WhatsApp sin trocearse feo', () => {
+test('el mensaje entra COMPLETO en UN mensaje de WhatsApp', () => {
+  // [2026-08-21] El tope real es el de WhatsApp (4096), no el de las burbujas: el informe se
+  // manda CRUDO desde el webhook, sin partirEnBurbujas. Un informe firmado por un profesional
+  // se lee como un documento, no como tres mensajitos sueltos.
   const m = armarMensaje(TEMUCO, { nombre: 'Jorge' });
-  assert.ok(m.length < 900, `mide ${m.length}: se partiria en varias burbujas y perderia el efecto`);
-  assert.ok(m.includes('En un momento le mando su propuesta'), 'tiene que cerrar anunciando la cotizacion');
+  assert.ok(m.length < 1600, `mide ${m.length}: se esta yendo de largo para leerlo esperando`);
+  assert.ok(m.includes('Ahora le mando su propuesta'), 'tiene que cerrar anunciando la cotizacion');
+});
+
+test('el informe va FIRMADO, con el titulo real y su numero de resolucion', () => {
+  const m = armarMensaje(TEMUCO, { nombre: 'Jorge' });
+  assert.match(m, /Ing\. Marcelo Cifuentes Méndez/);
+  assert.match(m, /Evaluador Energético Externo acreditado MINVU/);
+  assert.match(m, /Res\. 266\/2025/, 'el numero de resolucion es lo que lo hace verificable');
+  // ⚠️ NO puede decir "consultor del MINVU": eso insinua que trabaja PARA el ministerio.
+  assert.doesNotMatch(m, /consultor.{0,20}MINVU|del MINVU/i,
+    'acreditado POR el MINVU no es lo mismo que consultor DEL MINVU');
 });
 
 test('sin nombre, el mensaje sigue siendo correcto', () => {
   const m = armarMensaje(TEMUCO);
-  assert.match(m, /^Mientras le preparo la propuesta, le dejo/);
+  assert.match(m, /^Le cuento algo mientras termino su propuesta\./, 'sin nombre, sin coma colgando');
   assert.doesNotMatch(m, /undefined|null|, ,/);
 });
 
@@ -137,7 +150,7 @@ test('sin nombre, el mensaje sigue siendo correcto', () => {
 test('sin comuna cae a Temuco, pero lo ANUNCIA como referencia regional', async () => {
   const m = await informeParaComuna('', { fetchFn: async () => respuesta(TEMUCO) });
   assert.ok(m, 'con el fallback SI tiene que haber informe');
-  assert.match(m, /dato técnico de la región/, 'no puede decir "de su comuna": no la sabemos');
+  assert.match(m, /informe corto de la región/, 'no puede decir "de su comuna": no la sabemos');
   assert.match(m, /como referencia \(es la capital regional\)/);
   assert.match(m, /cuando me confirme su comuna/, 'tiene que pedirla sin exigirla');
 });

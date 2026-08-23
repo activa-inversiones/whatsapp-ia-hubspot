@@ -43,6 +43,8 @@ import {
 } from '../../services/atribucionCotizacion.js';
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
 import { leer as leerEstado, escribir as escribirEstado } from '../../services/estadoPersistente.js';
+// [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
+import { informeParaComuna, esperarAntesDeEnviar } from '../../services/informeTermico.js';
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import {
@@ -977,6 +979,48 @@ export async function handleWebhook(req, res, deps = {}) {
     // ── (6) toolCtx cableado a servicios REALES ──────────────────────────
     const toolCtx = {
       telefono: from,
+
+      // ── [2026-08-21] INFORME TÉRMICO ANTES DE LA COTIZACIÓN ──────────────────
+      // Idea del dueño: mandarle al cliente el dato normativo de su comuna JUSTO
+      // cuando Oliver empieza a calcular, "para que lo lea mientras le decimos
+      // preparamos la propuesta". Cuando el precio llega, ya no llega solo.
+      //
+      // Se dispara desde calcular_cotizacion —el momento exacto en que el cliente
+      // queda esperando— y NO desde el PDF, que ya es tarde.
+      //
+      // 🔒 TRES GUARDAS, porque esto le escribe a un cliente real:
+      //   1. UNA SOLA VEZ por teléfono (candado de 30 días). Un informe repetido
+      //      deja de ser un informe y pasa a ser spam.
+      //   2. fire-and-forget: no se espera. La cotización no puede demorarse ni un
+      //      milisegundo por esto — es la regla dura del proyecto.
+      //   3. si THERMAL no responde o no hay dato verificado, NO se manda nada.
+      //      Jamás se inventa un número: son citas normativas.
+      enviarInformeTermico: (comuna) => {
+        const clave = `informe_termico:${String(from).replace(/\D/g, '')}`;
+        safe('informeTermico', async () => {
+          let yaSeMando = false;
+          try { yaSeMando = (await (deps.leerEstado || leerEstado)(clave)) === true; }
+          catch { /* si el estado no se puede leer, se sigue: el candado de abajo igual corre */ }
+          if (yaSeMando) return;
+
+          const msg = await informeParaComuna(comuna, { nombre: state.name || '' });
+          if (!msg) return;   // sin dato verificado no hay informe
+
+          // [2026-08-21] La demora es a proposito (pedido del dueno: "la idea es demorarse
+          // un poco"). Sin ella el informe sale pegado al "deme un momento que calculo" y
+          // el cliente lee las dos cosas juntas. Con unos segundos aterriza solo y se lee
+          // como algo que alguien preparo. Como esto ya es fire-and-forget, esperar aca NO
+          // demora la cotizacion: el precio sigue su camino en paralelo.
+          await esperarAntesDeEnviar({ dormir: deps.dormir || null });
+
+          // Se manda CRUDO, sin partir en burbujas: un informe firmado por un profesional
+          // se lee como un documento, no como tres mensajitos sueltos.
+          await enviarSinPausa(from, msg);
+          // Se marca DESPUÉS de que salió: si el envío falla, el próximo turno reintenta.
+          try { await (deps.escribirEstado || escribirEstado)(clave, true, 30 * 24 * 3600); }
+          catch { /* no bloquea: el mensaje ya llegó */ }
+        });
+      },
 
       // saveLead → pushLeadEvent (persistencia real del lead).
       saveLead: (leadState = {}) =>

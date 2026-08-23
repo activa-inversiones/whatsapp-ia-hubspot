@@ -31,7 +31,27 @@
 // se testea sin red.
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
+
+// [2026-08-21] LA FIRMA. Pedido del dueño: que se vea "muy formal pero a la vez cercano",
+// preparado por el especialista y no por un bot.
+//
+// ⚠️ EL TÍTULO ES EL REAL Y VERIFICABLE, no uno inventado. El dueño lo pidió como
+// "consultor externo del MINVU"; eso insinuaría que trabaja PARA el ministerio, que es otra
+// cosa y expone al cliente si lo repite mal. Lo que SÍ es cierto y ya está documentado en
+// el system-prompt (líneas 55, 82, 483) es: **Evaluador Energético Externo ACREDITADO POR
+// el MINVU, Resolución 266/2025 del Diario Oficial**. Es más fuerte, porque trae número de
+// resolución que el cliente puede buscar. Acreditado POR el MINVU ≠ consultor DEL MINVU.
+const FIRMA = {
+  nombre: 'Ing. Marcelo Cifuentes Méndez',
+  cargo: 'Evaluador Energético Externo acreditado MINVU',
+  resolucion: 'Res. 266/2025, Diario Oficial',
+};
+
+// Cuánto espera antes de mandarlo. NO es un capricho: si sale en el mismo instante que
+// "déjeme calcular", el cliente lee las dos cosas juntas y el informe se pierde entre
+// medio. Con unos segundos aterriza solo, y se lee como algo que alguien preparó.
+const DEMORA_MS = Number(process.env.INFORME_DEMORA_MS || 6000);
 
 const BASE_URL = () =>
   (process.env.THERMAL_API_URL || 'https://activa-thermal-production.up.railway.app')
@@ -110,7 +130,9 @@ export function armarMensaje(datos, { nombre = '', esReferenciaRegional = false 
   //    Y sabemos que el cliente está en esa comuna. Si es la referencia regional, se dice.
   if (esReferenciaRegional) {
     lineas.push(
-      `Mientras le preparo la propuesta${trato}, le dejo el dato técnico de la región.`,
+      `Le cuento algo mientras termino su propuesta${trato}.`,
+      '',
+      `Le preparé un informe corto de la región para que sepa contra qué se compara su ventana.`,
       '',
       `Tomo *${datos.comuna}* como referencia (es la capital regional) — cuando me confirme su ` +
       `comuna le afino los números, porque la exigencia cambia de una a otra.`,
@@ -125,7 +147,10 @@ export function armarMensaje(datos, { nombre = '', esReferenciaRegional = false 
     }
   } else if (datos.regimen === 'PDA' && num(datos.uw_max_Wm2K) > 0) {
     lineas.push(
-      `Mientras le preparo la propuesta${trato}, le dejo el dato técnico de ${datos.comuna}.`,
+      `Le cuento algo mientras termino su propuesta${trato}.`,
+      '',
+      `Le preparé un informe corto de ${datos.comuna} para que sepa contra qué se compara ` +
+      `su ventana. Léalo con calma, son 30 segundos.`,
       '',
       `Su comuna está bajo Plan de Descontaminación, así que las ventanas tienen un tope ` +
       `*obligatorio*: Uw máximo *${dec(datos.uw_max_Wm2K)} W/m²K*.` +
@@ -136,7 +161,10 @@ export function armarMensaje(datos, { nombre = '', esReferenciaRegional = false 
     bloquesConDato++;
   } else {
     lineas.push(
-      `Mientras le preparo la propuesta${trato}, le dejo el dato técnico de ${datos.comuna}.`,
+      `Le cuento algo mientras termino su propuesta${trato}.`,
+      '',
+      `Le preparé un informe corto de ${datos.comuna} para que sepa contra qué se compara ` +
+      `su ventana. Léalo con calma, son 30 segundos.`,
       '',
       `Su comuna es zona térmica *${datos.zona_termica_NCh1079 || '?'}* según la NCh 1079. ` +
       `Acá no hay tope obligatorio de Uw por ventana, pero el frío es el mismo.`,
@@ -176,7 +204,17 @@ export function armarMensaje(datos, { nombre = '', esReferenciaRegional = false 
   if (datos.criterio_ref) fuentes.push(datos.criterio_ref);
   if (t65 !== null && cond && cond.metodo) fuentes.push(cond.metodo);
   if (fuentes.length) lineas.push('', `_Fuente: ${fuentes.join(' · ')}_`);
-  lineas.push('', 'En un momento le mando su propuesta con el Uw de sus ventanas.');
+
+  // La firma va al final y con el número de resolución: eso es lo que convierte un mensaje
+  // de WhatsApp en algo que el cliente guarda y le muestra a su marido, su arquitecto o su
+  // maestro. Formal por el título, cercano porque lo firma una persona con nombre.
+  lineas.push(
+    '',
+    `Se lo preparó *${FIRMA.nombre}*, ${FIRMA.cargo} (${FIRMA.resolucion}).`,
+    'Cualquier duda técnica se la responde él mismo.',
+    '',
+    'Ahora le mando su propuesta con el Uw de sus ventanas. 👇',
+  );
 
   return lineas.join('\n');
 }
@@ -217,4 +255,17 @@ export async function informeParaComuna(comuna, opts = {}) {
   return armarMensaje(ref, { ...opts, esReferenciaRegional: true });
 }
 
-export default { normalizarComuna, pedirInformeComuna, armarMensaje, informeParaComuna, VERSION };
+/**
+ * Espera antes de mandar el informe. Pedido del dueño: "la idea es demorarse un poco".
+ * Sin esto el informe sale pegado al "déjeme calcular" y el cliente lee todo junto.
+ * `dormir` es inyectable para que los tests no esperen de verdad.
+ */
+export async function esperarAntesDeEnviar({ dormir = null, ms = DEMORA_MS } = {}) {
+  const espera = Number.isFinite(Number(ms)) && Number(ms) > 0 ? Math.min(Number(ms), 15000) : 0;
+  if (!espera) return;
+  if (typeof dormir === 'function') return dormir(espera);
+  await new Promise((r) => setTimeout(r, espera));
+}
+
+export { FIRMA, DEMORA_MS };
+export default { normalizarComuna, pedirInformeComuna, armarMensaje, informeParaComuna, esperarAntesDeEnviar, FIRMA, VERSION };
