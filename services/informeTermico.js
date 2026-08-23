@@ -48,10 +48,24 @@ const FIRMA = {
   resolucion: 'Res. 266/2025, Diario Oficial',
 };
 
-// Cuánto espera antes de mandarlo. NO es un capricho: si sale en el mismo instante que
-// "déjeme calcular", el cliente lee las dos cosas juntas y el informe se pierde entre
-// medio. Con unos segundos aterriza solo, y se lee como algo que alguien preparó.
-const DEMORA_MS = Number(process.env.INFORME_DEMORA_MS || 6000);
+// [2026-08-21] DOS TIEMPOS, no uno. Corrección del dueño: *"no olvidar que hay que ser más
+// humano, no puede ser inmediato — el informe debe verse real"*.
+//
+// Un informe técnico que aparece 6 segundos después de pedir el precio se lee como un
+// autoresponder, y eso ANULA todo el trabajo de que parezca preparado por un profesional.
+// Nadie redacta un informe con citas normativas en seis segundos.
+//
+// El ritmo queda así:
+//   1. AVISO (~4 s): "déjeme revisar la norma de su comuna". Explica la espera, que es lo
+//      que hace tolerable esperar. Un silencio sin explicación se lee como que se colgó.
+//   2. ELABORACIÓN (~35 s): el tiempo en que un humano estaría armándolo. Durante ese rato
+//      se mantienen los puntitos de "escribiendo…" en WhatsApp, así el cliente VE que hay
+//      alguien trabajando en vez de mirar una pantalla muerta.
+//   3. El PDF.
+// Los dos son ajustables por env; el tope duro de 90 s existe para que un valor mal escrito
+// no deje a un cliente esperando eternamente.
+const DEMORA_AVISO_MS = Number(process.env.INFORME_AVISO_MS || 4000);
+const DEMORA_MS = Number(process.env.INFORME_DEMORA_MS || 35000);
 
 const BASE_URL = () =>
   (process.env.THERMAL_API_URL || 'https://activa-thermal-production.up.railway.app')
@@ -261,11 +275,11 @@ export async function informeParaComuna(comuna, opts = {}) {
  * `dormir` es inyectable para que los tests no esperen de verdad.
  */
 export async function esperarAntesDeEnviar({ dormir = null, ms = DEMORA_MS } = {}) {
-  const espera = Number.isFinite(Number(ms)) && Number(ms) > 0 ? Math.min(Number(ms), 15000) : 0;
+  const espera = Number.isFinite(Number(ms)) && Number(ms) > 0 ? Math.min(Number(ms), 90000) : 0;
   if (!espera) return;
   if (typeof dormir === 'function') return dormir(espera);
   await new Promise((r) => setTimeout(r, espera));
 }
 
-export { FIRMA, DEMORA_MS };
+export { FIRMA, DEMORA_MS, DEMORA_AVISO_MS };
 export default { normalizarComuna, pedirInformeComuna, armarMensaje, informeParaComuna, esperarAntesDeEnviar, FIRMA, VERSION };

@@ -44,7 +44,7 @@ import {
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
 import { leer as leerEstado, escribir as escribirEstado } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
-import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA } from '../../services/informeTermico.js';
+import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS } from '../../services/informeTermico.js';
 import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
@@ -1033,23 +1033,31 @@ export async function handleWebhook(req, res, deps = {}) {
           });
           if (!pdfBuf) return;
 
-          // [2026-08-21] La demora es a proposito (pedido del dueno: "la idea es demorarse
-          // un poco"). Sin ella el informe sale pegado al "deme un momento que calculo" y
-          // el cliente lee las dos cosas juntas. Con unos segundos aterriza solo y se lee
-          // como algo que alguien preparo. Como esto ya es fire-and-forget, esperar aca NO
-          // demora la cotizacion: el precio sigue su camino en paralelo.
-          await esperarAntesDeEnviar({ dormir: deps.dormir || null });
-
-          // Un mensaje corto que ANUNCIA el documento, y el PDF. El dueño lo pidió así:
-          // "esperaba un archivo de PDF más formal". Un PDF firmado se guarda y se reenvía
-          // —al marido, al arquitecto, al maestro—; un mensaje se pierde en el scroll.
+          // [2026-08-21] RITMO HUMANO, EN DOS TIEMPOS. Corrección del dueño: *"no olvidar que
+          // hay que ser más humano, no puede ser inmediato — el informe debe verse real"*.
+          // Nadie redacta un informe con citas normativas en seis segundos. Si aparece al
+          // toque, se lee como autoresponder y se anula todo el trabajo de que parezca
+          // preparado por un profesional.
+          // Esto NO demora el precio: todo el bloque es fire-and-forget y la cotización
+          // sigue su camino en paralelo.
           const nom = String(state.name || '').trim().split(/\s+/)[0];
-          await enviarSinPausa(from,
-            `Le cuento algo mientras termino su propuesta${nom ? `, ${nom}` : ''}.
 
-` +
-            `Le preparé el informe térmico de ${esRef ? 'la región' : datos.comuna}: qué exige la norma ` +
-            `en su zona y a qué temperatura condensa una ventana. Se lo mando acá 👇`);
+          // TIEMPO 1 — el aviso. Explica la espera, que es lo que la vuelve tolerable: un
+          // silencio largo sin explicación se lee como que el bot se colgó.
+          await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: DEMORA_AVISO_MS });
+          await enviarSinPausa(from,
+            `Deme un momento${nom ? `, ${nom}` : ''} — reviso qué exige la norma en `
+            + `${esRef ? 'su zona' : datos.comuna} y le armo el informe.`);
+
+          // TIEMPO 2 — la elaboración, con los puntitos de "escribiendo…" vivos para que el
+          // cliente VEA que hay alguien trabajando en vez de mirar una pantalla muerta.
+          let detenerPuntitos = null;
+          try { detenerPuntitos = mantenerEscribiendo(msgId); } catch { /* cosmético */ }
+          try {
+            await esperarAntesDeEnviar({ dormir: deps.dormir || null });
+          } finally {
+            try { if (typeof detenerPuntitos === 'function') detenerPuntitos(); } catch { /* cosmético */ }
+          }
 
           // Reusa el mismo par upload+send que ya usa el PDF de la propuesta: subir el
           // documento a Meta y mandarlo por su media_id. Cero maquinaria nueva.

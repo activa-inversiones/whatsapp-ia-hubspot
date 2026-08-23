@@ -59,7 +59,7 @@ test('🔒 el candado se marca DESPUES del envio, no antes', async () => {
   // Si se marcara antes y el envio fallara, el cliente se quedaria sin informe para siempre.
   const src = await leer('../src/oliver-gpt/webhook.js');
   const i = src.indexOf('enviarInformeTermico: (comuna,');
-  const bloque = src.slice(i, i + 4200);
+  const bloque = src.slice(i, i + 6000);
   const iEnvio = bloque.indexOf('sendWaDocument(from, mediaId');
   const iMarca = bloque.indexOf('escribirEstado)(clave, true');
   assert.ok(iEnvio > 0, 'no se encontro el envio del PDF');
@@ -69,7 +69,7 @@ test('🔒 el candado se marca DESPUES del envio, no antes', async () => {
 test('🔒 sin dato verificado NO se manda nada — son citas normativas', async () => {
   const src = await leer('../src/oliver-gpt/webhook.js');
   const i = src.indexOf('enviarInformeTermico: (comuna,');
-  const bloque = src.slice(i, i + 4200);
+  const bloque = src.slice(i, i + 6000);
   assert.match(bloque, /if \(!datos\) return;/, 'sin datos de THERMAL no se emite documento');
   assert.match(bloque, /if \(!pdfBuf\) return;/, 'si el PDF no se pudo armar, no se manda nada');
 });
@@ -97,7 +97,7 @@ test('la tool de re-envio existe y SALTA el candado', async () => {
 test('se manda un PDF, no un mensaje de texto', async () => {
   const src = await leer('../src/oliver-gpt/webhook.js');
   const i = src.indexOf('enviarInformeTermico: (comuna,');
-  const bloque = src.slice(i, i + 4200);
+  const bloque = src.slice(i, i + 6000);
   assert.match(bloque, /generarInformeTermicoPdf/);
   assert.match(bloque, /uploadWaDocument\(pdfBuf, nombreArchivo\)/);
   assert.match(bloque, /sendWaDocument\(from, mediaId/);
@@ -106,7 +106,7 @@ test('se manda un PDF, no un mensaje de texto', async () => {
 test('el hook usa el nombre del cliente si lo hay', async () => {
   const src = await leer('../src/oliver-gpt/webhook.js');
   const i = src.indexOf('enviarInformeTermico: (comuna,');
-  assert.match(src.slice(i, i + 4200), /nombre: state\.name \|\| ''/);
+  assert.match(src.slice(i, i + 6000), /nombre: state\.name \|\| ''/);
 });
 
 test('🔴 el informe lleva LA VENTANA DEL CLIENTE, no solo el catalogo', async () => {
@@ -124,4 +124,32 @@ test('🔴 el informe lleva LA VENTANA DEL CLIENTE, no solo el catalogo', async 
   assert.match(pdf, /LA VENTANA DE SU COTIZACIÓN/, 'el bloque destacado con sus datos');
   assert.match(pdf, /CUMPLE/, 'el veredicto contra la exigencia de su comuna');
   assert.match(pdf, /esSuVidrio\(cod\)/, 'su fila resaltada entre las 10');
+});
+
+test('🔴 RITMO HUMANO: aviso primero, espera larga despues, y recien el PDF', async () => {
+  // Correccion del dueno: "no puede ser inmediato, el informe debe verse real". Nadie
+  // redacta un informe con citas normativas en 6 segundos; si aparece al toque se lee como
+  // autoresponder y se anula el efecto de que lo preparo un profesional.
+  const wh = await leer('../src/oliver-gpt/webhook.js');
+  const i = wh.indexOf('enviarInformeTermico: (comuna,');
+  const bloque = wh.slice(i, i + 6000);
+
+  const iAviso   = bloque.indexOf('ms: DEMORA_AVISO_MS');
+  const iMensaje = bloque.indexOf('Deme un momento');
+  const iEspera  = bloque.indexOf('await esperarAntesDeEnviar({ dormir: deps.dormir || null });');
+  const iPdf     = bloque.indexOf('sendWaDocument(from, mediaId');
+
+  assert.ok(iAviso > 0 && iMensaje > iAviso, 'primero la espera corta, despues el aviso');
+  assert.ok(iEspera > iMensaje, 'la espera LARGA va despues del aviso, no antes');
+  assert.ok(iPdf > iEspera, 'el PDF va al final de todo');
+  assert.match(bloque, /mantenerEscribiendo\(msgId\)/, 'los puntitos vivos durante la espera larga');
+  assert.match(bloque, /finally \{/, 'los puntitos se apagan pase lo que pase');
+});
+
+test('los dos tiempos son configurables y estan topados', async () => {
+  const src = await leer('./informeTermico.js');
+  assert.match(src, /INFORME_AVISO_MS \|\| 4000/);
+  assert.match(src, /INFORME_DEMORA_MS \|\| 35000/, 'el default tiene que sentirse humano');
+  assert.match(src, /Math\.min\(Number\(ms\), 90000\)/,
+    'un valor mal escrito no puede dejar a un cliente esperando eternamente');
 });
