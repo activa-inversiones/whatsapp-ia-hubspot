@@ -726,7 +726,18 @@ export async function runTool(name, input = {}, ctx = {}) {
       // fire-and-forget A PROPOSITO, sin await: la cotizacion no espera al informe.
       // El candado de "una sola vez por cliente" vive del lado del webhook.
       if (typeof ctx?.enviarInformeTermico === 'function') {
-        try { ctx.enviarInformeTermico(input.comuna || ''); } catch { /* nunca frena la cotizacion */ }
+        // [2026-08-21] Se le pasa EL VIDRIO Y EL Uw QUE ACABA DE SALIR de la cotizacion.
+        // Sin esto el informe lista los 10 vidrios del catalogo y se lee como folleto; con
+        // esto el cliente ve el SUYO marcado entre todos, que es lo que lo vuelve un informe
+        // de SU proyecto. El dueno lo cazo mirando el PDF: "entrego un informe tipo con
+        // muchos termopaneles".
+        try {
+          ctx.enviarInformeTermico(input.comuna || '', {
+            glassLabel: it.glass_label || '',
+            uw: it.termico?.uw ?? null,
+            producto: it.producto_label || '',
+          });
+        } catch { /* nunca frena la cotizacion */ }
       }
 
       return {

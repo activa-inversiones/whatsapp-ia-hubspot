@@ -19,17 +19,22 @@ test('calcular_cotizacion DISPARA el informe — es el momento en que el cliente
   const bloque = src.slice(src.indexOf("case 'calcular_cotizacion'"), src.indexOf("case 'calcular_por_area'"));
   assert.match(bloque, /ctx\?\.enviarInformeTermico/,
     'sin esto el informe existe pero nadie lo manda');
-  assert.match(bloque, /ctx\.enviarInformeTermico\(input\.comuna \|\| ''\)/,
+  assert.match(bloque, /ctx\.enviarInformeTermico\(input\.comuna \|\| '',/,
     'tiene que pasarle la comuna capturada, no inventar una');
 });
 
 test('🔒 el disparo NO puede frenar ni demorar la cotizacion', async () => {
   const src = await leer('../src/oliver-gpt/tools.js');
   const bloque = src.slice(src.indexOf("case 'calcular_cotizacion'"), src.indexOf("case 'calcular_por_area'"));
-  const linea = bloque.split('\n').find((l) => l.includes('ctx.enviarInformeTermico('));
-  assert.ok(linea, 'no se encontro la llamada');
-  assert.doesNotMatch(linea, /await/, 'con await, un THERMAL lento demoraria el precio del cliente');
-  assert.match(linea, /try \{.*\} catch/, 'una excepcion aca no puede tumbar la cotizacion');
+  // La llamada pasó a ser MULTILÍNEA (lleva el vidrio y el Uw del cliente), así que ya no
+  // sirve mirar una sola línea: se inspecciona el trozo completo alrededor.
+  const i = bloque.indexOf('ctx.enviarInformeTermico(');
+  assert.ok(i > 0, 'no se encontro la llamada');
+  const trozo = bloque.slice(Math.max(0, i - 140), i + 340);
+  assert.doesNotMatch(trozo, /await ctx\.enviarInformeTermico/,
+    'con await, un THERMAL lento demoraria el precio del cliente');
+  assert.match(trozo, /try \{/, 'tiene que ir dentro de un try');
+  assert.match(trozo, /\} catch \{/, 'una excepcion aca no puede tumbar la cotizacion');
 });
 
 test('el disparo va DESPUES de que la cotizacion salio bien, no antes', async () => {
@@ -74,7 +79,7 @@ test('🔴 el informe se manda SIEMPRE al cotizar — es parte del proceso de ve
   // venta". Estuvo un rato como tool a pedido y se revirtio a proposito.
   const src = await leer('../src/oliver-gpt/tools.js');
   const bloque = src.slice(src.indexOf("case 'calcular_cotizacion'"), src.indexOf("case 'calcular_por_area'"));
-  assert.match(bloque, /ctx\.enviarInformeTermico\(input\.comuna \|\| ''\)/,
+  assert.match(bloque, /ctx\.enviarInformeTermico\(input\.comuna \|\| '',/,
     'sin esto el informe solo saldria si alguien lo pide, y el dueno lo quiere SIEMPRE');
 });
 
@@ -85,7 +90,7 @@ test('la tool de re-envio existe y SALTA el candado', async () => {
   assert.match(tools, /name: 'enviar_informe_termico'/);
   assert.match(tools, /ctx\.enviarInformeTermico\(input\.comuna \|\| '', \{ forzar: true \}\)/);
   const wh = await leer('../src/oliver-gpt/webhook.js');
-  assert.match(wh, /enviarInformeTermico: \(comuna, \{ forzar = false \} = \{\}\) =>/);
+  assert.match(wh, /enviarInformeTermico: \(comuna, \{ forzar = false/, 'el hook acepta forzar');
   assert.match(wh, /if \(!forzar\) \{/, 'el candado solo aplica al envio automatico');
 });
 
@@ -102,4 +107,21 @@ test('el hook usa el nombre del cliente si lo hay', async () => {
   const src = await leer('../src/oliver-gpt/webhook.js');
   const i = src.indexOf('enviarInformeTermico: (comuna,');
   assert.match(src.slice(i, i + 4200), /nombre: state\.name \|\| ''/);
+});
+
+test('🔴 el informe lleva LA VENTANA DEL CLIENTE, no solo el catalogo', async () => {
+  // El dueno lo cazo mirando el PDF: "entrego un informe tipo con muchos termopaneles".
+  // Tenia razon: con los 10 vidrios y nada suyo, se lee como folleto. Ahora el vidrio y el
+  // Uw que ACABAN de salir de la cotizacion viajan al informe y se destacan.
+  const tools = await leer('../src/oliver-gpt/tools.js');
+  assert.match(tools, /glassLabel: it\.glass_label/, 'el vidrio del cliente tiene que viajar');
+  assert.match(tools, /uw: it\.termico\?\.uw/, 'y su Uw calculado');
+
+  const wh = await leer('../src/oliver-gpt/webhook.js');
+  assert.match(wh, /suVidrio: glassLabel, suUw: uw, suProducto: producto/);
+
+  const pdf = await leer('./informeTermicoPdf.js');
+  assert.match(pdf, /LA VENTANA DE SU COTIZACIÓN/, 'el bloque destacado con sus datos');
+  assert.match(pdf, /CUMPLE/, 'el veredicto contra la exigencia de su comuna');
+  assert.match(pdf, /esSuVidrio\(cod\)/, 'su fila resaltada entre las 10');
 });

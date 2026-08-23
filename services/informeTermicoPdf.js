@@ -35,7 +35,7 @@ const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
  * @param {object} opts        { nombre, firma, esReferenciaRegional }
  * @returns {Promise<Buffer|null>}  null si no hay un solo dato duro que reportar
  */
-export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {}, esReferenciaRegional = false, vidrios = null } = {}) {
+export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {}, esReferenciaRegional = false, vidrios = null, suVidrio = '', suUw = null, suProducto = '' } = {}) {
   if (!datos || !datos.comuna) return null;
 
   const cond = datos.condensacion;
@@ -49,6 +49,15 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
 
   // Anti-alucinación: sin un solo dato verificado no se emite documento.
   if (!tienePDA && !tieneCond) return null;
+
+  // El glass_label del motor viene como "5+12+5" o "4+12+4 saten (bano)"; las claves del
+  // catalogo son "DVH_5-12-5". Se comparan solo los digitos, que es lo unico estable.
+  const digitos = (x) => String(x || '').replace(/[^0-9]/g, '');
+  const esSuVidrio = (codigo) => {
+    const a3 = digitos(suVidrio); const b3 = digitos(codigo);
+    return a3.length >= 3 && b3.startsWith(a3);
+  };
+  const uwCliente = num(suUw);
 
   const { default: PDFDocument } = await import('pdfkit');
 
@@ -84,6 +93,35 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           + 'ni contiene precios: su propuesta económica se envía por separado.', 58, 185, { width: W - 116 });
 
       let y = 222;
+
+      // ── SU COTIZACIÓN ───────────────────────────────────────────────────
+      // [2026-08-21] Esto es lo primero que ve el cliente, y es lo que separa un informe de
+      // un folleto: sus datos, no el catálogo. Solo se dibuja si de verdad los tenemos.
+      if (uwCliente !== null || suVidrio) {
+        const cumple = uwCliente !== null && uw !== null ? uwCliente <= uw : null;
+        doc.rect(50, y, W - 100, 54).fill('#0B3D6F');
+        doc.fillColor(GOLD).fontSize(8).font('Helvetica-Bold')
+          .text('LA VENTANA DE SU COTIZACIÓN', 60, y + 8);
+        doc.fillColor('#fff').fontSize(9).font('Helvetica')
+          .text(String(suProducto || 'Ventana PVC termopanel').slice(0, 58), 60, y + 22, { width: 260 });
+        if (suVidrio) {
+          doc.fillColor('#cbd5e1').fontSize(8)
+            .text(`Vidrio: ${suVidrio}`, 60, y + 36, { width: 260 });
+        }
+        if (uwCliente !== null) {
+          doc.fillColor('#fff').fontSize(8).font('Helvetica').text('Uw calculado', 340, y + 12, { width: 90 });
+          doc.fillColor(cumple === false ? '#fca5a5' : '#86efac').fontSize(20).font('Helvetica-Bold')
+            .text(`${dec(uwCliente, 2)}`, 340, y + 24, { width: 90 });
+          doc.fillColor('#cbd5e1').fontSize(7).font('Helvetica').text('W/m²K', 393, y + 33);
+        }
+        if (cumple !== null) {
+          doc.fillColor(cumple ? '#86efac' : '#fca5a5').fontSize(10).font('Helvetica-Bold')
+            .text(cumple ? '✓ CUMPLE' : '✗ NO CUMPLE', W - 175, y + 20, { width: 115, align: 'right' });
+          doc.fillColor('#cbd5e1').fontSize(7).font('Helvetica')
+            .text(`exigencia ${dec(uw)} W/m²K`, W - 175, y + 36, { width: 115, align: 'right' });
+        }
+        y += 68;
+      }
 
       const seccion = (titulo) => {
         saltoSiNoCabe(60);
@@ -172,8 +210,11 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           if (ug === null) continue;
           const largo = Math.max(6, (ug / maxUg) * ancho);
           const bueno = ug <= 1.4;
-          doc.fillColor(DARK).fontSize(7).font('Helvetica')
-            .text(String(cod).replace(/_/g, ' ').slice(0, 30), 55, y + 2, { width: 115 });
+          const suyo = esSuVidrio(cod);
+          // El vidrio del cliente va resaltado: entre 10 filas, tiene que encontrar la suya.
+          if (suyo) doc.rect(50, y - 2, W - 100, 13).fill('#fff7e6');
+          doc.fillColor(suyo ? '#92400e' : DARK).fontSize(7).font(suyo ? 'Helvetica-Bold' : 'Helvetica')
+            .text((suyo ? '\u25B6 ' : '') + String(cod).replace(/_/g, ' ').slice(0, 28), 55, y + 2, { width: 115 });
           doc.rect(x0, y, largo, 9).fill(bueno ? '#0a7d33' : (ug <= 2 ? '#C4993B' : '#94a3b8'));
           doc.fillColor(DARK).fontSize(7).font('Helvetica-Bold')
             .text(dec(ug, 2), x0 + largo + 4, y + 1, { width: 40 });
@@ -277,6 +318,9 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         ordenados.forEach(([cod, x]) => filaVidrio(cod, x));
 
         y += 4;
+        if (suVidrio) {
+          parrafo('\u25B6 La fila resaltada es el vidrio considerado en su cotización.', { size: 8, color: '#92400e', bold: true });
+        }
         parrafo('«Certificado» significa que el Ug proviene de un informe de ensayo del fabricante. '
           + '«Tabulado» significa que proviene de ficha técnica. Ambos son datos de origen, no estimaciones '
           + 'nuestras.', { size: 8, color: GRAY });

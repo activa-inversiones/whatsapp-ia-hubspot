@@ -996,7 +996,7 @@ export async function handleWebhook(req, res, deps = {}) {
       //      milisegundo por esto — es la regla dura del proyecto.
       //   3. si THERMAL no responde o no hay dato verificado, NO se manda nada.
       //      Jamás se inventa un número: son citas normativas.
-      enviarInformeTermico: (comuna, { forzar = false } = {}) => {
+      enviarInformeTermico: (comuna, { forzar = false, glassLabel = '', uw = null, producto = '' } = {}) => {
         const clave = `informe_termico:${String(from).replace(/\D/g, '')}`;
         safe('informeTermico', async () => {
           // `forzar` llega desde la tool enviar_informe_termico: si el cliente lo PIDE, se le
@@ -1028,6 +1028,8 @@ export async function handleWebhook(req, res, deps = {}) {
 
           const pdfBuf = await generarInformeTermicoPdf(datos, {
             nombre: state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios,
+            // Lo que hace que el informe sea de SU proyecto y no un catalogo.
+            suVidrio: glassLabel, suUw: uw, suProducto: producto,
           });
           if (!pdfBuf) return;
 
