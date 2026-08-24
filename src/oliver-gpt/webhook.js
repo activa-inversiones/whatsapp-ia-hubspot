@@ -1040,8 +1040,32 @@ export async function handleWebhook(req, res, deps = {}) {
           let termopanel = null;
           try { termopanel = await laminaTermopanel({ glassLabel }); } catch { /* opcional */ }
 
+          // [2026-08-24] CORRELATIVO ISO (CM-FR-006), pedido ANTES de generar el PDF y
+          // ESTAMPADO en el documento — el mismo procedimiento que la cotizacion (CM-FR-004).
+          // Pedido del dueno, textual: "mismo procedimiento de la cotizacion, debe haber
+          // registro". Si sales-os no contesta, fallback LOCAL con marca visible: un numero
+          // fuera de secuencia se distingue en la auditoria, no se disfraza de correlativo.
+          let numeroInforme = '';
+          try {
+            const sosUrl = (process.env.SALES_OS_URL || '').replace(/\/$/, '');
+            const sosTok = process.env.SALES_OS_OPERATOR_TOKEN || '';
+            if (sosUrl && sosTok) {
+              const rn = await fetch(`${sosUrl}/internal/informes/next-number`, {
+                method: 'POST',
+                headers: { 'x-api-key': sosTok, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tenant_id: 'activa' }),
+                signal: AbortSignal.timeout(8000),
+              });
+              if (rn.ok) numeroInforme = (await rn.json())?.informe_number || '';
+            }
+          } catch { /* el fallback de abajo cubre */ }
+          if (!numeroInforme) {
+            numeroInforme = `INF-LOCAL-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+          }
+
           const pdfBuf = await generarInformeTermicoPdf(datos, {
             nombre: state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios, laminas, termopanel,
+            numeroInforme,
             // Lo que hace que el informe sea de SU proyecto y no un catalogo.
             suVidrio: glassLabel, suUw: uw, suProducto: producto,
           });
@@ -1081,6 +1105,47 @@ export async function handleWebhook(req, res, deps = {}) {
           // Se marca DESPUÉS de que salió: si el envío falla, el próximo turno reintenta.
           try { await (deps.escribirEstado || escribirEstado)(clave, true, 30 * 24 * 3600); }
           catch { /* no bloquea: el mensaje ya llegó */ }
+
+          // [2026-08-24] REGISTRO ISO del informe ENTREGADO — despues del envio, nunca
+          // antes (misma regla que el candado: registrar algo que no salio es mentirle a
+          // la auditoria). El sha256 identifica el PDF byte a byte: si un dia hay disputa,
+          // el archivo del telefono del cliente se contrasta contra el hash. Si el registro
+          // falla se dice EN VOZ ALTA (la clase de silencio que ya nos costo 3 semanas en
+          // costGuard), pero no se reintenta ni bloquea: el cliente ya tiene su informe.
+          if (mediaId) {
+            try {
+              const { createHash } = await import('node:crypto');
+              const sosUrl = (process.env.SALES_OS_URL || '').replace(/\/$/, '');
+              const sosTok = process.env.SALES_OS_OPERATOR_TOKEN || '';
+              if (sosUrl && sosTok) {
+                const rr = await fetch(`${sosUrl}/internal/informes/registrar`, {
+                  method: 'POST',
+                  headers: { 'x-api-key': sosTok, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    tenant_id: 'activa',
+                    informe_number: numeroInforme,
+                    telefono: String(from),
+                    nombre: state.name || '',
+                    comuna: datos.comuna,
+                    es_referencia_regional: esRef,
+                    vidrio: glassLabel,
+                    uw,
+                    producto,
+                    perfil_lamina: termopanel?.perfil || null,
+                    laminas_ids: Array.isArray(laminas?.laminas) ? laminas.laminas.map((l) => l.id).join(',') : null,
+                    pdf_bytes: pdfBuf.length,
+                    pdf_sha256: createHash('sha256').update(pdfBuf).digest('hex'),
+                  }),
+                  signal: AbortSignal.timeout(8000),
+                });
+                if (!rr.ok) log('warn', 'informeTermico.registro', `sales-os respondio ${rr.status}: el informe ${numeroInforme} salio SIN registro ISO`);
+              } else {
+                log('warn', 'informeTermico.registro', `sin SALES_OS_URL/token: el informe ${numeroInforme} salio SIN registro ISO`);
+              }
+            } catch (e) {
+              log('warn', 'informeTermico.registro', `fallo el registro de ${numeroInforme}: ${e.message} — el cliente YA tiene su informe`);
+            }
+          }
         });
       },
 

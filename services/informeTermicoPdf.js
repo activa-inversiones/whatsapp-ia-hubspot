@@ -117,7 +117,7 @@ const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
  * @param {object} opts        { nombre, firma, esReferenciaRegional }
  * @returns {Promise<Buffer|null>}  null si no hay un solo dato duro que reportar
  */
-export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {}, esReferenciaRegional = false, vidrios = null, suVidrio = '', suUw = null, suProducto = '', laminas = null, termopanel = null } = {}) {
+export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {}, esReferenciaRegional = false, vidrios = null, suVidrio = '', suUw = null, suProducto = '', laminas = null, termopanel = null, numeroInforme = '' } = {}) {
   if (!datos || !datos.comuna) return null;
 
   const cond = datos.condensacion;
@@ -177,8 +177,12 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         .text('INFORME TÉRMICO', 50, 118);
       doc.fillColor(GOLD).fontSize(12)
         .text(esReferenciaRegional ? 'Referencia regional — La Araucanía' : `Comuna de ${datos.comuna}`, 50, 142);
+      // [2026-08-24] El correlativo ISO va IMPRESO — igual que la cotizacion imprime el
+      // suyo. Un registro cuyo numero no aparece en el documento no amarra nada.
       doc.fillColor(GRAY).fontSize(9).font('Helvetica')
-        .text(`Emitido: ${new Date().toLocaleDateString('es-CL')}${nombre ? `  ·  Preparado para: ${String(nombre).trim()}` : ''}`, 50, 161);
+        .text(`Emitido: ${new Date().toLocaleDateString('es-CL')}`
+          + `${String(numeroInforme || '').trim() ? `  ·  Informe N° ${String(numeroInforme).trim().slice(0, 40)}` : ''}`
+          + `${nombre ? `  ·  Preparado para: ${String(nombre).trim()}` : ''}`, 50, 161);
 
       // Aclaración de alcance ARRIBA, no en la letra chica: este documento NO es la propuesta.
       doc.rect(50, 178, W - 100, 26).fill('#F7F9FC');
