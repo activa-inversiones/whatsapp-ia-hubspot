@@ -44,7 +44,7 @@ import {
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
 import { leer as leerEstado, escribir as escribirEstado } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
-import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS } from '../../services/informeTermico.js';
+import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS, datosDelInforme } from '../../services/informeTermico.js';
 import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
 import { laminasParaInforme, laminaTermopanel } from '../../services/laminasThermal.js';   // [2026-08-24] isotermas del FEM
 import { getClient as realGetClient } from './engine.js';
@@ -1000,6 +1000,28 @@ export async function handleWebhook(req, res, deps = {}) {
       enviarInformeTermico: (comuna, { forzar = false, glassLabel = '', uw = null, producto = '' } = {}) => {
         const clave = `informe_termico:${String(from).replace(/\D/g, '')}`;
         safe('informeTermico', async () => {
+          // 🔴 [2026-08-24 · Codex, compuerta cruzada] LA MEMORIA VA ANTES QUE TODO CANDADO.
+          // Primer intento la puse despues, y Codex cazo el agujero: si el cliente YA recibio
+          // su informe (candado de 30 dias puesto) y despues RECOTIZA con otro vidrio, el
+          // `return` del candado cortaba antes de guardar — la memoria se quedaba con el
+          // vidrio VIEJO. Cuando ese cliente pidiera el informe de nuevo, se le declararia el
+          // Uw de un vidrio que ya no es el suyo, en un documento firmado.
+          //
+          // El orden correcto sale de separar dos cosas que no son la misma: RECORDAR lo que
+          // se cotizo es un registro, y ocurre siempre; MANDAR el informe es un envio, y
+          // tiene candados. Un candado de envio no puede gobernar un registro.
+          const claveDatos = `${clave}:datos`;
+          let recordados = null;
+          try { recordados = await (deps.leerEstado || leerEstado)(claveDatos); }
+          catch { /* sin memoria el informe sale igual, solo sin el recuadro */ }
+          const elegido = datosDelInforme({ glassLabel, uw, producto }, recordados);
+          ({ glassLabel, uw, producto } = elegido.datos);
+          if (elegido.recordar) {
+            try {
+              await (deps.escribirEstado || escribirEstado)(claveDatos, elegido.datos, 30 * 24 * 3600);
+            } catch { /* la memoria es un lujo; el informe no depende de ella */ }
+          }
+
           // `forzar` llega desde la tool enviar_informe_termico: si el cliente lo PIDE, se le
           // manda aunque ya lo tenga. El candado existe para no spamear, no para negarle algo
           // a alguien que lo esta pidiendo.
@@ -1009,6 +1031,26 @@ export async function handleWebhook(req, res, deps = {}) {
             catch { /* si el estado no se puede leer, se sigue */ }
           }
           if (yaSeMando) return;
+
+          // 🔴 [2026-08-24] CANDADO CORTO CONTRA EL DUPLICADO. Medido en produccion: el
+          // cliente 56990704777 recibio DOS informes identicos en el mismo minuto, y quedaron
+          // dos folios (CM-FR-006-2026-0001 y -0002) del mismo segundo. La causa: entre que
+          // arranca este bloque y que se marca el candado definitivo pasan ~40 s (el ritmo
+          // humano), y en esa ventana una segunda cotizacion dispara el flujo de nuevo.
+          //
+          // El candado definitivo NO puede adelantarse: si se marcara antes del envio y el
+          // envio fallara, el cliente se quedaria sin informe por 30 dias — que es
+          // exactamente el bug que dejo a 4 clientes bloqueados hoy. Entonces van DOS:
+          //   · este, CORTO (5 min): tapa la ventana del duplicado y, si el envio se cae,
+          //     vence solo y el proximo turno reintenta;
+          //   · el de 30 dias, que se sigue marcando SOLO tras entrega confirmada.
+          const claveEnCurso = `${clave}:en_curso`;
+          if (!forzar) {
+            try {
+              if ((await (deps.leerEstado || leerEstado)(claveEnCurso)) === true) return;
+              await (deps.escribirEstado || escribirEstado)(claveEnCurso, true, 5 * 60);
+            } catch { /* si el estado no se puede leer/escribir, se sigue: mejor duplicar que no mandar */ }
+          }
 
           // Se pide la comuna del cliente; si THERMAL no la reconoce (pasa con los SECTORES:
           // Labranza, Cajon, Metrenco…) se cae a la referencia regional, anunciada como tal.

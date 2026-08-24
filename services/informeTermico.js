@@ -311,5 +311,47 @@ export async function esperarAntesDeEnviar({ dormir = null, ms = DEMORA_MS } = {
   await new Promise((r) => setTimeout(r, espera));
 }
 
+/**
+ * QUE DATOS DEL CLIENTE LLEVA EL INFORME, y si hay que recordarlos para la proxima.
+ *
+ * POR QUE EXISTE: el informe se dispara por DOS caminos distintos, y solo uno trae datos.
+ *   · `calcular_cotizacion` -> llega con el vidrio, el Uw y el producto recien calculados.
+ *   · la tool `enviar_informe_termico` (el cliente lo PIDE, o dice que no le llego) ->
+ *     llega con `{ forzar: true }` a secas, porque nace de una frase y no de un calculo.
+ *
+ * Sin memoria, justo al cliente que PIDE el informe se le mandaba el despersonalizado —sin
+ * el recuadro "LA VENTANA DE SU COTIZACION"—, que se lee como folleto. Y hasta el fix del
+ * 24-ago era peor: el Uw ausente se dibujaba como «0,00 W/m2K · CUMPLE».
+ *
+ * La regla, en una linea: LO FRESCO MANDA, LO VIEJO RESCATA. Datos entrantes se usan y se
+ * guardan; si no hay, se rescatan los recordados; si tampoco, el informe sale sin recuadro
+ * —correcto, solo mas pobre—. Un re-envio NUNCA pisa datos frescos con datos viejos.
+ *
+ * ⚖️ LO QUE SE RECUERDA ES "LA ULTIMA COTIZACION CON DATOS TERMICOS", no "la ultima
+ * cotizacion" a secas — y es a proposito. Gemini lo levanto en la compuerta del 24-ago: si
+ * el cliente cotiza una ventana con termopanel y despues una puerta ciega, la memoria
+ * conserva la ventana. Se evaluo y se dejo asi: un informe TERMICO sobre una puerta sin
+ * vidriado no tiene nada que declarar, y el Uw de la ventana sigue siendo el Uw real de una
+ * ventana que ese cliente SI cotizo. No es un dato de otro cliente ni inventado. La
+ * alternativa —olvidar al cotizar algo sin datos termicos— dejaria sin recuadro a un cliente
+ * que si tiene una ventana cotizada, que es peor.
+ */
+export function datosDelInforme(entrantes, recordados) {
+  const VACIO = { glassLabel: '', uw: null, producto: '' };
+  // `Number(d.uw) > 0` y no una simple comprobacion de presencia: un Uw de 0 es lo que
+  // produce `Number(null)`, no una medicion. Si contara como dato, un cero espurio
+  // desplazaria al Uw real recordado y se declararia EL CERO en su lugar.
+  const hay = (d) => Boolean(d && typeof d === 'object' && !Array.isArray(d)
+    && (d.glassLabel || d.producto || Number(d.uw) > 0));
+  const limpiar = (d) => ({
+    glassLabel: d.glassLabel || '',
+    uw: d.uw === undefined || d.uw === '' ? null : d.uw,
+    producto: d.producto || '',
+  });
+  if (hay(entrantes)) return { datos: limpiar(entrantes), recordar: true };
+  if (hay(recordados)) return { datos: limpiar(recordados), recordar: false };
+  return { datos: VACIO, recordar: false };
+}
+
 export { FIRMA, DEMORA_MS, DEMORA_AVISO_MS };
-export default { normalizarComuna, pedirInformeComuna, armarMensaje, informeParaComuna, esperarAntesDeEnviar, FIRMA, VERSION };
+export default { normalizarComuna, pedirInformeComuna, armarMensaje, informeParaComuna, esperarAntesDeEnviar, datosDelInforme, FIRMA, VERSION };

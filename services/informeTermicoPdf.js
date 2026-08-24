@@ -118,7 +118,53 @@ const GRAY = '#485A6B';   // [2026-08-24] antes #6B7B8D: ~4:1 sobre blanco, ileg
 const DARK = '#1A2332';
 
 const dec = (n, d = 1) => Number(n).toFixed(d).replace('.', ',');
-const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+// 🔴 [2026-08-24] `Number(null) === 0`, Y ESE CERO SE DIBUJA. El dueño lo cazó mirando un
+// informe: decía «Uw calculado 0,00 W/m²K · CUMPLE». Un documento firmado por un Evaluador
+// Energético acreditado MINVU declarando que una ventana cumple con transmitancia CERO.
+//
+// Y no era el único camino. En toda comuna SIN Plan de Descontaminación la API devuelve
+// `uw_max_Wm2K: null` porque ahí la norma NO pone tope por elemento (Vilcún, verificado
+// 24-ago). Ese null se volvía 0 y el informe acusaba «exigencia 0,00 W/m²K · NO CUMPLE»:
+// le decíamos a un cliente que su ventana incumple, contra un tope que no existe.
+//
+// La raíz es tratar AUSENCIA DE DATO y VALOR CERO como la misma cosa. No lo son, y en un
+// informe firmado la diferencia es la que separa «no lo declaro» de «declaro un cero».
+// `Number('')` también da 0, así que la cadena vacía entra en la misma regla.
+const num = (v) => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+// Piso físico del Uw de una ventana. El mejor triple vidriado del mercado ronda 0,6-0,8
+// W/m²K; nada real baja de ~0,5. Un valor bajo ese piso no es una ventana excepcional: es
+// un dato corrupto. En un informe firmado eso se CALLA, no se declara — porque un Uw
+// absurdamente bajo siempre «CUMPLE», y un falso CUMPLE es el error caro.
+const UW_MIN_PLAUSIBLE = 0.5;
+
+/**
+ * QUE SE LE DECLARA AL CLIENTE SOBRE SU Uw. Funcion PURA y exportada a proposito.
+ *
+ * Vivia como tres expresiones sueltas dentro del codigo de dibujo, y ahi no habia forma
+ * honesta de probarla: pdfkit escribe el texto como glifos hex de una fuente embebida, asi
+ * que verificar el veredicto exigia parsear el PDF. Una decision que puede firmar un
+ * "CUMPLE" falso en un documento MINVU no puede ser intestable.
+ *
+ * Tres estados, y ninguno se confunde con otro:
+ *   · uwCliente  null = no lo sabemos (o el dato es imposible) => NO se declara
+ *   · exigencia  null = la comuna no fija tope por elemento    => NO hay que cumplir nada
+ *   · cumple     null = no hay veredicto posible               => NO se dictamina
+ *
+ * @param {*} suUw        Uw calculado de la ventana del cliente
+ * @param {*} uwMaxNorma  tope de la comuna (null donde no rige un PDA)
+ */
+export function veredictoUw(suUw, uwMaxNorma) {
+  const bruto = num(suUw);
+  const uwCliente = bruto !== null && bruto >= UW_MIN_PLAUSIBLE ? bruto : null;
+  const exigencia = num(uwMaxNorma);
+  const cumple = uwCliente !== null && exigencia !== null ? uwCliente <= exigencia : null;
+  return { uwCliente, exigencia, cumple };
+}
 
 /**
  * Arma el PDF del informe térmico de una comuna.
@@ -160,7 +206,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
     const [cod, dat] = (conTono[0] || candidatos[0]);
     return { cod, ...dat };
   };
-  const uwCliente = num(suUw);
+  const { uwCliente } = veredictoUw(suUw, datos.uw_max_Wm2K);
 
   const { default: PDFDocument } = await import('pdfkit');
 
@@ -271,7 +317,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       // [2026-08-21] Esto es lo primero que ve el cliente, y es lo que separa un informe de
       // un folleto: sus datos, no el catálogo. Solo se dibuja si de verdad los tenemos.
       if (uwCliente !== null || suVidrio) {
-        const cumple = uwCliente !== null && uw !== null ? uwCliente <= uw : null;
+        const { cumple } = veredictoUw(suUw, datos.uw_max_Wm2K);
         doc.rect(50, y, W - 100, 54).fill('#0B3D6F');
         doc.fillColor(GOLD).fontSize(8).font('Helvetica-Bold')
           .text('LA VENTANA DE SU COTIZACIÓN', 60, y + 8);
