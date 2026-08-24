@@ -175,3 +175,14 @@ test('🔒 los numeros de la figura NO se transcriben al PDF', async () => {
     assert.ok(!pies.includes(n), `el valor ${n} sale de leer la figura y no puede ir al PDF`);
   }
 });
+
+test('🔒 [#392] el aviso legal lleva la razon social Y el RUT verificados del dueno', async () => {
+  // Los dio el dueno el 24-ago: "Activa Inversiones EIRL, RUT 76.486.825-0". El DV se
+  // comprobo por modulo 11 antes de escribirlo (suma 187 -> DV 0 ✓): un digito verificador
+  // equivocado dentro del parrafo que pretende tener valor juridico es peor que no ponerlo.
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('./informeTermicoPdf.js', import.meta.url), 'utf8');
+  assert.ok(src.includes("EMISOR_RAZON_SOCIAL || 'Activa Inversiones EIRL'"), 'razon social exacta');
+  assert.ok(src.includes("EMISOR_RUT || '76.486.825-0'"), 'RUT exacto');
+  assert.ok(src.includes('RUT ${rutEmisor}'), 'y aparece en el texto legal');
+});

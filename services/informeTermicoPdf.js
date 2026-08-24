@@ -230,12 +230,21 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       // tocar código. Poner un "SpA" o un RUT a ojo en un aviso legal sería inventar un dato
       // — justo lo que la regla del proyecto prohíbe, y encima en el párrafo que pretende
       // tener valor jurídico.
-      const razonSocial = String(process.env.EMISOR_RAZON_SOCIAL || 'Activa Inversiones').trim();
+      // [2026-08-24, tablero #392] LA RAZÓN SOCIAL Y EL RUT LOS DIO EL DUEÑO, textual:
+      // "Activa Inversiones EIRL, RUT 76.486.825-0". No se inventaron — ese era justamente
+      // el motivo por el que el aviso legal salió con el nombre comercial y una variable
+      // esperando el dato. El RUT se verificó por módulo 11 antes de escribirlo (DV = 0 ✓):
+      // un dígito verificador equivocado dentro del párrafo que pretende tener valor
+      // jurídico sería peor que no ponerlo.
+      // Van como DEFAULT en código (el dato es público y ya está confirmado por el dueño);
+      // las env vars quedan por si la sociedad cambia, sin necesidad de deploy.
+      const razonSocial = String(process.env.EMISOR_RAZON_SOCIAL || 'Activa Inversiones EIRL').trim();
+      const rutEmisor = String(process.env.EMISOR_RUT || '76.486.825-0').trim();
       const destinatario = String(nombre || '').trim();
       const legal = 'DOCUMENTO CONFIDENCIAL — USO EXCLUSIVO DEL DESTINATARIO. '
         + `Este informe fue preparado${destinatario ? ` para ${destinatario}` : ''} y para el proyecto que lo motivó. `
-        + `Su contenido, cálculos y figuras son de ${razonSocial} y están protegidos por la legislación de `
-        + 'propiedad intelectual vigente. Su entrega no transfiere derechos sobre el contenido. '
+        + `Su contenido, cálculos y figuras son de ${razonSocial}${rutEmisor ? `, RUT ${rutEmisor}` : ''}, `
+        + 'y están protegidos por la legislación de '
         + 'Queda prohibida su reproducción total o parcial, su alteración, y su uso por terceros o para un '
         + 'proyecto distinto —incluido presentarlo, o los valores que contiene, ante terceros o autoridades '
         + 'por quien no es el destinatario— sin autorización escrita previa. El uso no autorizado podrá dar '
