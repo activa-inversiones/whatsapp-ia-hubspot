@@ -140,3 +140,38 @@ test('🔒 [P2 · Codex] un nombre absurdamente largo no descuadra la pagina', a
   assert.ok(pdf && pdf.length > 0);
   assert.equal(contarImagenes(pdf), 2, 'el informe sale igual, con el nombre acotado');
 });
+
+test('🔴 el pie de la lamina 10 NO puede prometer que no condensa', async () => {
+  // La lamina del termopanel del propio ACTIVA reporta, para Temuco a 65 % de HR:
+  //   borde aluminio 9,2 C -> CONDENSA · borde thermoflex 11,8 C -> CONDENSA
+  //   (umbral que devuelve la API para Temuco: 12,28 C)
+  // O sea el borde condensa con LOS DOS separadores. Un texto que insinue lo contrario
+  // contradice al motor de la empresa en un documento que ella misma firma.
+  // Se junta el texto REAL que ve el cliente: el pie está partido en varios literales
+  // concatenados, así que comparar sobre la fuente cruda da falsos negativos.
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('./informeTermicoPdf.js', import.meta.url), 'utf8');
+  const i = src.indexOf("'10':");
+  const crudo = src.slice(i, src.indexOf('});', i));
+  const pie = [...crudo.matchAll(/'((?:[^'\\]|\\.)*)'/g)].map((m) => m[1]).join('');
+
+  assert.doesNotMatch(pie, /no se empa|nunca condensa|evita la condensaci|sin condensaci/i,
+    'no se puede prometer ausencia de condensacion');
+  assert.match(pie, /puede alcanzar igual la temperatura de condensaci/i,
+    'tiene que decir que el borde puede condensar con los dos separadores');
+  assert.match(pie, /con uno u otro separador/i, 'y que aplica a AMBOS, no solo al aluminio');
+  assert.match(pie, /secci[óo]n de condensaci[óo]n/i, 'y remitir al dato calculado');
+});
+
+test('🔒 los numeros de la figura NO se transcriben al PDF', async () => {
+  // Leer un valor de una imagen y ponerlo en un documento firmado es exactamente lo que el
+  // contrato con THERMAL prohibe: las laminas viajan con X-No-Declarable.
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('./informeTermicoPdf.js', import.meta.url), 'utf8');
+  const i = src.indexOf("const PIES_LAMINA");
+  const bloque = src.slice(i, src.indexOf('});', i));
+  const pies = bloque.split(String.fromCharCode(10)).filter((l) => !l.trim().startsWith('//')).join(' ');
+  for (const n of ['9,2', '11,8', '13,3', '12,28']) {
+    assert.ok(!pies.includes(n), `el valor ${n} sale de leer la figura y no puede ir al PDF`);
+  }
+});

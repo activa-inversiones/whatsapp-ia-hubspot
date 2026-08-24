@@ -42,17 +42,31 @@ const PIES_LAMINA = Object.freeze({
   //     ventilación de la casa: con una estufa a gas y sin ventilar, condensa igual.
   //     Prometerlo en un documento firmado es regalarle al cliente el respaldo para un
   //     reclamo de garantía. Se mantiene la fuerza comercial, se saca la garantía implícita.
-  //   · Y una tercera pasada [P1 · Codex]: la version anterior seguia AFIRMANDO un resultado
-  //     de condensacion ("para que no concentre humedad"), y una figura ilustrativa no puede
-  //     respaldar eso. El informe YA trae la temperatura de condensacion CALCULADA para la
-  //     comuna en su seccion propia: ahi es donde vive el dato declarable. Este pie ahora
-  //     describe lo que se VE y remite al calculo, sin prometer un resultado.
+  //   · Tercera pasada [P1 · Codex]: seguia AFIRMANDO un resultado de condensacion, y una
+  //     figura ilustrativa no puede respaldar eso.
+  //   · 🔴 CUARTA Y DEFINITIVA [2026-08-24], y esta no la pidio un revisor sino EL PROPIO
+  //     MOTOR DE ACTIVA. La lamina del termopanel que genera THERMAL
+  //     (tools/lamina_termopanel_separadores.py) reporta, para Temuco a 65 % de HR interior:
+  //           borde ALUMINIO   θsi =  9,2 °C  -> CONDENSA
+  //           borde THERMOFLEX θsi = 11,8 °C  -> CONDENSA
+  //           centro de vidrio θsi = 13,3 °C  -> no condensa
+  //     y el umbral que devuelve la API para Temuco es 12,28 °C a 65 % (14,47 °C a 75 %).
+  //     O sea: EN TEMUCO EL BORDE CONDENSA CON LOS DOS SEPARADORES. El warm-edge cierra casi
+  //     toda la brecha (9,2 → 11,8) pero NO la cruza. Cualquier texto que insinue que con
+  //     warm-edge "no se empaña" contradice al motor de la propia empresa, en un documento
+  //     que ella misma firma. Eso no es una imprecision de redaccion: es entregarle al
+  //     cliente el papel con el que reclamar.
+  //     ⛔ Y NO se transcriben esos numeros al PDF: salen de LEER UNA FIGURA, que es
+  //     exactamente lo que el contrato con THERMAL prohibe. El dato declarable es el umbral
+  //     calculado, que ya vive en la seccion de condensacion de este mismo informe.
   '10': 'ESTA es la que conviene mirar dos veces: el mismo perfil con separador de ALUMINIO (izquierda) y '
       + 'con separador WARM-EDGE (derecha). El aluminio actúa como puente térmico y deja escapar el calor '
-      + 'por el borde del vidrio: por eso se ve la franja fría pegada al canto, que con el warm-edge no '
-      + 'aparece. Un borde más templado significa menos riesgo de condensación en los cantos; cuánto, '
-      + 'depende además de la humedad y la ventilación de cada casa, y la temperatura a la que su ventana '
-      + 'condensaría está calculada en la sección de condensación de este informe.',
+      + 'por el borde del vidrio: por eso se ve la franja fría pegada al canto, mucho más marcada que con '
+      + 'el warm-edge. El warm-edge sube bastante la temperatura de ese borde, y esa diferencia es real y '
+      + 'medible. Ahora, siendo francos: en las mañanas más frías el BORDE del termopanel puede alcanzar '
+      + 'igual la temperatura de condensación, con uno u otro separador — el centro del vidrio es el que '
+      + 'se mantiene seco. La temperatura exacta a la que eso ocurre en su comuna está calculada en la '
+      + 'sección de condensación de este informe.',
 });
 
 /** Tope de megapíxeles por figura. Ver el comentario largo en `laminasThermal.js`. */
@@ -126,7 +140,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       doc.fillColor('#fff').fontSize(9).text('Evaluación energética acreditada MINVU', 50, 72);
 
       doc.fillColor(DARK).fontSize(17).font('Helvetica-Bold')
-        .text('INFORME TÉRMICO PRELIMINAR', 50, 118);
+        .text('INFORME TÉRMICO', 50, 118);
       doc.fillColor(GOLD).fontSize(12)
         .text(esReferenciaRegional ? 'Referencia regional — La Araucanía' : `Comuna de ${datos.comuna}`, 50, 142);
       doc.fillColor(GRAY).fontSize(9).font('Helvetica')
@@ -138,7 +152,42 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         .text('Este documento informa la exigencia normativa vigente en su comuna. No es una cotización '
           + 'ni contiene precios: su propuesta económica se envía por separado.', 58, 185, { width: W - 116 });
 
-      let y = 222;
+      // ── AVISO LEGAL ─────────────────────────────────────────────────────
+      // Pedido del dueño (2026-08-24): *"debería decir que el informe no se puede enviar,
+      // copiar, transgredir... es exclusivo para quien lo recibe o se podrían tomar acciones
+      // legales"*. Y sacar la palabra "preliminar" del título, que ya se hizo arriba.
+      //
+      // ⚠️ SE LE ADVIRTIÓ LA TENSIÓN Y DECIDIÓ IGUAL: el motivo declarado por el que esto es
+      // un PDF y no un mensaje fue que *se reenvíe* — al marido, al arquitecto, al maestro
+      // (ver la cabecera de este archivo). Por eso la redacción NO prohíbe que el cliente lo
+      // comparta con quien lo asesora: prohíbe el USO POR TERCEROS —presentarlo como propio,
+      // reproducirlo, o usar sus valores ante una autoridad sin ser el destinatario—, que es
+      // lo que de verdad hay que proteger. Prohibir el reenvío liso y llano habría matado el
+      // efecto que motivó el formato.
+      //
+      // ⛔ NO SE INVENTA LA RAZÓN SOCIAL NI EL RUT. Se usa el nombre comercial que ya figura
+      // en el encabezado, y `EMISOR_RAZON_SOCIAL` permite poner el nombre legal exacto sin
+      // tocar código. Poner un "SpA" o un RUT a ojo en un aviso legal sería inventar un dato
+      // — justo lo que la regla del proyecto prohíbe, y encima en el párrafo que pretende
+      // tener valor jurídico.
+      const razonSocial = String(process.env.EMISOR_RAZON_SOCIAL || 'Activa Inversiones').trim();
+      const destinatario = String(nombre || '').trim();
+      const legal = 'DOCUMENTO CONFIDENCIAL — USO EXCLUSIVO DEL DESTINATARIO. '
+        + `Este informe fue preparado${destinatario ? ` para ${destinatario}` : ''} y para el proyecto que lo motivó. `
+        + `Su contenido, cálculos y figuras son de ${razonSocial} y están protegidos por la legislación de `
+        + 'propiedad intelectual vigente. Su entrega no transfiere derechos sobre el contenido. '
+        + 'Queda prohibida su reproducción total o parcial, su alteración, y su uso por terceros o para un '
+        + 'proyecto distinto —incluido presentarlo, o los valores que contiene, ante terceros o autoridades '
+        + 'por quien no es el destinatario— sin autorización escrita previa. El uso no autorizado podrá dar '
+        + 'lugar a las acciones legales que correspondan.';
+      doc.fontSize(7).font('Helvetica');
+      const altoLegal = doc.heightOfString(legal, { width: W - 116 });
+      doc.rect(50, 208, W - 100, altoLegal + 14).fill('#FDF6E9')
+        .strokeColor(GOLD).lineWidth(0.5).rect(50, 208, W - 100, altoLegal + 14).stroke();
+      doc.fillColor('#7A5B14').fontSize(7).font('Helvetica')
+        .text(legal, 58, 215, { width: W - 116, align: 'justify' });
+
+      let y = 208 + altoLegal + 26;
 
       // ── SU COTIZACIÓN ───────────────────────────────────────────────────
       // [2026-08-21] Esto es lo primero que ve el cliente, y es lo que separa un informe de
