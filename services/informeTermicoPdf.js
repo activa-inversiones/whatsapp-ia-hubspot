@@ -457,61 +457,81 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           y += 2;
         }
         if (termoDibujable) {
-          parrafo('El análisis completo del borde de su termopanel se presenta en la página '
-            + 'siguiente, en formato apaisado para su correcta lectura.', { size: 9, color: GRAY });
+          // 🔴 [2026-08-24] SE ACABÓ LA PÁGINA ROTADA. El dueño lo cazó mirando el PDF en el
+          // teléfono: *"diste vuelta la hoja; cuando un cliente usa celular normalmente no
+          // podrá verlo, se le comenzará a dar vuelta"*. Y tiene razón: rotar el CONTENIDO
+          // dentro de una hoja vertical es lo peor de los dos mundos — el visor la sigue
+          // tratando como página vertical y el auto-giro del teléfono pelea con la imagen.
+          //
+          // La solución tiene DOS partes, y la primera es la que de verdad resuelve:
+          //   1. LOS NÚMEROS COMO TEXTO, EN VERTICAL. Lo que el cliente necesita leer no es
+          //      la imagen: son los valores. Vienen del endpoint (cálculo), NUNCA de leer la
+          //      figura, y se dibujan como tabla nativa a tamaño completo.
+          //   2. LA FIGURA EN SU PROPIA PÁGINA APAISADA DE VERDAD (`layout: 'landscape'`),
+          //      no con el contenido girado: el visor sabe que es apaisada y la muestra como
+          //      corresponde. Si el cliente solo mira los números, ya tiene lo que importa.
+          const r = figTermo.resultados || null;
+          const n2 = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+          const psiAlu = n2(r?.psi_borde_aluminio_W_mK);
+          const psiTf = n2(r?.psi_borde_thermoflex_W_mK);
+          const redu = n2(r?.reduccion_psi_pct);
+          const ugDecl = n2(r?.Ug_declarado_W_m2K);
 
-          // PAGINA COMPLETA Y ROTADA 90 GRADOS. La figura es apaisada (2366x1581): metida en
-          // el ancho de una A4 vertical la letra quedaba ilegible — reclamo del dueno, textual:
-          // "muy pequena la letra, no se ve, no se lee". Rotada, su ancho corre a lo largo del
-          // ALTO de la pagina y el texto crece ~45 %.
-          doc.addPage();
-          doc.page.margins.bottom = 0;
-          const cx = W / 2, cy = doc.page.height / 2;
-          const fw = doc.page.height - 140;   // el ancho de la figura corre por el alto de la pagina
-          const fh = W - 140;                 // y su alto, por el ancho
-          // [2026-08-24, #390] EN CLAVE DE VENTA, con el respaldo del motor. Instruccion del
-          // dueño: "es para apoyar la venta: hay que destacar lo bueno y que el cliente pueda
-          // tomar una buena decision". Y el motor lo respalda: con humedad interior normal
-          // (50 %), el borde warm-edge queda SOBRE el punto de rocio en todos los vidriados
-          // corridos (10,5 a 12,9 °C contra 9,3 °C de rocio) mientras el aluminio queda bajo.
-          // Lo que NO se afirma: que lo elimine a la humedad de exigencia normativa (65 %) —
-          // ahi el propio motor dice que ningun separador lo logra solo. Vender la mitad
-          // verdadera con todas sus letras ES ayudar a una buena decision informada.
-          const pieT = 'Análisis del borde de su termopanel, desarrollado con nuestro motor de cálculo por '
-            + 'elementos finitos: el mismo corte resuelto con separador de aluminio (izquierda) y con '
-            + 'separador térmico warm-edge (derecha) — el separador es el marco que va DENTRO del '
-            + 'termopanel manteniendo los dos vidrios a distancia. La diferencia se ve a simple vista: el warm-edge '
-            + 'mantiene el borde interior del vidrio varios grados más templado. En una vivienda con '
-            + 'humedad interior normal, ese borde se mantiene sobre el punto de rocío — la condensación '
-            + 'perimetral que se ve en tantos termopaneles con separador de aluminio, aquí no se produce. '
-            + 'El análisis vale para cualquier tipo de ventana, porque el borde del termopanel es común a '
-            + 'todas las tipologías. Para condiciones de humedad interior alta (sobre 65 %, p. ej. cocinas '
-            + 'sin ventilación), la temperatura de condensación aplicable a su comuna se detalla en la '
-            + 'sección de condensación de este informe.'
-            + (() => {
-              // [#394] La nota de "su vidriado es otro" solo va cuando la figura NO es la de
-              // su vidrio. Se compara contra el perfil REAL de la figura (THERMAL ya publica
-              // una lamina por vidriado y Oliver elige la que corresponde), no contra un
-              // 4-12-4 hardcodeado.
-              const mDvh = /(\d+)-(\d+)(?:Ar)?-(\d+)/.exec(String(figTermo.perfil || ''));
-              const digFig = mDvh ? mDvh[1] + mDvh[2] + mDvh[3] : '';
-              return suV && digFig && digitos(suV.cod) !== digFig
-                ? ` La figura corresponde al termopanel ${mDvh[1]}-${mDvh[2]}-${mDvh[3]}; los valores específicos de su vidriado pueden diferir, sin alterar la comparación entre ambos separadores.`
-                : '';
-            })();
-          try {
-            doc.save();
-            doc.rotate(90, { origin: [cx, cy] });
-            doc.image(figTermo.lamina.png, cx - fw / 2, cy - fh / 2, {
-              fit: [fw, fh - 52], align: 'center', valign: 'center',
-            });
-            doc.fillColor(GRAY).fontSize(9).font('Helvetica')
-              .text(pieT, cx - fw / 2, cy + fh / 2 - 46, { width: fw });
-            doc.restore();
-          } catch {
-            // una figura rota no puede costar el informe: se restaura y se sigue
-            try { doc.restore(); } catch { /* ya restaurado */ }
+          if (psiAlu !== null && psiTf !== null) {
+            parrafo('Comparación calculada sobre el borde de su termopanel, con un separador y con el otro:',
+              { size: 9 });
+            const filaCmp = (etq, val, unidad, destacar) => {
+              saltoSiNoCabe(22);
+              if (destacar) doc.rect(50, y - 2, W - 100, 20).fill('#eefaf1');
+              doc.fillColor(destacar ? '#0a7d33' : DARK).fontSize(10)
+                .font(destacar ? 'Helvetica-Bold' : 'Helvetica')
+                .text(etq, 58, y + 3, { width: 280 });
+              doc.fillColor(destacar ? '#0a7d33' : DARK).fontSize(11).font('Helvetica-Bold')
+                .text(val, 340, y + 2, { width: 90, align: 'right' });
+              doc.fillColor(GRAY).fontSize(8).font('Helvetica')
+                .text(unidad, 438, y + 5, { width: W - 495 });
+              y += 21;
+            };
+            filaCmp('Con separador de ALUMINIO (el habitual del mercado)', dec(psiAlu, 4), 'W/m·K', false);
+            filaCmp('Con separador WARM-EDGE (el que lleva su ventana)', dec(psiTf, 4), 'W/m·K', true);
+            if (redu !== null) {
+              y += 2;
+              doc.fillColor('#0a7d33').fontSize(12).font('Helvetica-Bold')
+                .text(`${dec(redu, 0)} % menos pérdida por el borde con warm-edge`, 58, y, { width: W - 116 });
+              y += 20;
+            }
+            if (ugDecl !== null) {
+              doc.fillColor(GRAY).fontSize(8).font('Helvetica')
+                .text(`Cálculo sobre su vidriado, con el Ug ${dec(ugDecl, 3)} W/m²K declarado por el fabricante`
+                  + `${String(r?.estado_del_Ug || '').toUpperCase() === 'CERTIFICADO' ? ' y respaldado por certificado de ensayo' : ''}.`,
+                  58, y, { width: W - 116 });
+              y += 16;
+            }
+            y += 4;
           }
+
+          parrafo('La figura completa del cálculo —isotermas del corte y tabla de resultados— va en la '
+            + 'página siguiente, en formato apaisado.', { size: 9, color: GRAY });
+
+          // La figura, en una página APAISADA DE VERDAD.
+          const dimT2 = medirPng(figTermo.lamina.png);
+          doc.addPage({ size: 'A4', layout: 'landscape' });
+          doc.page.margins.bottom = 0;
+          const AW = doc.page.width, AH = doc.page.height;
+          const pieT = 'Cálculo por elementos finitos sobre el borde de su termopanel: el mismo corte '
+            + 'resuelto con separador de aluminio (izquierda) y con separador warm-edge (derecha) — el '
+            + 'separador es el marco que va dentro del termopanel manteniendo los dos vidrios a distancia. '
+            + 'Los valores de la comparación se informan en la página anterior.';
+          try {
+            doc.fillColor(DARK).fontSize(12).font('Helvetica-Bold')
+              .text(String(figTermo.nombre || '').trim().slice(0, 90), 40, 28, { width: AW - 80 });
+            doc.image(figTermo.lamina.png, 40, 50, {
+              fit: [AW - 80, AH - 110], align: 'center', valign: 'center',
+            });
+            doc.fillColor(GRAY).fontSize(8).font('Helvetica')
+              .text(pieT, 40, AH - 52, { width: AW - 80 });
+          } catch { /* una figura rota no puede costar el informe */ }
+
           doc.addPage();
           doc.page.margins.bottom = 0;
           y = 60;

@@ -225,6 +225,18 @@ export function elegirPerfilTermopanel(perfiles, glassLabel = '') {
   return generico;
 }
 
+/** El detalle de UN perfil: trae `resultados_aprobados`, que el indice no incluye. */
+async function pedirDetallePerfil(perfil, { fetchFn = globalThis.fetch, timeoutMs = null, log = console.warn } = {}) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs || TIMEOUT_MS());
+  try {
+    const r = await fetchFn(`${BASE_URL()}/api/v1/laminas/${encodeURIComponent(perfil)}`,
+      { signal: ctrl.signal, headers: cabeceras() });
+    if (!r || r.ok === false) return null;
+    return await r.json();
+  } catch { return null; } finally { clearTimeout(t); }
+}
+
 export async function laminaTermopanel(opts = {}) {
   const { log = console.warn, glassLabel = '' } = opts;
   const perfiles = await perfilesConLaminas(opts);
@@ -235,12 +247,27 @@ export async function laminaTermopanel(opts = {}) {
   }
   const laminas = await descargarLaminas(meta.perfil, { ...opts, ids: ['01'] });
   if (!laminas.length) { log('[laminasThermal] el perfil del termopanel existe pero su lamina no bajo'); return null; }
+
+  // [2026-08-24] LOS NUMEROS, APARTE DE LA IMAGEN. El dueño: *"cuando un cliente usa celular
+  // normalmente no podra verlo, se le comenzara a dar vuelta"*. Una figura apaisada en un
+  // telefono es ilegible por mas vueltas que le de. La solucion no es pelear con la imagen:
+  // es que los VALORES viajen como datos y el PDF los dibuje como texto de verdad, a tamaño
+  // completo y en vertical. La figura queda como respaldo visual, no como unica fuente.
+  // ⛔ Y esto es ademas la forma CORRECTA segun el contrato: los numeros salen del endpoint
+  // (calculo), NUNCA de leer la figura.
+  let resultados = null;
+  try {
+    const det = await pedirDetallePerfil(meta.perfil, opts);
+    resultados = det?.resultados_aprobados || null;
+  } catch { /* la figura sola tambien sirve */ }
+
   return {
     perfil: meta.perfil,
     nombre: meta.nombre_comercial || meta.perfil,
     aprobadoPor: meta.aprobado_por || '',
     fecha: meta.fecha_aprobacion || '',
     lamina: laminas[0],
+    resultados,
   };
 }
 
