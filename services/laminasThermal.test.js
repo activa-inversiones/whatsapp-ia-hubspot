@@ -106,6 +106,37 @@ test('🔒 respeta el techo de bytes y CORTA, no manda un adjunto gigante', asyn
 
 // ── La API key (mismo criterio que informeTermico) ────────────────────────────────────
 
+test('🔴 [Codex] el techo se mira ANTES de bajar el PNG, no despues', async () => {
+  // Hallazgo de Codex en la compuerta: el tope de bytes se controlaba DESPUES de
+  // materializar la respuesta entera con arrayBuffer(). O sea, protegia el tamaño del PDF
+  // pero NO la memoria: una lamina gigante se bajaba completa y recien ahi se descartaba.
+  // Ahora, si el servidor declara Content-Length y no entra, ni se descarga.
+  let bajadas = 0;
+  const grande = pngFalso(100, 50, 900_000);
+  const f = async () => ({
+    ok: true, status: 200,
+    headers: { get: (k) => (k.toLowerCase() === 'content-length' ? String(grande.length) : null) },
+    arrayBuffer: async () => { bajadas++; return grande.buffer.slice(grande.byteOffset, grande.byteOffset + grande.length); },
+  });
+  const avisos = [];
+  const r = await descargarLaminas('S60_proyectante', {
+    ids: ['10'], fetchFn: f, maxBytes: 100_000, log: (m) => avisos.push(m),
+  });
+  assert.deepEqual(r, []);
+  assert.equal(bajadas, 0, 'no se baja a memoria algo que ya sabemos que no entra');
+  assert.ok(avisos.some((a) => /techo/i.test(a)));
+});
+
+test('sin Content-Length el techo igual se aplica despues de bajar (red de seguridad)', async () => {
+  const grande = pngFalso(100, 50, 900_000);
+  const f = async () => ({
+    ok: true, status: 200, headers: { get: () => null },
+    arrayBuffer: async () => grande.buffer.slice(grande.byteOffset, grande.byteOffset + grande.length),
+  });
+  const r = await descargarLaminas('S60_proyectante', { ids: ['10'], fetchFn: f, maxBytes: 100_000, log: callado });
+  assert.deepEqual(r, [], 'el control post-descarga sigue existiendo');
+});
+
 test('🔑 manda X-API-Key en la lista y en cada descarga', async () => {
   const previo = process.env.THERMAL_API_KEY;
   process.env.THERMAL_API_KEY = 'clave-prueba';

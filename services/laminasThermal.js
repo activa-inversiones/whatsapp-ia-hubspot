@@ -109,6 +109,17 @@ export async function descargarLaminas(perfil, {
         { signal: ctrl.signal, headers: cabeceras() });
       if (!r || r.ok === false) { log(`[laminasThermal] lámina ${id}: HTTP ${r?.status} — se omite`); continue; }
 
+      // 🔴 [hallazgo de Codex, 24-ago] EL TECHO SE MIRA ANTES DE BAJAR, cuando se puede.
+      // Antes el control estaba solo DESPUES de `arrayBuffer()`, o sea protegia el tamaño
+      // del PDF pero NO la memoria: una lámina gigante se materializaba entera y recién ahí
+      // se descartaba. Si el servidor declara `Content-Length` y no entra, ni se descarga.
+      const declarado = Number(r.headers?.get?.('content-length'));
+      if (Number.isFinite(declarado) && declarado > 0 && total + declarado > tope) {
+        log(`[laminasThermal] techo de ${Math.round(tope / 1024)} KB alcanzado: la lámina ${id} `
+          + `(${Math.round(declarado / 1024)} KB declarados) y las siguientes no van`);
+        break;
+      }
+
       const ab = await r.arrayBuffer();
       const png = Buffer.from(ab);
       // Se comprueba la FIRMA del PNG. Si THERMAL devolviera un JSON de error con 200,
