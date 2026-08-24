@@ -33,10 +33,20 @@ const PIES_LAMINA = Object.freeze({
       + 'transición es gradual y no hay un salto brusco hacia el interior.',
   '02': 'El mismo corte, visto en horizontal. Sirve para ver el encuentro entre la hoja y el marco, que '
       + 'es donde una ventana mal resuelta pierde más calor.',
+  // [P1 · Gemini] Se corrigieron DOS cosas de este pie, y las dos importan porque el
+  // documento va firmado por un evaluador acreditado:
+  //   · "el aluminio conduce el frío" es físicamente incorrecto — lo que pasa es que deja
+  //     ESCAPAR el calor. En un informe técnico esa frase sola le baja la credibilidad.
+  //   · "es la diferencia entre un termopanel que amanece empañado y uno que no" es una
+  //     promesa ABSOLUTA. La condensación depende también de la humedad interior y de la
+  //     ventilación de la casa: con una estufa a gas y sin ventilar, condensa igual.
+  //     Prometerlo en un documento firmado es regalarle al cliente el respaldo para un
+  //     reclamo de garantía. Se mantiene la fuerza comercial, se saca la garantía implícita.
   '10': 'ESTA es la que conviene mirar dos veces: el mismo perfil con separador de ALUMINIO (izquierda) y '
-      + 'con separador WARM-EDGE (derecha). El aluminio conduce el frío por el borde del vidrio y por eso '
-      + 'aparece la franja fría pegada al canto; el warm-edge la corta. Es la diferencia entre un termopanel '
-      + 'que amanece con los bordes empañados y uno que no.',
+      + 'con separador WARM-EDGE (derecha). El aluminio actúa como puente térmico y deja escapar el calor '
+      + 'por el borde del vidrio: por eso aparece la franja fría pegada al canto. El warm-edge corta esa '
+      + 'fuga y mantiene el borde más templado, que es el factor que más pesa para que el termopanel no '
+      + 'concentre humedad en los cantos las mañanas frías.',
 });
 
 /** Ancho y alto de un PNG leyendo su cabecera IHDR. null si no es un PNG. */
@@ -377,21 +387,38 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       // Sacar cualquiera de las dos cosas convierte un argumento técnico en una promesa
       // falsa, y es exactamente lo que la regla anti-alucinación del proyecto prohíbe.
       const figuras = Array.isArray(laminas?.laminas) ? laminas.laminas.filter((l) => l && l.png) : [];
-      if (figuras.length) {
+      // 🔴 [P0 · hallazgo de Gemini, 24-ago] EL NOMBRE DEL PERFIL ES CONDICIÓN, NO ADORNO.
+      // Antes el bloque se dibujaba con `if (figuras.length)` y la advertencia colgaba de un
+      // `if (laminas?.nombre)` aparte: si THERMAL devolvía un perfil con los nombres vacíos,
+      // las isotermas salían SIN ROTULAR dentro de un informe firmado por un evaluador
+      // acreditado MINVU. Tres cortes térmicos a color y ni una línea que los relativice ⇒
+      // el cliente asume que le simularon SU ventana.
+      // Se prefiere un informe SIN figuras a un informe con figuras que induzcan a error:
+      // si no podemos decir QUÉ estamos mostrando, no se muestra.
+      if (figuras.length && laminas?.nombre) {
         const nSec = lista.length ? '5' : '4';
         seccion(`${nSec} · CÓMO SE COMPORTA EL PERFIL POR DENTRO`);
         parrafo('Estas figuras salen del cálculo por elementos finitos del perfil: cada línea une los '
           + 'puntos que están a la misma temperatura. Donde las líneas se juntan, el calor escapa más '
           + 'rápido; donde se separan, el perfil aísla.');
-        if (laminas?.nombre) {
-          doc.fillColor(GRAY).fontSize(8).font('Helvetica')
-            .text(`Corte del sistema ${laminas.nombre}`
-              + `${laminas.aprobadoPor ? ` · modelo aprobado por ${laminas.aprobadoPor}` : ''}`
-              + `${laminas.fecha ? ` (${laminas.fecha})` : ''}`
-              + '. Figuras ILUSTRATIVAS del sistema, no una simulación de su ventana en particular: '
-              + 'los valores declarables (Uw) salen del cálculo normativo, no de leer un color en la figura.',
-              50, y, { width: W - 100 });
-          y += doc.heightOfString(' ', { width: W - 100 }) + 26;
+        {
+          // [P1 · Gemini] SE DICE QUÉ TIPO DE VENTANA ES LA DE LA FIGURA.
+          // Hoy THERMAL publica láminas de UN solo sistema (S60 proyectante) y el producto
+          // más vendido es la corredera. Decir solo "figura ilustrativa" no alcanza: el
+          // cliente que cotizó una corredera necesita saber que el corte que está viendo
+          // no es el de su tipo de ventana. Se declara el hecho —qué sistema se ilustra—
+          // sin afirmar nada comparativo sobre el rendimiento de un tipo frente al otro,
+          // porque eso no lo respalda esta figura.
+          const aviso = `Corte del sistema ${laminas.nombre}`
+            + `${laminas.aprobadoPor ? ` · modelo aprobado por ${laminas.aprobadoPor}` : ''}`
+            + `${laminas.fecha ? ` (${laminas.fecha})` : ''}. `
+            + 'Figuras ILUSTRATIVAS de cómo se comporta el PVC con termopanel: corresponden al sistema '
+            + 'indicado y NO son la simulación de su ventana en particular. Si su cotización incluye otro '
+            + 'tipo de apertura —por ejemplo corredera— el perfil de su ventana no es el de estas figuras. '
+            + 'Los valores declarables (Uw) de su proyecto salen del cálculo normativo, no de leer un '
+            + 'color en la figura.';
+          doc.fillColor(GRAY).fontSize(8).font('Helvetica').text(aviso, 50, y, { width: W - 100 });
+          y += doc.heightOfString(aviso, { width: W - 100, fontSize: 8 }) + 18;
         }
 
         for (const f of figuras) {

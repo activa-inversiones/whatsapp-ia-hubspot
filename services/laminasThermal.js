@@ -38,8 +38,19 @@ const BASE_URL = () =>
 const TIMEOUT_MS = () => Number(process.env.THERMAL_LAMINA_TIMEOUT_MS || 12000);
 /** Techo total: el PDF viaja por WhatsApp y no queremos un adjunto que nadie abra. */
 const MAX_BYTES = () => Number(process.env.THERMAL_LAMINAS_MAX_BYTES || 2_500_000);
-/** Cuáles y en qué orden. La 10 primero: es la que mejor vende. */
-export const IDS_POR_DEFECTO = ['10', '01', '02'];
+/**
+ * Cuáles y en qué orden. La 10 primero: es la que mejor vende, y quien abandona el PDF a
+ * la mitad igual la vio.
+ *
+ * [P2 · Gemini, 24-ago] Propuso bajar a dos ('10','01') porque 6 páginas cansarían al
+ * cliente. NO se aplicó: el dueño ya decidió lo contrario, textual — *"entregale el informe
+ * real, no importa que sean varias hojas"* y *"pensé que tendría gráficas para que se vea
+ * impresionante"*. Una recomendación de un revisor no pisa una decisión del dueño.
+ * Pero SÍ se hizo configurable: si mañana cambia de opinión, se ajusta con una variable de
+ * entorno y sin deployar.
+ */
+export const IDS_POR_DEFECTO = (process.env.THERMAL_LAMINAS_IDS || '10,01,02')
+  .split(',').map((s) => s.trim()).filter(Boolean);
 
 function cabeceras() {
   const h = {};
