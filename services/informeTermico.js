@@ -93,7 +93,9 @@ export function normalizarComuna(comuna) {
  * Pide el informe térmico de una comuna. NUNCA lanza: o devuelve datos o null.
  * @returns {Promise<object|null>}
  */
-export async function pedirInformeComuna(comuna, { fetchFn = globalThis.fetch, timeoutMs = TIMEOUT_MS, baseUrl = null } = {}) {
+export async function pedirInformeComuna(comuna, {
+  fetchFn = globalThis.fetch, timeoutMs = TIMEOUT_MS, baseUrl = null, log = console.warn,
+} = {}) {
   const norm = normalizarComuna(comuna);
   if (!norm) return null;
 
@@ -101,13 +103,41 @@ export async function pedirInformeComuna(comuna, { fetchFn = globalThis.fetch, t
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const url = `${baseUrl || BASE_URL()}/api/v1/exigencia?comuna=${encodeURIComponent(norm)}`;
-    const r = await fetchFn(url, { signal: ctrl.signal });
-    if (!r || r.ok === false) return null;          // 404 = comuna fuera del registro: sin informe
+    // [2026-08-24 · tablero #383] Se manda la key SIEMPRE que exista, aunque HOY no se valide.
+    // Medido el 24-ago contra la URL publica de THERMAL: las rutas que su contrato declara
+    // "anillo 1, la key sigue siendo obligatoria" devuelven 200 sin ningun header, y 200
+    // con una key inventada ⇒ no la mira. Eso lo decide el dueño de THERMAL, no nosotros.
+    // Lo que SI es nuestro problema: el dia que la validacion se active, todo lo que llame
+    // sin key pasa a 401 de golpe. Mandarla ahora es gratis y evita ese apagon.
+    const headers = {};
+    if (process.env.THERMAL_API_KEY) headers['X-API-Key'] = process.env.THERMAL_API_KEY;
+
+    const r = await fetchFn(url, { signal: ctrl.signal, headers });
+    if (!r || r.ok === false) {
+      // 🔴 401/403 NO es "comuna desconocida": es que THERMAL empezo a exigir la key.
+      // Sin este aviso el sintoma seria "el informe dejo de salir" sin ninguna pista, y
+      // eso es el modo de falla mas caro de diagnosticar (ver hotLeadNotifier / costGuard).
+      if (r && (r.status === 401 || r.status === 403)) {
+        log(`[informeTermico] 🔴 THERMAL respondio ${r.status}: LA API KEY EMPEZO A VALIDARSE. ` +
+            `Hay que poner THERMAL_API_KEY (la emite el dueño con tools/emitir_key_oliver.py). ` +
+            `Mientras tanto NO se manda ningun informe termico.`);
+      } else if (r && r.status !== 404) {
+        // 404 = comuna fuera del registro oficial: caso NORMAL y esperado (el llamador cae
+        // a Temuco como referencia regional). Cualquier otro codigo si es una anomalia.
+        log(`[informeTermico] THERMAL respondio ${r.status} para "${norm}" — sin informe`);
+      }
+      return null;
+    }
     const j = await r.json();
     return j && j.comuna ? j : null;
-  } catch {
+  } catch (e) {
     // Filosofía anti-alucinación del proyecto: si no hay dato verificado, no hay informe.
     // Jamás se rellena con un número inventado — es una cita normativa, no una estimación.
+    // Pero AHORA se dice en voz alta: devolver null en silencio es lo que convierte
+    // "THERMAL esta caido" en "el informe dejo de salir y nadie sabe por que" (tablero #384).
+    const motivo = e?.name === 'AbortError' ? `timeout de ${timeoutMs} ms` : (e?.message || 'error de red');
+    log(`[informeTermico] no se pudo consultar THERMAL (${motivo}) — el cliente NO recibe informe, ` +
+        `la cotizacion sigue normal`);
     return null;
   } finally {
     clearTimeout(timer);
