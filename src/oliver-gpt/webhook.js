@@ -46,6 +46,7 @@ import { leer as leerEstado, escribir as escribirEstado } from '../../services/e
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS } from '../../services/informeTermico.js';
 import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
+import { laminasParaInforme } from '../../services/laminasThermal.js';   // [2026-08-24] isotermas del FEM
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import {
@@ -1026,8 +1027,16 @@ export async function handleWebhook(req, res, deps = {}) {
             if (rv.ok) vidrios = (await rv.json())?.vidrios || null;
           } catch { /* opcional */ }
 
+          // [2026-08-24] LAS ISOTERMAS DEL FEM. Pedido del dueño: *"tan pequeño sabiendo que
+          // puedes pasarle el FEM al termopanel para ver la isoterma"*. THERMAL ya tenia las
+          // figuras del corte real (isotermas cada 1 grado) aprobadas y firmadas, y no se
+          // estaban usando. Tampoco es obligatorio: si THERMAL no contesta, van [] y el
+          // informe sale sin figuras. Dos niveles de degradacion y ninguno rompe la venta.
+          let laminas = null;
+          try { laminas = await laminasParaInforme(); } catch { /* opcional */ }
+
           const pdfBuf = await generarInformeTermicoPdf(datos, {
-            nombre: state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios,
+            nombre: state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios, laminas,
             // Lo que hace que el informe sea de SU proyecto y no un catalogo.
             suVidrio: glassLabel, suUw: uw, suProducto: producto,
           });

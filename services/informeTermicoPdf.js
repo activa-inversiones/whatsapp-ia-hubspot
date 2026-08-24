@@ -19,7 +19,34 @@
 // principio y los saltos son explícitos. No repetir ese bug.
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
+
+/**
+ * El pie de cada lámina, EN CASTELLANO DE CLIENTE. THERMAL trae una descripción técnica
+ * ("Corte vertical: isotermas cada 1 grado C y elementos que ve el solver") que le sirve a
+ * un ingeniero y no le dice nada a quien está comprando ventanas. Acá se explica QUÉ MIRAR
+ * y POR QUÉ IMPORTA — sin agregar ni un dato que la figura no respalde.
+ */
+const PIES_LAMINA = Object.freeze({
+  '01': 'Corte vertical del marco y el termopanel. El rojo es el lado de adentro (calefaccionado) y el '
+      + 'azul el de afuera. Las cámaras de aire del PVC son las que frenan el paso del frío: por eso la '
+      + 'transición es gradual y no hay un salto brusco hacia el interior.',
+  '02': 'El mismo corte, visto en horizontal. Sirve para ver el encuentro entre la hoja y el marco, que '
+      + 'es donde una ventana mal resuelta pierde más calor.',
+  '10': 'ESTA es la que conviene mirar dos veces: el mismo perfil con separador de ALUMINIO (izquierda) y '
+      + 'con separador WARM-EDGE (derecha). El aluminio conduce el frío por el borde del vidrio y por eso '
+      + 'aparece la franja fría pegada al canto; el warm-edge la corta. Es la diferencia entre un termopanel '
+      + 'que amanece con los bordes empañados y uno que no.',
+});
+
+/** Ancho y alto de un PNG leyendo su cabecera IHDR. null si no es un PNG. */
+function medirPng(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 24) return null;
+  if (buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4E || buf[3] !== 0x47) return null;
+  const ancho = buf.readUInt32BE(16);
+  const alto = buf.readUInt32BE(20);
+  return ancho > 0 && alto > 0 ? { ancho, alto } : null;
+}
 
 const NAVY = '#0B3D6F';
 const GOLD = '#C4993B';
@@ -35,7 +62,7 @@ const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
  * @param {object} opts        { nombre, firma, esReferenciaRegional }
  * @returns {Promise<Buffer|null>}  null si no hay un solo dato duro que reportar
  */
-export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {}, esReferenciaRegional = false, vidrios = null, suVidrio = '', suUw = null, suProducto = '' } = {}) {
+export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {}, esReferenciaRegional = false, vidrios = null, suVidrio = '', suUw = null, suProducto = '', laminas = null } = {}) {
   if (!datos || !datos.comuna) return null;
 
   const cond = datos.condensacion;
@@ -333,6 +360,61 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         + 'umbrales, incluso en las noches más frías. Un perfil de aluminio sin rotura de puente térmico, '
         + 'o un vidrio simple, no lo consigue: por eso amanecen mojados. En la propuesta que recibirá a '
         + 'continuación se indica la transmitancia (Uw) calculada para sus ventanas y si cumple.');
+
+      // ── 5. ISOTERMAS DEL CORTE REAL (FEM de ACTIVA THERMAL) ─────────────
+      //
+      // [2026-08-24] Pedido del dueño: *"tan pequeño sabiendo que puedes pasarle el FEM al
+      // termopanel para ver la isoterma"*. El informe pesaba 9 KB mientras THERMAL ya tenía
+      // 7 figuras del corte real con las isotermas cada 1 °C, aprobadas y firmadas.
+      //
+      // 🔴 CÓMO SE ROTULAN, Y POR QUÉ NO ES NEGOCIABLE. Cada PNG viaja con la cabecera
+      // `X-No-Declarable: true` y THERMAL lo dice en su propia respuesta: *"figuras
+      // ilustrativas; los valores declarables salen del cálculo"*. Entonces:
+      //   · se nombra EL PERFIL que se está mostrando (hoy el único con láminas es el
+      //     S60 proyectante) — dejar que el cliente asuma que es SU ventana sería
+      //     afirmarle algo que el proveedor no respalda;
+      //   · se dice explícitamente que el número sale del cálculo, no de mirar la figura.
+      // Sacar cualquiera de las dos cosas convierte un argumento técnico en una promesa
+      // falsa, y es exactamente lo que la regla anti-alucinación del proyecto prohíbe.
+      const figuras = Array.isArray(laminas?.laminas) ? laminas.laminas.filter((l) => l && l.png) : [];
+      if (figuras.length) {
+        const nSec = lista.length ? '5' : '4';
+        seccion(`${nSec} · CÓMO SE COMPORTA EL PERFIL POR DENTRO`);
+        parrafo('Estas figuras salen del cálculo por elementos finitos del perfil: cada línea une los '
+          + 'puntos que están a la misma temperatura. Donde las líneas se juntan, el calor escapa más '
+          + 'rápido; donde se separan, el perfil aísla.');
+        if (laminas?.nombre) {
+          doc.fillColor(GRAY).fontSize(8).font('Helvetica')
+            .text(`Corte del sistema ${laminas.nombre}`
+              + `${laminas.aprobadoPor ? ` · modelo aprobado por ${laminas.aprobadoPor}` : ''}`
+              + `${laminas.fecha ? ` (${laminas.fecha})` : ''}`
+              + '. Figuras ILUSTRATIVAS del sistema, no una simulación de su ventana en particular: '
+              + 'los valores declarables (Uw) salen del cálculo normativo, no de leer un color en la figura.',
+              50, y, { width: W - 100 });
+          y += doc.heightOfString(' ', { width: W - 100 }) + 26;
+        }
+
+        for (const f of figuras) {
+          const pie = PIES_LAMINA[f.id] || '';
+          // Se mide la imagen para reservar el alto EXACTO antes de decidir el salto de
+          // página: la paginación automática está apagada a propósito en este documento.
+          const dim = medirPng(f.png);
+          const anchoUtil = W - 100;
+          const alto = dim ? Math.min(Math.round(anchoUtil * (dim.alto / dim.ancho)), 430) : 300;
+          saltoSiNoCabe(alto + (pie ? 40 : 16));
+          try {
+            doc.image(f.png, 50, y, { fit: [anchoUtil, alto], align: 'center' });
+          } catch {
+            // Una figura que no se puede dibujar NO puede costarle el informe al cliente.
+            continue;
+          }
+          y += alto + 8;
+          if (pie) {
+            doc.fillColor(GRAY).fontSize(8).font('Helvetica').text(pie, 50, y, { width: anchoUtil });
+            y += doc.heightOfString(pie, { width: anchoUtil }) + 14;
+          }
+        }
+      }
 
       // ── ALCANCE ─────────────────────────────────────────────────────────
       // Decir QUE NO cubre el informe es lo que lo vuelve creible. Un documento que promete
