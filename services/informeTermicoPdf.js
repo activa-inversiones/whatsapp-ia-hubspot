@@ -28,6 +28,26 @@ export const VERSION = '1.1.0';
  * y POR QUÉ IMPORTA — sin agregar ni un dato que la figura no respalde.
  */
 const PIES_LAMINA = Object.freeze({
+  // ── LOS NUDOS CON PANEL: lo que el dueño pidió ver ───────────────────────────────────
+  // [2026-08-24] Textual: *"sería mejor presentarlos por separador superior e inferior con
+  // panel, mejor para que se vean las isotermas, porque a esta le falta todo"*, sobre los
+  // cortes completos (01 y 02). Tenía razón en el uso que les estábamos dando: un corte
+  // entero a escala chica no deja ver el borde, que es justo donde pasa lo que importa.
+  // Los nudos 03/04 son los que traen el termopanel extendido 190 mm —la sustitución por
+  // panel que exige la norma— y ahí las isotermas del borde se leen de verdad.
+  '04': 'Nudo SUPERIOR: el encuentro entre el marco de arriba y el termopanel, con el panel extendido '
+      + '190 mm como exige el método normativo. Cada línea une los puntos que están a la misma '
+      + 'temperatura. Mientras las líneas se mantengan separadas y lejos de la cara interior, el calor '
+      + 'no está encontrando un camino fácil para salir.',
+  '03': 'Nudo INFERIOR, el mismo encuentro abajo. Es el punto más exigido de la ventana: el aire frío se '
+      + 'acumula en la parte baja del vidrio y por eso, si algo se va a empañar, empieza por ahí. Acá se '
+      + 've cuánto alcanza a subir el frío desde el borde.',
+  '07': 'El MISMO nudo inferior, resuelto con separador de ALUMINIO. El aluminio conduce muchísimo '
+      + '(λ 160 frente a 0,135 del warm-edge): mire cómo las líneas frías trepan pegadas al canto del '
+      + 'vidrio. Es el caso desfavorable, y es el que traen la mayoría de los termopaneles del mercado.',
+  '08': 'El mismo nudo con separador WARM-EDGE. Comparándolo con la figura anterior se ve la diferencia '
+      + 'sin necesidad de leer un número: las líneas frías se retiran del canto. Esa distancia es todo lo '
+      + 'que separa un borde que aguanta de uno que no.',
   '01': 'Corte vertical del marco y el termopanel. El rojo es el lado de adentro (calefaccionado) y el '
       + 'azul el de afuera. Las cámaras de aire del PVC son las que frenan el paso del frío: por eso la '
       + 'transición es gradual y no hay un salto brusco hacia el interior.',

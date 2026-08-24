@@ -7,10 +7,23 @@
 // del corte real del perfil, con las isotermas cada 1 °C, aprobadas y firmadas el 19-ago.
 // Eran el mejor argumento de venta que teníamos y no se estaba usando.
 //
-// ─── LAS TRES QUE VENDEN (marcadas `destacada: true` por THERMAL) ──────────────────────
-//   01 · Corte VERTICAL: isotermas cada 1 °C y los elementos que ve el solver
-//   02 · Corte HORIZONTAL: idem
-//   10 · ALUMINIO vs WARM-EDGE superpuestas — justifica sola el separador mejor
+// ─── CUÁLES SE MANDAN, Y POR QUÉ CAMBIARON (2026-08-24) ────────────────────────────────
+// Arrancó con las tres que THERMAL marca `destacada` (01 corte vertical, 02 horizontal,
+// 10 comparativa). El dueño —que es el evaluador que firma el informe— las bajó:
+//     "sería mejor presentarlos por separador superior e inferior con panel, mejor para que
+//      se vean las isotermas, porque a esta le falta todo"
+// y enumeró lo que echaba de menos en el corte completo: calzo, puente de acristalamiento,
+// el cierre del termopanel, las cotas b1/b2, los 190 mm de panel que exige la norma, y que
+// la cavidad se resuelva por radiosidad con sus Rsi/Rse y emisividades (0,9 en general;
+// ~0,3 en el acero galvanizado). Eso es MODELO DE THERMAL y no se toca desde acá: quedó
+// como pedido formal en el tablero (#393).
+// Lo que SÍ es nuestro: dejar de mandar en un documento firmado una figura que su propio
+// autor considera incompleta. Por eso el set por defecto pasó a los NUDOS:
+//     04 · nudo SUPERIOR con termopanel extendido 190 mm
+//     03 · nudo INFERIOR con termopanel extendido 190 mm   <- el punto más exigido
+//     07 · nudo inferior con separador de ALUMINIO  (lambda 160)     — caso desfavorable
+//     08 · nudo inferior con separador WARM-EDGE    (lambda 0,135)   — caso mejorado
+// 07 y 08 juntas dicen lo mismo que la 10, pero SOBRE EL NUDO, que es donde se ve.
 //
 // ─── 🔴 LO QUE NUNCA HAY QUE HACER CON ESTAS IMÁGENES ──────────────────────────────────
 // Cada PNG viaja con la cabecera `X-No-Declarable: true` y THERMAL lo dice en su propia
@@ -39,8 +52,9 @@ const TIMEOUT_MS = () => Number(process.env.THERMAL_LAMINA_TIMEOUT_MS || 12000);
 /** Techo total: el PDF viaja por WhatsApp y no queremos un adjunto que nadie abra. */
 const MAX_BYTES = () => Number(process.env.THERMAL_LAMINAS_MAX_BYTES || 2_500_000);
 /**
- * Cuáles y en qué orden. La 10 primero: es la que mejor vende, y quien abandona el PDF a
- * la mitad igual la vio.
+ * Cuáles y en qué orden. Ver el bloque de la cabecera: son los NUDOS con panel, no los
+ * cortes completos. El orden cuenta una historia — arriba, abajo, y después el mismo nudo
+ * de abajo con un separador y con el otro, que es la comparación que vende.
  *
  * [P2 · Gemini, 24-ago] Propuso bajar a dos ('10','01') porque 6 páginas cansarían al
  * cliente. NO se aplicó: el dueño ya decidió lo contrario, textual — *"entregale el informe
@@ -49,7 +63,7 @@ const MAX_BYTES = () => Number(process.env.THERMAL_LAMINAS_MAX_BYTES || 2_500_00
  * Pero SÍ se hizo configurable: si mañana cambia de opinión, se ajusta con una variable de
  * entorno y sin deployar.
  */
-export const IDS_POR_DEFECTO = (process.env.THERMAL_LAMINAS_IDS || '10,01,02')
+export const IDS_POR_DEFECTO = (process.env.THERMAL_LAMINAS_IDS || '04,03,07,08')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
 function cabeceras() {
