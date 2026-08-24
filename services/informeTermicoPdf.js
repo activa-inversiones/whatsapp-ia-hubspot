@@ -42,7 +42,8 @@ const PIES_LAMINA = Object.freeze({
   '03': 'Nudo INFERIOR, el mismo encuentro abajo. Es el punto más exigido de la ventana: el aire frío se '
       + 'acumula en la parte baja del vidrio y por eso, si algo se va a empañar, empieza por ahí. Acá se '
       + 've cuánto alcanza a subir el frío desde el borde.',
-  '07': 'El MISMO nudo inferior, resuelto con separador de ALUMINIO. El aluminio conduce muchísimo '
+  '07': 'Nudo inferior de la ventana —el punto más exigido: el aire frío se acumula abajo y, si algo se '
+      + 'va a empañar, empieza por ahí— resuelto con separador de ALUMINIO. El aluminio conduce muchísimo '
       + '(λ 160 frente a 0,135 del warm-edge): mire cómo las líneas frías trepan pegadas al canto del '
       + 'vidrio. Es el caso desfavorable, y es el que traen la mayoría de los termopaneles del mercado.',
   '08': 'El mismo nudo con separador WARM-EDGE. Comparándolo con la figura anterior se ve la diferencia '

@@ -161,15 +161,17 @@ test('🔴 un 401 al listar GRITA que falta la key', async () => {
 
 // ── El orden importa: la que vende va primera ─────────────────────────────────────────
 
-test('🔥 el set por defecto son los NUDOS con panel, no los cortes completos', async () => {
-  // El dueno bajo los cortes completos (01/02): "a esta le falta todo... seria mejor
-  // presentarlos por separador superior e inferior con panel". Los nudos 03/04 son los que
-  // traen el termopanel extendido 190 mm, y 07/08 comparan los dos separadores SOBRE el
-  // nudo, que es donde se ve. No se vuelve a los cortes completos sin que el autor de las
-  // laminas los de por buenos.
-  assert.deepEqual(IDS_POR_DEFECTO, ['04', '03', '07', '08']);
-  assert.ok(!IDS_POR_DEFECTO.includes('01') && !IDS_POR_DEFECTO.includes('02'),
-    'los cortes completos quedaron fuera por decision del evaluador que firma');
+test('🔥 el set por defecto es SOLO la comparacion aluminio vs warm-edge (07 y 08)', async () => {
+  // Dos decisiones del dueno, en orden: primero bajo los cortes completos (01/02) — "a esta
+  // le falta todo" — y despues, al verificar que los nudos 03/04 tambien tienen defectos
+  // (burletes en espejo 106 vs 17 mm2, termopanel sin cerrar en la base — tablero #393b),
+  // dejo SOLO la pareja que compara separadores: "usa las graficas de thermoflex warm edge
+  // y de aluminio, solo dejar esas". No se agrega ninguna otra sin que el autor de las
+  // laminas la de por buena.
+  assert.deepEqual(IDS_POR_DEFECTO, ['07', '08']);
+  for (const id of ['01', '02', '03', '04', '10']) {
+    assert.ok(!IDS_POR_DEFECTO.includes(id), `la lamina ${id} quedo fuera por decision del evaluador que firma`);
+  }
 });
 
 test('laminasParaInforme devuelve el perfil rotulado, no solo las imágenes', async () => {
@@ -181,7 +183,7 @@ test('laminasParaInforme devuelve el perfil rotulado, no solo las imágenes', as
   assert.equal(r.nombre, 'S60 proyectante WinHouse');
   assert.equal(r.aprobadoPor, 'Marcelo Cifuentes');
   assert.equal(r.fecha, '2026-08-19');
-  assert.equal(r.laminas.length, 4, 'las 4 del set por defecto: 04, 03, 07, 08');
+  assert.equal(r.laminas.length, 2, 'las 2 del set por defecto: 07 y 08');
 });
 
 test('sin perfiles publicados devuelve vacío, sin romper', async () => {

@@ -18,12 +18,16 @@
 // ~0,3 en el acero galvanizado). Eso es MODELO DE THERMAL y no se toca desde acá: quedó
 // como pedido formal en el tablero (#393).
 // Lo que SÍ es nuestro: dejar de mandar en un documento firmado una figura que su propio
-// autor considera incompleta. Por eso el set por defecto pasó a los NUDOS:
-//     04 · nudo SUPERIOR con termopanel extendido 190 mm
-//     03 · nudo INFERIOR con termopanel extendido 190 mm   <- el punto más exigido
+// autor considera incompleta.
+// [2026-08-24, segunda pasada] El dueño verificó que los nudos 03/04 TAMBIÉN tienen defectos
+// (burletes en espejo: 106 mm² de EPDM en el superior vs 17 mm² en el inferior; termopanel
+// sin cerrar en la base; b1/b2 — tablero #393b) y decidió, textual: *"usa las graficas de
+// thermoflex warm edge y de aluminio, solo dejar esas"*. El set queda en LA COMPARACIÓN:
 //     07 · nudo inferior con separador de ALUMINIO  (lambda 160)     — caso desfavorable
 //     08 · nudo inferior con separador WARM-EDGE    (lambda 0,135)   — caso mejorado
-// 07 y 08 juntas dicen lo mismo que la 10, pero SOBRE EL NUDO, que es donde se ve.
+// Es la pareja que vende: el mismo nudo dos veces, y la diferencia se ve sin leer números.
+// (Comparten la base del nudo inferior, así que arrastran sus defectos de modelado — el
+// dueño lo sabe y las eligió igual; la corrección del modelo va por el repo de THERMAL.)
 //
 // ─── 🔴 LO QUE NUNCA HAY QUE HACER CON ESTAS IMÁGENES ──────────────────────────────────
 // Cada PNG viaja con la cabecera `X-No-Declarable: true` y THERMAL lo dice en su propia
@@ -63,7 +67,7 @@ const MAX_BYTES = () => Number(process.env.THERMAL_LAMINAS_MAX_BYTES || 2_500_00
  * Pero SÍ se hizo configurable: si mañana cambia de opinión, se ajusta con una variable de
  * entorno y sin deployar.
  */
-export const IDS_POR_DEFECTO = (process.env.THERMAL_LAMINAS_IDS || '04,03,07,08')
+export const IDS_POR_DEFECTO = (process.env.THERMAL_LAMINAS_IDS || '07,08')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
 function cabeceras() {
