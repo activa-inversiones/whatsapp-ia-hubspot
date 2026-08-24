@@ -154,25 +154,6 @@ export function liberarReserva(clave, token) {
   return true;
 }
 
-/**
- * LEER-CALCULAR-ESCRIBIR ATOMICO. `calcular(valorActual)` devuelve `{ valor, guardar }`.
- *
- * 🔴 [2026-08-24 · 2a compuerta] Misma leccion que `reservar`, en los DATOS en vez del
- * candado: acumular las ventanas de un proyecto con `await leer()` y despues
- * `escribir()` tiene la carrera de siempre. Cada `calcular_cotizacion` leia la memoria
- * antes de que las hermanas escribieran, veia vacio, y guardaba SU ventana pisando a las
- * demas — el cliente con ocho ventanas terminaba con una.
- *
- * Igual que en `reservar`: LA GARANTIA ES QUE ACA NO HAY UN SOLO `await`. `calcular` debe
- * ser sincrona; si alguien le pasa una funcion async, la atomicidad se pierde en silencio.
- */
-export function fusionar(clave, calcular, ttlSegundos = 3600) {
-  const actual = leerLocal(clave);
-  const { valor, guardar } = calcular(actual) || {};
-  if (guardar && valor !== undefined && valor !== null) escribir(clave, valor, ttlSegundos);
-  return valor === undefined ? actual : valor;
-}
-
 export function borrar(clave) {
   MEMORIA.delete(clave);
   pedir('DELETE', clave).catch(() => {});
@@ -181,4 +162,4 @@ export function borrar(clave) {
 /** Para tests. */
 export function _reset() { MEMORIA.clear(); }
 
-export default { leer, leerLocal, escribir, fusionar, reservar, liberarReserva, borrar, PERSISTENCIA_ACTIVA };
+export default { leer, leerLocal, escribir, reservar, liberarReserva, borrar, PERSISTENCIA_ACTIVA };

@@ -42,7 +42,7 @@ import {
   normalizar as normalizarTel,
 } from '../../services/atribucionCotizacion.js';
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
-import { leer as leerEstado, escribir as escribirEstado, fusionar as fusionarEstado, reservar as reservarEstado, liberarReserva } from '../../services/estadoPersistente.js';
+import { leer as leerEstado, escribir as escribirEstado, reservar as reservarEstado, liberarReserva } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS, datosDelInforme } from '../../services/informeTermico.js';
 import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
@@ -978,26 +978,24 @@ export async function handleWebhook(req, res, deps = {}) {
       return; // el finally libera el lock
     }
 
-    // ── (6) toolCtx cableado a servicios REALES ──────────────────────────
-    const toolCtx = {
-      telefono: from,
+    // ── 🔴 [2026-08-24] EL INFORME TERMICO SE DESPACHA AL FINAL DEL TURNO ──────────────
+    //
+    // Antes se disparaba DENTRO de `calcular_cotizacion`. Como esa tool cotiza UNA partida
+    // por llamada, un proyecto de ocho ventanas son ocho disparos, y habia que reconstruir
+    // el proyecto desde N invocaciones sueltas con memoria compartida entre ellas. Toda la
+    // maquinaria que eso exigia —candado corto, fusion atomica del estado, sello de tanda,
+    // barrera de estabilizacion por tiempo— existia SOLO para compensar el lugar del
+    // disparo, y cada arreglo destapaba una carrera nueva en otro lado: cuatro pasadas de
+    // compuerta cruzada, cuatro veredictos NO APTO, siempre por lo mismo.
+    //
+    // El turno es secuencial y termina en un instante conocido. Acumulando en memoria del
+    // turno y despachando UNA vez al final, las carreras no se mitigan: DEJAN DE EXISTIR.
+    // No hay dos ejecuciones que coordinar, no hay que adivinar cuantos segundos esperar a
+    // que "deje de crecer", y una tool lenta no puede quedarse afuera porque el turno
+    // espera a sus propias tools.
+    const informeDelTurno = { pedido: false, comuna: '', glassLabel: '', uw: null, producto: '', ventanas: [] };
 
-      // ── [2026-08-21] INFORME TÉRMICO ANTES DE LA COTIZACIÓN ──────────────────
-      // Idea del dueño: mandarle al cliente el dato normativo de su comuna JUSTO
-      // cuando Oliver empieza a calcular, "para que lo lea mientras le decimos
-      // preparamos la propuesta". Cuando el precio llega, ya no llega solo.
-      //
-      // Se dispara desde calcular_cotizacion —el momento exacto en que el cliente
-      // queda esperando— y NO desde el PDF, que ya es tarde.
-      //
-      // 🔒 TRES GUARDAS, porque esto le escribe a un cliente real:
-      //   1. UNA SOLA VEZ por teléfono (candado de 30 días). Un informe repetido
-      //      deja de ser un informe y pasa a ser spam.
-      //   2. fire-and-forget: no se espera. La cotización no puede demorarse ni un
-      //      milisegundo por esto — es la regla dura del proyecto.
-      //   3. si THERMAL no responde o no hay dato verificado, NO se manda nada.
-      //      Jamás se inventa un número: son citas normativas.
-      enviarInformeTermico: (comuna, { forzar = false, glassLabel = '', uw = null, producto = '', ventanas = null } = {}) => {
+      const despacharInforme = (comuna, { forzar = false, glassLabel = '', uw = null, producto = '', ventanas = null } = {}) => {
         const clave = `informe_termico:${String(from).replace(/\D/g, '')}`;
         safe('informeTermico', async () => {
           // 🔴 [2026-08-24 · Codex, compuerta cruzada] LA MEMORIA VA ANTES QUE TODO CANDADO.
@@ -1014,21 +1012,17 @@ export async function handleWebhook(req, res, deps = {}) {
           let recordados = null;
           try { recordados = await (deps.leerEstado || leerEstado)(claveDatos); }
           catch { /* sin memoria el informe sale igual, solo sin el recuadro */ }
-          // 🔴 [2026-08-24 · 2a compuerta] LEER-CALCULAR-ESCRIBIR EN UN SOLO PASO ATOMICO.
-          // Antes eran tres pasos con `await` en medio, y tenian la misma carrera que el
-          // candado: las ocho cotizaciones de un proyecto leian la memoria antes de que
-          // ninguna escribiera, cada una se creia la unica y guardaba SU ventana pisando a
-          // las demas. El cliente terminaba con un informe de una ventana.
-          // `fusionar` no tiene ningun await adentro, asi que entre leer y escribir no se
-          // cuela nadie. `recordados` (la ida a Postgres) sirve de semilla cuando la memoria
-          // local esta vacia, que es el caso despues de un redeploy.
-          try {
-            const datosInforme = (deps.fusionarEstado || fusionarEstado)(claveDatos, (local) => {
-              const e = datosDelInforme({ glassLabel, uw, producto, ventanas }, local || recordados);
-              return { valor: e.datos, guardar: e.recordar };
-            }, 30 * 24 * 3600);
-            if (datosInforme) ({ glassLabel, uw, producto, ventanas } = datosInforme);
-          } catch { /* la memoria es un lujo; el informe no depende de ella */ }
+          // [2026-08-24] Escritura simple: el despacho ocurre UNA vez por turno, asi que
+          // no hay dos ejecuciones compitiendo por esta clave. La version anterior usaba un
+          // leer-calcular-escribir atomico (`fusionar`) porque las ocho cotizaciones de un
+          // proyecto escribian aca en paralelo y se pisaban. Ya no escriben aca.
+          const elegido = datosDelInforme({ glassLabel, uw, producto, ventanas }, recordados);
+          ({ glassLabel, uw, producto, ventanas } = elegido.datos);
+          if (elegido.recordar) {
+            try {
+              await (deps.escribirEstado || escribirEstado)(claveDatos, elegido.datos, 30 * 24 * 3600);
+            } catch { /* la memoria es un lujo; el informe no depende de ella */ }
+          }
 
           // `forzar` llega desde la tool enviar_informe_termico: si el cliente lo PIDE, se le
           // manda aunque ya lo tenga. El candado existe para no spamear, no para negarle algo
@@ -1201,49 +1195,10 @@ export async function handleWebhook(req, res, deps = {}) {
             try { if (typeof detenerPuntitos === 'function') detenerPuntitos(); } catch { /* cosmético */ }
           }
 
-          // 🔴 [2026-08-24 · Codex, 2a pasada] SE RELEEN LAS VENTANAS JUSTO ANTES DE ARMAR
-          // EL PDF, no al entrar al hook.
-          //
-          // EL PORQUE: `calcular_cotizacion` cotiza UNA partida por llamada, asi que un
-          // cliente con ocho ventanas dispara ocho veces, con ~100-300 ms entre una y otra
-          // (medido: folios 0003 y 0004). La primera llamada se lleva la reserva y arma el
-          // documento; si tomara la foto en ese instante, el informe saldria con UNA
-          // ventana y las otras siete llegarian tarde. Es el defecto original sobreviviendo
-          // al arreglo.
-          //
-          // Los dos tiempos humanos de arriba —que ya existian para que el informe no
-          // parezca un autoresponder— son la ventana de agrupacion: cuando terminan, las
-          // demas cotizaciones ya escribieron su ventana en la memoria. Un efecto util de
-          // algo que estaba puesto por otra razon, sin agregar ni un segundo de espera.
-          //
-          // 🔴 [Codex · 3a compuerta] Y SE ESPERA A QUE EL PROYECTO DEJE DE CRECER. Una sola
-          // foto no es una barrera: las tools corren SECUENCIALMENTE (agent.js) y cada
-          // cotizacion espera a la anterior, asi que la ultima partida de un proyecto largo
-          // puede terminar despues de los tiempos humanos y quedarse afuera del documento.
-          // El fake de los tests las disparaba todas de una y escondia el escenario.
-          //
-          // Se relee hasta que dos lecturas seguidas dan el mismo total: ahi el proyecto se
-          // estabilizo. Con tope, porque esto corre con el cliente esperando y un informe
-          // con una ventana de menos es mejor que un informe que no llega.
-          const ESPERA_MS = Number(process.env.INFORME_ESTABILIZAR_MS || 1500);
-          const VUELTAS = Number(process.env.INFORME_ESTABILIZAR_VUELTAS || 6);
-          // Se ESPERA PRIMERO y se lee despues: preguntar antes de darle tiempo a nadie
-          // devuelve siempre lo mismo que ya se tenia y el bucle cortaria en la vuelta uno
-          // sin haber esperado nunca. Hacen falta dos lecturas iguales seguidas para
-          // declarar estable el proyecto.
-          let estable = 0;
-          for (let vuelta = 0; vuelta < VUELTAS && estable < 2; vuelta++) {
-            await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: ESPERA_MS });
-            const antes = ventanas.length;
-            try {
-              const alDia = await (deps.leerEstado || leerEstado)(claveDatos);
-              if (Array.isArray(alDia?.ventanas) && alDia.ventanas.length > ventanas.length) {
-                ventanas = alDia.ventanas;
-              }
-            } catch { /* si la memoria falla se usa lo que ya se tenia */ }
-            estable = ventanas.length === antes ? estable + 1 : 0;
-          }
-
+          // [2026-08-24] Ya no se relee nada aca: las ventanas llegan completas desde el
+          // turno. Lo que habia antes —una barrera que esperaba a que el total "dejara de
+          // crecer"— era una forma de adivinar cuando estaban todas, y no habia numero
+          // correcto: 3 s de quietud contra una cotizacion que puede tardar 15 s.
           const pdfBuf = await (deps.generarInformeTermicoPdf || generarInformeTermicoPdf)(datos, {
             nombre: state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios, laminas, termopanel,
             numeroInforme,
@@ -1305,6 +1260,33 @@ export async function handleWebhook(req, res, deps = {}) {
             },
           }));
 
+          // 🔴 [2026-08-24] EL PDF SE ARCHIVA, COMO LA COTIZACION.
+          // Reclamo del dueño, textual: *"yo abro el sistema y deberia estar guardado...
+          // tiene que estar almacenado, al lado de la cotizacion"*. Tenia razon: del
+          // informe solo quedaba el folio y un sha256. El PDF no se guardaba en ninguna
+          // parte, asi que "¿le llego el informe?" era una pregunta que el sistema no podia
+          // responder — y por eso se volvia una discusion. Un documento firmado entregado a
+          // un cliente del que no queda copia tampoco resiste una auditoria ISO.
+          //
+          // Va DESPUES de la entrega confirmada (no se archiva lo que no salio) y en su
+          // propio `safe`: el archivo es trazabilidad NUESTRA y el informe es del cliente.
+          // Si Zoho esta caido, el cliente ya tiene su documento y eso no se toca.
+          safe('informeTermico.zoho', async () => {
+            const dealId = await upsertZohoDeal({
+              phone: from,
+              name: state.name || '',
+              comuna: datos.comuna || '',
+              stageKey: 'informe_termico',
+            });
+            if (!dealId) return;
+            await addZohoNote(dealId,
+              `Informe térmico entregado: ${numeroInforme}`,
+              `PDF enviado al cliente por WhatsApp.
+Comuna: ${datos.comuna}`
+              + `${esRef ? ' (referencia regional)' : ''}`);
+            await attachPdfToDeal(dealId, pdfBuf, nombreArchivo);
+          });
+
           // [2026-08-24] REGISTRO ISO del informe ENTREGADO — despues del envio, nunca
           // antes (misma regla que el candado: registrar algo que no salio es mentirle a
           // la auditoria). El sha256 identifica el PDF byte a byte: si un dia hay disputa,
@@ -1352,6 +1334,42 @@ export async function handleWebhook(req, res, deps = {}) {
             liberar();
           }
         });
+      };
+
+    // ── (6) toolCtx cableado a servicios REALES ──────────────────────────
+    const toolCtx = {
+      telefono: from,
+
+      // ── [2026-08-21] INFORME TÉRMICO ANTES DE LA COTIZACIÓN ──────────────────
+      // Idea del dueño: mandarle al cliente el dato normativo de su comuna JUSTO
+      // cuando Oliver empieza a calcular, "para que lo lea mientras le decimos
+      // preparamos la propuesta". Cuando el precio llega, ya no llega solo.
+      //
+      // Se dispara desde calcular_cotizacion —el momento exacto en que el cliente
+      // queda esperando— y NO desde el PDF, que ya es tarde.
+      //
+      // 🔒 TRES GUARDAS, porque esto le escribe a un cliente real:
+      //   1. UNA SOLA VEZ por teléfono (candado de 30 días). Un informe repetido
+      //      deja de ser un informe y pasa a ser spam.
+      //   2. fire-and-forget: no se espera. La cotización no puede demorarse ni un
+      //      milisegundo por esto — es la regla dura del proyecto.
+      //   3. si THERMAL no responde o no hay dato verificado, NO se manda nada.
+      //      Jamás se inventa un número: son citas normativas.
+      // El hook que ven las tools. `calcular_cotizacion` REGISTRA su ventana y sigue de
+      // largo —sincrono, sin red, sin candados— y el despacho ocurre al cerrar el turno.
+      // `forzar` viene de la tool `enviar_informe_termico`, o sea el cliente lo esta
+      // pidiendo ahora: eso se despacha en el momento y no espera al final del turno.
+      enviarInformeTermico: (comuna, opciones = {}) => {
+        if (opciones.forzar) return despacharInforme(comuna, opciones);
+        informeDelTurno.pedido = true;
+        if (comuna) informeDelTurno.comuna = comuna;
+        // Los tres campos de resumen son de la ULTIMA cotizacion del turno; las ventanas
+        // se suman. Un array local: sin await en el medio, no hay carrera que resolver.
+        if (opciones.glassLabel) informeDelTurno.glassLabel = opciones.glassLabel;
+        if (opciones.uw !== undefined && opciones.uw !== null) informeDelTurno.uw = opciones.uw;
+        if (opciones.producto) informeDelTurno.producto = opciones.producto;
+        if (Array.isArray(opciones.ventanas)) informeDelTurno.ventanas.push(...opciones.ventanas);
+        return null;
       },
 
       // saveLead → pushLeadEvent (persistencia real del lead).
@@ -2080,6 +2098,19 @@ export async function handleWebhook(req, res, deps = {}) {
         const asVoice = (audioResult.mime || '').toLowerCase().includes('ogg');
         await sendWaAudio(from, mediaId, asVoice);
         log('info', 'voice.sent', `nota de voz enviada a ${from} (${audioResult.buffer.length} bytes, voice=${asVoice})`);
+      });
+    }
+
+    // ── 🔴 (7c) EL INFORME TERMICO, UNA VEZ, CON EL PROYECTO COMPLETO ──────────────
+    // Aca ya corrieron TODAS las tools del turno, asi que `informeDelTurno.ventanas` tiene
+    // el proyecto entero. Es el unico punto del flujo donde eso es cierto sin tener que
+    // adivinar nada. Sigue siendo fire-and-forget: el informe no puede demorar el turno.
+    if (informeDelTurno.pedido && informeDelTurno.ventanas.length) {
+      despacharInforme(informeDelTurno.comuna, {
+        glassLabel: informeDelTurno.glassLabel,
+        uw: informeDelTurno.uw,
+        producto: informeDelTurno.producto,
+        ventanas: informeDelTurno.ventanas,
       });
     }
 

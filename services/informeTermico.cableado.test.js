@@ -53,12 +53,23 @@ function posicionDelPdf(bloque) {
   return i;
 }
 
+// [2026-08-24 · rediseño] El cuerpo del envio ya no vive dentro del objeto `toolCtx`: se
+// extrajo a `despacharInforme`, una funcion del turno que se llama UNA vez al final. El
+// hook `enviarInformeTermico` quedo como un registrador de tres lineas.
 function cuerpoDelHook(src) {
-  const i = src.indexOf('enviarInformeTermico: (comuna,');
-  assert.ok(i > 0, 'no se encontro el hook enviarInformeTermico en webhook.js');
-  const resto = src.slice(i);
-  const m = resto.slice(1).match(/\n {6}[a-zA-Z_$][\w$]*: /);
-  return m ? resto.slice(0, m.index + 1) : resto;
+  const i = src.indexOf('const despacharInforme = (comuna,');
+  assert.ok(i > 0, 'no se encontro despacharInforme en webhook.js');
+  const j = src.indexOf('\n      };', i);
+  assert.ok(j > i, 'no se encontro el cierre de despacharInforme');
+  return src.slice(i, j);
+}
+
+/** El registrador que ven las tools (lo que antes era el hook completo). */
+function registradorDelTurno(src) {
+  const i = src.indexOf('enviarInformeTermico: (comuna, opciones');
+  assert.ok(i > 0, 'no se encontro el hook enviarInformeTermico en toolCtx');
+  const j = src.indexOf('\n      },', i);
+  return src.slice(i, j);
 }
 
 test('calcular_cotizacion DISPARA el informe — es el momento en que el cliente espera', async () => {
@@ -103,7 +114,8 @@ test('el disparo va DESPUES de que la cotizacion salio bien, no antes', async ()
 
 test('webhook.js PROVEE el hook, con candado de una sola vez por cliente', async () => {
   const src = await leer('../src/oliver-gpt/webhook.js');
-  assert.match(src, /enviarInformeTermico: \(comuna, \{ forzar/, 'el hook tiene que estar en toolCtx');
+  assert.match(src, /enviarInformeTermico: \(comuna, opciones/, 'el hook tiene que estar en toolCtx');
+  assert.match(src, /const despacharInforme = \(comuna,/, 'y el envio, en la funcion del turno');
   assert.match(src, /informe_termico:\$\{String\(from\)/, 'el candado va por telefono');
   assert.match(src, /30 \* 24 \* 3600/, 'candado de 30 dias: un informe repetido es spam');
 });
@@ -143,8 +155,13 @@ test('la tool de re-envio existe y SALTA el candado', async () => {
   assert.match(tools, /name: 'enviar_informe_termico'/);
   assert.match(tools, /ctx\.enviarInformeTermico\(input\.comuna \|\| '', \{ forzar: true \}\)/);
   const wh = await leer('../src/oliver-gpt/webhook.js');
-  assert.match(wh, /enviarInformeTermico: \(comuna, \{ forzar = false/, 'el hook acepta forzar');
-  assert.match(wh, /if \(!forzar\) \{/, 'el candado solo aplica al envio automatico');
+  const reg = registradorDelTurno(wh);
+  // [2026-08-24 · rediseño] `forzar` = el cliente lo esta PIDIENDO ahora, asi que se
+  // despacha en el momento en vez de esperar al cierre del turno.
+  assert.match(reg, /if \(opciones\.forzar\) return despacharInforme\(comuna, opciones\);/,
+    'un pedido explicito no espera al final del turno');
+  assert.match(wh, /const despacharInforme = \(comuna, \{ forzar = false/, 'y despacharInforme acepta forzar');
+  assert.match(cuerpoDelHook(wh), /if \(!forzar\) \{/, 'el candado solo aplica al envio automatico');
 });
 
 test('se manda un PDF, no un mensaje de texto', async () => {
@@ -343,12 +360,11 @@ test('🔒 el rescate NO puede pisar los datos frescos de una cotizacion', async
   // La inversion seria silenciosa: el cliente recotiza con un vidrio mejor y el informe le
   // declara el Uw del anterior. Un numero correcto... de otro proyecto.
   const bloque = cuerpoDelHook(await leer('../src/oliver-gpt/webhook.js'));
-  // [2026-08-24] La llamada vive dentro del callback de `fusionar` (leer-calcular-escribir
-  // atomico), pero el orden de los argumentos es lo que se protege acá y no cambio: los
-  // entrantes primero, la memoria como segundo. `local || recordados` es la memoria: lo
-  // que escribieron las cotizaciones hermanas de este mismo turno, o lo que sobrevivio en
-  // Postgres a un redeploy.
-  assert.match(bloque, /datosDelInforme\(\{ glassLabel, uw, producto, ventanas \}, local \|\| recordados\)/,
+  // [2026-08-24 · rediseño] Vuelve a ser una llamada directa: el despacho ocurre UNA vez
+  // por turno, asi que ya no hay cotizaciones hermanas compitiendo por esta clave y no
+  // hace falta el leer-calcular-escribir atomico. Lo que se protege —el orden de los
+  // argumentos, entrantes primero— no cambio nunca.
+  assert.match(bloque, /datosDelInforme\(\{ glassLabel, uw, producto, ventanas \}, recordados\)/,
     'los datos entrantes van PRIMERO en la llamada: son los que mandan');
 });
 
@@ -373,14 +389,15 @@ test('🔒 tramo 1 — la cotizacion manda las 8 ventanas, no items[0]', async (
 
 test('🔒 tramo 2 — el hook recuerda las ventanas y las recupera en el re-envio', async () => {
   const bloque = cuerpoDelHook(await leer('../src/oliver-gpt/webhook.js'));
-  assert.match(bloque, /datosDelInforme\(\{ glassLabel, uw, producto, ventanas \}, local \|\| recordados\)/,
+  assert.match(bloque, /datosDelInforme\(\{ glassLabel, uw, producto, ventanas \}, recordados\)/,
     'sin `ventanas` en la llamada, un re-envio recupera el vidrio pero pierde el proyecto');
-  assert.match(bloque, /\(\{ glassLabel, uw, producto, ventanas \} = datosInforme\)/,
-    'y hay que leer de vuelta lo fusionado, o se usa la variable entrante sin rescate');
-  // [Codex · 2a pasada] La acumulacion tiene que ser ATOMICA: con leer-y-despues-escribir,
-  // las ocho cotizaciones de un proyecto se pisaban entre si y quedaba una sola ventana.
-  assert.match(bloque, /fusionarEstado \|\| fusionarEstado\)\(claveDatos/,
-    'un leer-luego-escribir aca vuelve a perder las ventanas de las cotizaciones hermanas');
+  assert.match(bloque, /\(\{ glassLabel, uw, producto, ventanas \} = elegido\.datos\)/,
+    'y hay que leer de vuelta lo elegido, o se usa la variable entrante sin rescate');
+  // [2026-08-24 · rediseño] El ACUMULADO ya no vive en el estado compartido: se junta en
+  // memoria del turno y llega completo. Lo que se guarda aca es para el RE-ENVIO posterior.
+  const reg = registradorDelTurno(await leer('../src/oliver-gpt/webhook.js'));
+  assert.match(reg, /informeDelTurno\.ventanas\.push\(\.\.\.opciones\.ventanas\)/,
+    'cada cotizacion suma su ventana al proyecto del turno');
 });
 
 test('🔒 tramo 3 — el PDF recibe el proyecto (este es el tramo que faltaba)', async () => {

@@ -49,7 +49,7 @@ function makeRes() {
  *                  del proyecto de dos ventanas que produjo el duplicado.
  */
 function makeDeps({ disparos = 1, envioOk = true, overrides = {} } = {}) {
-  const spy = { docsEnviados: [], convEvents: [], pdfArgs: [], textos: [] };
+  const spy = { docsEnviados: [], convEvents: [], pdfArgs: [], textos: [], adjuntosZoho: [], notasZoho: [] };
   const estado = new Map();
   let tokenSeq = 0;
   const vigente = (e) => e && (!e.expira || e.expira > Date.now());
@@ -91,6 +91,12 @@ function makeDeps({ disparos = 1, envioOk = true, overrides = {} } = {}) {
     laminasParaInforme: async () => null,
     laminaTermopanel: async () => null,
 
+    upsertZohoDeal: async () => 'deal.777',
+    addZohoNote: async (...a) => { spy.notasZoho.push(a); return { ok: true }; },
+    attachPdfToDeal: async (dealId, buf, filename) => {
+      spy.adjuntosZoho.push({ dealId, bytes: buf?.length || 0, filename });
+      return { ok: true };
+    },
     uploadWaDocument: async () => 'media.1',
     sendWaDocument: async (to, mediaId, filename) => {
       spy.docsEnviados.push({ to, mediaId, filename });
@@ -277,50 +283,95 @@ test('🔒 [Codex · 2a pasada] si Meta rechaza el AVISO, tampoco se registra', 
     && e.metadata?.source === 'oliver_gpt_informe_termico'));
 });
 
-// ⚠️ SKIP DELIBERADO — ESTE ES EL LIMITE CONOCIDO DE LA ARQUITECTURA ACTUAL, no un test roto.
+// ── 🔴 [2026-08-24] REDISEÑO: EL INFORME SE DESPACHA AL FINAL DEL TURNO ──────────────
+// Antes se disparaba DENTRO de cada `calcular_cotizacion`, y como esa tool cotiza una
+// partida por llamada, habia que reconstruir el proyecto desde N invocaciones sueltas con
+// memoria compartida. Toda la maquinaria del lote anterior —candado corto, fusion atomica,
+// sello de tanda, barrera de estabilizacion por tiempo— existia solo para compensar eso, y
+// cada arreglo destapaba una carrera nueva en otro lado (4 pasadas de compuerta).
 //
-// La barrera de estabilizacion espera a que el total deje de crecer, pero "dejar de crecer"
-// se mide en segundos de quietud (2 lecturas x 1,5 s = 3 s). Una cotizacion puede tardar
-// hasta 15 s (el timeout del engine), asi que una partida lenta todavia puede quedar fuera
-// del PDF. Subir el numero seria adivinar: cualquier N que se elija tiene un caso que lo
-// supera, y mientras tanto el cliente espera.
-//
-// La raiz no es el numero: es que el informe se dispara DENTRO de cada `calcular_cotizacion`
-// y hay que reconstruir el proyecto desde N invocaciones sueltas. Toda la maquinaria de este
-// lote —candado corto, fusion atomica, sello de tanda, esta barrera— existe para compensar
-// eso. Disparando UNA vez al final del turno, el problema desaparece en vez de mitigarse.
-//
-// Se deja escrito y en skip a proposito: es la especificacion del arreglo que falta, y
-// ponerlo en verde con un timeout mas grande seria tapar el hueco en vez de medirlo.
-test('🔴 [Codex 4a] una ventana que llega TARDE igual entra al informe', { skip: 'limite conocido: la barrera por tiempo no cubre una cotizacion de 15 s — ver nota' }, async () => {
-  // Las tools corren secuencialmente: la ultima partida de un proyecto largo puede
-  // terminar despues de los tiempos humanos. Con una sola foto quedaba afuera del
-  // documento y nadie se enteraba. Ahora se relee hasta que el proyecto deja de crecer.
-  // `dormir` real pero corto: con el instantaneo del resto de los tests, las vueltas de
-  // estabilizacion pasan volando y no le dan tiempo a nadie — el test no probaria nada.
-  const { deps, spy } = makeDeps({ overrides: { dormir: (ms) => new Promise((r) => setTimeout(r, Math.min(ms || 0, 40))) } });
-  const tercera = { id: 'V3', producto: 'Fijo S60', medidas: '600x600mm', vidrio: 'DVH 5/12/5', ambiente: 'Baño', cantidad: 1, uw: 2.9 };
+// El turno es secuencial y termina en un instante conocido. Acumulando en memoria del turno
+// y despachando UNA vez al final, las carreras no se mitigan: dejan de existir.
+
+test('🔴 el informe se despacha UNA vez y DESPUES de que el turno termino', async () => {
+  const { deps, spy } = makeDeps({ disparos: 2 });
   const original = deps.handleTurn;
   deps.handleTurn = async (args) => {
     const r = await original(args);
-    // La cotizacion lenta: llega despues de que el hook ya tomo su primera lectura.
-    setTimeout(() => {
-      args.toolCtx.enviarInformeTermico('Temuco', {
-        glassLabel: tercera.vidrio, uw: tercera.uw, producto: tercera.producto, ventanas: [tercera],
-      });
-      // 300 ms: DESPUES de que el bucle de estabilizacion arranco. Con 60 ms la ventana
-      // llegaba mientras corrian todavia los dos tiempos humanos (2 x 40 ms), o sea antes
-      // de la primera lectura: el test pasaba con UNA sola vuelta y no probaba la barrera.
-      // Lo cazo Codex en la 4a pasada. Un test que pasa por la razon equivocada es peor
-      // que no tenerlo, porque se cuenta como cobertura.
-    }, 300);
+    assert.equal(spy.docsEnviados.length, 0,
+      'durante el turno no se manda nada: todavia pueden llegar mas ventanas');
+    return r;
+  };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.docsEnviados.length > 0));
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(spy.docsEnviados.length, 1, 'un solo informe por turno');
+  assert.deepEqual(spy.pdfArgs.at(-1).ventanas, VENTANAS, 'con las dos ventanas');
+});
+
+test('🔴 una cotizacion LENTA dentro del turno igual entra al informe', async () => {
+  // Este es el caso que la barrera por tiempo no podia cubrir: las tools corren
+  // secuencialmente y una puede tardar hasta 15 s (timeout del engine). Con el despacho al
+  // final del turno el tiempo deja de importar — el turno espera a sus propias tools.
+  const tercera = { id: 'V3', producto: 'Fijo S60', medidas: '600x600mm', vidrio: 'DVH 5/12/5', ambiente: 'Baño', cantidad: 1, uw: 2.9 };
+  const { deps, spy } = makeDeps({ disparos: 2 });
+  const original = deps.handleTurn;
+  deps.handleTurn = async (args) => {
+    const r = await original(args);
+    await new Promise((res) => setTimeout(res, 300));   // la tool lenta
+    args.toolCtx.enviarInformeTermico('Temuco', {
+      glassLabel: tercera.vidrio, uw: tercera.uw, producto: tercera.producto, ventanas: [tercera],
+    });
     return r;
   };
   await handleWebhook({ body: {} }, makeRes(), deps);
   assert.ok(await esperar(() => spy.docsEnviados.length > 0, 6000));
   await new Promise((r) => setTimeout(r, 200));
+  const v = spy.pdfArgs.at(-1).ventanas;
+  assert.equal(v.length, 3, 'las tres ventanas del turno');
+  assert.ok(v.some((x) => x.medidas === tercera.medidas), 'incluida la de la tool lenta');
+});
 
-  const ultimas = spy.pdfArgs[spy.pdfArgs.length - 1].ventanas;
-  assert.ok(ultimas.some((v) => v.medidas === tercera.medidas),
-    'la ventana rezagada tiene que estar en el documento que se mando');
+test('un turno SIN cotizaciones no manda ningun informe', async () => {
+  const { deps, spy } = makeDeps({ disparos: 0 });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(spy.docsEnviados.length, 0);
+});
+
+// ── 🔴 [2026-08-24] EL INFORME SE ARCHIVA, COMO LA COTIZACION ────────────────────────
+// Reclamo del dueño, textual: *"yo abro el sistema y deberia estar guardado... tiene que
+// estar almacenado, al lado de la cotizacion"*. Y tenia razon: del informe solo quedaba un
+// numero de folio y un hash. El PDF no se guardaba en NINGUNA parte — ni adjunto al Deal
+// (como si hace la cotizacion) ni descargable desde el cockpit.
+//
+// Eso convierte "¿le llego el informe?" en una pregunta que el sistema no puede responder,
+// y por lo tanto en una discusion. Un documento firmado que se entrega a un cliente y del
+// que no queda copia tampoco resiste una auditoria ISO.
+
+test('🔴 el PDF del informe queda ADJUNTO al Deal, igual que la cotizacion', async () => {
+  const { deps, spy } = makeDeps();
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.adjuntosZoho.length > 0), 'tiene que archivarse');
+
+  const adj = spy.adjuntosZoho[0];
+  assert.equal(adj.dealId, 'deal.777');
+  assert.ok(adj.bytes > 0, 'el PDF de verdad, no un puntero');
+  assert.match(adj.filename, /Informe-Termico.*\.pdf$/, 'con nombre distinguible de la propuesta');
+});
+
+test('🔒 se archiva DESPUES de entregar: no se guarda copia de algo que no salio', async () => {
+  const { deps, spy } = makeDeps({ envioOk: false });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(spy.adjuntosZoho.length, 0);
+});
+
+test('🔒 si Zoho falla, el cliente NO pierde su informe', async () => {
+  // El archivo es trazabilidad nuestra; el informe es del cliente. Nunca al reves.
+  const { deps, spy } = makeDeps({
+    overrides: { attachPdfToDeal: async () => { throw new Error('Zoho caido'); } },
+  });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.docsEnviados.length > 0), 'el envio no depende de Zoho');
 });

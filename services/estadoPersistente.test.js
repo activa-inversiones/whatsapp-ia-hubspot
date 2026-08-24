@@ -173,35 +173,14 @@ test('liberarReserva sin token o con clave libre no hace nada ni lanza', async (
   assert.equal(mod.liberarReserva('nada', 'token-inventado'), false);
 });
 
-test('🔴 fusionar: acumular tambien necesita ser ATOMICO', async () => {
-  // La misma carrera del candado, en la memoria de datos: dos ejecuciones hacen
-  // `await leer()` antes de que ninguna escriba, las dos ven vacio, y la segunda PISA a
-  // la primera en vez de sumarse. Asi se perdian las ventanas de un proyecto: cada
-  // `calcular_cotizacion` guardaba la suya creyendo que era la unica.
-  const { fetchFalso } = armarBackend();
-  const mod = await cargarModulo(fetchFalso, 'f1');
-  const sumar = (v) => (local) => ({ valor: [...(local || []), v], guardar: true });
-  mod.fusionar('proj', sumar('V1'), 60);
-  mod.fusionar('proj', sumar('V2'), 60);
-  mod.fusionar('proj', sumar('V3'), 60);
-  assert.deepEqual(mod.leerLocal('proj'), ['V1', 'V2', 'V3'], 'las tres, en orden');
-});
-
-test('fusionar: si el calculo dice que no hay nada que guardar, no escribe', async () => {
-  const { fetchFalso } = armarBackend();
-  const mod = await cargarModulo(fetchFalso, 'f2');
-  mod.fusionar('vacio', () => ({ valor: null, guardar: false }), 60);
-  assert.equal(mod.leerLocal('vacio'), null, 'no tiene sentido guardar el vacio');
-});
-
 test('🔴 [Codex 3a] un GET atrasado NO puede pisar lo que se fusiono mientras viajaba', async () => {
-  // EL DEFECTO MAS FINO DE TODO EL LOTE, y `fusionar` por si sola no lo cubria: `leer()`
-  // va a Postgres y, al volver, CACHEA lo que trajo en la memoria local. Si mientras ese
-  // GET viajaba otra ejecucion fusiono ventanas nuevas, la respuesta vieja las pisa.
+  // `leer()` va a Postgres y, al volver, CACHEA lo que trajo en la memoria local. Si
+  // mientras ese GET viajaba alguien escribio, la respuesta vieja pisa lo nuevo — sin
+  // error, en silencio.
   //
-  // Reproduccion de Codex: A fusiona [VIEJA, A]; llega el GET atrasado de B con [VIEJA] y
-  // pisa; B fusiona sobre eso y queda [VIEJA, B]. La ventana de A desaparecio, y nadie se
-  // entera: no hay error, solo un informe con una ventana menos.
+  // Lo encontro Codex sobre el diseño anterior (donde el informe se armaba juntando el
+  // estado entre varias ejecuciones). Ese diseño ya no existe, pero la proteccion se queda:
+  // `leer` es de uso general y esta clase de pisada es un defecto suyo, no de su llamador.
   const { disco, fetchFalso } = armarBackend();
   disco.set('p', ['VIEJA']);
   let soltar;
@@ -219,7 +198,7 @@ test('🔴 [Codex 3a] un GET atrasado NO puede pisar lo que se fusiono mientras 
 
   const viaje = mod.leer('p');                        // GET en vuelo
   await new Promise((r) => setTimeout(r, 10));
-  mod.fusionar('p', (local) => ({ valor: [...(local || ['VIEJA']), 'A'], guardar: true }), 60);
+  mod.escribir('p', ['VIEJA', 'A'], 60);                // escritura local mientras el GET viaja
   assert.deepEqual(mod.leerLocal('p'), ['VIEJA', 'A']);
 
   soltar();                                            // ahora vuelve el GET viejo
