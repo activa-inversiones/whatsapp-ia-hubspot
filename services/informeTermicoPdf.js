@@ -42,11 +42,20 @@ const PIES_LAMINA = Object.freeze({
   '03': 'Nudo INFERIOR, el mismo encuentro abajo. Es el punto más exigido de la ventana: el aire frío se '
       + 'acumula en la parte baja del vidrio y por eso, si algo se va a empañar, empieza por ahí. Acá se '
       + 've cuánto alcanza a subir el frío desde el borde.',
+  // [2026-08-24] PRECISIÓN DEL DUEÑO: los 160 W/m·K son del SEPARADOR de aluminio —el
+  // marco metálico que va DENTRO del termopanel, entre los dos vidrios—, no del perfil de
+  // la ventana. Escrito como estaba, un cliente podía leer que hablábamos de una ventana de
+  // aluminio. Se desambigua nombrando la pieza, y se deja el paralelo con el perfil de
+  // aluminio: es el MISMO metal y por eso arrastra el mismo problema — un argumento
+  // legítimo y verificable, sin inventarle un Uf a un producto que no cotizamos.
   '07': 'Nudo inferior de la ventana —la zona más exigida del conjunto, por la acumulación de aire frío '
-      + 'en la parte baja del vidrio— resuelto con separador de aluminio (conductividad 160 W/m·K, frente '
-      + 'a 0,135 W/m·K del separador warm-edge). Se observa cómo las isotermas frías ascienden junto al '
-      + 'canto del vidrio: constituye el caso desfavorable, y es la solución que incorpora la mayoría de '
-      + 'los termopaneles disponibles en el mercado.',
+      + 'en la parte baja del vidrio— resuelto con SEPARADOR DE ALUMINIO: el marco metálico que va dentro '
+      + 'del termopanel, entre los dos vidrios, separándolos. Ese aluminio conduce 160 W/m·K frente a los '
+      + '0,135 W/m·K del separador warm-edge, y se observa cómo las isotermas frías ascienden junto al '
+      + 'canto del vidrio. Es el mismo metal del que están hechos los perfiles de ventana de aluminio, y '
+      + 'por la misma razón: donde hay metal continuo entre el interior y el exterior, el calor encuentra '
+      + 'un camino directo para salir. Constituye el caso desfavorable, y es la solución que incorpora la '
+      + 'mayoría de los termopaneles del mercado.',
   '08': 'El mismo nudo resuelto con separador warm-edge. En la comparación con la figura anterior se '
       + 'aprecia el retroceso de las isotermas frías respecto del canto del vidrio: un borde interior más '
       + 'templado reduce el riesgo de condensación en esa zona.',
@@ -470,7 +479,8 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           // verdadera con todas sus letras ES ayudar a una buena decision informada.
           const pieT = 'Análisis del borde de su termopanel, desarrollado con nuestro motor de cálculo por '
             + 'elementos finitos: el mismo corte resuelto con separador de aluminio (izquierda) y con '
-            + 'separador térmico warm-edge (derecha). La diferencia se ve a simple vista: el warm-edge '
+            + 'separador térmico warm-edge (derecha) — el separador es el marco que va DENTRO del '
+            + 'termopanel manteniendo los dos vidrios a distancia. La diferencia se ve a simple vista: el warm-edge '
             + 'mantiene el borde interior del vidrio varios grados más templado. En una vivienda con '
             + 'humedad interior normal, ese borde se mantiene sobre el punto de rocío — la condensación '
             + 'perimetral que se ve en tantos termopaneles con separador de aluminio, aquí no se produce. '
@@ -607,6 +617,51 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
             y += doc.heightOfString(pie, { width: anchoUtil }) + 14;
           }
         }
+      }
+
+      // ── VALIDACIÓN DEL MOTOR (pedido del dueño, 24-ago) ─────────────────
+      //
+      // Textual: *"deberíamos decir que nuestro modelo de cálculo cumple con las 28 pruebas
+      // que indica la normativa ISO 10077-1 y 2, homóloga norma chilena 3137-1 y 2… para que
+      // el modelo esté validado, pero como algo que sea creíble, impactante"*.
+      //
+      // 🔴 LAS 28 SON REALES Y SE VERIFICARON ANTES DE IMPRIMIRLAS. No se tomó el número
+      // porque el dueño lo dijera: se consultó `GET /api/v1/validacion` de ACTIVA THERMAL,
+      // que es público a propósito para que un tercero pueda auditarlo, y la suma da 28/28:
+      //     Anexo F/I ................. 10/10   (±3 % en L2D, cláusula 5.3)
+      //     Anexo E/H con radiosidad ... 11/11   (±3 % en L2D · desbalance ≤ 0,5 %)
+      //     Anexo G1 ................... 4/4     (flujo: piso ±3 % / vendor ±1 %)
+      //     Anexo G2-G3-G4 ............. 3/3     (flujo ±1 % · temperatura ±0,03 K)
+      // más el caso 1 analítico de NCh 3136 (±0,1 K): conforme.
+      //
+      // ⚠️ SE RESPETA LA ADVERTENCIA DE LA PROPIA API: *"el render NO produce valores
+      // declarables"*. Por eso el bloque habla de LA VALIDACIÓN DEL MOTOR, no de que las
+      // figuras sean declarables — son dos cosas distintas y confundirlas sería el mismo
+      // error que veníamos corrigiendo, al revés.
+      y += 6;
+      seccion(`${++nSec} · POR QUÉ PUEDE CONFIAR EN ESTOS NÚMEROS`);
+      parrafo('El motor de cálculo con el que se hizo este informe está validado contra la batería '
+        + 'completa de casos de referencia de la norma: 28 pruebas, 28 aprobadas.', { bold: true, size: 10 });
+      {
+        const filas = [
+          ['Anexo F / I — transmisión bidimensional', '10 de 10', 'tolerancia ±3 % en L2D (cláusula 5.3)'],
+          ['Anexo E / H — cavidades con radiosidad', '11 de 11', 'tolerancia ±3 % · desbalance ≤ 0,5 %'],
+          ['Anexo G1 — flujos de referencia', '4 de 4', 'tolerancia ±1 % nivel fabricante'],
+          ['Anexo G2·G3·G4 — casos combinados', '3 de 3', 'flujo ±1 % · temperatura ±0,03 K'],
+        ];
+        for (const [caso, res, tol] of filas) {
+          saltoSiNoCabe(20);
+          doc.fillColor(DARK).fontSize(9).font('Helvetica').text(caso, 55, y + 3, { width: 230 });
+          doc.fillColor('#0a7d33').fontSize(9).font('Helvetica-Bold').text(res, 290, y + 3, { width: 55 });
+          doc.fillColor(GRAY).fontSize(8).font('Helvetica').text(tol, 350, y + 4, { width: W - 405 });
+          y += 18;
+        }
+        y += 6;
+        parrafo('Esos casos son los que la norma ISO 10077-2 —homologada en Chile como NCh 3137/2— '
+          + 'define para comprobar que un programa de cálculo entrega resultados correctos. Nuestro motor '
+          + 'los reproduce dentro de la tolerancia exigida, y además supera el caso analítico de NCh 3136 '
+          + '(±0,1 K). La validación es auditable por un tercero: se publica y puede consultarse.',
+          { size: 9, color: GRAY });
       }
 
       // ── ALCANCE ─────────────────────────────────────────────────────────
