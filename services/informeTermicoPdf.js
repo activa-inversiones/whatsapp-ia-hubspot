@@ -42,13 +42,14 @@ const PIES_LAMINA = Object.freeze({
   '03': 'Nudo INFERIOR, el mismo encuentro abajo. Es el punto más exigido de la ventana: el aire frío se '
       + 'acumula en la parte baja del vidrio y por eso, si algo se va a empañar, empieza por ahí. Acá se '
       + 've cuánto alcanza a subir el frío desde el borde.',
-  '07': 'Nudo inferior de la ventana —el punto más exigido: el aire frío se acumula abajo y, si algo se '
-      + 'va a empañar, empieza por ahí— resuelto con separador de ALUMINIO. El aluminio conduce muchísimo '
-      + '(conductividad 160 W/mK frente a 0,135 del warm-edge): mire cómo las líneas frías trepan pegadas al canto del '
-      + 'vidrio. Es el caso desfavorable, y es el que traen la mayoría de los termopaneles del mercado.',
-  '08': 'El mismo nudo con separador WARM-EDGE. Comparándolo con la figura anterior se ve la diferencia '
-      + 'sin necesidad de leer un número: las líneas frías se retiran del canto. Esa distancia es todo lo '
-      + 'que separa un borde que aguanta de uno que no.',
+  '07': 'Nudo inferior de la ventana —la zona más exigida del conjunto, por la acumulación de aire frío '
+      + 'en la parte baja del vidrio— resuelto con separador de aluminio (conductividad 160 W/m·K, frente '
+      + 'a 0,135 W/m·K del separador warm-edge). Se observa cómo las isotermas frías ascienden junto al '
+      + 'canto del vidrio: constituye el caso desfavorable, y es la solución que incorpora la mayoría de '
+      + 'los termopaneles disponibles en el mercado.',
+  '08': 'El mismo nudo resuelto con separador warm-edge. En la comparación con la figura anterior se '
+      + 'aprecia el retroceso de las isotermas frías respecto del canto del vidrio: un borde interior más '
+      + 'templado reduce el riesgo de condensación en esa zona.',
   '01': 'Corte vertical del marco y el termopanel. El rojo es el lado de adentro (calefaccionado) y el '
       + 'azul el de afuera. Las cámaras de aire del PVC son las que frenan el paso del frío: por eso la '
       + 'transición es gradual y no hay un salto brusco hacia el interior.',
@@ -401,7 +402,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       );
       if (termoDibujable || suV) {
         y += 6;
-        seccion(`${++nSec} · SU TERMOPANEL, PASADO POR NUESTRO MOTOR`);
+        seccion(`${++nSec} · ANÁLISIS TÉRMICO DEL BORDE DE SU TERMOPANEL`);
         if (suV) {
           const respaldo = String(suV.estado || '').toUpperCase() === 'CERTIFICADO'
             ? 'con Ug certificado por informe de ensayo del fabricante'
@@ -412,27 +413,45 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           y += 2;
         }
         if (termoDibujable) {
-          const anchoUtil = W - 100;
-          const altoT = Math.min(Math.round(anchoUtil * (dimT.alto / dimT.ancho)), 430);
-          const pieT = 'Cálculo de nuestro motor sobre el borde del termopanel '
-            + `(${String(figTermo.nombre).trim()}): el mismo corte con separador de ALUMINIO a la `
-            + 'izquierda y THERMOFLEX (warm-edge) a la derecha, con las isotermas y la tabla de '
-            + 'resultados. Vale para cualquier tipo de ventana, porque el borde del termopanel es '
-            + 'el mismo sea proyectante o corredera. Como muestra la propia figura, en las mañanas '
-            + 'más frías el borde puede condensar con uno u otro separador — el warm-edge lo reduce, '
-            + 'y el centro del vidrio es el que se mantiene seco.'
+          parrafo('El análisis completo del borde de su termopanel se presenta en la página '
+            + 'siguiente, en formato apaisado para su correcta lectura.', { size: 9, color: GRAY });
+
+          // PAGINA COMPLETA Y ROTADA 90 GRADOS. La figura es apaisada (2366x1581): metida en
+          // el ancho de una A4 vertical la letra quedaba ilegible — reclamo del dueno, textual:
+          // "muy pequena la letra, no se ve, no se lee". Rotada, su ancho corre a lo largo del
+          // ALTO de la pagina y el texto crece ~45 %.
+          doc.addPage();
+          doc.page.margins.bottom = 0;
+          const cx = W / 2, cy = doc.page.height / 2;
+          const fw = doc.page.height - 140;   // el ancho de la figura corre por el alto de la pagina
+          const fh = W - 140;                 // y su alto, por el ancho
+          const pieT = 'Análisis del borde del termopanel desarrollado con nuestro motor de cálculo por '
+            + 'elementos finitos: el mismo corte resuelto con separador de aluminio (izquierda) y separador '
+            + 'warm-edge Thermoflex (derecha), con sus isotermas y la tabla de resultados. El análisis es '
+            + 'válido para cualquier tipo de ventana, dado que el borde del termopanel es común a todas las '
+            + 'tipologías. Conforme indica la propia figura, en condiciones de invierno el borde puede '
+            + 'alcanzar la temperatura de condensación con cualquiera de los dos separadores; el warm-edge '
+            + 'reduce ese riesgo, y el centro del vidrio se mantiene sobre el umbral. La temperatura de '
+            + 'condensación aplicable a su comuna se detalla en la sección de condensación de este informe.'
             + (suV && digitos(suV.cod) !== '4124'
-              ? ' La figura ilustra el fenómeno con el termopanel 4-12-4; su vidriado es otro, pero el patrón del borde es el mismo.'
+              ? ' La figura corresponde al termopanel 4-12-4; los valores específicos de su vidriado pueden diferir, sin alterar la comparación entre ambos separadores.'
               : '');
-          doc.fontSize(8).font('Helvetica');
-          const altoPieT = doc.heightOfString(pieT, { width: anchoUtil });
-          saltoSiNoCabe(altoT + altoPieT + 30);
           try {
-            doc.image(figTermo.lamina.png, 50, y, { fit: [anchoUtil, altoT], align: 'center' });
-            y += altoT + 8;
-            doc.fillColor(GRAY).fontSize(8).font('Helvetica').text(pieT, 50, y, { width: anchoUtil });
-            y += altoPieT + 14;
-          } catch { /* una figura rota no puede costar el informe */ }
+            doc.save();
+            doc.rotate(90, { origin: [cx, cy] });
+            doc.image(figTermo.lamina.png, cx - fw / 2, cy - fh / 2, {
+              fit: [fw, fh - 52], align: 'center', valign: 'center',
+            });
+            doc.fillColor(GRAY).fontSize(9).font('Helvetica')
+              .text(pieT, cx - fw / 2, cy + fh / 2 - 46, { width: fw });
+            doc.restore();
+          } catch {
+            // una figura rota no puede costar el informe: se restaura y se sigue
+            try { doc.restore(); } catch { /* ya restaurado */ }
+          }
+          doc.addPage();
+          doc.page.margins.bottom = 0;
+          y = 60;
         }
       }
 
@@ -487,14 +506,18 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           // [P2 · Codex] Los campos vienen de una API ajena: se ACOTAN. Un `nombre` de 1000
           // caracteres empujaba el rotulo varias lineas y la imagen se dibujaba encima.
           const corto = (x, n) => String(x || '').trim().slice(0, n);
-          const aviso = `Corte del sistema ${corto(idPerfil, 80)}`
-            + `${corto(laminas.aprobadoPor, 60) ? ` · modelo aprobado por ${corto(laminas.aprobadoPor, 60)}` : ''}`
+          // [2026-08-24] Registro PROFESIONAL, pedido del dueno: "el lenguaje debe ser mas
+          // correcto, mas profesional". La honestidad se mantiene entera (caracter referencial,
+          // no es la simulacion de SU ventana, el Uw sale del calculo) — cambia el tono.
+          const aviso = `Figuras elaboradas con nuestro motor de cálculo por elementos finitos sobre el `
+            + `sistema ${corto(idPerfil, 80)}`
+            + `${corto(laminas.aprobadoPor, 60) ? `, modelo aprobado por ${corto(laminas.aprobadoPor, 60)}` : ''}`
             + `${corto(laminas.fecha, 20) ? ` (${corto(laminas.fecha, 20)})` : ''}. `
-            + 'Figuras ILUSTRATIVAS de cómo se comporta el PVC con termopanel: corresponden al sistema '
-            + 'indicado y NO son la simulación de su ventana en particular. Si su cotización incluye otro '
-            + 'tipo de apertura —por ejemplo corredera— el perfil de su ventana no es el de estas figuras. '
-            + 'Los valores declarables (Uw) de su proyecto salen del cálculo normativo, no de leer un '
-            + 'color en la figura.';
+            + 'Tienen carácter referencial: representan el comportamiento térmico del sistema indicado y '
+            + 'no constituyen una simulación de su ventana en particular. Si su cotización considera otro '
+            + 'tipo de apertura —por ejemplo, corredera— el perfil de su ventana difiere del ilustrado. '
+            + 'Los valores declarables de su proyecto (Uw) provienen del cálculo normativo conforme a '
+            + 'NCh 3137.';
           doc.fillColor(GRAY).fontSize(8).font('Helvetica');
           // El alto REAL del rotulo, con la fuente ya fijada en 8 (heightOfString usa la
           // fuente actual del documento; pasarle `fontSize` como opcion no hace nada).

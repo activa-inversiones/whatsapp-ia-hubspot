@@ -129,7 +129,7 @@ test('🔴 el informe lleva LA VENTANA DEL CLIENTE, no solo el catalogo', async 
   // y usaba un caracter que la fuente no dibuja — por eso se fue.
   assert.match(pdf, /mejorVidrio\(\)/, 'el vidrio del cliente se elige UNICO, no por startsWith');
   assert.doesNotMatch(pdf, /esSuVidrio\s*\(/, 'el resaltado triple no puede volver (la mencion en comentarios es historia, el uso no)');
-  assert.match(pdf, /SU TERMOPANEL, PASADO POR NUESTRO MOTOR/, 'la seccion nueva existe');
+  assert.match(pdf, /ANÁLISIS TÉRMICO DEL BORDE DE SU TERMOPANEL/, 'la seccion nueva existe');
 });
 
 test('🔴 RITMO HUMANO: aviso primero, espera larga despues, y recien el PDF', async () => {
