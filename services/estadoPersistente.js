@@ -33,6 +33,7 @@ const TIMEOUT_MS = Number(process.env.ESTADO_PERSISTENTE_TIMEOUT_MS || 2500);
 export const PERSISTENCIA_ACTIVA = !!(SALES_OS_URL && TOKEN);
 
 const MEMORIA = new Map(); // clave -> { valor, expira }
+let SEQ = 0;               // parte del token de dueño de `reservar` (ver mas abajo)
 
 const vigente = (e) => e && (!e.expira || e.expira > Date.now());
 
@@ -67,6 +68,16 @@ export async function leer(clave) {
   if (e) MEMORIA.delete(clave);
   const j = await pedir('GET', clave);
   const valor = j && Object.prototype.hasOwnProperty.call(j, 'valor') ? j.valor : null;
+  // 🔴 [2026-08-24 · Codex, 3a compuerta] SE RE-CHEQUEA LA MEMORIA DESPUES DEL AWAIT.
+  // El GET tarda, y mientras viaja otra ejecucion pudo escribir. Al volver, esto cacheaba
+  // la respuesta encima sin mirar: A fusionaba [VIEJA, A], llegaba el GET atrasado con
+  // [VIEJA] y lo pisaba, y B terminaba guardando [VIEJA, B]. La ventana de A desaparecia
+  // sin ningun error — un informe con una ventana menos y nadie enterado.
+  //
+  // Lo que hay en memoria es siempre MAS NUEVO que una respuesta que venia en camino: se
+  // devuelve eso y no se toca el cache.
+  const yaEnMemoria = MEMORIA.get(clave);
+  if (vigente(yaEnMemoria)) return yaEnMemoria.valor;
   if (valor !== null && valor !== undefined) MEMORIA.set(clave, { valor, expira: null });
   return valor ?? null;
 }
@@ -89,6 +100,79 @@ export function escribir(clave, valor, ttlSegundos = 3600) {
   return valor;
 }
 
+/**
+ * TEST-AND-SET ATOMICO. Devuelve true si la reserva se otorga, false si ya estaba tomada.
+ *
+ * 🔴 [2026-08-24] Existe por un duplicado MEDIDO: los dos clientes del 24-ago recibieron
+ * su informe termico DOS veces (folios 0001/0002 y 0003/0004), separados por 90 y 310 ms.
+ * El candado de entonces hacia `await leer(clave)` y despues `await escribir(clave)`, y
+ * cada `await` cede el event loop: dos `calcular_cotizacion` del mismo turno —una por
+ * ventana del proyecto— leian \libre\ antes de que ninguna marcara, y las dos mandaban.
+ *
+ * La garantia es simple y depende de UNA regla: ACA ADENTRO NO PUEDE HABER UN `await`.
+ * Node corre un solo hilo, asi que sin puntos de suspension nadie se cuela entre el
+ * chequeo y la marca. Si alguien agrega un await aca, el candado deja de existir en
+ * silencio — por eso esto es una funcion aparte y no un patron repetido en cada llamador.
+ *
+ * Alcance honesto: la atomicidad es POR PROCESO (el Map local). Cubre exactamente el caso
+ * que produjo el defecto —concurrencia dentro del mismo turno— y no pretende ser un lock
+ * distribuido. Contra reinicios y repeticiones a lo largo del tiempo sigue mandando el
+ * candado largo de 30 dias, que vive en Postgres.
+ *
+ * Devuelve el TOKEN DEL DUEÑO (string) si la reserva se otorga, o `null` si ya esta tomada.
+ * El token no es decorativo: sin el, `liberarReserva` no puede distinguir "suelto la mia"
+ * de "borro la de otro" — ver el comentario de esa funcion.
+ *
+ * @param {number} ttlSegundos  cuanto dura la reserva si nadie la libera.
+ */
+export function reservar(clave, ttlSegundos = 300) {
+  const e = MEMORIA.get(clave);
+  if (vigente(e)) return null;
+  const token = `${Date.now().toString(36)}-${++SEQ}`;
+  escribir(clave, token, ttlSegundos);   // sincrono a memoria; el PUT va fire-and-forget
+  return token;
+}
+
+/**
+ * Suelta una reserva, PERO SOLO SI SEGUIS SIENDO EL DUEÑO.
+ *
+ * 🔴 [2026-08-24 · Codex, compuerta cruzada] La primera version era un `borrar()` pelado, y
+ * Codex encontro la secuencia que lo rompe: A reserva · pasan los 5 min y su reserva vence ·
+ * B toma una reserva nueva y valida · recien ahi A falla y suelta *la de B*. Con la llave
+ * libre, C reserva tambien ⇒ dos envios, o sea justo el duplicado que el candado vino a
+ * matar, ahora causado por el propio mecanismo de liberacion.
+ *
+ * La regla: una reserva vencida ya no es tuya, aunque vos la hayas pedido.
+ *
+ * @returns {boolean} true solo si se solto de verdad.
+ */
+export function liberarReserva(clave, token) {
+  if (!token) return false;
+  const e = MEMORIA.get(clave);
+  if (!vigente(e) || e.valor !== token) return false;
+  borrar(clave);
+  return true;
+}
+
+/**
+ * LEER-CALCULAR-ESCRIBIR ATOMICO. `calcular(valorActual)` devuelve `{ valor, guardar }`.
+ *
+ * 🔴 [2026-08-24 · 2a compuerta] Misma leccion que `reservar`, en los DATOS en vez del
+ * candado: acumular las ventanas de un proyecto con `await leer()` y despues
+ * `escribir()` tiene la carrera de siempre. Cada `calcular_cotizacion` leia la memoria
+ * antes de que las hermanas escribieran, veia vacio, y guardaba SU ventana pisando a las
+ * demas — el cliente con ocho ventanas terminaba con una.
+ *
+ * Igual que en `reservar`: LA GARANTIA ES QUE ACA NO HAY UN SOLO `await`. `calcular` debe
+ * ser sincrona; si alguien le pasa una funcion async, la atomicidad se pierde en silencio.
+ */
+export function fusionar(clave, calcular, ttlSegundos = 3600) {
+  const actual = leerLocal(clave);
+  const { valor, guardar } = calcular(actual) || {};
+  if (guardar && valor !== undefined && valor !== null) escribir(clave, valor, ttlSegundos);
+  return valor === undefined ? actual : valor;
+}
+
 export function borrar(clave) {
   MEMORIA.delete(clave);
   pedir('DELETE', clave).catch(() => {});
@@ -97,4 +181,4 @@ export function borrar(clave) {
 /** Para tests. */
 export function _reset() { MEMORIA.clear(); }
 
-export default { leer, leerLocal, escribir, borrar, PERSISTENCIA_ACTIVA };
+export default { leer, leerLocal, escribir, fusionar, reservar, liberarReserva, borrar, PERSISTENCIA_ACTIVA };

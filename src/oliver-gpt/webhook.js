@@ -42,7 +42,7 @@ import {
   normalizar as normalizarTel,
 } from '../../services/atribucionCotizacion.js';
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
-import { leer as leerEstado, escribir as escribirEstado } from '../../services/estadoPersistente.js';
+import { leer as leerEstado, escribir as escribirEstado, fusionar as fusionarEstado, reservar as reservarEstado, liberarReserva } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS, datosDelInforme } from '../../services/informeTermico.js';
 import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
@@ -997,7 +997,7 @@ export async function handleWebhook(req, res, deps = {}) {
       //      milisegundo por esto — es la regla dura del proyecto.
       //   3. si THERMAL no responde o no hay dato verificado, NO se manda nada.
       //      Jamás se inventa un número: son citas normativas.
-      enviarInformeTermico: (comuna, { forzar = false, glassLabel = '', uw = null, producto = '' } = {}) => {
+      enviarInformeTermico: (comuna, { forzar = false, glassLabel = '', uw = null, producto = '', ventanas = null } = {}) => {
         const clave = `informe_termico:${String(from).replace(/\D/g, '')}`;
         safe('informeTermico', async () => {
           // 🔴 [2026-08-24 · Codex, compuerta cruzada] LA MEMORIA VA ANTES QUE TODO CANDADO.
@@ -1014,13 +1014,21 @@ export async function handleWebhook(req, res, deps = {}) {
           let recordados = null;
           try { recordados = await (deps.leerEstado || leerEstado)(claveDatos); }
           catch { /* sin memoria el informe sale igual, solo sin el recuadro */ }
-          const elegido = datosDelInforme({ glassLabel, uw, producto }, recordados);
-          ({ glassLabel, uw, producto } = elegido.datos);
-          if (elegido.recordar) {
-            try {
-              await (deps.escribirEstado || escribirEstado)(claveDatos, elegido.datos, 30 * 24 * 3600);
-            } catch { /* la memoria es un lujo; el informe no depende de ella */ }
-          }
+          // 🔴 [2026-08-24 · 2a compuerta] LEER-CALCULAR-ESCRIBIR EN UN SOLO PASO ATOMICO.
+          // Antes eran tres pasos con `await` en medio, y tenian la misma carrera que el
+          // candado: las ocho cotizaciones de un proyecto leian la memoria antes de que
+          // ninguna escribiera, cada una se creia la unica y guardaba SU ventana pisando a
+          // las demas. El cliente terminaba con un informe de una ventana.
+          // `fusionar` no tiene ningun await adentro, asi que entre leer y escribir no se
+          // cuela nadie. `recordados` (la ida a Postgres) sirve de semilla cuando la memoria
+          // local esta vacia, que es el caso despues de un redeploy.
+          try {
+            const datosInforme = (deps.fusionarEstado || fusionarEstado)(claveDatos, (local) => {
+              const e = datosDelInforme({ glassLabel, uw, producto, ventanas }, local || recordados);
+              return { valor: e.datos, guardar: e.recordar };
+            }, 30 * 24 * 3600);
+            if (datosInforme) ({ glassLabel, uw, producto, ventanas } = datosInforme);
+          } catch { /* la memoria es un lujo; el informe no depende de ella */ }
 
           // `forzar` llega desde la tool enviar_informe_termico: si el cliente lo PIDE, se le
           // manda aunque ya lo tenga. El candado existe para no spamear, no para negarle algo
@@ -1044,21 +1052,58 @@ export async function handleWebhook(req, res, deps = {}) {
           //   · este, CORTO (5 min): tapa la ventana del duplicado y, si el envio se cae,
           //     vence solo y el proximo turno reintenta;
           //   · el de 30 dias, que se sigue marcando SOLO tras entrega confirmada.
+          //
+          // 🔴 [2026-08-24 · SEGUNDA VUELTA] LA PRIMERA VERSION DE ESTE CANDADO NO SERVIA, Y
+          // SE MIDIO: hacia `await leer(...)` y despues `await escribir(...)`. Cada `await`
+          // cede el event loop, asi que las dos ejecuciones leian "libre" antes de que
+          // ninguna marcara — y las dos mandaban. Los 4 informes de hoy (0001/0002 a un
+          // cliente, 0003/0004 a otro) salieron por ese hueco, con 90 y 310 ms de diferencia:
+          // ni cerca de los ~40 s de ritmo humano que el comentario de arriba suponia.
+          //
+          // La causa real no era el tiempo: son DOS `calcular_cotizacion` del MISMO turno,
+          // una por ventana del proyecto. Se arregla con un test-and-set sin await adentro
+          // (`reservar`), no alargando el TTL.
           const claveEnCurso = `${clave}:en_curso`;
+          let tokenReserva = null;
           if (!forzar) {
             try {
-              if ((await (deps.leerEstado || leerEstado)(claveEnCurso)) === true) return;
-              await (deps.escribirEstado || escribirEstado)(claveEnCurso, true, 5 * 60);
-            } catch { /* si el estado no se puede leer/escribir, se sigue: mejor duplicar que no mandar */ }
+              tokenReserva = (deps.reservarEstado || reservarEstado)(claveEnCurso, 5 * 60) || null;
+              if (!tokenReserva) return;
+            } catch { /* si el estado no se puede reservar, se sigue: mejor duplicar que no mandar */ }
           }
+          // Si algo corta entre aca y el envio, la reserva se suelta: un candado que no se
+          // puede soltar deja al cliente sin informe hasta que venza el TTL.
+          //
+          // 🔴 [Codex · compuerta] SE SUELTA CON TOKEN, no con un `borrar` pelado. La
+          // secuencia que rompia el borrado ciego: esta ejecucion reserva · pasan los 5 min
+          // y su reserva vence · OTRA cotizacion toma una reserva nueva y valida · recien
+          // ahi esta falla y borra *la de la otra*, dejando la llave libre para una tercera.
+          // El mecanismo de liberacion causaba el duplicado que el candado vino a matar.
+          const liberar = () => {
+            if (!tokenReserva) return;
+            const mio = tokenReserva;
+            tokenReserva = null;
+            try { (deps.liberarReserva || liberarReserva)(claveEnCurso, mio); } catch { /* nada que hacer */ }
+          };
 
+          // 🔴 [Codex · compuerta] DE ACA PARA ABAJO, TODO VA EN try/finally. Las salidas por
+          // `return` ya soltaban la reserva, pero una EXCEPCION no: si THERMAL, pdfkit o el
+          // envio lanzaban, el candado quedaba puesto sin que nadie hubiera mandado nada —
+          // cliente sin informe y reintento bloqueado hasta que venciera el TTL. Es el mismo
+          // error que dejo a 4 clientes trabados 30 dias, en version corta.
+          try {
           // Se pide la comuna del cliente; si THERMAL no la reconoce (pasa con los SECTORES:
           // Labranza, Cajon, Metrenco…) se cae a la referencia regional, anunciada como tal.
           const norm = normalizarComuna(comuna);
-          let datos = norm ? await pedirInformeComuna(norm) : null;
+          // [2026-08-24] Inyectables: sin esto, TODO este camino —el que le manda un
+          // documento firmado a un cliente— solo se podia probar leyendo el codigo fuente
+          // con expresiones regulares. Un test de fuente ve si una linea existe; no ve si
+          // el envio ocurre una vez, ninguna o dos, que es exactamente lo que fallo hoy.
+          const pedirComunaFn = deps.pedirInformeComuna || pedirInformeComuna;
+          let datos = norm ? await pedirComunaFn(norm) : null;
           let esRef = false;
-          if (!datos) { datos = await pedirInformeComuna(COMUNA_REFERENCIA); esRef = true; }
-          if (!datos) return;   // sin dato verificado no hay informe
+          if (!datos) { datos = await pedirComunaFn(COMUNA_REFERENCIA); esRef = true; }
+          if (!datos) { liberar(); return; }   // sin dato verificado no hay informe
 
           // El catálogo de vidrios enriquece el informe, pero NO es obligatorio: si falla,
           // el informe sale igual sin esa sección.
@@ -1075,12 +1120,12 @@ export async function handleWebhook(req, res, deps = {}) {
           // estaban usando. Tampoco es obligatorio: si THERMAL no contesta, van [] y el
           // informe sale sin figuras. Dos niveles de degradacion y ninguno rompe la venta.
           let laminas = null;
-          try { laminas = await laminasParaInforme(); } catch { /* opcional */ }
+          try { laminas = await (deps.laminasParaInforme || laminasParaInforme)(); } catch { /* opcional */ }
           // [2026-08-24] La figura del TERMOPANEL (aluminio vs Thermoflex): reemplaza al
           // catalogo de vidrios, que el dueno bajo ("genera desconfianza"). Hasta que
           // THERMAL deployee el perfil nuevo devuelve null y el informe sale sin ella.
           let termopanel = null;
-          try { termopanel = await laminaTermopanel({ glassLabel }); } catch { /* opcional */ }
+          try { termopanel = await (deps.laminaTermopanel || laminaTermopanel)({ glassLabel }); } catch { /* opcional */ }
 
           // [2026-08-24] CORRELATIVO ISO (CM-FR-006), pedido ANTES de generar el PDF y
           // ESTAMPADO en el documento — el mismo procedimiento que la cotizacion (CM-FR-004).
@@ -1111,14 +1156,6 @@ export async function handleWebhook(req, res, deps = {}) {
             numeroInforme = `INF-LOCAL-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString(36).toUpperCase().slice(-4)}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
           }
 
-          const pdfBuf = await generarInformeTermicoPdf(datos, {
-            nombre: state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios, laminas, termopanel,
-            numeroInforme,
-            // Lo que hace que el informe sea de SU proyecto y no un catalogo.
-            suVidrio: glassLabel, suUw: uw, suProducto: producto,
-          });
-          if (!pdfBuf) return;
-
           // [2026-08-21] RITMO HUMANO, EN DOS TIEMPOS. Corrección del dueño: *"no olvidar que
           // hay que ser más humano, no puede ser inmediato — el informe debe verse real"*.
           // Nadie redacta un informe con citas normativas en seis segundos. Si aparece al
@@ -1131,9 +1168,28 @@ export async function handleWebhook(req, res, deps = {}) {
           // TIEMPO 1 — el aviso. Explica la espera, que es lo que la vuelve tolerable: un
           // silencio largo sin explicación se lee como que el bot se colgó.
           await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: DEMORA_AVISO_MS });
-          await enviarSinPausa(from,
-            `Deme un momento${nom ? `, ${nom}` : ''} — reviso qué exige la norma en `
-            + `${esRef ? 'su zona' : datos.comuna} y le armo el informe.`);
+          const avisoTxt = `Deme un momento${nom ? `, ${nom}` : ''} — reviso qué exige la norma en `
+            + `${esRef ? 'su zona' : datos.comuna} y le armo el informe.`;
+          const avisoEnviado = await enviarSinPausa(from, avisoTxt);
+          // 🔴 [2026-08-24] ESPEJO AL COCKPIT. `enviarSinPausa` habla con Meta pero NO
+          // registra nada: este texto salia hacia el cliente y no existia para el operador.
+          // Sin el, el documento de mas abajo aparece solo, sin la frase que lo anuncia.
+          //
+          // [Codex · 2a pasada] SOLO SI SALIO. La primera version ignoraba el resultado y
+          // registraba igual: con Meta rechazando el texto, el operador veia en el cockpit
+          // un mensaje que el cliente nunca recibio. Es el mismo error que ya se corrigio
+          // para el documento, en el mensaje de al lado.
+          // [Codex · 3a] `ok === true` y nada mas. Antes `undefined`/`null` contaban como
+          // exito "por las dudas", y la regla del proyecto dice lo contrario: nada se
+          // registra sin confirmacion. El emisor real siempre devuelve {ok:boolean}.
+          if (avisoEnviado?.ok === true) {
+          safe('informeTermico.espejo.aviso', () => bridge.pushConversationEvent({
+            channel: 'whatsapp', external_id: from, direction: 'outbound',
+            actor_type: 'ai', actor_name: 'Oliver', message_type: 'text',
+            body: avisoTxt,
+            metadata: { source: 'oliver_gpt_informe_termico', informe_number: numeroInforme },
+          }));
+          }
 
           // TIEMPO 2 — la elaboración, con los puntitos de "escribiendo…" vivos para que el
           // cliente VEA que hay alguien trabajando en vez de mirar una pantalla muerta.
@@ -1144,6 +1200,61 @@ export async function handleWebhook(req, res, deps = {}) {
           } finally {
             try { if (typeof detenerPuntitos === 'function') detenerPuntitos(); } catch { /* cosmético */ }
           }
+
+          // 🔴 [2026-08-24 · Codex, 2a pasada] SE RELEEN LAS VENTANAS JUSTO ANTES DE ARMAR
+          // EL PDF, no al entrar al hook.
+          //
+          // EL PORQUE: `calcular_cotizacion` cotiza UNA partida por llamada, asi que un
+          // cliente con ocho ventanas dispara ocho veces, con ~100-300 ms entre una y otra
+          // (medido: folios 0003 y 0004). La primera llamada se lleva la reserva y arma el
+          // documento; si tomara la foto en ese instante, el informe saldria con UNA
+          // ventana y las otras siete llegarian tarde. Es el defecto original sobreviviendo
+          // al arreglo.
+          //
+          // Los dos tiempos humanos de arriba —que ya existian para que el informe no
+          // parezca un autoresponder— son la ventana de agrupacion: cuando terminan, las
+          // demas cotizaciones ya escribieron su ventana en la memoria. Un efecto util de
+          // algo que estaba puesto por otra razon, sin agregar ni un segundo de espera.
+          //
+          // 🔴 [Codex · 3a compuerta] Y SE ESPERA A QUE EL PROYECTO DEJE DE CRECER. Una sola
+          // foto no es una barrera: las tools corren SECUENCIALMENTE (agent.js) y cada
+          // cotizacion espera a la anterior, asi que la ultima partida de un proyecto largo
+          // puede terminar despues de los tiempos humanos y quedarse afuera del documento.
+          // El fake de los tests las disparaba todas de una y escondia el escenario.
+          //
+          // Se relee hasta que dos lecturas seguidas dan el mismo total: ahi el proyecto se
+          // estabilizo. Con tope, porque esto corre con el cliente esperando y un informe
+          // con una ventana de menos es mejor que un informe que no llega.
+          const ESPERA_MS = Number(process.env.INFORME_ESTABILIZAR_MS || 1500);
+          const VUELTAS = Number(process.env.INFORME_ESTABILIZAR_VUELTAS || 6);
+          // Se ESPERA PRIMERO y se lee despues: preguntar antes de darle tiempo a nadie
+          // devuelve siempre lo mismo que ya se tenia y el bucle cortaria en la vuelta uno
+          // sin haber esperado nunca. Hacen falta dos lecturas iguales seguidas para
+          // declarar estable el proyecto.
+          let estable = 0;
+          for (let vuelta = 0; vuelta < VUELTAS && estable < 2; vuelta++) {
+            await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: ESPERA_MS });
+            const antes = ventanas.length;
+            try {
+              const alDia = await (deps.leerEstado || leerEstado)(claveDatos);
+              if (Array.isArray(alDia?.ventanas) && alDia.ventanas.length > ventanas.length) {
+                ventanas = alDia.ventanas;
+              }
+            } catch { /* si la memoria falla se usa lo que ya se tenia */ }
+            estable = ventanas.length === antes ? estable + 1 : 0;
+          }
+
+          const pdfBuf = await (deps.generarInformeTermicoPdf || generarInformeTermicoPdf)(datos, {
+            nombre: state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios, laminas, termopanel,
+            numeroInforme,
+            // Lo que hace que el informe sea de SU proyecto y no un catalogo.
+            suVidrio: glassLabel, suUw: uw, suProducto: producto,
+            // 🔴 [2026-08-24] EL PROYECTO ENTERO. Sin esta linea el hook recibia las ocho
+            // ventanas y las tiraba: el PDF volvia a dibujar UNA sola, en singular.
+            ventanas,
+          });
+          if (!pdfBuf) { liberar(); return; }
+
 
           // Reusa el mismo par upload+send que ya usa el PDF de la propuesta: subir el
           // documento a Meta y mandarlo por su media_id. Cero maquinaria nueva.
@@ -1160,11 +1271,39 @@ export async function handleWebhook(req, res, deps = {}) {
           if (!entregado) {
             log('warn', 'informeTermico.envio',
               `el informe ${numeroInforme} NO se entrego (${envio?.error || 'sin mediaId'}) — sin candado y sin registro: el proximo turno reintenta`);
+            // Se suelta la reserva corta: si no, el reintento que este log promete no
+            // podria ocurrir hasta dentro de 5 minutos.
+            liberar();
             return;
           }
           // Se marca DESPUÉS de que salió DE VERDAD: si el envío falla, el próximo turno reintenta.
           try { await (deps.escribirEstado || escribirEstado)(clave, true, 30 * 24 * 3600); }
           catch { /* no bloquea: el mensaje ya llegó */ }
+
+          // El informe SALIO. Se suelta el token sin liberar la reserva: si el `finally` la
+          // soltara ahora, se reabriria la ventana del duplicado justo despues de mandar.
+          // De aca en adelante manda el candado de 30 dias.
+          tokenReserva = null;
+
+          // 🔴 [2026-08-24] ESPEJO AL COCKPIT — EL DEFECTO QUE HIZO PREGUNTAR "¿POR QUE NO
+          // LLEGO EL INFORME?". Habia llegado: Meta acepto los PDF y la BD los tenia como
+          // entregados. Pero `conversation_messages` no tenia NI UNA FILA del informe, asi
+          // que en el cockpit no existia. La propuesta (CM-FR-004) si se ve, porque en
+          // junio le pusieron este mismo espejo por el mismo motivo ("no está en ninguna
+          // parte"); el informe nunca lo tuvo.
+          //
+          // Va DESPUES de confirmar la entrega, nunca antes: mostrarle al operador un
+          // documento que Meta rechazo es la version cockpit de mentirle a la auditoria.
+          safe('informeTermico.espejo', () => bridge.pushConversationEvent({
+            channel: 'whatsapp', external_id: from, direction: 'outbound',
+            actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
+            body: `📄 Informe térmico ${numeroInforme} (${datos.comuna}) enviado al cliente`,
+            metadata: {
+              source: 'oliver_gpt_informe_termico',
+              informe_number: numeroInforme, filename: nombreArchivo,
+              media_id: mediaId, comuna: datos.comuna, es_referencia_regional: esRef,
+            },
+          }));
 
           // [2026-08-24] REGISTRO ISO del informe ENTREGADO — despues del envio, nunca
           // antes (misma regla que el candado: registrar algo que no salio es mentirle a
@@ -1206,6 +1345,11 @@ export async function handleWebhook(req, res, deps = {}) {
             } catch (e) {
               log('warn', 'informeTermico.registro', `fallo el registro de ${numeroInforme}: ${e.message} — el cliente YA tiene su informe`);
             }
+          }
+          } finally {
+            // Idempotente: si el informe se entrego, `tokenReserva` ya es null y esto no
+            // hace nada. Solo actua cuando se salio sin haber mandado.
+            liberar();
           }
         });
       },

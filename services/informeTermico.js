@@ -336,20 +336,84 @@ export async function esperarAntesDeEnviar({ dormir = null, ms = DEMORA_MS } = {
  * alternativa —olvidar al cotizar algo sin datos termicos— dejaria sin recuadro a un cliente
  * que si tiene una ventana cotizada, que es peor.
  */
-export function datosDelInforme(entrantes, recordados) {
-  const VACIO = { glassLabel: '', uw: null, producto: '' };
+/**
+ * Ventana de agrupacion de una TANDA. Las N llamadas de un mismo pedido llegan con ms de
+ * diferencia (medido: 90 y 310 ms); 15 min es holgado para eso y corto para no pegar dos
+ * proyectos distintos. Configurable por si el ritmo del bot cambia.
+ */
+const TANDA_MS = Number(process.env.INFORME_TANDA_MS || 15 * 60 * 1000);
+
+export function datosDelInforme(entrantes, recordados, ahora = Date.now()) {
+  const VACIO = { glassLabel: '', uw: null, producto: '', ventanas: [] };
   // `Number(d.uw) > 0` y no una simple comprobacion de presencia: un Uw de 0 es lo que
   // produce `Number(null)`, no una medicion. Si contara como dato, un cero espurio
   // desplazaria al Uw real recordado y se declararia EL CERO en su lugar.
+  //
+  // [2026-08-24] `ventanas` es el proyecto COMPLETO (una fila por ventana). Cuenta como
+  // dato por si sola: un proyecto puede traer todas sus ventanas sin Uw —correderas H98,
+  // que la API termica aun no tiene cargadas— y aun asi el informe tiene que listarlas.
   const hay = (d) => Boolean(d && typeof d === 'object' && !Array.isArray(d)
-    && (d.glassLabel || d.producto || Number(d.uw) > 0));
+    && (d.glassLabel || d.producto || Number(d.uw) > 0
+      || (Array.isArray(d.ventanas) && d.ventanas.length > 0)));
   const limpiar = (d) => ({
     glassLabel: d.glassLabel || '',
     uw: d.uw === undefined || d.uw === '' ? null : d.uw,
     producto: d.producto || '',
+    ventanas: Array.isArray(d.ventanas) ? d.ventanas : [],
   });
-  if (hay(entrantes)) return { datos: limpiar(entrantes), recordar: true };
-  if (hay(recordados)) return { datos: limpiar(recordados), recordar: false };
+  // 🔴 [2026-08-24 · Codex, 2a pasada] LAS VENTANAS SE ACUMULAN; EL RESTO SE REEMPLAZA.
+  // Son dos cosas distintas y por confundirlas el arreglo del proyecto-completo no
+  // arreglaba nada: `calcular_cotizacion` cotiza UNA partida por llamada, asi que ocho
+  // ventanas son ocho llamadas con una ventana cada una. Con la memoria reemplazando, el
+  // informe salia con la ultima y listo.
+  //
+  // `glassLabel`/`uw`/`producto` SI se reemplazan: son el resumen de la ULTIMA cotizacion,
+  // no una coleccion, y ahi lo entrante tiene que ganarle a lo viejo (regla que cazo Codex
+  // en la primera compuerta: si no, se le declara el Uw de un vidrio que ya no es el suyo).
+  // ⚠️ SE ACUMULA SIN DEDUPLICAR, Y ES A PROPOSITO. El primer intento deduplicaba por
+  // producto+medidas+vidrio, y estaba mal por una razon de negocio, no de codigo: DOS
+  // VENTANAS IGUALES SON UN CASO NORMAL — un living con dos correderas gemelas es lo mas
+  // comun del mundo. Deduplicar por contenido las fusionaba y el informe declaraba una
+  // ventana menos de las que el cliente compra. Perder una ventana del proyecto es
+  // exactamente el defecto que este lote vino a arreglar.
+  //
+  // ¿Y la recotizacion (el mismo proyecto en color madera, caso real de Vanessa)? No
+  // duplica nada, porque no llega hasta aca: el candado de 30 dias hace que el informe
+  // salga UNA sola vez por cliente. Esta acumulacion solo junta las llamadas de la
+  // primera tanda, que es cuando el cliente lista sus N ventanas.
+  const acumular = (nuevas, viejas) => [
+    ...(Array.isArray(viejas) ? viejas : []),      // primero las de antes: se listan en el
+    ...(Array.isArray(nuevas) ? nuevas : []),      // orden en que se cotizaron
+  ];
+  // 🔴 [2026-08-24 · Gemini, 3a pasada] LA ACUMULACION SE CORTA POR TANDA.
+  // La memoria vive 30 dias y no tenia ningun corte entre proyectos: un cliente que
+  // cotizaba 4 ventanas el lunes y otras 4 el viernes acumulaba OCHO. El candado de 30
+  // dias evita el envio automatico —por eso parecia cubierto— pero NO cubre el re-envio
+  // con `forzar: true`, que es justo cuando el cliente PIDE su informe: recibia un
+  // documento firmado mezclando el proyecto descartado con el nuevo. Y si la segunda
+  // cotizacion es de otra comuna, las ventanas viejas quedan certificadas contra una
+  // exigencia que no les corresponde.
+  //
+  // El corte es POR TIEMPO porque es el unico dato disponible: no hay id de proyecto ni de
+  // tanda. Sin sello (memoria escrita antes de este cambio) se trata como otra tanda:
+  // mostrar de menos es recuperable —el cliente recotiza— y mezclar proyectos no.
+  const selloPrevio = Number(recordados?.ventanasAt);
+  const mismaTanda = Number.isFinite(selloPrevio) && (ahora - selloPrevio) <= TANDA_MS;
+  const traeVentanas = Array.isArray(entrantes?.ventanas) && entrantes.ventanas.length > 0;
+  const ventanas = (traeVentanas && !mismaTanda)
+    ? [...entrantes.ventanas]                       // tanda nueva: reemplaza
+    : acumular(entrantes?.ventanas, recordados?.ventanas);
+  // El sello se renueva con cada ventana que entra; si no entro ninguna, se conserva el
+  // de la tanda que las trajo (un re-envio no puede hacer parecer fresco a un proyecto viejo).
+  const ventanasAt = traeVentanas ? ahora : (Number.isFinite(selloPrevio) ? selloPrevio : null);
+
+  if (hay(entrantes)) return { datos: { ...limpiar(entrantes), ventanas, ventanasAt }, recordar: true };
+  // Aunque no haya datos entrantes, si el acumulado crecio hay que volver a guardarlo.
+  if (hay(recordados)) {
+    const rec = limpiar(recordados);
+    const crecio = ventanas.length !== rec.ventanas.length;
+    return { datos: { ...rec, ventanas, ventanasAt }, recordar: crecio };
+  }
   return { datos: VACIO, recordar: false };
 }
 

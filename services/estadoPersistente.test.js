@@ -73,3 +73,157 @@ test('sin credenciales queda inerte y no lanza (entorno de test/local)', async (
   assert.doesNotThrow(() => mod.escribir('y', 2, 60));
   assert.equal(mod.leerLocal('y'), 2, 'sigue sirviendo como caché en memoria');
 });
+
+// ── 🔴 [2026-08-24] RESERVAR: test-and-set ATOMICO ───────────────────────────
+// Nacio de un duplicado MEDIDO en produccion: los DOS clientes atendidos el 24-ago
+// recibieron su informe termico DOS veces (folios 0001/0002 y 0003/0004), con 90 y 310 ms
+// entre emisiones. La causa no era la ventana humana que el candado de 5 min asumia: son
+// dos `calcular_cotizacion` del MISMO turno —una por ventana del proyecto— corriendo en
+// paralelo. El candado hacia `await leer(...)` y despues `await escribir(...)`, y CADA
+// `await` cede el event loop: las dos ejecuciones leian "libre" antes de que ninguna
+// escribiera, y las dos pasaban.
+//
+// `reservar` cierra la carrera porque no tiene NI UN await adentro: en el hilo unico de
+// Node, entre el chequeo y la marca no puede colarse nadie.
+
+test('🔒 reservar: el primero se la lleva, el segundo NO', async () => {
+  const { fetchFalso } = armarBackend();
+  const mod = await cargarModulo(fetchFalso, 'r1');
+  const token = mod.reservar('informe:569', 300);
+  assert.ok(token, 'la primera reserva se otorga y devuelve el token del dueño');
+  assert.equal(mod.reservar('informe:569', 300), null, 'la segunda tiene que ser rechazada');
+});
+
+test('🔒 reservar: dos ejecuciones CONCURRENTES — solo una pasa', async () => {
+  // Esta es la reproduccion del defecto real. Con el patron viejo (leer/escribir con
+  // await) las dos pasaban; el test lo demuestra comparando ambos caminos.
+  const { fetchFalso } = armarBackend();
+  const mod = await cargarModulo(fetchFalso, 'r2');
+
+  const intento = async (clave, i) => {
+    await new Promise((r) => setTimeout(r, i));   // el desfase de ~ms que hubo en produccion
+    return mod.reservar(clave, 300);
+  };
+  const conReserva = await Promise.all([intento('a', 0), intento('a', 1), intento('a', 2)]);
+  assert.deepEqual(conReserva.filter(Boolean).length, 1, 'una sola ejecucion puede seguir');
+
+  // El patron VIEJO, para que quede constancia de por que no servia:
+  // Arrancan en el MISMO tick, que es lo que pasa cuando un turno dispara dos
+  // cotizaciones: el `await` de `leer` cede el control y las tres entran antes de que
+  // ninguna haya marcado nada.
+  const viejo = async (clave) => {
+    if (await mod.leer(clave)) return false;
+    mod.escribir(clave, true, 300);
+    return true;
+  };
+  const sinReserva = await Promise.all([viejo('b'), viejo('b'), viejo('b')]);
+  assert.ok(sinReserva.filter(Boolean).length > 1,
+    'el patron leer-luego-escribir deja pasar a mas de uno: por eso se cambio');
+});
+
+test('🔒 reservar: si el envio falla, liberar deja reintentar en el proximo turno', async () => {
+  // Un candado que no se puede soltar es peor que no tener candado: dejaria al cliente
+  // sin informe hasta que venza el TTL. Ya paso —4 clientes bloqueados 30 dias— y no
+  // se repite.
+  const { fetchFalso } = armarBackend();
+  const mod = await cargarModulo(fetchFalso, 'r3');
+  const token = mod.reservar('c', 300);
+  assert.ok(token);
+  assert.equal(mod.reservar('c', 300), null);
+  assert.equal(mod.liberarReserva('c', token), true, 'el dueño puede soltarla');
+  assert.ok(mod.reservar('c', 300), 'liberada, el proximo turno reintenta');
+});
+
+test('🔒 reservar: una reserva VENCIDA no bloquea para siempre', async () => {
+  const { fetchFalso } = armarBackend();
+  const mod = await cargarModulo(fetchFalso, 'r4');
+  assert.ok(mod.reservar('d', 0.03));                    // 30 ms de vida
+  assert.equal(mod.reservar('d', 0.03), null);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(mod.reservar('d', 300), 'vencida, se puede volver a tomar');
+});
+
+test('🔴 [Codex · compuerta] liberar SIN dueño podia borrar la reserva de otro', async () => {
+  // LA SECUENCIA QUE CAZO CODEX: A reserva. Pasan los 5 min y la reserva vence. B, que es
+  // otra cotizacion, toma una reserva NUEVA y valida. Recien ahi A falla y suelta... la de
+  // B. Con la llave libre, C reserva tambien ⇒ dos envios, que es exactamente el duplicado
+  // que este candado vino a matar.
+  //
+  // Por eso `liberar` deja de ser un `borrar` a secas: solo suelta el que tiene el token.
+  const { fetchFalso } = armarBackend();
+  const mod = await cargarModulo(fetchFalso, 'r5');
+
+  const tokenA = mod.reservar('k', 0.03);
+  assert.ok(tokenA);
+  await new Promise((r) => setTimeout(r, 50));          // vence la de A
+  const tokenB = mod.reservar('k', 300);
+  assert.ok(tokenB, 'B toma una reserva nueva y legitima');
+  assert.notEqual(tokenA, tokenB, 'cada reserva tiene su propio dueño');
+
+  assert.equal(mod.liberarReserva('k', tokenA), false,
+    'A ya no es el dueño: su liberacion tardia no puede tocar la reserva de B');
+  assert.equal(mod.reservar('k', 300), null, 'y la de B sigue en pie: C no puede entrar');
+  assert.equal(mod.liberarReserva('k', tokenB), true, 'el dueño real si puede soltarla');
+});
+
+test('liberarReserva sin token o con clave libre no hace nada ni lanza', async () => {
+  const { fetchFalso } = armarBackend();
+  const mod = await cargarModulo(fetchFalso, 'r6');
+  assert.equal(mod.liberarReserva('nada', null), false);
+  assert.equal(mod.liberarReserva('nada', 'token-inventado'), false);
+});
+
+test('🔴 fusionar: acumular tambien necesita ser ATOMICO', async () => {
+  // La misma carrera del candado, en la memoria de datos: dos ejecuciones hacen
+  // `await leer()` antes de que ninguna escriba, las dos ven vacio, y la segunda PISA a
+  // la primera en vez de sumarse. Asi se perdian las ventanas de un proyecto: cada
+  // `calcular_cotizacion` guardaba la suya creyendo que era la unica.
+  const { fetchFalso } = armarBackend();
+  const mod = await cargarModulo(fetchFalso, 'f1');
+  const sumar = (v) => (local) => ({ valor: [...(local || []), v], guardar: true });
+  mod.fusionar('proj', sumar('V1'), 60);
+  mod.fusionar('proj', sumar('V2'), 60);
+  mod.fusionar('proj', sumar('V3'), 60);
+  assert.deepEqual(mod.leerLocal('proj'), ['V1', 'V2', 'V3'], 'las tres, en orden');
+});
+
+test('fusionar: si el calculo dice que no hay nada que guardar, no escribe', async () => {
+  const { fetchFalso } = armarBackend();
+  const mod = await cargarModulo(fetchFalso, 'f2');
+  mod.fusionar('vacio', () => ({ valor: null, guardar: false }), 60);
+  assert.equal(mod.leerLocal('vacio'), null, 'no tiene sentido guardar el vacio');
+});
+
+test('🔴 [Codex 3a] un GET atrasado NO puede pisar lo que se fusiono mientras viajaba', async () => {
+  // EL DEFECTO MAS FINO DE TODO EL LOTE, y `fusionar` por si sola no lo cubria: `leer()`
+  // va a Postgres y, al volver, CACHEA lo que trajo en la memoria local. Si mientras ese
+  // GET viajaba otra ejecucion fusiono ventanas nuevas, la respuesta vieja las pisa.
+  //
+  // Reproduccion de Codex: A fusiona [VIEJA, A]; llega el GET atrasado de B con [VIEJA] y
+  // pisa; B fusiona sobre eso y queda [VIEJA, B]. La ventana de A desaparecio, y nadie se
+  // entera: no hay error, solo un informe con una ventana menos.
+  const { disco, fetchFalso } = armarBackend();
+  disco.set('p', ['VIEJA']);
+  let soltar;
+  const lento = async (url, opts = {}) => {
+    if ((opts.method || 'GET') !== 'GET') return fetchFalso(url, opts);
+    // El GET lee el disco AHORA —como haria la base de datos real al recibir la consulta—
+    // y recien despues se cuelga. Si leyera al soltarse veria el PUT que ocurrio mientras
+    // tanto y el defecto no se reproduciria: seria un test que se auto-arregla.
+    const r = await fetchFalso(url, opts);
+    const congelado = await r.json();
+    await new Promise((res) => { soltar = res; });
+    return { ok: true, json: async () => congelado };
+  };
+  const mod = await cargarModulo(lento, 'g1');
+
+  const viaje = mod.leer('p');                        // GET en vuelo
+  await new Promise((r) => setTimeout(r, 10));
+  mod.fusionar('p', (local) => ({ valor: [...(local || ['VIEJA']), 'A'], guardar: true }), 60);
+  assert.deepEqual(mod.leerLocal('p'), ['VIEJA', 'A']);
+
+  soltar();                                            // ahora vuelve el GET viejo
+  await viaje;
+  assert.deepEqual(mod.leerLocal('p'), ['VIEJA', 'A'],
+    'lo que ya estaba en memoria es MAS NUEVO que la respuesta que venia en camino');
+});

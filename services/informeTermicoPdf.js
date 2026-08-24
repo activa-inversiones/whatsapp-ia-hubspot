@@ -167,12 +167,172 @@ export function veredictoUw(suUw, uwMaxNorma) {
 }
 
 /**
+ * EL PROYECTO COMPLETO, VENTANA POR VENTANA. Función PURA y exportada.
+ *
+ * PEDIDO DEL DUEÑO (2026-08-24, textual): *"no podemos cotizarle una ventana al cliente
+ * teniendo ocho ventanas con transmitancias térmicas [distintas]"*. Hasta hoy el informe
+ * declaraba el Uw de `items[0]` bajo el rótulo "LA VENTANA DE SU COTIZACIÓN", en singular,
+ * y las otras siete no existían para el documento.
+ *
+ * Y el cálculo YA ESTABA HECHO: `enginePricer.js:491` guarda `item.termico` en CADA ítem,
+ * o sea las seis ventanas de un proyecto ya tienen su Uw calculado contra ACTIVA THERMAL
+ * con sus medidas, su perfil y su vidrio EFECTIVOS. Se estaba tirando a la basura.
+ *
+ * 🔴 LAS FILAS SIN Uw NO SE OMITEN. Medido en la BD viva el 24-ago: 130 de 630 cotizaciones
+ * (20,6 %) salen con `termico: null`, y no por azar — toda corredera de 4 m² o más usa hoja
+ * H98, que la API térmica todavía no tiene cargada (`quoteEngine.js:1007` +
+ * `uwClient.js` SLIDING_PERFIL_POR_HOJA), y `PERFIL_MAP` no tiene ninguna puerta. Omitir
+ * esas filas haría parecer que el proyecto tiene MENOS ventanas de las que tiene, que es
+ * peor que decir la verdad: la ventana se lista y se rotula "perfil en certificación".
+ * Redacción aprobada por el dueño.
+ *
+ * @param {Array} ventanas    ítems: {id, producto, medidas, vidrio, ambiente, cantidad, uw}
+ * @param {*}     uwMaxNorma  tope de la comuna (null donde no rige un PDA)
+ */
+export function resumenVentanas(ventanas, uwMaxNorma) {
+  const lista = Array.isArray(ventanas) ? ventanas : [];
+  const exigencia = num(uwMaxNorma);
+
+  const filas = lista.map((v, i) => {
+    const { uwCliente, cumple } = veredictoUw(v && v.uw, uwMaxNorma);
+    // 🔴 [2026-08-24 · Codex] LA CANTIDAD NO SE INVENTA. Antes esto era `Number(qty) || 1`
+    // y convertia `undefined`, `0`, `'abc'` y los negativos en un 1 que nadie informo.
+    // Que la fila exista prueba que hay AL MENOS una ventana —de ahi salio el item
+    // cotizado— asi que 1 se mantiene como PISO para que los conteos cierren; lo que
+    // faltaba era distinguirlo de un dato informado. Un supuesto que no se puede
+    // distinguir de un hecho es, a efectos del documento firmado, una invencion.
+    const nCant = Number(v?.cantidad);
+    const cantidadCierta = Number.isInteger(nCant) && nCant > 0;
+    const cantidad = cantidadCierta ? nCant : 1;
+    return {
+      id: String(v?.id || `V${i + 1}`),
+      producto: String(v?.producto || 'Ventana').trim(),
+      medidas: String(v?.medidas || '').trim(),
+      vidrio: String(v?.vidrio || '').trim(),
+      ambiente: String(v?.ambiente || '').trim(),
+      cantidad,
+      cantidadIncierta: !cantidadCierta,
+      uw: uwCliente,
+      cumple,
+      // Lo que se imprime cuando no hay Uw. No es un dato que falte del cliente: es un
+      // perfil que todavía no está certificado de nuestro lado, y así se dice.
+      motivo: uwCliente === null ? 'perfil en certificación' : '',
+    };
+  });
+
+  const conUw = filas.filter((f) => f.uw !== null);
+  const vidrios = [...new Set(filas.map((f) => f.vidrio).filter(Boolean))];
+  // 🔴 [2026-08-24 · Codex] TODO LO QUE SE DECLARA SE CUENTA EN UNIDADES. El encabezado
+  // sumaba cantidades y la sintesis contaba filas: dos partidas de 3 daban "6 ventanas"
+  // arriba y "Las 2 ventanas calculadas cumplen" abajo, en la misma pagina firmada. El
+  // cliente compra unidades; las filas son un detalle de como se agrupo la cotizacion.
+  const unidades = (lista) => lista.reduce((n, f) => n + f.cantidad, 0);
+
+  return {
+    filas,
+    exigencia,
+    vidrios,                                   // termopaneles distintos presentes en el proyecto
+    totalVentanas: unidades(filas),
+    conUw: conUw.length,                       // FILAS con Uw (detalle de la cotizacion)
+    sinUw: filas.length - conUw.length,        // FILAS sin Uw
+    unidadesConUw: unidades(conUw),            // lo que se le declara al cliente
+    unidadesSinUw: unidades(filas.filter((f) => f.uw === null)),
+    // `null` = no hay veredicto de conjunto posible (o no hay tope, o falta algún Uw).
+    // JAMÁS se afirma "todo el proyecto cumple" si alguna ventana no se pudo calcular:
+    // sería extender un veredicto a algo que no se midió, en un documento firmado.
+    todasCumplen: exigencia !== null && filas.length > 0 && conUw.length === filas.length
+      ? filas.every((f) => f.cumple === true)
+      : null,
+    peorUw: conUw.length ? Math.max(...conUw.map((f) => f.uw)) : null,
+    mejorUw: conUw.length ? Math.min(...conUw.map((f) => f.uw)) : null,
+  };
+}
+
+/**
+ * LA SINTESIS DEL CONJUNTO: las dos o tres frases en negrita bajo la tabla, que es lo unico
+ * que un cliente apurado lee de todo el informe. Devuelve `[{ texto, tono, size }]`.
+ *
+ * 🔴 [2026-08-24] Es una funcion PURA a proposito. Antes vivia embebida en el dibujo del
+ * PDF —o sea no se podia probar— y ahi tenia un defecto que solo se ve enumerando casos:
+ * la rama de incumplimiento cerraba SIEMPRE con "El resto cumple", incluso cuando las 8
+ * ventanas del proyecto excedian la exigencia y no habia ningun resto. Una afirmacion de
+ * cumplimiento sobre un conjunto vacio, en un documento firmado por un evaluador
+ * acreditado MINVU. La regla del proyecto es no inventar datos; afirmar de mas sobre un
+ * conjunto vacio es la misma falta con otra cara.
+ *
+ * Regla que ordena todo lo de abajo: solo se afirma lo que se midio. Si falta un Uw no hay
+ * veredicto de conjunto, y si no hay exigencia no hay nada contra que comparar.
+ */
+export function sintesisProyecto(proyecto) {
+  const p = proyecto || {};
+  const filas = Array.isArray(p.filas) ? p.filas : [];
+  if (!filas.length) return [];
+  const lineas = [];
+  // UNIDADES, no filas: es lo que el cliente compra y lo que dice el encabezado.
+  const n = Number(p.totalVentanas) || filas.length;
+  const pendientes = Number.isFinite(Number(p.unidadesSinUw)) ? Number(p.unidadesSinUw) : 0;
+
+  if (p.todasCumplen === true) {
+    // Concordancia: con una sola ventana decia "Las 1 ventanas calculadas cumplen".
+    lineas.push({ texto: n === 1
+      ? 'La ventana calculada cumple la exigencia de su comuna.'
+      : `Las ${n} ventanas calculadas cumplen la exigencia de su comuna.`,
+    tono: 'ok', size: 9 });
+  } else if (p.todasCumplen === false) {
+    const malas = filas.filter((f) => f.cumple === false);
+    const unidadesMalas = malas.reduce((k, f) => k + f.cantidad, 0);
+    // "El resto cumple" SOLO si existe un resto. Y "No cumplen" en vez de "Sobre la
+    // exigencia": en Chile "sobre la exigencia" se puede leer como "respecto a la
+    // exigencia", que deja al cliente sin saber si su ventana pasa o no. La frase que
+    // cierra un informe firmado tiene que ser categorica.
+    const ids = malas.map((f) => f.id).join(', ');
+    lineas.push(unidadesMalas === n
+      ? { texto: n === 1
+        ? 'La ventana calculada no cumple la exigencia de su comuna.'
+        : `Ninguna de las ${n} ventanas calculadas cumple la exigencia de su comuna.`,
+      tono: 'alerta', size: 9 }
+      // [Gemini · 3a pasada] "No cumplen ... V1" con UNA sola fallada es discordante.
+      : { texto: unidadesMalas === 1
+        ? `No cumple la exigencia de su comuna: ${ids}. El resto cumple.`
+        : `No cumplen la exigencia de su comuna: ${ids}. El resto cumple.`,
+      tono: 'alerta', size: 9 });
+  }
+
+  if (pendientes > 0) {
+    // Concordancia de numero: "1 de 3 ventanas QUEDA" / "2 de 3 ventanas QUEDAN", y el
+    // cierre en singular referido AL CALCULO, no a las ventanas (P2 de Gemini: decia
+    // "se las informamos apenas esté disponible", mezclando plural con singular).
+    const queda = pendientes === 1 ? 'queda' : 'quedan';
+    lineas.push({
+      texto: `${pendientes} de ${n} ventanas ${queda} con el cálculo pendiente: su perfil está en `
+        + 'proceso de certificación en nuestro laboratorio de cálculo. Se lo informamos apenas '
+        + 'esté disponible, sin costo.',
+      tono: 'neutro', size: 8,
+    });
+  }
+
+  if (Array.isArray(p.vidrios) && p.vidrios.length > 1) {
+    // "A y B y C" es polisindeton: no se escribe asi en un informe tecnico. Con dos va la
+    // "y" a secas; con tres o mas, comas y "y" solo antes del ultimo.
+    const lista = p.vidrios.length === 2
+      ? p.vidrios.join(' y ')
+      : `${p.vidrios.slice(0, -1).join(', ')} y ${p.vidrios[p.vidrios.length - 1]}`;
+    lineas.push({
+      texto: `Su proyecto combina ${p.vidrios.length} termopaneles distintos: ${lista}. `
+        + 'Más abajo se analiza el comportamiento de cada uno.',
+      tono: 'dato', size: 8,
+    });
+  }
+  return lineas;
+}
+
+/**
  * Arma el PDF del informe térmico de una comuna.
  * @param {object} datos       respuesta de /api/v1/exigencia
  * @param {object} opts        { nombre, firma, esReferenciaRegional }
  * @returns {Promise<Buffer|null>}  null si no hay un solo dato duro que reportar
  */
-export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {}, esReferenciaRegional = false, vidrios = null, suVidrio = '', suUw = null, suProducto = '', laminas = null, termopanel = null, numeroInforme = '' } = {}) {
+export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {}, esReferenciaRegional = false, vidrios = null, suVidrio = '', suUw = null, suProducto = '', ventanas = null, laminas = null, termopanel = null, numeroInforme = '' } = {}) {
   if (!datos || !datos.comuna) return null;
 
   const cond = datos.condensacion;
@@ -207,6 +367,17 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
     return { cod, ...dat };
   };
   const { uwCliente } = veredictoUw(suUw, datos.uw_max_Wm2K);
+  // [2026-08-24] EL PROYECTO COMPLETO. Si el llamador no manda `ventanas` —el re-envío
+  // viejo, o un cliente cuya memoria es anterior a este cambio— se arma una sola fila con
+  // lo que sí tenemos, así el informe nunca queda peor que antes.
+  const proyecto = resumenVentanas(
+    Array.isArray(ventanas) && ventanas.length
+      ? ventanas
+      : (uwCliente !== null || suVidrio || suProducto
+        ? [{ id: 'V1', producto: suProducto, vidrio: suVidrio, uw: suUw }]
+        : []),
+    datos.uw_max_Wm2K,
+  );
 
   const { default: PDFDocument } = await import('pdfkit');
 
@@ -313,33 +484,130 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
 
       let y = 208 + altoLegal + 26;
 
-      // ── SU COTIZACIÓN ───────────────────────────────────────────────────
-      // [2026-08-21] Esto es lo primero que ve el cliente, y es lo que separa un informe de
-      // un folleto: sus datos, no el catálogo. Solo se dibuja si de verdad los tenemos.
-      if (uwCliente !== null || suVidrio) {
-        const { cumple } = veredictoUw(suUw, datos.uw_max_Wm2K);
-        doc.rect(50, y, W - 100, 54).fill('#0B3D6F');
-        doc.fillColor(GOLD).fontSize(8).font('Helvetica-Bold')
-          .text('LA VENTANA DE SU COTIZACIÓN', 60, y + 8);
-        doc.fillColor('#fff').fontSize(9).font('Helvetica')
-          .text(String(suProducto || 'Ventana PVC termopanel').slice(0, 58), 60, y + 22, { width: 260 });
-        if (suVidrio) {
-          doc.fillColor('#cbd5e1').fontSize(8)
-            .text(`Vidrio: ${suVidrio}`, 60, y + 36, { width: 260 });
-        }
-        if (uwCliente !== null) {
-          doc.fillColor('#fff').fontSize(8).font('Helvetica').text('Uw calculado', 340, y + 12, { width: 90 });
-          doc.fillColor(cumple === false ? '#fca5a5' : '#86efac').fontSize(20).font('Helvetica-Bold')
-            .text(`${dec(uwCliente, 2)}`, 340, y + 24, { width: 90 });
-          doc.fillColor('#cbd5e1').fontSize(8).font('Helvetica').text('W/m²K', 393, y + 33);
-        }
-        if (cumple !== null) {
-          doc.fillColor(cumple ? '#86efac' : '#fca5a5').fontSize(10).font('Helvetica-Bold')
-            .text(cumple ? 'CUMPLE' : 'NO CUMPLE', W - 175, y + 20, { width: 115, align: 'right' });
+      // [2026-08-21] El dueno pidio el informe COMPLETO: "entregale el informe real, no importa
+      // si son varias hojas". Asi que se deja de pelear por entrar en una pagina y se agrega un
+      // salto explicito. La paginacion automatica sigue APAGADA — los cortes los decidimos acá.
+      const saltoSiNoCabe = (alto) => {
+        if (y + alto <= doc.page.height - 70) return;
+        doc.addPage();
+        doc.page.margins.bottom = 0;
+        y = 60;
+      };
+
+      // ── LAS VENTANAS DE SU PROYECTO ─────────────────────────────────────
+      // 🔴 [2026-08-24] UNA FILA POR VENTANA. Pedido del dueño, textual: *"no podemos
+      // cotizarle una ventana al cliente teniendo ocho ventanas con transmitancias térmicas
+      // [distintas]"*. Antes se dibujaba UN recuadro con el Uw de `items[0]` rotulado en
+      // singular, y las otras siete no existían para el documento.
+      //
+      // Las filas sin Uw NO se omiten: se rotulan "perfil en certificación" (redacción
+      // aprobada por el dueño). Omitirlas haría parecer que el proyecto tiene menos
+      // ventanas de las que tiene, y eso es peor que decir la verdad.
+      if (proyecto.filas.length) {
+        // 🔴 [2026-08-24 · Codex, 2a pasada] EL SINGULAR SE DECIDE POR UNIDADES, NO POR
+        // FILAS. Con `filas.length === 1`, una sola partida de 4 unidades caia en el
+        // recuadro "LA VENTANA DE SU COTIZACION": sin el ×4, sin el encabezado "4 ventanas"
+        // y sin sintesis. El cliente compra cuatro y el documento le hablaba de una. Que la
+        // cotizacion las haya agrupado en una linea es un detalle nuestro, no del proyecto.
+        const unaSola = proyecto.filas.length === 1 && proyecto.totalVentanas === 1;
+        const titulo = unaSola ? 'LA VENTANA DE SU COTIZACIÓN' : 'LAS VENTANAS DE SU PROYECTO';
+
+        // Encabezado azul con el resumen del conjunto.
+        doc.rect(50, y, W - 100, unaSola ? 54 : 32).fill('#0B3D6F');
+        doc.fillColor(GOLD).fontSize(8).font('Helvetica-Bold').text(titulo, 60, y + 8);
+        if (!unaSola) {
+          const nVent = `${proyecto.totalVentanas} ventana${proyecto.totalVentanas === 1 ? '' : 's'}`;
+          const exig = proyecto.exigencia !== null ? `  ·  exigencia ${dec(proyecto.exigencia)} W/m²K` : '';
           doc.fillColor('#cbd5e1').fontSize(8).font('Helvetica')
-            .text(`exigencia ${dec(uw)} W/m²K`, W - 175, y + 36, { width: 115, align: 'right' });
+            .text(`${nVent}${exig}`, W - 300, y + 8, { width: 240, align: 'right' });
+          y += 40;
         }
-        y += 68;
+
+        if (unaSola) {
+          // Una sola ventana: el recuadro grande de siempre, que se lee mejor que una tabla
+          // de una fila.
+          const f = proyecto.filas[0];
+          doc.fillColor('#fff').fontSize(9).font('Helvetica')
+            .text(String(f.producto || 'Ventana PVC termopanel').slice(0, 58), 60, y + 22, { width: 260 });
+          if (f.vidrio) {
+            doc.fillColor('#cbd5e1').fontSize(8).text(`Vidrio: ${f.vidrio}`, 60, y + 36, { width: 260 });
+          }
+          if (f.uw !== null) {
+            doc.fillColor('#fff').fontSize(8).font('Helvetica').text('Uw calculado', 340, y + 12, { width: 90 });
+            doc.fillColor(f.cumple === false ? '#fca5a5' : '#86efac').fontSize(20).font('Helvetica-Bold')
+              .text(`${dec(f.uw, 2)}`, 340, y + 24, { width: 90 });
+            doc.fillColor('#cbd5e1').fontSize(8).font('Helvetica').text('W/m²K', 393, y + 33);
+          } else if (f.motivo) {
+            doc.fillColor('#cbd5e1').fontSize(8).font('Helvetica-Oblique')
+              .text(f.motivo, 340, y + 26, { width: 150 });
+          }
+          if (f.cumple !== null) {
+            doc.fillColor(f.cumple ? '#86efac' : '#fca5a5').fontSize(10).font('Helvetica-Bold')
+              .text(f.cumple ? 'CUMPLE' : 'NO CUMPLE', W - 175, y + 20, { width: 115, align: 'right' });
+            doc.fillColor('#cbd5e1').fontSize(8).font('Helvetica')
+              .text(`exigencia ${dec(proyecto.exigencia)} W/m²K`, W - 175, y + 36, { width: 115, align: 'right' });
+          }
+          y += 68;
+        } else {
+          // Tabla. Columnas en x fijos para que Uw y veredicto queden alineados a la vista.
+          const X = { id: 58, prod: 86, med: 300, vid: 370, uw: 440, ver: W - 145 };
+          doc.fillColor(GRAY).fontSize(7).font('Helvetica-Bold');
+          doc.text('N°', X.id, y); doc.text('VENTANA', X.prod, y);
+          doc.text('MEDIDAS', X.med, y); doc.text('VIDRIO', X.vid, y);
+          doc.text('Uw', X.uw, y, { width: 46, align: 'right' });
+          doc.text('NORMA', X.ver, y, { width: 85, align: 'right' });
+          y += 11;
+          doc.strokeColor('#d7dee7').lineWidth(0.5).moveTo(50, y).lineTo(W - 50, y).stroke();
+          y += 5;
+
+          for (const f of proyecto.filas) {
+            saltoSiNoCabe(26);
+            const alto = 20;
+            if (f.cumple === false) doc.rect(50, y - 3, W - 100, alto).fill('#fdf0ef');
+
+            doc.fillColor(GRAY).fontSize(8).font('Helvetica-Bold').text(f.id, X.id, y);
+            const rotulo = f.cantidad > 1 ? `${f.producto}  (×${f.cantidad})` : f.producto;
+            doc.fillColor(DARK).fontSize(8).font('Helvetica')
+              .text(rotulo.slice(0, 46), X.prod, y, { width: 210, lineBreak: false });
+            if (f.ambiente) {
+              doc.fillColor(GRAY).fontSize(6.5)
+                .text(f.ambiente.slice(0, 30), X.prod, y + 9, { width: 210, lineBreak: false });
+            }
+            doc.fillColor(GRAY).fontSize(8).font('Helvetica')
+              .text(f.medidas.slice(0, 13) || '—', X.med, y, { width: 66, lineBreak: false });
+            doc.text(f.vidrio.slice(0, 13) || '—', X.vid, y, { width: 66, lineBreak: false });
+
+            if (f.uw !== null) {
+              doc.fillColor(f.cumple === false ? '#b91c1c' : DARK).fontSize(9).font('Helvetica-Bold')
+                .text(dec(f.uw, 2), X.uw, y - 1, { width: 46, align: 'right' });
+            } else {
+              // No es un hueco: es una explicación. El cliente tiene que entender que la
+              // ventana existe y que el número está pendiente de NUESTRO lado.
+              doc.fillColor(GRAY).fontSize(6.5).font('Helvetica-Oblique')
+                .text(f.motivo, X.uw - 20, y + 1, { width: 150, lineBreak: false });
+            }
+            if (f.cumple !== null) {
+              doc.fillColor(f.cumple ? '#0a7d33' : '#b91c1c').fontSize(8).font('Helvetica-Bold')
+                .text(f.cumple ? 'cumple' : 'NO cumple', X.ver, y, { width: 85, align: 'right' });
+            }
+            y += alto;
+            doc.strokeColor('#eef2f6').lineWidth(0.5).moveTo(50, y - 4).lineTo(W - 50, y - 4).stroke();
+          }
+          y += 4;
+
+          // Síntesis honesta del conjunto. La REDACCION vive en `sintesisProyecto`, que es
+          // pura y esta cubierta por tests: lo que va firmado tiene que ser testeable, y
+          // dentro del dibujo del PDF no lo era.
+          const COLOR_TONO = { ok: '#0a7d33', alerta: '#b91c1c', neutro: GRAY, dato: DARK };
+          for (const linea of sintesisProyecto(proyecto)) {
+            saltoSiNoCabe(34);
+            doc.fillColor(COLOR_TONO[linea.tono] || DARK).fontSize(linea.size)
+              .font(linea.size >= 9 ? 'Helvetica-Bold' : 'Helvetica');
+            doc.text(linea.texto, 58, y, { width: W - 116 });
+            y = doc.y + 8;
+          }
+          y += 4;
+        }
       }
 
       const seccion = (titulo) => {
@@ -354,15 +622,6 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         doc.fillColor(color).fontSize(size).font(bold ? 'Helvetica-Bold' : 'Helvetica');
         doc.text(txt, 50, y, { width: W - 100, align: 'justify' });
         y = doc.y + 8;
-      };
-      // [2026-08-21] El dueno pidio el informe COMPLETO: "entregale el informe real, no importa
-      // si son varias hojas". Asi que se deja de pelear por entrar en una pagina y se agrega un
-      // salto explicito. La paginacion automatica sigue APAGADA — los cortes los decidimos acá.
-      const saltoSiNoCabe = (alto) => {
-        if (y + alto <= doc.page.height - 70) return;
-        doc.addPage();
-        doc.page.margins.bottom = 0;
-        y = 60;
       };
       const dato = (etiqueta, valor) => {
         saltoSiNoCabe(26);
