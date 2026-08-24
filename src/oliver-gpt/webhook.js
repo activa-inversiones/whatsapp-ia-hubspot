@@ -1053,7 +1053,7 @@ export async function handleWebhook(req, res, deps = {}) {
               const rn = await fetch(`${sosUrl}/internal/informes/next-number`, {
                 method: 'POST',
                 headers: { 'x-api-key': sosTok, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tenant_id: 'activa' }),
+                body: JSON.stringify({ tenant_id: 'activa', telefono: String(from) }),
                 signal: AbortSignal.timeout(8000),
               });
               if (rn.ok) numeroInforme = (await rn.json())?.informe_number || '';
@@ -1135,6 +1135,7 @@ export async function handleWebhook(req, res, deps = {}) {
                     laminas_ids: Array.isArray(laminas?.laminas) ? laminas.laminas.map((l) => l.id).join(',') : null,
                     pdf_bytes: pdfBuf.length,
                     pdf_sha256: createHash('sha256').update(pdfBuf).digest('hex'),
+                    quote_number: state?.quoteNum ?? state?.quote_number ?? null,
                   }),
                   signal: AbortSignal.timeout(8000),
                 });
