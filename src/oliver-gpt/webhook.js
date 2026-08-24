@@ -1054,13 +1054,19 @@ export async function handleWebhook(req, res, deps = {}) {
                 method: 'POST',
                 headers: { 'x-api-key': sosTok, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ tenant_id: 'activa', telefono: String(from) }),
-                signal: AbortSignal.timeout(8000),
+                // [P2 · Codex] 5 s, no 8: este tiempo corre ANTES del aviso, con el cliente
+                // esperando en silencio. En el caso normal la llamada tarda <300 ms; el
+                // timeout solo importa con sales-os caido, y ahi 3 s menos de mudez valen
+                // mas que 3 s mas de esperanza.
+                signal: AbortSignal.timeout(5000),
               });
               if (rn.ok) numeroInforme = (await rn.json())?.informe_number || '';
             }
           } catch { /* el fallback de abajo cubre */ }
           if (!numeroInforme) {
-            numeroInforme = `INF-LOCAL-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+            // [P2 · Codex] fecha + reloj en base36 + 4 aleatorios: dos envios el mismo dia
+            // no pueden colisionar ni con Math.random repetido.
+            numeroInforme = `INF-LOCAL-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString(36).toUpperCase().slice(-4)}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
           }
 
           const pdfBuf = await generarInformeTermicoPdf(datos, {
@@ -1101,8 +1107,20 @@ export async function handleWebhook(req, res, deps = {}) {
           // documento a Meta y mandarlo por su media_id. Cero maquinaria nueva.
           const nombreArchivo = `Informe-Termico-${String(datos.comuna).replace(/\s+/g, '-')}.pdf`;
           const mediaId = await uploadWaDocument(pdfBuf, nombreArchivo);
-          if (mediaId) await sendWaDocument(from, mediaId, nombreArchivo, `Informe térmico — ${datos.comuna}`);
-          // Se marca DESPUÉS de que salió: si el envío falla, el próximo turno reintenta.
+          // 🔴 [P1 · Codex, compuerta 24-ago] `mediaId` NO prueba entrega: `sendWaDocument`
+          // devuelve {ok:false} SIN lanzar cuando Meta rechaza. La version anterior marcaba
+          // el candado y registraba la entrega igual — el cliente sin documento, el candado
+          // puesto (sin reintento en 30 dias) y la "evidencia" ISO de algo que nunca salio.
+          // Ahora TODO lo posterior exige envio.ok === true.
+          let envio = null;
+          if (mediaId) envio = await sendWaDocument(from, mediaId, nombreArchivo, `Informe térmico — ${datos.comuna}`);
+          const entregado = Boolean(mediaId && envio && envio.ok === true);
+          if (!entregado) {
+            log('warn', 'informeTermico.envio',
+              `el informe ${numeroInforme} NO se entrego (${envio?.error || 'sin mediaId'}) — sin candado y sin registro: el proximo turno reintenta`);
+            return;
+          }
+          // Se marca DESPUÉS de que salió DE VERDAD: si el envío falla, el próximo turno reintenta.
           try { await (deps.escribirEstado || escribirEstado)(clave, true, 30 * 24 * 3600); }
           catch { /* no bloquea: el mensaje ya llegó */ }
 
@@ -1112,7 +1130,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // el archivo del telefono del cliente se contrasta contra el hash. Si el registro
           // falla se dice EN VOZ ALTA (la clase de silencio que ya nos costo 3 semanas en
           // costGuard), pero no se reintenta ni bloquea: el cliente ya tiene su informe.
-          if (mediaId) {
+          {
             try {
               const { createHash } = await import('node:crypto');
               const sosUrl = (process.env.SALES_OS_URL || '').replace(/\/$/, '');

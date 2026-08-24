@@ -173,6 +173,28 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       doc.fillColor(GOLD).fontSize(10).font('Helvetica').text('Ventanas PVC · Termopanel · Fábrica en Temuco', 50, 56);
       doc.fillColor('#fff').fontSize(9).text('Evaluación energética acreditada MINVU', 50, 72);
 
+      // ── LOGO "EVALUACIÓN ENERGÉTICA" (pedido del dueño, 24-ago) ─────────
+      // Las flechas de la etiqueta de eficiencia (A→G), dibujadas en vector — cero
+      // imágenes, cero peso. El dueño mandó su firma de correo como referencia y pidió
+      // una sola corrección de texto: "cambiar CALIFICADOR energético por EVALUADOR" —
+      // acá va la forma sustantiva, EVALUACIÓN ENERGÉTICA, que calza con el cargo real
+      // de la firma (Evaluador Energético Externo acreditado MINVU).
+      {
+        const COLORES = ['#009640', '#52AE32', '#C8D400', '#FFED00', '#FBBA00', '#EB6909', '#E30613'];
+        const lx = W - 195, ly = 13;      // esquina del bloque de flechas
+        for (let bi = 0; bi < 7; bi++) {
+          const bw = 30 + bi * 6;         // cada peldaño un poco más largo, como la etiqueta
+          const by = ly + bi * 9.2;
+          doc.polygon(
+            [lx, by], [lx + bw, by], [lx + bw + 5, by + 3.4], [lx + bw, by + 6.8], [lx, by + 6.8]
+          ).fill(COLORES[bi]);
+        }
+        doc.fillColor('#fff').fontSize(10).font('Helvetica-Bold')
+          .text('EVALUACIÓN', W - 112, 32, { width: 102, align: 'left' });
+        doc.fillColor(GOLD).fontSize(10).font('Helvetica-Bold')
+          .text('ENERGÉTICA', W - 112, 45, { width: 102, align: 'left' });
+      }
+
       doc.fillColor(DARK).fontSize(17).font('Helvetica-Bold')
         .text('INFORME TÉRMICO', 50, 118);
       doc.fillColor(GOLD).fontSize(12)
@@ -429,14 +451,24 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           const cx = W / 2, cy = doc.page.height / 2;
           const fw = doc.page.height - 140;   // el ancho de la figura corre por el alto de la pagina
           const fh = W - 140;                 // y su alto, por el ancho
-          const pieT = 'Análisis del borde del termopanel desarrollado con nuestro motor de cálculo por '
-            + 'elementos finitos: el mismo corte resuelto con separador de aluminio (izquierda) y separador '
-            + 'warm-edge Thermoflex (derecha), con sus isotermas y la tabla de resultados. El análisis es '
-            + 'válido para cualquier tipo de ventana, dado que el borde del termopanel es común a todas las '
-            + 'tipologías. Conforme indica la propia figura, en condiciones de invierno el borde puede '
-            + 'alcanzar la temperatura de condensación con cualquiera de los dos separadores; el warm-edge '
-            + 'reduce ese riesgo, y el centro del vidrio se mantiene sobre el umbral. La temperatura de '
-            + 'condensación aplicable a su comuna se detalla en la sección de condensación de este informe.'
+          // [2026-08-24, #390] EN CLAVE DE VENTA, con el respaldo del motor. Instruccion del
+          // dueño: "es para apoyar la venta: hay que destacar lo bueno y que el cliente pueda
+          // tomar una buena decision". Y el motor lo respalda: con humedad interior normal
+          // (50 %), el borde warm-edge queda SOBRE el punto de rocio en todos los vidriados
+          // corridos (10,5 a 12,9 °C contra 9,3 °C de rocio) mientras el aluminio queda bajo.
+          // Lo que NO se afirma: que lo elimine a la humedad de exigencia normativa (65 %) —
+          // ahi el propio motor dice que ningun separador lo logra solo. Vender la mitad
+          // verdadera con todas sus letras ES ayudar a una buena decision informada.
+          const pieT = 'Análisis del borde de su termopanel, desarrollado con nuestro motor de cálculo por '
+            + 'elementos finitos: el mismo corte resuelto con separador de aluminio (izquierda) y con '
+            + 'separador térmico warm-edge (derecha). La diferencia se ve a simple vista: el warm-edge '
+            + 'mantiene el borde interior del vidrio varios grados más templado. En una vivienda con '
+            + 'humedad interior normal, ese borde se mantiene sobre el punto de rocío — la condensación '
+            + 'perimetral que se ve en tantos termopaneles con separador de aluminio, aquí no se produce. '
+            + 'El análisis vale para cualquier tipo de ventana, porque el borde del termopanel es común a '
+            + 'todas las tipologías. Para condiciones de humedad interior alta (sobre 65 %, p. ej. cocinas '
+            + 'sin ventilación), la temperatura de condensación aplicable a su comuna se detalla en la '
+            + 'sección de condensación de este informe.'
             + (() => {
               // [#394] La nota de "su vidriado es otro" solo va cuando la figura NO es la de
               // su vidrio. Se compara contra el perfil REAL de la figura (THERMAL ya publica

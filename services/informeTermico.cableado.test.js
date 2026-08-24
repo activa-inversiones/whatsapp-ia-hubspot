@@ -59,7 +59,7 @@ test('🔒 el candado se marca DESPUES del envio, no antes', async () => {
   // Si se marcara antes y el envio fallara, el cliente se quedaria sin informe para siempre.
   const src = await leer('../src/oliver-gpt/webhook.js');
   const i = src.indexOf('enviarInformeTermico: (comuna,');
-  const bloque = src.slice(i, i + 9500);
+  const bloque = src.slice(i, i + 11500);
   const iEnvio = bloque.indexOf('sendWaDocument(from, mediaId');
   const iMarca = bloque.indexOf('escribirEstado)(clave, true');
   assert.ok(iEnvio > 0, 'no se encontro el envio del PDF');
@@ -69,7 +69,7 @@ test('🔒 el candado se marca DESPUES del envio, no antes', async () => {
 test('🔒 sin dato verificado NO se manda nada — son citas normativas', async () => {
   const src = await leer('../src/oliver-gpt/webhook.js');
   const i = src.indexOf('enviarInformeTermico: (comuna,');
-  const bloque = src.slice(i, i + 9500);
+  const bloque = src.slice(i, i + 11500);
   assert.match(bloque, /if \(!datos\) return;/, 'sin datos de THERMAL no se emite documento');
   assert.match(bloque, /if \(!pdfBuf\) return;/, 'si el PDF no se pudo armar, no se manda nada');
 });
@@ -97,7 +97,7 @@ test('la tool de re-envio existe y SALTA el candado', async () => {
 test('se manda un PDF, no un mensaje de texto', async () => {
   const src = await leer('../src/oliver-gpt/webhook.js');
   const i = src.indexOf('enviarInformeTermico: (comuna,');
-  const bloque = src.slice(i, i + 9500);
+  const bloque = src.slice(i, i + 11500);
   assert.match(bloque, /generarInformeTermicoPdf/);
   assert.match(bloque, /uploadWaDocument\(pdfBuf, nombreArchivo\)/);
   assert.match(bloque, /sendWaDocument\(from, mediaId/);
@@ -106,7 +106,7 @@ test('se manda un PDF, no un mensaje de texto', async () => {
 test('el hook usa el nombre del cliente si lo hay', async () => {
   const src = await leer('../src/oliver-gpt/webhook.js');
   const i = src.indexOf('enviarInformeTermico: (comuna,');
-  assert.match(src.slice(i, i + 9500), /nombre: state\.name \|\| ''/);
+  assert.match(src.slice(i, i + 11500), /nombre: state\.name \|\| ''/);
 });
 
 test('🔴 el informe lleva LA VENTANA DEL CLIENTE, no solo el catalogo', async () => {
@@ -138,7 +138,7 @@ test('🔴 RITMO HUMANO: aviso primero, espera larga despues, y recien el PDF', 
   // autoresponder y se anula el efecto de que lo preparo un profesional.
   const wh = await leer('../src/oliver-gpt/webhook.js');
   const i = wh.indexOf('enviarInformeTermico: (comuna,');
-  const bloque = wh.slice(i, i + 9500);
+  const bloque = wh.slice(i, i + 11500);
 
   const iAviso   = bloque.indexOf('ms: DEMORA_AVISO_MS');
   const iMensaje = bloque.indexOf('Deme un momento');
@@ -166,7 +166,7 @@ test('los dos tiempos son configurables y estan topados', async () => {
 test('el correlativo se pide ANTES de generar el PDF y va estampado', async () => {
   const wh = await leer('../src/oliver-gpt/webhook.js');
   const i = wh.indexOf("enviarInformeTermico: (comuna,");
-  const bloque = wh.slice(i, i + 9500);
+  const bloque = wh.slice(i, i + 11500);
   const iNum = bloque.indexOf('/internal/informes/next-number');
   const iPdf = bloque.indexOf('generarInformeTermicoPdf(');
   assert.ok(iNum > 0, 'sin correlativo no hay procedimiento ISO');
@@ -180,7 +180,7 @@ test('el correlativo se pide ANTES de generar el PDF y va estampado', async () =
 test('si sales-os no contesta, el fallback se DISTINGUE (INF-LOCAL-), no se disfraza', async () => {
   const wh = await leer('../src/oliver-gpt/webhook.js');
   const j = wh.indexOf("enviarInformeTermico: (comuna,");
-  const bloque = wh.slice(j, j + 9500);
+  const bloque = wh.slice(j, j + 11500);
   assert.ok(bloque.includes('INF-LOCAL-'),
     'un numero fuera de secuencia tiene que VERSE fuera de secuencia en la auditoria');
 });
@@ -188,20 +188,20 @@ test('si sales-os no contesta, el fallback se DISTINGUE (INF-LOCAL-), no se disf
 test('el registro va DESPUES del envio: registrar algo que no salio es mentirle a la auditoria', async () => {
   const wh = await leer('../src/oliver-gpt/webhook.js');
   const j = wh.indexOf("enviarInformeTermico: (comuna,");
-  const bloque = wh.slice(j, j + 9500);
+  const bloque = wh.slice(j, j + 11500);
   const iEnvio = bloque.indexOf('sendWaDocument(from, mediaId');
   const iCandado = bloque.indexOf('escribirEstado)(clave, true');
   const iReg = bloque.indexOf('/internal/informes/registrar');
   assert.ok(iEnvio > 0 && iReg > iEnvio, 'primero sale el documento, despues se registra');
   assert.ok(iReg > iCandado, 'y despues del candado: el registro jamas frena la entrega');
-  const previo = bloque.slice(iCandado, iReg);
-  assert.ok(previo.includes('if (mediaId)'), 'sin mediaId (no se envio) no se registra');
+  // el gate ahora vive ANTES (if (!entregado) return) — lo cubre el test del P1 de Codex
+  assert.ok(bloque.indexOf('if (!entregado)') < iCandado, 'el gate de entrega corta antes del candado');
 });
 
 test('el registro lleva el sha256 del PDF exacto que salio', async () => {
   const wh = await leer('../src/oliver-gpt/webhook.js');
   const j = wh.indexOf("enviarInformeTermico: (comuna,");
-  const bloque = wh.slice(j, j + 9500);
+  const bloque = wh.slice(j, j + 11500);
   assert.ok(bloque.includes("createHash('sha256').update(pdfBuf).digest('hex')"),
     'el hash identifica el documento byte a byte: es la evidencia');
   assert.ok(bloque.includes('pdf_bytes: pdfBuf.length'));
@@ -210,11 +210,26 @@ test('el registro lleva el sha256 del PDF exacto que salio', async () => {
 test('si el registro falla se dice EN VOZ ALTA y el cliente NO pierde su informe', async () => {
   const wh = await leer('../src/oliver-gpt/webhook.js');
   const j = wh.indexOf("enviarInformeTermico: (comuna,");
-  const bloque = wh.slice(j, j + 9500);
+  const bloque = wh.slice(j, j + 11500);
   assert.ok(bloque.includes('SIN registro ISO'),
     'el silencio es la clase de bug que ya costo 3 semanas en costGuard');
   const iReg = bloque.indexOf('/internal/informes/registrar');
   const cola = bloque.slice(iReg);
   assert.ok(cola.includes('} catch (e) {') && cola.includes('el cliente YA tiene su informe'),
     'la falla del registro se captura y se reporta, no tumba nada');
+});
+
+test('🔴 [P1 · Codex] mediaId NO prueba entrega: el candado y el registro exigen envio.ok', async () => {
+  // sendWaDocument devuelve {ok:false} SIN lanzar cuando Meta rechaza. Antes se marcaba el
+  // candado igual: cliente sin documento, sin reintento en 30 dias, y evidencia ISO de algo
+  // que nunca salio. Ahora todo lo posterior al envio cuelga de envio.ok === true.
+  const wh = await leer('../src/oliver-gpt/webhook.js');
+  const j = wh.indexOf("enviarInformeTermico: (comuna,");
+  const bloque = wh.slice(j, j + 11000);
+  const iGate = bloque.indexOf('envio.ok === true');
+  const iCandado = bloque.indexOf("escribirEstado)(clave, true");
+  const iReg = bloque.indexOf('/internal/informes/registrar');
+  assert.ok(iGate > 0, 'el gate de entrega existe');
+  assert.ok(iGate < iCandado && iGate < iReg, 'candado y registro van DESPUES del gate');
+  assert.ok(bloque.includes('if (!entregado)'), 'sin entrega: return, sin candado y sin registro');
 });
