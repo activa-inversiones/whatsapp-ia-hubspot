@@ -44,7 +44,7 @@ const PIES_LAMINA = Object.freeze({
       + 've cuánto alcanza a subir el frío desde el borde.',
   '07': 'Nudo inferior de la ventana —el punto más exigido: el aire frío se acumula abajo y, si algo se '
       + 'va a empañar, empieza por ahí— resuelto con separador de ALUMINIO. El aluminio conduce muchísimo '
-      + '(λ 160 frente a 0,135 del warm-edge): mire cómo las líneas frías trepan pegadas al canto del '
+      + '(conductividad 160 W/mK frente a 0,135 del warm-edge): mire cómo las líneas frías trepan pegadas al canto del '
       + 'vidrio. Es el caso desfavorable, y es el que traen la mayoría de los termopaneles del mercado.',
   '08': 'El mismo nudo con separador WARM-EDGE. Comparándolo con la figura anterior se ve la diferencia '
       + 'sin necesidad de leer un número: las líneas frías se retiran del canto. Esa distancia es todo lo '
@@ -116,7 +116,7 @@ const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
  * @param {object} opts        { nombre, firma, esReferenciaRegional }
  * @returns {Promise<Buffer|null>}  null si no hay un solo dato duro que reportar
  */
-export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {}, esReferenciaRegional = false, vidrios = null, suVidrio = '', suUw = null, suProducto = '', laminas = null } = {}) {
+export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {}, esReferenciaRegional = false, vidrios = null, suVidrio = '', suUw = null, suProducto = '', laminas = null, termopanel = null } = {}) {
   if (!datos || !datos.comuna) return null;
 
   const cond = datos.condensacion;
@@ -131,12 +131,24 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
   // Anti-alucinación: sin un solo dato verificado no se emite documento.
   if (!tienePDA && !tieneCond) return null;
 
-  // El glass_label del motor viene como "5+12+5" o "4+12+4 saten (bano)"; las claves del
-  // catalogo son "DVH_5-12-5". Se comparan solo los digitos, que es lo unico estable.
+  // El glass_label del motor viene como "5+12+5" o "4+12+4 low-e"; las claves del catalogo
+  // son "DVH_5-12-5". Se comparan los digitos, que es lo unico estable.
+  //
+  // 🔴 [2026-08-24, lo cazo el dueno en el PDF real] La version anterior (esSuVidrio, un
+  // startsWith de digitos) marcaba TRES filas como "su vidrio": DVH_4-12-4, la INCOLORO
+  // FICHA y la LOWE KGLASS empiezan igual. Tres filas resaltadas + un caracter que la
+  // fuente no podia dibujar = "genera desconfianza", textual. Ahora se elige UNA: digitos
+  // iguales, y ante empate desempata el token low-e (presente o ausente en los dos lados).
   const digitos = (x) => String(x || '').replace(/[^0-9]/g, '');
-  const esSuVidrio = (codigo) => {
-    const a3 = digitos(suVidrio); const b3 = digitos(codigo);
-    return a3.length >= 3 && b3.startsWith(a3);
+  const esLowE = (x) => /low.?e|lowe/i.test(String(x || ''));
+  const mejorVidrio = () => {
+    const d = digitos(suVidrio);
+    if (d.length < 3 || !vidrios || typeof vidrios !== 'object') return null;
+    const candidatos = Object.entries(vidrios).filter(([cod]) => digitos(cod) === d);
+    if (!candidatos.length) return null;
+    const conTono = candidatos.filter(([cod, v2]) => esLowE(cod + ' ' + (v2?.desc || '')) === esLowE(suVidrio));
+    const [cod, dat] = (conTono[0] || candidatos[0]);
+    return { cod, ...dat };
   };
   const uwCliente = num(suUw);
 
@@ -232,7 +244,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         }
         if (cumple !== null) {
           doc.fillColor(cumple ? '#86efac' : '#fca5a5').fontSize(10).font('Helvetica-Bold')
-            .text(cumple ? '✓ CUMPLE' : '✗ NO CUMPLE', W - 175, y + 20, { width: 115, align: 'right' });
+            .text(cumple ? 'CUMPLE' : 'NO CUMPLE', W - 175, y + 20, { width: 115, align: 'right' });
           doc.fillColor('#cbd5e1').fontSize(8).font('Helvetica')
             .text(`exigencia ${dec(uw)} W/m²K`, W - 175, y + 36, { width: 115, align: 'right' });
         }
@@ -312,32 +324,6 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       };
 
       /** Barras horizontales de Ug: cuanto más corta, mejor aísla. */
-      const graficoVidrios = (entradas) => {
-        const filas = entradas.slice(0, 10);
-        const alto = filas.length * 16 + 34;
-        saltoSiNoCabe(alto);
-        const x0 = 175, ancho = W - 235;
-        const maxUg = Math.max(...filas.map(([, v]) => num(v.Ug) || 0), 3);
-        doc.fillColor(GRAY).fontSize(8).font('Helvetica')
-          .text('Ug en W/m²K — barra más corta = aísla mejor', x0, y, { width: ancho });
-        y += 12;
-        for (const [cod, v] of filas) {
-          const ug = num(v.Ug);
-          if (ug === null) continue;
-          const largo = Math.max(6, (ug / maxUg) * ancho);
-          const bueno = ug <= 1.4;
-          const suyo = esSuVidrio(cod);
-          // El vidrio del cliente va resaltado: entre 10 filas, tiene que encontrar la suya.
-          if (suyo) doc.rect(50, y - 2, W - 100, 14).fill('#fff7e6');
-          doc.fillColor(suyo ? '#92400e' : DARK).fontSize(8).font(suyo ? 'Helvetica-Bold' : 'Helvetica')
-            .text((suyo ? '\u25B6 ' : '') + String(cod).replace(/_/g, ' ').slice(0, 28), 55, y + 2, { width: 115 });
-          doc.rect(x0, y, largo, 9).fill(bueno ? '#0a7d33' : (ug <= 2 ? '#C4993B' : '#94a3b8'));
-          doc.fillColor(DARK).fontSize(8).font('Helvetica-Bold')
-            .text(dec(ug, 2), x0 + largo + 4, y + 1, { width: 40 });
-          y += 16;
-        }
-        y += 8;
-      };
 
       // ── 1. EXIGENCIA ────────────────────────────────────────────────────
       seccion('1 · QUÉ EXIGE LA NORMA EN SU COMUNA');
@@ -390,61 +376,69 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         if (cond?.metodo) parrafo(`Método: ${cond.metodo}`, { color: GRAY, size: 8 });
       }
 
-      // ── 3. CATÁLOGO DE VIDRIOS ──────────────────────────────────────────
-      // Es la seccion que el cliente REENVIA: le permite comparar peras con peras cuando
-      // otro proveedor le pasa un precio sin decirle que vidrio lleva.
-      const lista = vidrios && typeof vidrios === 'object' ? Object.entries(vidrios) : [];
-      if (lista.length) {
+      // ── 3. SU TERMOPANEL, PASADO POR NUESTRO MOTOR ──────────────────────
+      //
+      // [2026-08-24] Decision del dueno, textual: *"lo de los vidrios igual esta mal,
+      // genera desconfianza; yo pasaria el termopanel por una isoterma y entregaria lo que
+      // me dio nuestro motor"*. Y tenia DOS razones medibles: el resaltado marcaba TRES
+      // filas como "su vidrio" (el startsWith de digitos no distinguia 4-12-4 de sus
+      // variantes) y el marcador era un caracter que la fuente no puede dibujar — en el
+      // PDF real salia "%¶". Un catalogo de 10 vidrios ajenos con eso encima se leia como
+      // folleto defectuoso, exactamente lo contrario de lo que el informe vino a lograr.
+      //
+      // Lo que va en su lugar: LA FIGURA DEL MOTOR (borde del termopanel, aluminio vs
+      // Thermoflex, con isotermas, f_Rsi y Psi calculados) + UNA linea con el vidrio del
+      // cliente y su respaldo. El resto del catalogo murio: comparar 10 vidrios es trabajo
+      // del vendedor, no del documento firmado.
+      // Numeracion por contador: si una seccion no aplica, la siguiente no salta numero.
+      let nSec = 2;
+      const suV = mejorVidrio();
+      const figTermo = termopanel && termopanel.lamina && termopanel.lamina.png ? termopanel : null;
+      const dimT = figTermo ? medirPng(figTermo.lamina.png) : null;
+      const termoDibujable = Boolean(
+        figTermo && dimT && (dimT.ancho * dimT.alto) / 1e6 <= MAX_MPX_FIGURA
+        && String(figTermo.nombre || '').trim()
+      );
+      if (termoDibujable || suV) {
         y += 6;
-        seccion('3 · VIDRIOS Y SU TRANSMITANCIA (Ug)');
-        parrafo('Buena parte de la diferencia entre una ventana y otra está en el vidrio. Estos son '
-          + 'los vidriados con Ug documentado. A menor Ug, menos calor se escapa.', { size: 9, color: GRAY });
-        y += 4;
-
-        const filaVidrio = (cod, x, cabecera = false) => {
-          saltoSiNoCabe(22);
-          if (cabecera) {
-            doc.rect(50, y, W - 100, 18).fill(NAVY);
-            doc.fillColor('#fff').fontSize(8).font('Helvetica-Bold');
-            doc.text('VIDRIO', 56, y + 5, { width: 150 });
-            doc.text('Ug (W/m²K)', 210, y + 5, { width: 60, align: 'right' });
-            doc.text('RESPALDO', 285, y + 5, { width: 70 });
-            doc.text('DESCRIPCIÓN', 360, y + 5, { width: W - 415 });
-            y += 18;
-            return;
-          }
-          doc.fillColor(DARK).fontSize(8).font('Helvetica');
-          doc.text(String(cod).replace(/_/g, ' '), 56, y + 4, { width: 150 });
-          doc.fillColor(num(x.Ug) !== null && num(x.Ug) <= 1.4 ? '#0a7d33' : DARK).font('Helvetica-Bold');
-          doc.text(num(x.Ug) !== null ? dec(x.Ug, 2) : '—', 210, y + 4, { width: 60, align: 'right' });
-          doc.fillColor(String(x.estado).toUpperCase() === 'CERTIFICADO' ? '#0a7d33' : GRAY).font('Helvetica');
-          doc.text(String(x.estado || '—').toLowerCase(), 285, y + 4, { width: 70 });
-          doc.fillColor(GRAY);
-          doc.text(String(x.desc || '').slice(0, 74), 360, y + 4, { width: W - 415 });
-          y += 17;
-        };
-
-        const ordenados = lista
-          .filter(([, x]) => num(x.Ug) !== null)
-          .sort((a2, b2) => num(a2[1].Ug) - num(b2[1].Ug));
-        graficoVidrios(ordenados);
-
-        filaVidrio(null, null, true);
-        // Mismo orden que el gráfico: el mejor arriba, que es como se compara.
-        ordenados.forEach(([cod, x]) => filaVidrio(cod, x));
-
-        y += 4;
-        if (suVidrio) {
-          parrafo('\u25B6 La fila resaltada es el vidrio considerado en su cotización.', { size: 8, color: '#92400e', bold: true });
+        seccion(`${++nSec} · SU TERMOPANEL, PASADO POR NUESTRO MOTOR`);
+        if (suV) {
+          const respaldo = String(suV.estado || '').toUpperCase() === 'CERTIFICADO'
+            ? 'con Ug certificado por informe de ensayo del fabricante'
+            : 'con Ug de ficha técnica del fabricante';
+          parrafo(`Su cotización considera el vidrio ${String(suV.cod).replace(/_/g, ' ')}`
+            + `${num(suV.Ug) !== null ? ` (Ug ${dec(suV.Ug, 2)} W/m²K, ${respaldo})` : ''}. `
+            + 'El dato es de origen, no una estimación nuestra.', { size: 9 });
+          y += 2;
         }
-        parrafo('«Certificado» significa que el Ug proviene de un informe de ensayo del fabricante. '
-          + '«Tabulado» significa que proviene de ficha técnica. Ambos son datos de origen, no estimaciones '
-          + 'nuestras.', { size: 8, color: GRAY });
+        if (termoDibujable) {
+          const anchoUtil = W - 100;
+          const altoT = Math.min(Math.round(anchoUtil * (dimT.alto / dimT.ancho)), 430);
+          const pieT = 'Cálculo de nuestro motor sobre el borde del termopanel '
+            + `(${String(figTermo.nombre).trim()}): el mismo corte con separador de ALUMINIO a la `
+            + 'izquierda y THERMOFLEX (warm-edge) a la derecha, con las isotermas y la tabla de '
+            + 'resultados. Vale para cualquier tipo de ventana, porque el borde del termopanel es '
+            + 'el mismo sea proyectante o corredera. Como muestra la propia figura, en las mañanas '
+            + 'más frías el borde puede condensar con uno u otro separador — el warm-edge lo reduce, '
+            + 'y el centro del vidrio es el que se mantiene seco.'
+            + (suV && digitos(suV.cod) !== '4124'
+              ? ' La figura ilustra el fenómeno con el termopanel 4-12-4; su vidriado es otro, pero el patrón del borde es el mismo.'
+              : '');
+          doc.fontSize(8).font('Helvetica');
+          const altoPieT = doc.heightOfString(pieT, { width: anchoUtil });
+          saltoSiNoCabe(altoT + altoPieT + 30);
+          try {
+            doc.image(figTermo.lamina.png, 50, y, { fit: [anchoUtil, altoT], align: 'center' });
+            y += altoT + 8;
+            doc.fillColor(GRAY).fontSize(8).font('Helvetica').text(pieT, 50, y, { width: anchoUtil });
+            y += altoPieT + 14;
+          } catch { /* una figura rota no puede costar el informe */ }
+        }
       }
 
       // ── 4. QUÉ SIGNIFICA ────────────────────────────────────────────────
       y += 6;
-      seccion(`${lista.length ? '4' : '3'} · QUÉ SIGNIFICA PARA SU PROYECTO`);
+      seccion(`${++nSec} · QUÉ SIGNIFICA PARA SU PROYECTO`);
       parrafo('Una ventana de PVC con termopanel mantiene la cara interior del vidrio por encima de esos '
         + 'umbrales, incluso en las noches más frías. Un perfil de aluminio sin rotura de puente térmico, '
         + 'o un vidrio simple, no lo consigue: por eso amanecen mojados. En la propuesta que recibirá a '
@@ -478,8 +472,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       // truthy y salia 'Corte del sistema   ' — rotulo vacio es lo mismo que sin rotulo.
       const idPerfil = String(laminas?.nombre || '').trim() || String(laminas?.perfil || '').trim();
       if (figuras.length && idPerfil) {
-        const nSec = lista.length ? '5' : '4';
-        seccion(`${nSec} · CÓMO SE COMPORTA EL PERFIL POR DENTRO`);
+        seccion(`${++nSec} · CÓMO SE COMPORTA EL PERFIL POR DENTRO`);
         parrafo('Estas figuras salen del cálculo por elementos finitos del perfil: cada línea une los '
           + 'puntos que están a la misma temperatura. Donde las líneas se juntan, el calor escapa más '
           + 'rápido; donde se separan, el perfil aísla.');
@@ -552,7 +545,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         .slice(0, 6);
       if (noCubre.length) {
         y += 6;
-        seccion(`${lista.length ? '5' : '4'} · ALCANCE DE ESTE INFORME`);
+        seccion(`${++nSec} · ALCANCE DE ESTE INFORME`);
         parrafo('Este documento cubre la exigencia aplicable a las VENTANAS. No verifica:', { size: 9 });
         doc.fillColor(GRAY).fontSize(8).font('Helvetica');
         for (const item of noCubre) {

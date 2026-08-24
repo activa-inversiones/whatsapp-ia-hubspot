@@ -168,6 +168,41 @@ export async function descargarLaminas(perfil, {
   return out;
 }
 
+/**
+ * LA LAMINA DEL TERMOPANEL (aluminio vs Thermoflex) — pedida aparte de las del sistema.
+ *
+ * [2026-08-24] Pedido del dueno, textual: *"esta lamina debe ir"* y *"lo de los vidrios
+ * igual esta mal, genera desconfianza; yo pasaria el termopanel por una isoterma y
+ * entregaria lo que me dio nuestro motor"*. Es la UNICA figura que aplica a cualquier tipo
+ * de ventana: compara el borde del termopanel con los dos separadores, no un perfil de
+ * apertura. En el informe REEMPLAZA al catalogo de 10 vidrios.
+ *
+ * Vive en THERMAL como perfil propio (`termopanel_4-12-4`, rama laminas/termopanel-4-12-4).
+ * ⚠️ HASTA QUE EL DUENO MERGEE Y DEPLOYEE THERMAL, en produccion este perfil NO existe:
+ * esta funcion devuelve null y el informe sale sin esa figura. Cuando el deploy llegue, la
+ * toma sola — cero cambios aca. Ese es el contrato: se pide, no se incorpora.
+ */
+const TERMOPANEL_PERFIL = () => process.env.THERMAL_TERMOPANEL_PERFIL || 'termopanel_4-12-4';
+
+export async function laminaTermopanel(opts = {}) {
+  const { log = console.warn } = opts;
+  const perfiles = await perfilesConLaminas(opts);
+  const meta = perfiles.find((p) => p.perfil === TERMOPANEL_PERFIL());
+  if (!meta) {
+    // Caso NORMAL hasta el deploy de THERMAL: no se loguea como error, seria ruido diario.
+    return null;
+  }
+  const laminas = await descargarLaminas(meta.perfil, { ...opts, ids: ['01'] });
+  if (!laminas.length) { log('[laminasThermal] el perfil del termopanel existe pero su lamina no bajo'); return null; }
+  return {
+    perfil: meta.perfil,
+    nombre: meta.nombre_comercial || meta.perfil,
+    aprobadoPor: meta.aprobado_por || '',
+    fecha: meta.fecha_aprobacion || '',
+    lamina: laminas[0],
+  };
+}
+
 /** Firma PNG: 89 50 4E 47 0D 0A 1A 0A. */
 export function esPng(buf) {
   return Buffer.isBuffer(buf) && buf.length > 24 &&
@@ -224,4 +259,4 @@ export async function laminasParaInforme({ preferido = '', ...opts } = {}) {
   };
 }
 
-export default { laminasParaInforme, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };
+export default { laminasParaInforme, laminaTermopanel, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };

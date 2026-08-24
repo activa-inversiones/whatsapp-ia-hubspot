@@ -46,7 +46,7 @@ import { leer as leerEstado, escribir as escribirEstado } from '../../services/e
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS } from '../../services/informeTermico.js';
 import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
-import { laminasParaInforme } from '../../services/laminasThermal.js';   // [2026-08-24] isotermas del FEM
+import { laminasParaInforme, laminaTermopanel } from '../../services/laminasThermal.js';   // [2026-08-24] isotermas del FEM
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import {
@@ -1034,9 +1034,14 @@ export async function handleWebhook(req, res, deps = {}) {
           // informe sale sin figuras. Dos niveles de degradacion y ninguno rompe la venta.
           let laminas = null;
           try { laminas = await laminasParaInforme(); } catch { /* opcional */ }
+          // [2026-08-24] La figura del TERMOPANEL (aluminio vs Thermoflex): reemplaza al
+          // catalogo de vidrios, que el dueno bajo ("genera desconfianza"). Hasta que
+          // THERMAL deployee el perfil nuevo devuelve null y el informe sale sin ella.
+          let termopanel = null;
+          try { termopanel = await laminaTermopanel(); } catch { /* opcional */ }
 
           const pdfBuf = await generarInformeTermicoPdf(datos, {
-            nombre: state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios, laminas,
+            nombre: state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios, laminas, termopanel,
             // Lo que hace que el informe sea de SU proyecto y no un catalogo.
             suVidrio: glassLabel, suUw: uw, suProducto: producto,
           });

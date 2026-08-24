@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { descargarLaminas, perfilesConLaminas, laminasParaInforme, esPng, IDS_POR_DEFECTO } from './laminasThermal.js';
+import { descargarLaminas, perfilesConLaminas, laminasParaInforme, laminaTermopanel, esPng, IDS_POR_DEFECTO } from './laminasThermal.js';
 
 /** Un PNG mínimo VÁLIDO: firma + IHDR con ancho/alto. */
 function pngFalso(ancho = 100, alto = 50, relleno = 200) {
@@ -198,4 +198,32 @@ test('esPng reconoce la firma real y rechaza cualquier otra cosa', () => {
   assert.equal(esPng(Buffer.alloc(4)), false);
   assert.equal(esPng(null), false);
   assert.equal(esPng('texto'), false);
+});
+
+// ── La lamina del termopanel (perfil aparte) ──────────────────────────────────────────
+
+test('laminaTermopanel: la trae cuando THERMAL publica el perfil', async () => {
+  const lista = { n: 2, perfiles: [
+    LISTA_OK.perfiles[0],
+    { perfil: 'termopanel_4-12-4', nombre_comercial: 'Termopanel 4-12-4 · borde ALUMINIO vs THERMOFLEX',
+      n_laminas: 1, aprobado_por: 'Marcelo Cifuentes', fecha_aprobacion: '2026-08-24' },
+  ] };
+  const r = await laminaTermopanel({ fetchFn: espia({ lista }), log: callado });
+  assert.equal(r.perfil, 'termopanel_4-12-4');
+  assert.match(r.nombre, /Termopanel 4-12-4/);
+  assert.ok(esPng(r.lamina.png));
+});
+
+test('🔒 laminaTermopanel: hasta que THERMAL deployee el perfil, devuelve null SIN ruido', async () => {
+  // Es el caso NORMAL en produccion hasta que el dueno mergee la rama de THERMAL. Loguearlo
+  // cada 5 minutos entrenaria a ignorar el log.
+  const avisos = [];
+  const r = await laminaTermopanel({ fetchFn: espia(), log: (m) => avisos.push(m) });
+  assert.equal(r, null);
+  assert.equal(avisos.length, 0, 'perfil ausente = silencio, no error');
+});
+
+test('laminaTermopanel: THERMAL caido -> null, nunca lanza', async () => {
+  const r = await laminaTermopanel({ fetchFn: async () => { throw new Error('ECONNREFUSED'); }, log: callado });
+  assert.equal(r, null);
 });

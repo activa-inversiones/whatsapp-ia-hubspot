@@ -123,7 +123,13 @@ test('🔴 el informe lleva LA VENTANA DEL CLIENTE, no solo el catalogo', async 
   const pdf = await leer('./informeTermicoPdf.js');
   assert.match(pdf, /LA VENTANA DE SU COTIZACIÓN/, 'el bloque destacado con sus datos');
   assert.match(pdf, /CUMPLE/, 'el veredicto contra la exigencia de su comuna');
-  assert.match(pdf, /esSuVidrio\(cod\)/, 'su fila resaltada entre las 10');
+  // [2026-08-24] El catalogo de 10 vidrios MURIO por decision del dueno ("genera
+  // desconfianza"): en su lugar va la figura del termopanel calculada por el motor + UNA
+  // linea con el vidrio del cliente. El resaltado viejo (esSuVidrio) marcaba tres filas
+  // y usaba un caracter que la fuente no dibuja — por eso se fue.
+  assert.match(pdf, /mejorVidrio\(\)/, 'el vidrio del cliente se elige UNICO, no por startsWith');
+  assert.doesNotMatch(pdf, /esSuVidrio\s*\(/, 'el resaltado triple no puede volver (la mencion en comentarios es historia, el uso no)');
+  assert.match(pdf, /SU TERMOPANEL, PASADO POR NUESTRO MOTOR/, 'la seccion nueva existe');
 });
 
 test('🔴 RITMO HUMANO: aviso primero, espera larga despues, y recien el PDF', async () => {
