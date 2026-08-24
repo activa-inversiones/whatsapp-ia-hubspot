@@ -42,12 +42,21 @@ const PIES_LAMINA = Object.freeze({
   //     ventilación de la casa: con una estufa a gas y sin ventilar, condensa igual.
   //     Prometerlo en un documento firmado es regalarle al cliente el respaldo para un
   //     reclamo de garantía. Se mantiene la fuerza comercial, se saca la garantía implícita.
+  //   · Y una tercera pasada [P1 · Codex]: la version anterior seguia AFIRMANDO un resultado
+  //     de condensacion ("para que no concentre humedad"), y una figura ilustrativa no puede
+  //     respaldar eso. El informe YA trae la temperatura de condensacion CALCULADA para la
+  //     comuna en su seccion propia: ahi es donde vive el dato declarable. Este pie ahora
+  //     describe lo que se VE y remite al calculo, sin prometer un resultado.
   '10': 'ESTA es la que conviene mirar dos veces: el mismo perfil con separador de ALUMINIO (izquierda) y '
       + 'con separador WARM-EDGE (derecha). El aluminio actúa como puente térmico y deja escapar el calor '
-      + 'por el borde del vidrio: por eso aparece la franja fría pegada al canto. El warm-edge corta esa '
-      + 'fuga y mantiene el borde más templado, que es el factor que más pesa para que el termopanel no '
-      + 'concentre humedad en los cantos las mañanas frías.',
+      + 'por el borde del vidrio: por eso se ve la franja fría pegada al canto, que con el warm-edge no '
+      + 'aparece. Un borde más templado significa menos riesgo de condensación en los cantos; cuánto, '
+      + 'depende además de la humedad y la ventilación de cada casa, y la temperatura a la que su ventana '
+      + 'condensaría está calculada en la sección de condensación de este informe.',
 });
+
+/** Tope de megapíxeles por figura. Ver el comentario largo en `laminasThermal.js`. */
+const MAX_MPX_FIGURA = Number(process.env.THERMAL_LAMINA_MAX_MPX || 8);
 
 /** Ancho y alto de un PNG leyendo su cabecera IHDR. null si no es un PNG. */
 function medirPng(buf) {
@@ -395,7 +404,10 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       // el cliente asume que le simularon SU ventana.
       // Se prefiere un informe SIN figuras a un informe con figuras que induzcan a error:
       // si no podemos decir QUÉ estamos mostrando, no se muestra.
-      if (figuras.length && laminas?.nombre) {
+      // [P1 · Codex] `.trim()` y cae al id del perfil: un nombre de solo espacios pasaba el
+      // truthy y salia 'Corte del sistema   ' — rotulo vacio es lo mismo que sin rotulo.
+      const idPerfil = String(laminas?.nombre || '').trim() || String(laminas?.perfil || '').trim();
+      if (figuras.length && idPerfil) {
         const nSec = lista.length ? '5' : '4';
         seccion(`${nSec} · CÓMO SE COMPORTA EL PERFIL POR DENTRO`);
         parrafo('Estas figuras salen del cálculo por elementos finitos del perfil: cada línea une los '
@@ -409,16 +421,24 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           // no es el de su tipo de ventana. Se declara el hecho —qué sistema se ilustra—
           // sin afirmar nada comparativo sobre el rendimiento de un tipo frente al otro,
           // porque eso no lo respalda esta figura.
-          const aviso = `Corte del sistema ${laminas.nombre}`
-            + `${laminas.aprobadoPor ? ` · modelo aprobado por ${laminas.aprobadoPor}` : ''}`
-            + `${laminas.fecha ? ` (${laminas.fecha})` : ''}. `
+          // [P2 · Codex] Los campos vienen de una API ajena: se ACOTAN. Un `nombre` de 1000
+          // caracteres empujaba el rotulo varias lineas y la imagen se dibujaba encima.
+          const corto = (x, n) => String(x || '').trim().slice(0, n);
+          const aviso = `Corte del sistema ${corto(idPerfil, 80)}`
+            + `${corto(laminas.aprobadoPor, 60) ? ` · modelo aprobado por ${corto(laminas.aprobadoPor, 60)}` : ''}`
+            + `${corto(laminas.fecha, 20) ? ` (${corto(laminas.fecha, 20)})` : ''}. `
             + 'Figuras ILUSTRATIVAS de cómo se comporta el PVC con termopanel: corresponden al sistema '
             + 'indicado y NO son la simulación de su ventana en particular. Si su cotización incluye otro '
             + 'tipo de apertura —por ejemplo corredera— el perfil de su ventana no es el de estas figuras. '
             + 'Los valores declarables (Uw) de su proyecto salen del cálculo normativo, no de leer un '
             + 'color en la figura.';
-          doc.fillColor(GRAY).fontSize(8).font('Helvetica').text(aviso, 50, y, { width: W - 100 });
-          y += doc.heightOfString(aviso, { width: W - 100, fontSize: 8 }) + 18;
+          doc.fillColor(GRAY).fontSize(8).font('Helvetica');
+          // El alto REAL del rotulo, con la fuente ya fijada en 8 (heightOfString usa la
+          // fuente actual del documento; pasarle `fontSize` como opcion no hace nada).
+          const altoAviso = doc.heightOfString(aviso, { width: W - 100 });
+          saltoSiNoCabe(altoAviso + 20);
+          doc.text(aviso, 50, y, { width: W - 100 });
+          y += altoAviso + 18;
         }
 
         for (const f of figuras) {
@@ -426,6 +446,13 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           // Se mide la imagen para reservar el alto EXACTO antes de decidir el salto de
           // página: la paginación automática está apagada a propósito en este documento.
           const dim = medirPng(f.png);
+          // 🔴 [hallazgo de Codex, medido] TOPE POR MEGAPÍXELES, también acá.
+          // `laminasThermal` ya lo filtra, pero esta función acepta `laminas` de cualquier
+          // llamador y el costo de equivocarse no es un PDF feo: un PNG de 10000x10000 RGBA
+          // entra bajo cualquier techo de bytes y se come ~1,4 GB al decodificarse ⇒ mata el
+          // proceso del bot y se cae la atención de TODOS los clientes, no solo este informe.
+          // Medido: 3000x3000 RGBA = 34 KB en disco → +129 MB de RSS.
+          if (dim && (dim.ancho * dim.alto) / 1e6 > MAX_MPX_FIGURA) continue;
           const anchoUtil = W - 100;
           const alto = dim ? Math.min(Math.round(anchoUtil * (dim.alto / dim.ancho)), 430) : 300;
           saltoSiNoCabe(alto + (pie ? 40 : 16));

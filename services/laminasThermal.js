@@ -127,6 +127,14 @@ export async function descargarLaminas(perfil, {
       // quedaria sin informe por culpa de un adorno.
       if (!esPng(png)) { log(`[laminasThermal] lámina ${id}: no es un PNG válido — se omite`); continue; }
 
+      // El tope por megapíxeles (ver MAX_MPX): el peso en bytes NO acota la memoria.
+      const med = medidasPng(png);
+      if (med && med.mpx > MAX_MPX()) {
+        log(`[laminasThermal] lámina ${id}: ${med.ancho}x${med.alto} = ${med.mpx.toFixed(1)} MPx supera el tope `
+          + `de ${MAX_MPX()} MPx — se omite (decodificarla podría tumbar el proceso)`);
+        continue;
+      }
+
       if (total + png.length > tope) {
         log(`[laminasThermal] techo de ${Math.round(tope / 1024)} KB alcanzado: la lámina ${id} y las siguientes no van`);
         break;
@@ -148,6 +156,35 @@ export function esPng(buf) {
     buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 &&
     buf[4] === 0x0D && buf[5] === 0x0A && buf[6] === 0x1A && buf[7] === 0x0A;
 }
+
+/** Ancho y alto leidos del IHDR. null si no es un PNG. */
+export function medidasPng(buf) {
+  if (!esPng(buf)) return null;
+  const ancho = buf.readUInt32BE(16);
+  const alto = buf.readUInt32BE(20);
+  return ancho > 0 && alto > 0 ? { ancho, alto, mpx: (ancho * alto) / 1e6 } : null;
+}
+
+/**
+ * 🔴 TOPE POR MEGAPIXELES — hallazgo de Codex en la compuerta cruzada del 24-ago, MEDIDO.
+ *
+ * EL PESO EN BYTES NO ACOTA LA MEMORIA. Un PNG uniforme comprime enormisimamente: se midio
+ * uno de 3000x3000 RGBA que ocupa 34 KB en disco y hace subir el RSS 129 MB al generarse el
+ * PDF. Uno de 10000x10000 entraria comodo bajo el techo de 2,5 MB y se comeria ~1,4 GB:
+ * eso no deja al cliente sin informe, MATA EL PROCESO DEL BOT — se cae la atencion de todos
+ * los clientes por culpa de un adorno de un informe.
+ *
+ * Por que RGBA y no cualquier PNG: pdfkit incrusta un PNG RGB tal cual, sin decodificarlo
+ * (medido: +0 MB). Un RGBA lo TIENE que decodificar para separar el canal alfa en un SMask,
+ * y ahi aparece el costo. Las laminas de THERMAL son RGBA, asi que caen del lado caro.
+ *
+ * Numeros reales medidos el 24-ago:
+ *     lamina real 1950x1950 RGBA (3,8 MPx)  ->  +70 MB
+ *     las 3 laminas juntas, camino completo ->  +103 MB de pico, 640 ms
+ * El tope se pone en 8 MPx: mas del doble de lo que THERMAL manda hoy, y acota el peor caso
+ * a ~115 MB por figura en vez de dejarlo abierto.
+ */
+const MAX_MPX = () => Number(process.env.THERMAL_LAMINA_MAX_MPX || 8);
 
 /**
  * Atajo para el webhook: elige el perfil y trae sus láminas destacadas.

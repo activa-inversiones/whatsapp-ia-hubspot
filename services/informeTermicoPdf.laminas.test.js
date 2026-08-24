@@ -96,3 +96,47 @@ test('🔒 un PNG corrupto NO tumba la generación del informe', async () => {
   assert.ok(pdf && pdf.length > 0, 'el PDF sale igual');
   assert.equal(contarImagenes(pdf), 1, 'la sana entra, la corrupta se saltea');
 });
+
+// ── Lo que trajo Codex en la compuerta (24-ago), todo MEDIDO ─────────────────────────
+
+test('🔴 [P1 · Codex] un PNG de muchos megapixeles NO se dibuja — puede matar el proceso', async () => {
+  // MEDIDO, no teorico: un PNG uniforme 3000x3000 RGBA ocupa 34 KB en disco y hace subir el
+  // RSS 129 MB al generar el PDF. Uno de 10000x10000 entra comodo bajo cualquier techo de
+  // BYTES y se come ~1,4 GB. Eso no deja al cliente sin informe: mata el proceso del bot y
+  // se cae la atencion de TODOS los clientes por culpa de un adorno.
+  // (pdfkit incrusta un PNG RGB sin decodificar; un RGBA lo TIENE que decodificar para
+  //  separar el alfa. Las laminas de THERMAL son RGBA, o sea caen del lado caro.)
+  const enorme = Buffer.from(pngReal());
+  enorme.writeUInt32BE(4000, 16);      // 4000 x 4000 = 16 MPx, sobre el tope de 8
+  enorme.writeUInt32BE(4000, 20);
+  const l = conLaminas('S60 proyectante WinHouse');
+  l.laminas = [{ id: '10', png: enorme }, { id: '01', png: pngReal() }];
+  const pdf = await generarInformeTermicoPdf(DATOS, { laminas: l });
+  assert.equal(contarImagenes(pdf), 1, 'la enorme se saltea, la sana entra');
+});
+
+test('🔴 [P1 · Codex] espacios en blanco NO alcanzan como rotulo', async () => {
+  // Antes `'   '` pasaba el truthy y salia "Corte del sistema   ": un rotulo vacio es lo
+  // mismo que no tener rotulo, y las figuras quedaban sin identificar en un documento
+  // firmado. Con AMBOS campos en blanco no hay identidad de ningun tipo ⇒ no se dibuja.
+  const l = conLaminas('   ');
+  l.perfil = '   ';
+  const pdf = await generarInformeTermicoPdf(DATOS, { laminas: l });
+  assert.equal(contarImagenes(pdf), 0, 'sin identidad fiable, no salen figuras');
+});
+
+test('cae al id del perfil si falta el nombre comercial', async () => {
+  const l = conLaminas('');
+  l.perfil = 'S60_proyectante';
+  const pdf = await generarInformeTermicoPdf(DATOS, { laminas: l });
+  assert.equal(contarImagenes(pdf), 2, 'con identidad, aunque sea el id tecnico, si se dibujan');
+});
+
+test('🔒 [P2 · Codex] un nombre absurdamente largo no descuadra la pagina', async () => {
+  // Los campos vienen de una API ajena. Un `nombre` de 1000 caracteres empujaba el rotulo
+  // varias lineas mientras la imagen se dibujaba a una altura fija: se superponian.
+  const l = conLaminas('X'.repeat(1000));
+  const pdf = await generarInformeTermicoPdf(DATOS, { laminas: l });
+  assert.ok(pdf && pdf.length > 0);
+  assert.equal(contarImagenes(pdf), 2, 'el informe sale igual, con el nombre acotado');
+});
