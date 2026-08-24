@@ -28,7 +28,17 @@ import { handleWebhook } from './webhook.js';
 // Nada de este test sale a la red. Lo que igual la intente (catalogo de vidrios,
 // correlativo ISO) esta envuelto en try/catch y degrada, que es justo lo que queremos
 // ejercitar: el informe sale igual.
-global.fetch = async () => { throw new Error('sin red en tests'); };
+// Fetch enrutado. Solo se atiende el CORRELATIVO de la propuesta, porque sin folio ISO el
+// PDF no se emite y el informe —que ahora cuelga de la propuesta entregada— no llegaria a
+// existir: el test estaria midiendo el correlativo, no el informe.
+// Todo lo demas responde "no disponible" para ejercitar los caminos de degradacion, que es
+// como se comporta el sistema cuando sales-os o THERMAL no contestan.
+global.fetch = async (url) => {
+  if (String(url).includes('/internal/quotes/next-number')) {
+    return { ok: true, status: 200, json: async () => ({ quote_number: 'CM-FR-004-2026-9999' }) };
+  }
+  return { ok: false, status: 503, json: async () => ({}) };
+};
 
 const DATOS_COMUNA = {
   comuna: 'Temuco', regimen: 'PDA', uw_max_Wm2K: 3.2,
@@ -40,6 +50,8 @@ const VENTANAS = [
   { id: 'V2', producto: 'Ventana PVC H98 corredera', medidas: '3250x1460mm', vidrio: 'DVH 5/12/5', ambiente: 'Dormitorio', cantidad: 1, uw: null },
 ];
 
+let SECUENCIA = 0;
+
 function makeRes() {
   return { sentStatus: undefined, sendStatus(c) { this.sentStatus = c; return this; } };
 }
@@ -48,18 +60,25 @@ function makeRes() {
  * @param disparos  cuantas veces el turno llama a enviarInformeTermico. 2 = el caso real
  *                  del proyecto de dos ventanas que produjo el duplicado.
  */
-function makeDeps({ disparos = 1, envioOk = true, overrides = {} } = {}) {
-  const spy = { docsEnviados: [], convEvents: [], pdfArgs: [], textos: [], adjuntosZoho: [], notasZoho: [] };
+function makeDeps({ disparos = 1, envioOk = true, ventanas = null, overrides = {} } = {}) {
+  // Telefono propio por test: el candado de 30 dias va por numero, y compartirlo hacia que
+  // el segundo test en adelante quedara bloqueado por el informe del primero.
+  const telefono = `5699${String(++SECUENCIA).padStart(7, '0')}`;
+  const spy = { escrituras: [], docsEnviados: [], propuestas: [], convEvents: [], pdfArgs: [], textos: [], adjuntosZoho: [], notasZoho: [] };
   const estado = new Map();
   let tokenSeq = 0;
   const vigente = (e) => e && (!e.expira || e.expira > Date.now());
 
   const deps = {
-    conv: new Map(), seen: new Set(),
+    // 🔴 AISLAMIENTO POR TEST. Sin `locks` propio, todos los tests comparten el mutex
+    // global por telefono: mientras un despacho fire-and-forget del test anterior sigue
+    // corriendo, el siguiente turno queda encolado y el test agota su espera. Se veia como
+    // "los primeros pasan y los ultimos no", que es la firma del estado compartido.
+    conv: new Map(), seen: new Set(), locks: new Map(),
     dormir: async () => {},                       // sin esperas humanas en test
 
     leerEstado: async (k) => (vigente(estado.get(k)) ? estado.get(k).valor : null),
-    escribirEstado: (k, v, ttl = 300) => estado.set(k, { valor: v, expira: Date.now() + ttl * 1000 }),
+    escribirEstado: (k, v, ttl = 300) => { spy.escrituras.push([k, v]); estado.set(k, { valor: v, expira: Date.now() + ttl * 1000 }); },
     // Leer-calcular-escribir en un paso, sin await: la acumulacion de ventanas tenia la
     // misma carrera que el candado y perdia las ventanas de las cotizaciones hermanas.
     fusionarEstado: (k, calcular, ttl = 300) => {
@@ -82,7 +101,7 @@ function makeDeps({ disparos = 1, envioOk = true, overrides = {} } = {}) {
       estado.delete(k); return true;
     },
 
-    parseInbound: () => ({ ok: true, from: '56995420506', text: 'dos ventanas', msgId: `wamid.${Math.random()}`, type: 'text' }),
+    parseInbound: () => ({ ok: true, from: telefono, text: 'dos ventanas', msgId: `wamid.${Math.random()}`, type: 'text' }),
     sendWhatsAppText: async (to, text) => { spy.textos.push(text); return { ok: true, msgId: 'm1' }; },
 
     // ── lo que hoy NO es inyectable y por eso este camino no se podia probar ──
@@ -97,27 +116,34 @@ function makeDeps({ disparos = 1, envioOk = true, overrides = {} } = {}) {
       spy.adjuntosZoho.push({ dealId, bytes: buf?.length || 0, filename });
       return { ok: true };
     },
+    // La PROPUESTA tambien pasa por aca: se separan por nombre de archivo, porque contar
+    // los dos juntos daria "2 documentos" y el test parecia verde por el motivo equivocado.
+    generatePdf: async () => Buffer.alloc(2048, 3),
     uploadWaDocument: async () => 'media.1',
     sendWaDocument: async (to, mediaId, filename) => {
-      spy.docsEnviados.push({ to, mediaId, filename });
+      const esInforme = /^Informe-Termico/.test(filename || '');
+      (esInforme ? spy.docsEnviados : spy.propuestas).push({ to, mediaId, filename });
+      if (!esInforme) return { ok: true, msgId: 'prop.1' };
       return envioOk ? { ok: true, msgId: 'doc.1' } : { ok: false, error: 'Meta rechazo' };
     },
 
     handleTurn: async ({ userText, state, toolCtx }) => {
-      // El turno dispara el informe tantas veces como ventanas cotizo, SIN await —
-      // exactamente como lo hace `calcular_cotizacion` en tools.js.
-      // 🔴 [2026-08-24 · Codex, 2a pasada] UNA VENTANA POR LLAMADA, que es lo que hace
-      // `calcular_cotizacion` de verdad: `d.items` se arma con UNA sola partida
-      // (tools.js:708), asi que cada invocacion manda su ventana y nada mas. El fake
-      // anterior inyectaba el array COMPLETO en cada disparo — o sea probaba un camino
-      // que no existe, y por eso los tests daban verde sobre una funcionalidad rota.
-      for (let i = 0; i < disparos; i++) {
-        const v = VENTANAS[i] || VENTANAS[0];
-        toolCtx.enviarInformeTermico('Temuco', {
-          glassLabel: v.vidrio, uw: v.uw, producto: v.producto, ventanas: [v],
+      // 🔴 [2026-08-24] EL INFORME SALE CON LA PROPUESTA. El cliente arma su proyecto a lo
+      // largo de VARIOS mensajes (Alejandro dio sus 10 ventanas en 5 turnos distintos), asi
+      // que ni una cotizacion ni un turno tienen el proyecto completo. La propuesta SI: el
+      // sistema ya acumula las partidas entre turnos en `pending_quote.items`.
+      if (disparos > 0) {
+        await toolCtx.generarPdf({
+          items: (ventanas || VENTANAS).slice(0, disparos).map((v) => ({
+            product: v.producto, producto_label: v.producto, measures: v.medidas,
+            measures_original: v.medidas, glass_label: v.vidrio, ambiente: v.ambiente,
+            qty: v.cantidad, unit_price: 100000, total_price: 100000,
+            termico: v.uw === null ? null : { uw: v.uw },
+          })),
+          comuna: 'Temuco', name: 'Alejandro',
         });
       }
-      return { reply: 'Listo', history: [], toolCalls: [], state: { ...state, name: 'Vanessa Wainer' } };
+      return { reply: 'Listo', history: [], toolCalls: [], state: { ...state, name: 'Alejandro' } };
     },
 
     bridge: {
@@ -132,8 +158,15 @@ function makeDeps({ disparos = 1, envioOk = true, overrides = {} } = {}) {
   return { deps, spy };
 }
 
-/** El hook es fire-and-forget: el webhook vuelve antes. Se espera a que decante. */
-async function esperar(cond, ms = 3000) {
+/**
+ * Las medidas identifican la ventana; el `id` ya no viaja (lo asigna resumenVentanas).
+ * Se normaliza el sufijo "mm" porque el guard de medidas del PDF reescribe
+ * `measures_original` y puede devolverlas sin unidad: comparar el texto crudo hacia fallar
+ * un test que estaba mirando el comportamiento correcto.
+ */
+const medidasDe = (vs) => (vs || []).map((v) => String(v.medidas || '').replace(/mm$/, ''));
+
+async function esperar(cond, ms = 8000) {
   const fin = Date.now() + ms;
   while (Date.now() < fin) {
     if (cond()) return true;
@@ -142,40 +175,61 @@ async function esperar(cond, ms = 3000) {
   return false;
 }
 
-test('camino feliz — el informe sale UNA vez y con el proyecto completo', async () => {
-  const { deps, spy } = makeDeps();
-  await handleWebhook({ body: {} }, makeRes(), deps);
-  assert.ok(await esperar(() => spy.docsEnviados.length > 0), 'el informe tiene que salir');
-  await new Promise((r) => setTimeout(r, 120));                 // margen por si saliera otro
+/* =========================================================================
+ * EL PROYECTO COMPLETO
+ * ========================================================================= */
 
-  assert.equal(spy.docsEnviados.length, 1, 'exactamente un documento');
-  assert.match(spy.docsEnviados[0].filename, /^Informe-Termico-Temuco\.pdf$/);
-  assert.deepEqual(spy.pdfArgs[0].ventanas, [VENTANAS[0]],
-    'con una sola cotizacion, el informe lleva esa ventana');
-});
-
-test('🔴 EL DUPLICADO — dos cotizaciones del mismo turno mandan UN solo informe', async () => {
-  // Reproduccion del incidente: folios 0003 y 0004 al mismo cliente con 90 ms de
-  // diferencia. Con el candado leer-luego-escribir este test daba 2.
+test('🔴 el informe lleva TODAS las ventanas de la propuesta, y sale UNA vez', async () => {
   const { deps, spy } = makeDeps({ disparos: 2 });
   await handleWebhook({ body: {} }, makeRes(), deps);
-  assert.ok(await esperar(() => spy.docsEnviados.length > 0));
+  assert.ok(await esperar(() => spy.docsEnviados.length > 0), 'el informe tiene que salir');
   await new Promise((r) => setTimeout(r, 200));
-  assert.equal(spy.docsEnviados.length, 1, 'el cliente recibe UN informe, no dos');
+
+  assert.equal(spy.docsEnviados.length, 1, 'exactamente un informe');
+  assert.equal(spy.propuestas.length, 1, 'y una propuesta');
+  assert.match(spy.docsEnviados[0].filename, /^Informe-Termico-Temuco\.pdf$/);
+  assert.deepEqual(medidasDe(spy.pdfArgs.at(-1).ventanas), medidasDe(VENTANAS),
+    'las MISMAS ventanas que declara la propuesta');
 });
+
+test('🔴 EL CASO ALEJANDRO: 10 ventanas listadas en 5 mensajes → informe con las 10', async () => {
+  // El defecto que motivo todo: su informe salio con UNA ventana de diez. El cliente arma
+  // el proyecto a lo largo de VARIOS mensajes, asi que ni una cotizacion ni un turno lo
+  // tienen completo. La propuesta SI —el sistema acumula las partidas entre turnos desde
+  // jun-2026— y de ahi sale ahora el informe.
+  const diez = [
+    { producto: 'Corredera S60', medidas: '2500x2000mm', vidrio: 'DVH 5/12/5', ambiente: 'Living', cantidad: 1, uw: 2.7 },
+    ...[1, 2, 3].map((i) => ({ producto: 'Fijo S60', medidas: `200${i}x600mm`, vidrio: 'DVH 5/12/5', ambiente: 'Dormitorio', cantidad: 1, uw: 2.8 })),
+    ...[1, 2, 3, 4].map((i) => ({ producto: 'Fijo S60', medidas: `150${i}x350mm`, vidrio: 'DVH 5/12/5', ambiente: 'Comedor', cantidad: 1, uw: null })),
+    ...[1, 2].map((i) => ({ producto: 'Proyectante S60', medidas: `80${i}x500mm`, vidrio: 'DVH 5/12/5', ambiente: 'Bano', cantidad: 1, uw: 2.9 })),
+  ];
+  const { deps, spy } = makeDeps({ ventanas: diez, disparos: diez.length });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.docsEnviados.length > 0));
+
+  assert.deepEqual(medidasDe(spy.pdfArgs.at(-1).ventanas), medidasDe(diez),
+    'las diez, en el orden del proyecto');
+});
+
+test('sin propuesta entregada NO hay informe: no se le promete nada a nadie', async () => {
+  const { deps, spy } = makeDeps({ disparos: 0 });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(spy.docsEnviados.length, 0);
+});
+
+/* =========================================================================
+ * VISIBILIDAD — el defecto que hizo preguntar "¿por que no llego?"
+ * ========================================================================= */
 
 test('🔴 EL INFORME INVISIBLE — queda registrado en la conversacion, como la propuesta', async () => {
   const { deps, spy } = makeDeps();
   await handleWebhook({ body: {} }, makeRes(), deps);
-  // [Codex · P2] Se espera EL DOCUMENTO, no "cualquier evento con este source": el aviso
-  // de texto llega antes y satisfacia el ancla mientras el envio seguia en curso. Un test
-  // que mira demasiado temprano falla —o peor, pasa— por razones que no son la que prueba.
   assert.ok(await esperar(() => spy.convEvents.some((e) => e.message_type === 'document'
     && e.metadata?.source === 'oliver_gpt_informe_termico')), 'el espejo del documento');
 
   const doc = spy.convEvents.find((e) => e.message_type === 'document'
     && e.metadata?.source === 'oliver_gpt_informe_termico');
-  assert.ok(doc, 'sin este evento el informe es invisible en el cockpit');
   assert.equal(doc.direction, 'outbound');
   assert.equal(doc.actor_type, 'ai');
   assert.match(doc.body, /Informe t[eé]rmico/i, 'el operador tiene que leer QUE se mando');
@@ -186,192 +240,106 @@ test('🔴 EL INFORME INVISIBLE — queda registrado en la conversacion, como la
   assert.ok(aviso, 'el aviso previo tambien: si no, el documento aparece sin contexto');
 });
 
-test('🔒 si Meta RECHAZA, no se le miente al cockpit y el proximo turno reintenta', async () => {
-  const { deps, spy } = makeDeps({ envioOk: false });
-  await handleWebhook({ body: {} }, makeRes(), deps);
-  assert.ok(await esperar(() => spy.docsEnviados.length > 0));
-  await new Promise((r) => setTimeout(r, 150));
-
-  const doc = spy.convEvents.find((e) => e.metadata?.source === 'oliver_gpt_informe_termico'
-    && e.message_type === 'document');
-  assert.equal(doc, undefined, 'registrar una entrega que no ocurrio es peor que no registrar');
-
-  // Y el candado corto quedo LIBRE: un envio fallido no puede dejar al cliente sin
-  // informe hasta que venza el TTL. Ese bug ya bloqueo a 4 clientes por 30 dias.
-  const { deps: deps2, spy: spy2 } = makeDeps({ envioOk: true });
-  deps2.leerEstado = deps.leerEstado; deps2.escribirEstado = deps.escribirEstado;
-  deps2.reservarEstado = deps.reservarEstado; deps2.liberarReserva = deps.liberarReserva;
-  await handleWebhook({ body: {} }, makeRes(), deps2);
-  assert.ok(await esperar(() => spy2.docsEnviados.length > 0),
-    'el reintento del proximo turno tiene que poder tomar el candado de nuevo');
-});
-
-test('🔒 [Codex · P1] si algo LANZA a mitad, el candado no queda trabado 5 minutos', async () => {
-  // EL AGUJERO QUE CAZO CODEX: la reserva se tomaba y las salidas por `return` la soltaban,
-  // pero una EXCEPCION no. Si `generarInformeTermicoPdf` (o THERMAL, o el envio) lanzaba,
-  // el candado quedaba puesto sin que nadie hubiera mandado nada: el cliente sin informe y
-  // el reintento bloqueado hasta que venciera el TTL.
-  const { deps, spy } = makeDeps({
-    overrides: { generarInformeTermicoPdf: async () => { throw new Error('pdfkit exploto'); } },
-  });
-  await handleWebhook({ body: {} }, makeRes(), deps);
-  await new Promise((r) => setTimeout(r, 200));
-  assert.equal(spy.docsEnviados.length, 0, 'no salio nada, como corresponde');
-
-  // El proximo turno TIENE que poder intentarlo de nuevo.
-  const { deps: deps2, spy: spy2 } = makeDeps();
-  deps2.leerEstado = deps.leerEstado; deps2.escribirEstado = deps.escribirEstado;
-  deps2.reservarEstado = deps.reservarEstado; deps2.liberarReserva = deps.liberarReserva;
-  await handleWebhook({ body: {} }, makeRes(), deps2);
-  assert.ok(await esperar(() => spy2.docsEnviados.length > 0),
-    'una excepcion no puede dejar al cliente esperando 5 minutos');
-});
-
-test('🔒 tras una entrega CONFIRMADA la reserva no se suelta sola', async () => {
-  // El reverso del test anterior: el `finally` no puede soltar la reserva cuando el envio
-  // SI ocurrio, o se reabriria la ventana del duplicado justo despues de mandar.
+test('🔴 el PDF del informe queda ARCHIVADO, igual que la cotizacion', async () => {
+  // Reclamo del dueno, textual: "yo abro el sistema y deberia estar guardado... tiene que
+  // estar almacenado, al lado de la cotizacion". Del informe solo quedaba folio y hash.
   const { deps, spy } = makeDeps();
   await handleWebhook({ body: {} }, makeRes(), deps);
-  assert.ok(await esperar(() => spy.docsEnviados.length > 0));
-  await new Promise((r) => setTimeout(r, 100));
+  // La PROPUESTA tambien se adjunta al Deal: se busca el del informe por su nombre, o el
+  // test pasaria mirando el archivo equivocado.
+  const delInforme = () => spy.adjuntosZoho.find((a) => /^Informe-Termico/.test(a.filename || ''));
+  assert.ok(await esperar(() => !!delInforme()), 'el informe tiene que archivarse');
 
-  const { deps: deps2, spy: spy2 } = makeDeps();
-  deps2.leerEstado = deps.leerEstado; deps2.escribirEstado = deps.escribirEstado;
-  deps2.reservarEstado = deps.reservarEstado; deps2.liberarReserva = deps.liberarReserva;
-  await handleWebhook({ body: {} }, makeRes(), deps2);
-  await new Promise((r) => setTimeout(r, 250));
-  assert.equal(spy2.docsEnviados.length, 0, 'el candado de 30 dias tiene que frenar el segundo');
+  const adj = delInforme();
+  assert.equal(adj.dealId, 'deal.777');
+  assert.ok(adj.bytes > 0, 'el PDF de verdad, no un puntero');
+  assert.match(adj.filename, /Informe-Termico.*\.pdf$/, 'distinguible de la propuesta');
 });
 
-test('🔴 [Codex · 2a pasada] DOS cotizaciones = UN informe con LAS DOS ventanas', async () => {
-  // EL HALLAZGO QUE DESTAPO QUE EL ARREGLO NO ARREGLABA NADA. `calcular_cotizacion` cotiza
-  // UNA partida por llamada (tools.js:708 arma `items: [{...}]`), asi que un cliente con
-  // dos ventanas produce DOS llamadas, cada una con SU ventana.
-  //
-  // Asi se lee la evidencia real de produccion: los folios 0003 (Uw 2,71) y 0004 (sin Uw)
-  // del mismo cliente NO eran el mismo informe repetido — eran la ventana 1 y la ventana 2,
-  // cada una en su propio documento. Con el candado y sin acumular, ese cliente habria
-  // recibido UN informe con UNA sola ventana: peor cobertura que antes del arreglo.
-  //
-  // Lo que se le promete al dueño es "las 8 ventanas en UN informe", asi que las sucesivas
-  // cotizaciones tienen que ACUMULARSE, no reemplazarse ni bloquearse.
-  const { deps, spy } = makeDeps({ disparos: 2 });
+/* =========================================================================
+ * NADA SE DA POR ENTREGADO SIN CONFIRMACION
+ * ========================================================================= */
+
+test('🔒 si Meta RECHAZA el informe: ni cockpit, ni archivo', async () => {
+  const { deps, spy } = makeDeps({ envioOk: false });
   await handleWebhook({ body: {} }, makeRes(), deps);
-  assert.ok(await esperar(() => spy.docsEnviados.length > 0));
-  await new Promise((r) => setTimeout(r, 250));
+  assert.ok(await esperar(() => spy.docsEnviados.length > 0), 'se intento el envio');
+  await new Promise((r) => setTimeout(r, 200));
 
-  assert.equal(spy.docsEnviados.length, 1, 'un solo documento');
-  assert.deepEqual(spy.pdfArgs[spy.pdfArgs.length - 1].ventanas, VENTANAS,
-    'y ese documento tiene que llevar LAS DOS ventanas del proyecto');
+  assert.equal(spy.convEvents.find((e) => e.metadata?.source === 'oliver_gpt_informe_termico'
+    && e.message_type === 'document'), undefined,
+  'registrar una entrega que no ocurrio es peor que no registrar');
+  assert.equal(spy.adjuntosZoho.filter((a) => /^Informe-Termico/.test(a.filename || '')).length, 0,
+    'ni se archiva copia de algo que no salio');
 });
 
-test('🔒 [Codex · 2a pasada] si Meta rechaza el AVISO, tampoco se registra', async () => {
-  // El espejo del documento ya exigia entrega confirmada, pero el del aviso ignoraba el
-  // resultado de `enviarSinPausa` y registraba igual. El operador veia en el cockpit un
-  // mensaje que el cliente nunca recibio — el mismo error que se corrigio al lado.
+test('🔒 si Meta rechaza el AVISO, tampoco se registra', async () => {
   const { deps, spy } = makeDeps({
     overrides: { sendWhatsAppText: async () => ({ ok: false, error: 'Meta rechazo texto' }) },
   });
   await handleWebhook({ body: {} }, makeRes(), deps);
   assert.ok(await esperar(() => spy.docsEnviados.length > 0), 'el informe igual se manda');
-  await new Promise((r) => setTimeout(r, 150));
-
-  const aviso = spy.convEvents.find((e) => /Deme un momento/.test(e.body || ''));
-  assert.equal(aviso, undefined, 'un mensaje que no salio no puede figurar en la conversacion');
-  // El documento SI: su envio es independiente y se confirmo aparte.
-  assert.ok(spy.convEvents.some((e) => e.message_type === 'document'
-    && e.metadata?.source === 'oliver_gpt_informe_termico'));
-});
-
-// ── 🔴 [2026-08-24] REDISEÑO: EL INFORME SE DESPACHA AL FINAL DEL TURNO ──────────────
-// Antes se disparaba DENTRO de cada `calcular_cotizacion`, y como esa tool cotiza una
-// partida por llamada, habia que reconstruir el proyecto desde N invocaciones sueltas con
-// memoria compartida. Toda la maquinaria del lote anterior —candado corto, fusion atomica,
-// sello de tanda, barrera de estabilizacion por tiempo— existia solo para compensar eso, y
-// cada arreglo destapaba una carrera nueva en otro lado (4 pasadas de compuerta).
-//
-// El turno es secuencial y termina en un instante conocido. Acumulando en memoria del turno
-// y despachando UNA vez al final, las carreras no se mitigan: dejan de existir.
-
-test('🔴 el informe se despacha UNA vez y DESPUES de que el turno termino', async () => {
-  const { deps, spy } = makeDeps({ disparos: 2 });
-  const original = deps.handleTurn;
-  deps.handleTurn = async (args) => {
-    const r = await original(args);
-    assert.equal(spy.docsEnviados.length, 0,
-      'durante el turno no se manda nada: todavia pueden llegar mas ventanas');
-    return r;
-  };
-  await handleWebhook({ body: {} }, makeRes(), deps);
-  assert.ok(await esperar(() => spy.docsEnviados.length > 0));
-  await new Promise((r) => setTimeout(r, 250));
-  assert.equal(spy.docsEnviados.length, 1, 'un solo informe por turno');
-  assert.deepEqual(spy.pdfArgs.at(-1).ventanas, VENTANAS, 'con las dos ventanas');
-});
-
-test('🔴 una cotizacion LENTA dentro del turno igual entra al informe', async () => {
-  // Este es el caso que la barrera por tiempo no podia cubrir: las tools corren
-  // secuencialmente y una puede tardar hasta 15 s (timeout del engine). Con el despacho al
-  // final del turno el tiempo deja de importar — el turno espera a sus propias tools.
-  const tercera = { id: 'V3', producto: 'Fijo S60', medidas: '600x600mm', vidrio: 'DVH 5/12/5', ambiente: 'Baño', cantidad: 1, uw: 2.9 };
-  const { deps, spy } = makeDeps({ disparos: 2 });
-  const original = deps.handleTurn;
-  deps.handleTurn = async (args) => {
-    const r = await original(args);
-    await new Promise((res) => setTimeout(res, 300));   // la tool lenta
-    args.toolCtx.enviarInformeTermico('Temuco', {
-      glassLabel: tercera.vidrio, uw: tercera.uw, producto: tercera.producto, ventanas: [tercera],
-    });
-    return r;
-  };
-  await handleWebhook({ body: {} }, makeRes(), deps);
-  assert.ok(await esperar(() => spy.docsEnviados.length > 0, 6000));
   await new Promise((r) => setTimeout(r, 200));
-  const v = spy.pdfArgs.at(-1).ventanas;
-  assert.equal(v.length, 3, 'las tres ventanas del turno');
-  assert.ok(v.some((x) => x.medidas === tercera.medidas), 'incluida la de la tool lenta');
-});
-
-test('un turno SIN cotizaciones no manda ningun informe', async () => {
-  const { deps, spy } = makeDeps({ disparos: 0 });
-  await handleWebhook({ body: {} }, makeRes(), deps);
-  await new Promise((r) => setTimeout(r, 250));
-  assert.equal(spy.docsEnviados.length, 0);
-});
-
-// ── 🔴 [2026-08-24] EL INFORME SE ARCHIVA, COMO LA COTIZACION ────────────────────────
-// Reclamo del dueño, textual: *"yo abro el sistema y deberia estar guardado... tiene que
-// estar almacenado, al lado de la cotizacion"*. Y tenia razon: del informe solo quedaba un
-// numero de folio y un hash. El PDF no se guardaba en NINGUNA parte — ni adjunto al Deal
-// (como si hace la cotizacion) ni descargable desde el cockpit.
-//
-// Eso convierte "¿le llego el informe?" en una pregunta que el sistema no puede responder,
-// y por lo tanto en una discusion. Un documento firmado que se entrega a un cliente y del
-// que no queda copia tampoco resiste una auditoria ISO.
-
-test('🔴 el PDF del informe queda ADJUNTO al Deal, igual que la cotizacion', async () => {
-  const { deps, spy } = makeDeps();
-  await handleWebhook({ body: {} }, makeRes(), deps);
-  assert.ok(await esperar(() => spy.adjuntosZoho.length > 0), 'tiene que archivarse');
-
-  const adj = spy.adjuntosZoho[0];
-  assert.equal(adj.dealId, 'deal.777');
-  assert.ok(adj.bytes > 0, 'el PDF de verdad, no un puntero');
-  assert.match(adj.filename, /Informe-Termico.*\.pdf$/, 'con nombre distinguible de la propuesta');
-});
-
-test('🔒 se archiva DESPUES de entregar: no se guarda copia de algo que no salio', async () => {
-  const { deps, spy } = makeDeps({ envioOk: false });
-  await handleWebhook({ body: {} }, makeRes(), deps);
-  await new Promise((r) => setTimeout(r, 300));
-  assert.equal(spy.adjuntosZoho.length, 0);
+  assert.equal(spy.convEvents.find((e) => /Deme un momento/.test(e.body || '')), undefined,
+    'un mensaje que no salio no puede figurar en la conversacion');
 });
 
 test('🔒 si Zoho falla, el cliente NO pierde su informe', async () => {
-  // El archivo es trazabilidad nuestra; el informe es del cliente. Nunca al reves.
+  // El archivo es trazabilidad NUESTRA; el informe es del cliente. Nunca al reves.
   const { deps, spy } = makeDeps({
     overrides: { attachPdfToDeal: async () => { throw new Error('Zoho caido'); } },
   });
   await handleWebhook({ body: {} }, makeRes(), deps);
   assert.ok(await esperar(() => spy.docsEnviados.length > 0), 'el envio no depende de Zoho');
+});
+
+test('🔒 si el informe explota, la PROPUESTA igual sale', async () => {
+  // La regla dura del proyecto: el informe nunca puede tumbar ni demorar el camino del precio.
+  const { deps, spy } = makeDeps({
+    overrides: { generarInformeTermicoPdf: async () => { throw new Error('pdfkit exploto'); } },
+  });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(spy.propuestas.length, 1, 'el cliente recibe su precio igual');
+  assert.equal(spy.docsEnviados.length, 0);
+});
+
+/* =========================================================================
+ * SIN DUPLICADOS
+ * ========================================================================= */
+
+test('🔴 dos propuestas seguidas al mismo cliente = UN solo informe', async () => {
+  // El candado de 30 dias. Un informe repetido deja de ser un informe y pasa a ser spam.
+  const { deps, spy } = makeDeps();
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.docsEnviados.length > 0));
+  await new Promise((r) => setTimeout(r, 200));
+
+  // Segunda vuelta del MISMO cliente. (La propuesta tiene su propio guard anti-duplicado
+  // de 2 min, asi que puede no reemitirse; lo que se prueba aca es el informe.)
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 600));
+  assert.equal(spy.docsEnviados.length, 1, 'el cliente recibe UN informe, no dos');
+});
+
+test('🔴 el informe deja RASTRO del msgId, o su acuse no se puede interpretar', async () => {
+  // Meta contesta 200 al aceptar el envio y manda el resultado real despues, con este
+  // mismo msgId. Sin saber a que documento corresponde, un `failed` pasa desapercibido —
+  // que es justo como un informe termino figurando "entregado" con hora mientras el
+  // cliente no tenia nada.
+  const { deps, spy } = makeDeps();
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.escrituras.some(([k]) => k.startsWith('wamsg:'))),
+    'tiene que guardarse el rastro del envio');
+
+  const rastros = spy.escrituras.filter(([k]) => k.startsWith('wamsg:'));
+  // LOS DOS documentos dejan rastro: una propuesta que no llega es una venta detenida, y
+  // hasta hoy tampoco se veia.
+  const porTipo = Object.fromEntries(rastros.map(([k, v]) => [v.tipo, { k, v }]));
+  assert.ok(porTipo.propuesta, 'la propuesta tambien deja rastro');
+  const inf = porTipo.informe_termico;
+  assert.ok(inf, 'y el informe');
+  assert.equal(inf.k, 'wamsg:doc.1', 'indexado por el id que devolvio Meta');
+  assert.ok(inf.v.folio, 'con el folio, para poder nombrarlo si falla');
+  assert.equal(inf.v.telefono, deps.parseInbound().from, 'y el telefono, para soltar su candado');
 });

@@ -33,6 +33,42 @@ const axiosWA = axios.create({
  *   Para tipos no-texto (audio/imagen/etc.) devuelve text = "[<tipo>]" para
  *   que el agente pueda pedir que escriban en texto.
  */
+/**
+ * LOS ACUSES DE META (`statuses[]`).
+ *
+ * 🔴 [2026-08-24] Cuando mandamos un mensaje, WhatsApp responde 200 al instante: eso
+ * significa "recibi tu pedido", NO "el cliente lo tiene". El resultado real llega DESPUES,
+ * por este mismo webhook: sent → delivered → read, o `failed` con el motivo.
+ *
+ * Los descartabamos sin leerlos, asi que el sistema no podia distinguir un documento
+ * entregado de uno rechazado. Medido ese dia: el informe termico de un cliente figuraba
+ * como "entregado" en la base, con hora, y en su WhatsApp no habia nada. El dueño lo
+ * resumio mejor que nadie: *"que tu hayas enviado tal vez un ok, no quiere decir que este
+ * ok"*. Y no afecta solo al informe — LAS PROPUESTAS usan el mismo criterio.
+ *
+ * @returns {Array<{msgId:string, estado:string, telefono:string, fallo:boolean,
+ *                  codigo:number|null, motivo:string}>}  vacio si el webhook no trae acuses.
+ */
+export function parseStatuses(body) {
+  const lista = body?.entry?.[0]?.changes?.[0]?.value?.statuses;
+  if (!Array.isArray(lista) || !lista.length) return [];
+  return lista.reduce((salida, st) => {
+    // Sin id no se puede saber DE QUE mensaje habla: un acuse anonimo no sirve para nada
+    // y confundirlo con otro seria peor que ignorarlo.
+    if (!st || !st.id) return salida;
+    const err = Array.isArray(st.errors) ? st.errors[0] : null;
+    salida.push({
+      msgId: String(st.id),
+      estado: String(st.status || ''),
+      telefono: String(st.recipient_id || ''),
+      fallo: String(st.status || '') === 'failed',
+      codigo: err && Number.isFinite(Number(err.code)) ? Number(err.code) : null,
+      motivo: [err?.title, err?.message, err?.error_data?.details].filter(Boolean).join(' — '),
+    });
+    return salida;
+  }, []);
+}
+
 export function parseInbound(body) {
   const val = body?.entry?.[0]?.changes?.[0]?.value;
   // statuses[] presente → es un status de entrega/lectura, no un mensaje.

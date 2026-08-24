@@ -1,0 +1,125 @@
+// webhook.acuses.test.js — [2026-08-24]
+//
+// QUE HACE EL BOT CON LOS ACUSES DE META. El parser ya los lee (whatsapp-acuses.test.js);
+// aca se prueba que sirvan para algo:
+//
+//   · un `failed` de un DOCUMENTO tiene que verse en la conversacion y avisarle a Marcelo,
+//     porque significa que el cliente NO tiene su propuesta o su informe;
+//   · si el que fallo era el informe termico, hay que SOLTAR el candado de 30 dias: si no,
+//     el cliente queda sin informe un mes por un envio que nunca llego;
+//   · un acuse nunca puede disparar un turno del bot ni contestarle nada al cliente.
+//
+// Nacio de un caso medido: un informe figuraba "entregado" en la base, con hora, y en el
+// WhatsApp del cliente no habia nada.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { handleWebhook } from './webhook.js';
+
+function makeRes() {
+  return { sentStatus: undefined, sendStatus(c) { this.sentStatus = c; return this; } };
+}
+
+const acuse = (status, msgId = 'wamid.DOC1', extra = {}) => ({
+  entry: [{ changes: [{ value: { statuses: [{
+    id: msgId, status, recipient_id: '56940415964', ...extra,
+  }] } }] }],
+});
+
+function makeDeps({ enviado = null, overrides = {} } = {}) {
+  const spy = { convEvents: [], avisos: [], turnos: 0, borrados: [] };
+  const estado = new Map();
+  if (enviado) estado.set(`wamsg:${enviado.msgId}`, { valor: enviado, expira: null });
+  estado.set('informe_termico:56940415964', { valor: true, expira: null });
+
+  const deps = {
+    conv: new Map(), seen: new Set(), locks: new Map(),
+    leerEstado: async (k) => (estado.has(k) ? estado.get(k).valor : null),
+    escribirEstado: (k, v) => estado.set(k, { valor: v, expira: null }),
+    borrarEstado: (k) => { spy.borrados.push(k); estado.delete(k); },
+    handleTurn: async () => { spy.turnos += 1; return { reply: 'x', history: [], toolCalls: [], state: {} }; },
+    sendWhatsAppText: async () => ({ ok: true, msgId: 'm1' }),
+    notifyHighValue: async (...a) => { spy.avisos.push(a); return { sent: true }; },
+    bridge: {
+      getConversationControl: async () => ({ ai_paused: false, operator_status: 'ai' }),
+      pushConversationEvent: async (p) => { spy.convEvents.push(p); return { ok: true }; },
+      pushLeadEvent: async () => ({ ok: true }),
+      pushQuoteEvent: async () => ({ ok: true }),
+    },
+    _estado: estado,
+  };
+  Object.assign(deps, overrides);
+  return { deps, spy };
+}
+
+test('🔒 un acuse NO despierta al bot ni le contesta al cliente', async () => {
+  const { deps, spy } = makeDeps();
+  const res = makeRes();
+  await handleWebhook({ body: acuse('delivered') }, res, deps);
+  assert.equal(res.sentStatus, 200, 'igual se ackea a Meta');
+  assert.equal(spy.turnos, 0, 'un acuse no es un mensaje del cliente');
+});
+
+test('🔴 un documento que FALLA se ve en la conversacion', async () => {
+  // Sin esto, el operador ve "propuesta enviada" y el cliente no tiene nada: la version
+  // del sistema y la realidad se separan y nadie se entera.
+  const { deps, spy } = makeDeps({
+    enviado: { msgId: 'wamid.DOC1', tipo: 'informe_termico', folio: 'CM-FR-006-2026-0005', telefono: '56940415964' },
+  });
+  await handleWebhook({ body: acuse('failed', 'wamid.DOC1', {
+    errors: [{ code: 131047, title: 'Re-engagement message' }],
+  }) }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 120));
+
+  const ev = spy.convEvents.find((e) => e.metadata?.source === 'oliver_gpt_acuse');
+  assert.ok(ev, 'tiene que quedar el rastro del fallo');
+  assert.match(ev.body, /NO se entreg/i, 'y decir claramente que no llego');
+  assert.match(ev.body, /CM-FR-006-2026-0005/, 'con el folio, para poder ubicarlo');
+  assert.equal(ev.metadata.codigo, 131047, 'y el motivo de Meta, que es lo que permite corregir');
+});
+
+test('🔴 si fallo el INFORME, se suelta el candado de 30 dias', async () => {
+  // Si no, el cliente queda un mes sin informe por un envio que nunca llego — el mismo
+  // bug que ya dejo a 4 clientes bloqueados.
+  const { deps, spy } = makeDeps({
+    enviado: { msgId: 'wamid.DOC1', tipo: 'informe_termico', folio: 'CM-FR-006-2026-0005', telefono: '56940415964' },
+  });
+  await handleWebhook({ body: acuse('failed', 'wamid.DOC1') }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.ok(spy.borrados.includes('informe_termico:56940415964'),
+    'el candado tiene que soltarse para que el proximo intento pueda reenviar');
+});
+
+test('🔴 un documento que falla se le AVISA a Marcelo', async () => {
+  const { deps, spy } = makeDeps({
+    enviado: { msgId: 'wamid.DOC1', tipo: 'propuesta', folio: 'CM-FR-004-2026-0336', telefono: '56940415964' },
+  });
+  await handleWebhook({ body: acuse('failed', 'wamid.DOC1') }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(spy.avisos.length, 1, 'una propuesta que no llego es plata parada');
+  assert.match(JSON.stringify(spy.avisos[0]), /CM-FR-004-2026-0336/);
+});
+
+test('un acuse BUENO no genera ruido: ni aviso ni evento de fallo', async () => {
+  const { deps, spy } = makeDeps({
+    enviado: { msgId: 'wamid.DOC1', tipo: 'informe_termico', folio: 'F1', telefono: '56940415964' },
+  });
+  for (const s of ['sent', 'delivered', 'read']) {
+    await handleWebhook({ body: acuse(s, 'wamid.DOC1') }, makeRes(), deps);
+  }
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(spy.avisos.length, 0, 'no se molesta al dueño con lo que si funciona');
+  assert.equal(spy.convEvents.filter((e) => /NO se entreg/i.test(e.body || '')).length, 0);
+  assert.deepEqual(spy.borrados, [], 'y NO se suelta el candado de algo que si llego');
+});
+
+test('un fallo de un mensaje que no rastreamos no rompe nada', async () => {
+  // Los textos comunes no se registran uno por uno: solo los DOCUMENTOS, que son los que
+  // importan. Un acuse de algo que no seguimos se ignora en silencio.
+  const { deps, spy } = makeDeps();
+  const res = makeRes();
+  await handleWebhook({ body: acuse('failed', 'wamid.DESCONOCIDO') }, res, deps);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(res.sentStatus, 200);
+  assert.equal(spy.avisos.length, 0);
+});

@@ -65,11 +65,11 @@ function cuerpoDelHook(src) {
 }
 
 /** El registrador que ven las tools (lo que antes era el hook completo). */
-function registradorDelTurno(src) {
+/** El hook de `toolCtx`, que quedo SOLO para el re-envio explicito (una linea). */
+function hookDeToolCtx(src) {
   const i = src.indexOf('enviarInformeTermico: (comuna, opciones');
   assert.ok(i > 0, 'no se encontro el hook enviarInformeTermico en toolCtx');
-  const j = src.indexOf('\n      },', i);
-  return src.slice(i, j);
+  return src.slice(i, src.indexOf('\n', i) + 1);
 }
 
 test('calcular_cotizacion DISPARA el informe — es el momento en que el cliente espera', async () => {
@@ -155,12 +155,12 @@ test('la tool de re-envio existe y SALTA el candado', async () => {
   assert.match(tools, /name: 'enviar_informe_termico'/);
   assert.match(tools, /ctx\.enviarInformeTermico\(input\.comuna \|\| '', \{ forzar: true \}\)/);
   const wh = await leer('../src/oliver-gpt/webhook.js');
-  const reg = registradorDelTurno(wh);
-  // [2026-08-24 · rediseño] `forzar` = el cliente lo esta PIDIENDO ahora, asi que se
-  // despacha en el momento en vez de esperar al cierre del turno.
-  assert.match(reg, /if \(opciones\.forzar\) return despacharInforme\(comuna, opciones\);/,
-    'un pedido explicito no espera al final del turno');
-  assert.match(wh, /const despacharInforme = \(comuna, \{ forzar = false/, 'y despacharInforme acepta forzar');
+  // [2026-08-24 · rediseño] El hook de `toolCtx` quedo SOLO para el re-envio explicito: el
+  // envio automatico ya no pasa por aca, sale con la propuesta (el unico punto donde el
+  // proyecto esta completo). Un pedido del cliente despacha en el momento.
+  assert.match(hookDeToolCtx(wh), /=> despacharInforme\(comuna, opciones\)/,
+    'un pedido explicito despacha en el momento');
+  assert.match(wh, /const despacharInforme = \(comuna, \{ forzar = false/, 'despacharInforme acepta forzar');
   assert.match(cuerpoDelHook(wh), /if \(!forzar\) \{/, 'el candado solo aplica al envio automatico');
 });
 
@@ -393,11 +393,16 @@ test('🔒 tramo 2 — el hook recuerda las ventanas y las recupera en el re-env
     'sin `ventanas` en la llamada, un re-envio recupera el vidrio pero pierde el proyecto');
   assert.match(bloque, /\(\{ glassLabel, uw, producto, ventanas \} = elegido\.datos\)/,
     'y hay que leer de vuelta lo elegido, o se usa la variable entrante sin rescate');
-  // [2026-08-24 · rediseño] El ACUMULADO ya no vive en el estado compartido: se junta en
-  // memoria del turno y llega completo. Lo que se guarda aca es para el RE-ENVIO posterior.
-  const reg = registradorDelTurno(await leer('../src/oliver-gpt/webhook.js'));
-  assert.match(reg, /informeDelTurno\.ventanas\.push\(\.\.\.opciones\.ventanas\)/,
-    'cada cotizacion suma su ventana al proyecto del turno');
+  // [2026-08-24 · rediseño] EL PROYECTO SALE DE LA PROPUESTA. No se junta en el estado ni
+  // en el turno: el cliente lista sus ventanas a lo largo de VARIOS mensajes (Alejandro dio
+  // diez en cinco), asi que ni una cotizacion ni un turno lo tienen entero. El sistema ya
+  // acumula las partidas entre turnos para la propuesta desde jun-2026, y de ahi se toma.
+  // Efecto lateral valioso: informe y propuesta declaran SIEMPRE las mismas ventanas.
+  const wh2 = await leer('../src/oliver-gpt/webhook.js');
+  assert.match(wh2, /const ventanasProyecto = \(input\.items \|\| \[\]\)\.map/,
+    'las ventanas salen de los items de la propuesta');
+  assert.match(wh2, /if \(docSent\) \{/,
+    'y solo si la propuesta se entrego de verdad: no se promete un informe a quien no cotizo');
 });
 
 test('🔒 tramo 3 — el PDF recibe el proyecto (este es el tramo que faltaba)', async () => {
@@ -422,4 +427,15 @@ test('🔴 [Codex 3a] la cantidad viaja CRUDA: `input.cantidad`, nunca `w.qty`',
   assert.doesNotMatch(mapeo, /cantidad:[^,]*\|\| 1/, 'un `|| 1` aca vuelve a inventar el dato');
   // Y sin `id`: cada llamada trae un solo item, asi que numerar aca daba "V1" ocho veces.
   assert.doesNotMatch(mapeo, /id: `V\$\{i \+ 1\}`/, 'la numeracion la hace resumenVentanas');
+});
+
+test('🔒 [Codex 5a] el upsert de Zoho del informe NO va con payload vacio', async () => {
+  // Con tres campos, el upsert sobre un Deal YA EXISTENTE le pisaba nombre y descripcion
+  // con vacio: el informe —un documento secundario— degradaba el registro comercial del
+  // cliente. Se mandan los datos del proyecto, igual que la propuesta.
+  const wh = await leer('../src/oliver-gpt/webhook.js');
+  const bloque = trozo(wh, "safe('informeTermico.zoho'", 'attachPdfToDeal(dealId');
+  assert.match(bloque, /items: ventanas \|\| \[\]/, 'el proyecto viaja al Deal');
+  assert.match(bloque, /comuna: datos\.comuna \|\| state\.comuna/, 'y la comuna real');
+  assert.doesNotMatch(bloque, /items: \[\],/, 'un items vacio pisa lo que ya habia');
 });

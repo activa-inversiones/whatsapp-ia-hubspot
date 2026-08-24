@@ -51,6 +51,7 @@ import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import {
   parseInbound as realParseInbound,
+  parseStatuses as realParseStatuses,
   sendWhatsAppText as realSendWhatsAppText,
   sendWhatsAppImageUrl as realSendImageUrl,
   sendWhatsAppVideoUrl as realSendVideoUrl,
@@ -533,6 +534,56 @@ export async function handleWebhook(req, res, deps = {}) {
 
     // ── (2) Parse + validación + idempotencia ───────────────────────────
     const inbound = parseInbound(req.body);
+    // ── 🔴 (2b) LOS ACUSES DE META ─────────────────────────────────────────
+    // Meta responde 200 cuando ACEPTA el envio, no cuando el cliente lo recibe. El
+    // resultado real llega aca despues: sent → delivered → read, o `failed` con el motivo.
+    // Se descartaban sin leerlos, asi que el sistema no podia distinguir un documento
+    // entregado de uno rechazado — y la base decia "entregado" con hora mientras el
+    // cliente no tenia nada.
+    //
+    // Solo se actua sobre los DOCUMENTOS (propuesta e informe), que son los que importan y
+    // los unicos que dejamos rastreados: un texto suelto que falla lo arregla el proximo
+    // mensaje, un PDF que no llego no se arregla solo.
+    const acuses = (deps.parseStatuses || realParseStatuses)(req.body);
+    if (acuses.length) {
+      for (const ac of acuses) {
+        if (!ac.fallo) continue;
+        await safe('acuse.fallo', async () => {
+          const rastro = await (deps.leerEstado || leerEstado)(`wamsg:${ac.msgId}`);
+          if (!rastro) return;               // no lo rastreabamos: no hay nada que decir
+          const que = rastro.tipo === 'informe_termico' ? 'Informe térmico' : 'Propuesta';
+          const detalle = ac.motivo || `código ${ac.codigo ?? 'desconocido'}`;
+
+          // 1. Que se vea en la conversacion, al lado del "enviado" que quedo mintiendo.
+          await safe('acuse.espejo', () => bridge.pushConversationEvent({
+            channel: 'whatsapp', external_id: rastro.telefono || ac.telefono,
+            direction: 'outbound', actor_type: 'system', actor_name: 'WhatsApp',
+            message_type: 'text',
+            body: `⚠️ ${que} ${rastro.folio || ''} NO se entregó al cliente — ${detalle}`.replace(/\s+/g, ' '),
+            metadata: { source: 'oliver_gpt_acuse', tipo: rastro.tipo, folio: rastro.folio || null,
+              codigo: ac.codigo, motivo: ac.motivo, msg_id: ac.msgId },
+          }));
+
+          // 2. Si era el INFORME, soltar el candado de 30 dias. Sin esto el cliente queda
+          //    un mes sin informe por un envio que nunca llego — el mismo bug que ya dejo
+          //    a 4 clientes bloqueados.
+          if (rastro.tipo === 'informe_termico' && rastro.telefono) {
+            try { (deps.borrarEstado || borrarEstado)(`informe_termico:${String(rastro.telefono).replace(/\D/g, '')}`); }
+            catch { /* si no se puede soltar, vence solo */ }
+          }
+
+          // 3. Avisarle a Marcelo: un documento que no llego es una venta detenida.
+          await safe('acuse.aviso', () => notifyHighValue(
+            deps.sendWhatsAppText || realSendWhatsAppText, rastro.telefono || ac.telefono,
+            { data: { telefono: rastro.telefono, folio: rastro.folio }, history: [] },
+            `[whatsapp] ${que} ${rastro.folio || ''} NO se entregó (${detalle}) — reenviarlo desde el inbox`));
+
+          log('warn', 'acuse.fallo', `${que} ${rastro.folio || ac.msgId} rechazado por Meta: ${detalle}`);
+        });
+      }
+      return;   // un acuse no es un mensaje: nunca dispara un turno del bot
+    }
+
     if (!inbound || !inbound.ok || !inbound.from) return;
 
     const { from, msgId, push_name } = inbound; // push_name = nombre de perfil WhatsApp (fallback de nombre del cliente)
@@ -993,7 +1044,6 @@ export async function handleWebhook(req, res, deps = {}) {
     // No hay dos ejecuciones que coordinar, no hay que adivinar cuantos segundos esperar a
     // que "deje de crecer", y una tool lenta no puede quedarse afuera porque el turno
     // espera a sus propias tools.
-    const informeDelTurno = { pedido: false, comuna: '', glassLabel: '', uw: null, producto: '', ventanas: [] };
 
       const despacharInforme = (comuna, { forzar = false, glassLabel = '', uw = null, producto = '', ventanas = null } = {}) => {
         const clave = `informe_termico:${String(from).replace(/\D/g, '')}`;
@@ -1060,6 +1110,23 @@ export async function handleWebhook(req, res, deps = {}) {
           const claveEnCurso = `${clave}:en_curso`;
           let tokenReserva = null;
           if (!forzar) {
+            // 🔴 [Codex · 5a pasada] DOS NIVELES, porque `reservar` solo es atomico DENTRO
+            // del proceso (su Map local). Durante un deploy conviven dos instancias y las
+            // dos podian pasar el candado largo antes de que ninguna entregara.
+            //
+            // Este chequeo va al estado COMPARTIDO (Postgres) antes de la reserva local. No
+            // es un lock distribuido —dos instancias que lean en el mismo instante siguen
+            // pasando— pero reduce la ventana de los ~40 s que dura el envio al ida y vuelta
+            // del KV. Se dice sin adornos: lo que garantiza el "una sola vez" a lo largo del
+            // tiempo es el candado de 30 dias, no este.
+            //
+            // ⚠️ SOLO SE LEE, NO SE ESCRIBE. El primer intento marcaba `true` aca y despues
+            // llamaba a `reservar`, que veia la clave ocupada... por uno mismo, y cortaba
+            // SIEMPRE. Ocho tests en rojo y ningun informe saliendo. `reservar` ya persiste
+            // su token en el KV compartido, asi que la marca compartida existe sin ayuda.
+            try {
+              if (await (deps.leerEstado || leerEstado)(claveEnCurso)) return;
+            } catch { /* si el estado compartido no responde, manda la reserva local */ }
             try {
               tokenReserva = (deps.reservarEstado || reservarEstado)(claveEnCurso, 5 * 60) || null;
               if (!tokenReserva) return;
@@ -1240,6 +1307,17 @@ export async function handleWebhook(req, res, deps = {}) {
           // De aca en adelante manda el candado de 30 dias.
           tokenReserva = null;
 
+          // 🔴 [2026-08-24] RASTRO PARA EL ACUSE DE META. Meta contesta 200 al aceptar el
+          // envio, no al entregarlo; el resultado real llega despues por el webhook con
+          // este mismo `msgId`. Sin guardar a que documento corresponde, ese acuse no se
+          // puede interpretar y un `failed` pasa desapercibido — que es como un informe
+          // termino figurando "entregado" con hora mientras el cliente no tenia nada.
+          try {
+            await (deps.escribirEstado || escribirEstado)(`wamsg:${envio.msgId}`, {
+              msgId: envio.msgId, tipo: 'informe_termico', folio: numeroInforme, telefono: String(from),
+            }, 3 * 24 * 3600);              // 3 dias: los acuses de Meta llegan en minutos
+          } catch { /* sin rastro solo se pierde el diagnostico, no el informe */ }
+
           // 🔴 [2026-08-24] ESPEJO AL COCKPIT — EL DEFECTO QUE HIZO PREGUNTAR "¿POR QUE NO
           // LLEGO EL INFORME?". Habia llegado: Meta acepto los PDF y la BD los tenia como
           // entregados. Pero `conversation_messages` no tenia NI UNA FILA del informe, asi
@@ -1272,10 +1350,16 @@ export async function handleWebhook(req, res, deps = {}) {
           // propio `safe`: el archivo es trazabilidad NUESTRA y el informe es del cliente.
           // Si Zoho esta caido, el cliente ya tiene su documento y eso no se toca.
           safe('informeTermico.zoho', async () => {
+            // 🔴 [Codex · 5a pasada] SE MANDAN LOS DATOS COMPLETOS. Con un payload de tres
+            // campos, el upsert sobre un Deal YA EXISTENTE le pisaba nombre y descripcion
+            // con vacio: el informe, que es un documento secundario, degradaba el registro
+            // comercial del cliente. Se reusa lo que ya se sabe del proyecto —lo mismo que
+            // manda la propuesta— para que el upsert no borre nada.
             const dealId = await upsertZohoDeal({
               phone: from,
               name: state.name || '',
-              comuna: datos.comuna || '',
+              comuna: datos.comuna || state.comuna || '',
+              items: ventanas || [],
               stageKey: 'informe_termico',
             });
             if (!dealId) return;
@@ -1355,22 +1439,10 @@ Comuna: ${datos.comuna}`
       //      milisegundo por esto — es la regla dura del proyecto.
       //   3. si THERMAL no responde o no hay dato verificado, NO se manda nada.
       //      Jamás se inventa un número: son citas normativas.
-      // El hook que ven las tools. `calcular_cotizacion` REGISTRA su ventana y sigue de
-      // largo —sincrono, sin red, sin candados— y el despacho ocurre al cerrar el turno.
-      // `forzar` viene de la tool `enviar_informe_termico`, o sea el cliente lo esta
-      // pidiendo ahora: eso se despacha en el momento y no espera al final del turno.
-      enviarInformeTermico: (comuna, opciones = {}) => {
-        if (opciones.forzar) return despacharInforme(comuna, opciones);
-        informeDelTurno.pedido = true;
-        if (comuna) informeDelTurno.comuna = comuna;
-        // Los tres campos de resumen son de la ULTIMA cotizacion del turno; las ventanas
-        // se suman. Un array local: sin await en el medio, no hay carrera que resolver.
-        if (opciones.glassLabel) informeDelTurno.glassLabel = opciones.glassLabel;
-        if (opciones.uw !== undefined && opciones.uw !== null) informeDelTurno.uw = opciones.uw;
-        if (opciones.producto) informeDelTurno.producto = opciones.producto;
-        if (Array.isArray(opciones.ventanas)) informeDelTurno.ventanas.push(...opciones.ventanas);
-        return null;
-      },
+      // La tool `enviar_informe_termico` (el cliente lo PIDE) sigue teniendo su hook.
+      // `calcular_cotizacion` ya NO dispara nada: el informe sale con la propuesta, que es
+      // el unico punto donde el proyecto esta completo.
+      enviarInformeTermico: (comuna, opciones = {}) => despacharInforme(comuna, opciones),
 
       // saveLead → pushLeadEvent (persistencia real del lead).
       saveLead: (leadState = {}) =>
@@ -1705,12 +1777,14 @@ Comuna: ${datos.comuna}`
           const filename = `${quoteNumber}.pdf`;
           const caption  = `Propuesta Técnica Económica N° ${quoteNumber} · Activa Inversiones`;
           let waDocMediaId = null;
+          let waDocMsgId = null;   // id de Meta: con el se interpreta el acuse que llega despues
           let docSent = false;   // ← refleja el ENVÍO REAL (sendWaDocument.ok), no solo el upload
           try {
             waDocMediaId = await uploadWaDocument(pdfBuffer, filename);
             const sendRes = await sendWaDocument(from, waDocMediaId, filename, caption);
             // sendWaDocument NO lanza: devuelve {ok:false} si Meta rechaza → hay que leerlo.
             docSent = !!(sendRes && sendRes.ok);
+            waDocMsgId = sendRes?.msgId || null;
             if (docSent) {
               // La propuesta formal salió: la atribución ya cumplió su función.
               if (atribucion) atribucionConsumida = true;
@@ -1741,6 +1815,55 @@ Comuna: ${datos.comuna}`
               signal: AbortSignal.timeout(15000),
             });
           });
+
+          // ── 🔴 Paso 3a·bis: EL INFORME TERMICO, CON EL PROYECTO COMPLETO ─────
+          // [2026-08-24] Antes salia desde `calcular_cotizacion`, y despues desde el cierre
+          // del turno. Las dos estaban mal por la misma razon: EL CLIENTE ARMA SU PROYECTO A
+          // LO LARGO DE VARIOS MENSAJES. Alejandro (24-ago) dio sus 10 ventanas en 5 turnos
+          // distintos —living, 3 de 2x60, 4 de 1.50x35, 2 de baño— asi que ni una cotizacion
+          // ni un turno tienen el proyecto entero; su informe salio con UNA ventana.
+          //
+          // La propuesta SI lo tiene: el sistema acumula las partidas entre turnos en
+          // `pending_quote.items` desde jun-2026. Y en este punto ya se les calculo el
+          // `termico` a TODAS (arriba, con priceAllEngine). Enganchar aca hace ademas que el
+          // informe y la propuesta declaren SIEMPRE las mismas ventanas, que es lo que un
+          // auditor va a comparar.
+          //
+          // ⚠️ Revierte la decision del 21-ago ("se dispara al cotizar y NO en el PDF, ya
+          // seria tarde"), con el OK del dueño: un informe con una ventana de diez es peor
+          // que uno que llega medio minuto despues. Va DESPUES de la entrega confirmada de
+          // la propuesta y fire-and-forget: no puede demorar ni tumbar el PDF.
+          if (docSent) {
+            try {
+              const ventanasProyecto = (input.items || []).map((it) => ({
+                producto: it.producto_label || it.product || '',
+                medidas: it.measures_original || it.measures || '',
+                vidrio: it.glass_label || '',
+                ambiente: it.ambiente || '',
+                cantidad: it.qty,                 // CRUDA: el supuesto se marca en resumenVentanas
+                uw: it.termico?.uw ?? null,
+              }));
+              const ultima = (input.items || []).at(-1) || {};
+              despacharInforme(input.comuna || state.comuna || '', {
+                ventanas: ventanasProyecto,
+                // El resumen sale de la ULTIMA ventana del proyecto, los tres campos
+                // juntos: tomarlos por separado dejaba `producto` de una y `uw` de otra.
+                glassLabel: ultima.glass_label || '',
+                uw: ultima.termico?.uw ?? null,
+                producto: ultima.producto_label || ultima.product || '',
+              });
+            } catch (e) { log('error', 'generarPdf.informeTermico', e?.message || e); }
+          }
+
+          // Mismo rastro para la PROPUESTA: un `failed` aca es una venta detenida, y
+          // hasta hoy tampoco se veia.
+          if (docSent && waDocMsgId) {
+            try {
+              await (deps.escribirEstado || escribirEstado)(`wamsg:${waDocMsgId}`, {
+                msgId: waDocMsgId, tipo: 'propuesta', folio: quoteNumber, telefono: String(from),
+              }, 3 * 24 * 3600);
+            } catch { /* solo se pierde el diagnostico */ }
+          }
 
           // ── Paso 3b: ESPEJO al dashboard (visibilidad del PDF) ───────────────
           // FIX 2026-06-15: el dashboard solo reflejaba TEXTO → el operador veía "Te envié
@@ -2098,19 +2221,6 @@ Comuna: ${datos.comuna}`
         const asVoice = (audioResult.mime || '').toLowerCase().includes('ogg');
         await sendWaAudio(from, mediaId, asVoice);
         log('info', 'voice.sent', `nota de voz enviada a ${from} (${audioResult.buffer.length} bytes, voice=${asVoice})`);
-      });
-    }
-
-    // ── 🔴 (7c) EL INFORME TERMICO, UNA VEZ, CON EL PROYECTO COMPLETO ──────────────
-    // Aca ya corrieron TODAS las tools del turno, asi que `informeDelTurno.ventanas` tiene
-    // el proyecto entero. Es el unico punto del flujo donde eso es cierto sin tener que
-    // adivinar nada. Sigue siendo fire-and-forget: el informe no puede demorar el turno.
-    if (informeDelTurno.pedido && informeDelTurno.ventanas.length) {
-      despacharInforme(informeDelTurno.comuna, {
-        glassLabel: informeDelTurno.glassLabel,
-        uw: informeDelTurno.uw,
-        producto: informeDelTurno.producto,
-        ventanas: informeDelTurno.ventanas,
       });
     }
 
