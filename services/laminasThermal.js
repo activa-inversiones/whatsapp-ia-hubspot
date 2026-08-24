@@ -184,10 +184,51 @@ export async function descargarLaminas(perfil, {
  */
 const TERMOPANEL_PERFIL = () => process.env.THERMAL_TERMOPANEL_PERFIL || 'termopanel_4-12-4';
 
+/** Los espesores del codigo DVH del perfil/etiqueta: 'DVH_4-16Ar-4_X' -> '4164'. */
+const digitosDvh = (nombre) => {
+  const m = /(\d+)-(\d+)(?:Ar)?-(\d+)/.exec(String(nombre || ''));
+  return m ? m[1] + m[2] + m[3] : '';
+};
+const esLowETp = (x) => /low.?e|lowe|optitherm|planitherm|s1.?plus/i.test(String(x || ''));
+
+/**
+ * [2026-08-24, #394] ELIGE EL PERFIL DEL VIDRIO DEL CLIENTE. THERMAL publica una lamina por
+ * vidriado del catalogo (termopanel_DVH_*), cada una con la camara derivada del Ug DECLARADO
+ * de su ficha. La eleccion: espesores iguales (los del codigo DVH, no los digitos sueltos —
+ * 'S1PLUS' tiene un 1 adentro que envenenaria un digitos() ingenuo), desempate por low-e, y
+ * ante variantes de marca gana la CERTIFICADA. Sin coincidencia: la generica 4-12-4, que
+ * ilustra el fenomeno y el PDF lo aclara.
+ */
+export function elegirPerfilTermopanel(perfiles, glassLabel = '') {
+  const candidatos = (perfiles || []).filter((p) => String(p.perfil || '').startsWith('termopanel_'));
+  if (!candidatos.length) return null;
+  const generico = candidatos.find((p) => p.perfil === TERMOPANEL_PERFIL()) || null;
+
+  const d = String(glassLabel || '').replace(/[^0-9]/g, '');
+  if (d.length >= 3) {
+    let mismos = candidatos.filter((p) => digitosDvh(p.perfil) === d);
+    // ORDEN DEL DESEMPATE (importa, y se corrigio con un test que fallo):
+    //   1º el CERTIFICADO — es el respaldo mas fuerte, y ademas el token low-e en el nombre
+    //      es poco confiable: la WINHOUSE_CERTIFICADO ES low-e pero su clave no lo dice.
+    //      Filtrar por token antes del certificado la descartaba.
+    //   2º la alineacion low-e por nombre, solo entre lo que quedo.
+    if (mismos.length > 1) {
+      const cert = mismos.filter((p) => /certificado/i.test(p.perfil));
+      if (cert.length) mismos = cert;
+    }
+    if (mismos.length > 1) {
+      const tono = mismos.filter((p) => esLowETp(p.perfil) === esLowETp(glassLabel));
+      if (tono.length) mismos = tono;
+    }
+    if (mismos.length) return mismos[0];
+  }
+  return generico;
+}
+
 export async function laminaTermopanel(opts = {}) {
-  const { log = console.warn } = opts;
+  const { log = console.warn, glassLabel = '' } = opts;
   const perfiles = await perfilesConLaminas(opts);
-  const meta = perfiles.find((p) => p.perfil === TERMOPANEL_PERFIL());
+  const meta = elegirPerfilTermopanel(perfiles, glassLabel);
   if (!meta) {
     // Caso NORMAL hasta el deploy de THERMAL: no se loguea como error, seria ruido diario.
     return null;
@@ -259,4 +300,4 @@ export async function laminasParaInforme({ preferido = '', ...opts } = {}) {
   };
 }
 
-export default { laminasParaInforme, laminaTermopanel, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };
+export default { laminasParaInforme, laminaTermopanel, elegirPerfilTermopanel, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };

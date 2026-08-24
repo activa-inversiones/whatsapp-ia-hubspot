@@ -1038,7 +1038,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // catalogo de vidrios, que el dueno bajo ("genera desconfianza"). Hasta que
           // THERMAL deployee el perfil nuevo devuelve null y el informe sale sin ella.
           let termopanel = null;
-          try { termopanel = await laminaTermopanel(); } catch { /* opcional */ }
+          try { termopanel = await laminaTermopanel({ glassLabel }); } catch { /* opcional */ }
 
           const pdfBuf = await generarInformeTermicoPdf(datos, {
             nombre: state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios, laminas, termopanel,

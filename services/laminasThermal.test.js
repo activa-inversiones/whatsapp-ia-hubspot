@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { descargarLaminas, perfilesConLaminas, laminasParaInforme, laminaTermopanel, esPng, IDS_POR_DEFECTO } from './laminasThermal.js';
+import { descargarLaminas, perfilesConLaminas, laminasParaInforme, laminaTermopanel, elegirPerfilTermopanel, esPng, IDS_POR_DEFECTO } from './laminasThermal.js';
 
 /** Un PNG mínimo VÁLIDO: firma + IHDR con ancho/alto. */
 function pngFalso(ancho = 100, alto = 50, relleno = 200) {
@@ -226,4 +226,57 @@ test('🔒 laminaTermopanel: hasta que THERMAL deployee el perfil, devuelve null
 test('laminaTermopanel: THERMAL caido -> null, nunca lanza', async () => {
   const r = await laminaTermopanel({ fetchFn: async () => { throw new Error('ECONNREFUSED'); }, log: callado });
   assert.equal(r, null);
+});
+
+// ── [#394] La eleccion del perfil por el vidrio del cliente ──────────────────────────
+
+const PERFILES_394 = [
+  { perfil: 'S60_proyectante' },
+  { perfil: 'termopanel_4-12-4' },
+  { perfil: 'termopanel_DVH_4-12-4' },
+  { perfil: 'termopanel_DVH_4-12-4_LOWE_KGLASS' },
+  { perfil: 'termopanel_DVH_5-12-5' },
+  { perfil: 'termopanel_DVH_4-16Ar-4_KGLASS' },
+  { perfil: 'termopanel_DVH_4-16Ar-4_OPTITHERM_S1PLUS' },
+  { perfil: 'termopanel_DVH_4-16Ar-4_WINHOUSE_CERTIFICADO' },
+];
+
+test('🔎 [#394] el vidrio del cliente elige SU lamina: 5+12+5 -> la del 5-12-5', () => {
+  const r = elegirPerfilTermopanel(PERFILES_394, '5+12+5 incoloro');
+  assert.equal(r.perfil, 'termopanel_DVH_5-12-5');
+});
+
+test('🔎 [#394] low-e desempata: 4+12+4 low-e -> la LOWE, 4+12+4 pelado -> la comun', () => {
+  assert.equal(elegirPerfilTermopanel(PERFILES_394, '4+12+4 low-e').perfil,
+    'termopanel_DVH_4-12-4_LOWE_KGLASS');
+  const pelado = elegirPerfilTermopanel(PERFILES_394, '4+12+4');
+  // '4124' matchea la DVH_4-12-4 y la generica no-DVH; cualquiera de las dos es correcta
+  // mientras NO sea la low-e.
+  assert.ok(!/LOWE/i.test(pelado.perfil), 'sin low-e en el pedido no puede salir la low-e');
+});
+
+test('🏆 [#394] entre tres variantes 4-16Ar-4 low-e gana la CERTIFICADA', () => {
+  const r = elegirPerfilTermopanel(PERFILES_394, '4+16+4 low-e argon');
+  assert.equal(r.perfil, 'termopanel_DVH_4-16Ar-4_WINHOUSE_CERTIFICADO');
+});
+
+test('🔒 [#394] el 1 de S1PLUS no envenena los espesores (regex DVH, no digitos sueltos)', () => {
+  // digitos('...OPTITHERM_S1PLUS') seria '41641' con un digitos() ingenuo y no matchearia
+  // nunca — o peor, matchearia mal. El regex del codigo DVH lo aisla.
+  const solo = [{ perfil: 'termopanel_DVH_4-16Ar-4_OPTITHERM_S1PLUS' }];
+  const r = elegirPerfilTermopanel(solo, '4+16+4 low-e');
+  assert.equal(r.perfil, 'termopanel_DVH_4-16Ar-4_OPTITHERM_S1PLUS');
+});
+
+test('↩️ [#394] vidrio sin lamina propia cae a la generica 4-12-4', () => {
+  const r = elegirPerfilTermopanel(PERFILES_394, '10+20+10 triple');
+  assert.equal(r.perfil, 'termopanel_4-12-4');
+});
+
+test('sin glassLabel tambien cae a la generica', () => {
+  assert.equal(elegirPerfilTermopanel(PERFILES_394, '').perfil, 'termopanel_4-12-4');
+});
+
+test('sin ningun perfil termopanel devuelve null', () => {
+  assert.equal(elegirPerfilTermopanel([{ perfil: 'S60_proyectante' }], '4+12+4'), null);
 });

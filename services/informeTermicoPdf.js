@@ -433,9 +433,17 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
             + 'alcanzar la temperatura de condensación con cualquiera de los dos separadores; el warm-edge '
             + 'reduce ese riesgo, y el centro del vidrio se mantiene sobre el umbral. La temperatura de '
             + 'condensación aplicable a su comuna se detalla en la sección de condensación de este informe.'
-            + (suV && digitos(suV.cod) !== '4124'
-              ? ' La figura corresponde al termopanel 4-12-4; los valores específicos de su vidriado pueden diferir, sin alterar la comparación entre ambos separadores.'
-              : '');
+            + (() => {
+              // [#394] La nota de "su vidriado es otro" solo va cuando la figura NO es la de
+              // su vidrio. Se compara contra el perfil REAL de la figura (THERMAL ya publica
+              // una lamina por vidriado y Oliver elige la que corresponde), no contra un
+              // 4-12-4 hardcodeado.
+              const mDvh = /(\d+)-(\d+)(?:Ar)?-(\d+)/.exec(String(figTermo.perfil || ''));
+              const digFig = mDvh ? mDvh[1] + mDvh[2] + mDvh[3] : '';
+              return suV && digFig && digitos(suV.cod) !== digFig
+                ? ` La figura corresponde al termopanel ${mDvh[1]}-${mDvh[2]}-${mDvh[3]}; los valores específicos de su vidriado pueden diferir, sin alterar la comparación entre ambos separadores.`
+                : '';
+            })();
           try {
             doc.save();
             doc.rotate(90, { origin: [cx, cy] });
