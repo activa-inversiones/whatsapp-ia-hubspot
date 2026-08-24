@@ -103,7 +103,7 @@ function medirPng(buf) {
 
 const NAVY = '#0B3D6F';
 const GOLD = '#C4993B';
-const GRAY = '#6B7B8D';
+const GRAY = '#485A6B';   // [2026-08-24] antes #6B7B8D: ~4:1 sobre blanco, ilegible en el telefono
 const DARK = '#1A2332';
 
 const dec = (n, d = 1) => Number(n).toFixed(d).replace('.', ',');
@@ -200,11 +200,11 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         + 'proyecto distinto —incluido presentarlo, o los valores que contiene, ante terceros o autoridades '
         + 'por quien no es el destinatario— sin autorización escrita previa. El uso no autorizado podrá dar '
         + 'lugar a las acciones legales que correspondan.';
-      doc.fontSize(7).font('Helvetica');
+      doc.fontSize(8).font('Helvetica');
       const altoLegal = doc.heightOfString(legal, { width: W - 116 });
       doc.rect(50, 208, W - 100, altoLegal + 14).fill('#FDF6E9')
         .strokeColor(GOLD).lineWidth(0.5).rect(50, 208, W - 100, altoLegal + 14).stroke();
-      doc.fillColor('#7A5B14').fontSize(7).font('Helvetica')
+      doc.fillColor('#7A5B14').fontSize(8).font('Helvetica')
         .text(legal, 58, 215, { width: W - 116, align: 'justify' });
 
       let y = 208 + altoLegal + 26;
@@ -227,12 +227,12 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           doc.fillColor('#fff').fontSize(8).font('Helvetica').text('Uw calculado', 340, y + 12, { width: 90 });
           doc.fillColor(cumple === false ? '#fca5a5' : '#86efac').fontSize(20).font('Helvetica-Bold')
             .text(`${dec(uwCliente, 2)}`, 340, y + 24, { width: 90 });
-          doc.fillColor('#cbd5e1').fontSize(7).font('Helvetica').text('W/m²K', 393, y + 33);
+          doc.fillColor('#cbd5e1').fontSize(8).font('Helvetica').text('W/m²K', 393, y + 33);
         }
         if (cumple !== null) {
           doc.fillColor(cumple ? '#86efac' : '#fca5a5').fontSize(10).font('Helvetica-Bold')
             .text(cumple ? '✓ CUMPLE' : '✗ NO CUMPLE', W - 175, y + 20, { width: 115, align: 'right' });
-          doc.fillColor('#cbd5e1').fontSize(7).font('Helvetica')
+          doc.fillColor('#cbd5e1').fontSize(8).font('Helvetica')
             .text(`exigencia ${dec(uw)} W/m²K`, W - 175, y + 36, { width: 115, align: 'right' });
         }
         y += 68;
@@ -295,7 +295,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           const xx = px(t);
           doc.moveTo(xx, yBar - (arriba ? 8 : 0)).lineTo(xx, yBar + hBar + (arriba ? 0 : 8))
             .strokeColor(color).lineWidth(1.5).stroke();
-          doc.fillColor(color).fontSize(7).font('Helvetica-Bold');
+          doc.fillColor(color).fontSize(8).font('Helvetica-Bold');
           doc.text(etiqueta, xx - 45, arriba ? yBar - 20 : yBar + hBar + 10, { width: 90, align: 'center' });
         };
         marca(tE, `Exterior ${dec(tE)} °C`, '#2563eb', true);
@@ -303,7 +303,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         if (t75 !== null) marca(t75, `Con 75 % HR: ${dec(t75)} °C`, '#c2410c', true);
         marca(19, 'Interior 19 °C', '#0a7d33', false);
 
-        doc.fillColor('#b91c1c').fontSize(7).font('Helvetica-Bold')
+        doc.fillColor('#b91c1c').fontSize(8).font('Helvetica-Bold')
           .text('CONDENSA', x0 + 4, yBar + 6);
         doc.fillColor('#0a7d33')
           .text('SIN CONDENSACIÓN', px(t65) + 6, yBar + 6);
@@ -313,11 +313,11 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       /** Barras horizontales de Ug: cuanto más corta, mejor aísla. */
       const graficoVidrios = (entradas) => {
         const filas = entradas.slice(0, 10);
-        const alto = filas.length * 15 + 34;
+        const alto = filas.length * 16 + 34;
         saltoSiNoCabe(alto);
         const x0 = 175, ancho = W - 235;
         const maxUg = Math.max(...filas.map(([, v]) => num(v.Ug) || 0), 3);
-        doc.fillColor(GRAY).fontSize(7).font('Helvetica')
+        doc.fillColor(GRAY).fontSize(8).font('Helvetica')
           .text('Ug en W/m²K — barra más corta = aísla mejor', x0, y, { width: ancho });
         y += 12;
         for (const [cod, v] of filas) {
@@ -327,13 +327,13 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           const bueno = ug <= 1.4;
           const suyo = esSuVidrio(cod);
           // El vidrio del cliente va resaltado: entre 10 filas, tiene que encontrar la suya.
-          if (suyo) doc.rect(50, y - 2, W - 100, 13).fill('#fff7e6');
-          doc.fillColor(suyo ? '#92400e' : DARK).fontSize(7).font(suyo ? 'Helvetica-Bold' : 'Helvetica')
+          if (suyo) doc.rect(50, y - 2, W - 100, 14).fill('#fff7e6');
+          doc.fillColor(suyo ? '#92400e' : DARK).fontSize(8).font(suyo ? 'Helvetica-Bold' : 'Helvetica')
             .text((suyo ? '\u25B6 ' : '') + String(cod).replace(/_/g, ' ').slice(0, 28), 55, y + 2, { width: 115 });
           doc.rect(x0, y, largo, 9).fill(bueno ? '#0a7d33' : (ug <= 2 ? '#C4993B' : '#94a3b8'));
-          doc.fillColor(DARK).fontSize(7).font('Helvetica-Bold')
+          doc.fillColor(DARK).fontSize(8).font('Helvetica-Bold')
             .text(dec(ug, 2), x0 + largo + 4, y + 1, { width: 40 });
-          y += 15;
+          y += 16;
         }
         y += 8;
       };
