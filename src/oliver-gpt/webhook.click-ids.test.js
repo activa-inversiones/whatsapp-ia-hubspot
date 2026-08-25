@@ -38,7 +38,6 @@ function makeDeps(quoteEvents) {
     uploadWaDocument: async () => 'media-landing-test',
     sendWaDocument: async () => ({ ok: true, msgId: 'sent-landing-test' }),
     upsertZohoDeal: async () => null,
-    archivarEnWorkDrive: async () => null,
     loadSession: async () => null,
     persistSession: () => {},
     bridge: {

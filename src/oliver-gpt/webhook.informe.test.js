@@ -64,7 +64,7 @@ function makeDeps({ disparos = 1, envioOk = true, ventanas = null, overrides = {
   // Telefono propio por test: el candado de 30 dias va por numero, y compartirlo hacia que
   // el segundo test en adelante quedara bloqueado por el informe del primero.
   const telefono = `5699${String(++SECUENCIA).padStart(7, '0')}`;
-  const spy = { upserts: [], escrituras: [], docsEnviados: [], propuestas: [], convEvents: [], pdfArgs: [], textos: [], adjuntosZoho: [], notasZoho: [] };
+  const spy = { upserts: [], escrituras: [], docsEnviados: [], propuestas: [], convEvents: [], pdfArgs: [], textos: [], adjuntosZoho: [], notasZoho: [], mediaGuardada: [] };
   const estado = new Map();
   let tokenSeq = 0;
   const vigente = (e) => e && (!e.expira || e.expira > Date.now());
@@ -109,6 +109,11 @@ function makeDeps({ disparos = 1, envioOk = true, ventanas = null, overrides = {
     generarInformeTermicoPdf: async (datos, opts) => { spy.pdfArgs.push(opts); return Buffer.alloc(1024, 7); },
     laminasParaInforme: async () => null,
     laminaTermopanel: async () => null,
+
+    // El registro en sales-os: es lo que hace que el documento entre a media_attachments y,
+    // desde ahi, que el hook de server.js lo suba a WorkDrive. Se inyecta porque el modulo
+    // real decide `MEDIA_ENABLED` al importarse, mirando env que en test no existen.
+    saveMedia: async (o) => { spy.mediaGuardada.push(o); return { ok: true, media: { id: 1 } }; },
 
     upsertZohoDeal: async (...a) => { spy.upserts.push(a); return 'deal.777'; },
     addZohoNote: async (...a) => { spy.notasZoho.push(a); return { ok: true }; },
@@ -391,6 +396,12 @@ test('🎥 tras la propuesta se manda UN video de fabrica, y no se repite', asyn
 test('🎥 sin videos cargados no se manda nada (y no rompe la propuesta)', async () => {
   const { deps, spy } = makeDeps();
   spy.videos = [];
+  // 🔴 [2026-08-25] SE FUERZA LA FUENTE ENTERA, no solo el KV. `mediaIdsDisponibles` cae al
+  // archivo `data/videos-media-ids.json` cuando el KV viene vacio; desde que ese archivo
+  // entro al repo (commit c4e3052, al subir los 6 videos) este test quedo en rojo: pedia
+  // "sin videos cargados" y el sistema encontraba los 6 del archivo. El test no estaba mal
+  // de origen — envejecio mal, que es peor, porque un rojo permanente entrena a ignorar los rojos.
+  deps.mediaIdsDisponibles = async () => ({});
   deps.sendWaVideo = async (...a) => { spy.videos.push(a); return { ok: true }; };
   await handleWebhook({ body: {} }, makeRes(), deps);
   await new Promise((r) => setTimeout(r, 300));
@@ -434,4 +445,107 @@ test('🎥 al cliente que YA vio uno se le manda OTRO, no el mismo', async () =>
   await handleWebhook({ body: {} }, makeRes(), deps);
   assert.ok(await esperar(() => spy.videos.length > 0), 'tiene que salir un video');
   assert.equal(spy.videos[0], 'media.vid2', 'el que NO vio, no el que ya tiene');
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EL INFORME TAMBIEN ES UN REGISTRO ISO, Y HASTA HOY NO SE ARCHIVABA
+//
+// La propuesta se registra en sales-os desde jun-2026 (webhook.js:1895) y por eso el hook
+// de `server.js` la sube a la carpeta COTIZACIONES de WorkDrive: medido 2026-08-25, 149
+// documentos salientes archivados desde que el hook existe. El informe termico nunca paso
+// por ahi — se sube a Meta, se manda y se adjunta al Deal, y ahi termina. Consecuencias
+// medidas: no esta en `media_attachments`, no se archiva en Drive, y en el cockpit no
+// aparece como adjunto del cliente.
+//
+// Un documento firmado que se le entrega a un cliente y del que la empresa no guarda copia
+// es exactamente lo que un auditor pide primero.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test('📁 el informe entregado se REGISTRA como documento saliente (lo que dispara el archivo en WorkDrive)', async () => {
+  const { deps, spy } = makeDeps();
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.docsEnviados.length > 0), 'primero tiene que entregarse');
+  assert.ok(await esperar(() => spy.mediaGuardada.some((m) => /^Informe-Termico/.test(m.filename || '')), 4000),
+    'el informe entregado tiene que quedar registrado en sales-os');
+
+  const informes = spy.mediaGuardada.filter((m) => /^Informe-Termico/.test(m.filename || ''));
+  // 🔴 [Codex, compuerta cruzada] EXACTAMENTE UNO. La version anterior de este test usaba
+  // `find`, que se conforma con "hay al menos uno" — y el duplicado del informe no es
+  // hipotetico: el 24-ago dos clientes recibieron el suyo DOS veces (folios 0001/0002 y
+  // 0003/0004). Un test que pasa con dos registros no protege del bug que ya ocurrio.
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(spy.mediaGuardada.filter((m) => /^Informe-Termico/.test(m.filename || '')).length, 1,
+    'un envio = un registro');
+  const reg = informes[0];
+  // Estos dos campos NO son decorativos: `isOutboundArchivable` (sales-os) solo archiva
+  // 'document', y el hook solo mira `direction === 'outbound'`. Con otro valor el registro
+  // entra a la BD y se queda ahi, marcado 'skip:no-es-registro'.
+  assert.equal(reg.direction, 'outbound', "sin 'outbound' el hook de WorkDrive ni lo mira");
+  assert.equal(reg.mediaType, 'document', "sin 'document' se descarta por no ser registro ISO");
+  assert.equal(reg.mimeType, 'application/pdf');
+  assert.ok(reg.buffer && reg.buffer.length > 0, 'con los bytes: sin ellos no hay nada que archivar');
+  assert.equal(reg.phone, spy.docsEnviados[0].to, 'al telefono del cliente que lo recibio');
+});
+
+test('📁 el registro lleva el media_id de WhatsApp, que es como el cockpit encuentra el archivo', async () => {
+  // Mismo motivo por el que se agrego a la propuesta en jun-2026: sin el wa_media_id, el
+  // link /api/v5/media/{id} del cockpit daba "not found" y el operador no podia abrir el PDF.
+  const { deps, spy } = makeDeps();
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.mediaGuardada.some((m) => /^Informe-Termico/.test(m.filename || '')), 4000));
+  const reg = spy.mediaGuardada.find((m) => /^Informe-Termico/.test(m.filename || ''));
+  assert.equal(reg.waMediaId, spy.docsEnviados[0].mediaId, 'el mismo id con el que se envio');
+});
+
+test('📁 el informe que NO se entrego no se registra: no se archiva lo que el cliente nunca recibio', async () => {
+  const { deps, spy } = makeDeps({ envioOk: false });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 600));
+  assert.equal(spy.mediaGuardada.filter((m) => /^Informe-Termico/.test(m.filename || '')).length, 0,
+    'un archivo de algo no entregado es un registro falso');
+});
+
+test('📁 si sales-os no responde, el informe igual se entrega', async () => {
+  // El archivo es trazabilidad NUESTRA; el informe es del cliente. Nunca al reves.
+  const { deps, spy } = makeDeps();
+  deps.saveMedia = async () => { throw new Error('sales-os caido'); };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.docsEnviados.length > 0, 4000), 'el cliente recibe su informe igual');
+});
+
+
+test('📁 el archivo lleva el correlativo: dos informes de la misma comuna no se pisan', async () => {
+  // Al cliente se le manda "Informe-Termico-Temuco.pdf" —igual para TODOS los de Temuco—.
+  // En WorkDrive se sube con override-name-exist:false a la misma carpeta que las
+  // cotizaciones, asi que sin correlativo el segundo informe de Temuco quedaria
+  // indistinguible del primero. El nombre del archivo es lo unico que ve un auditor
+  // antes de abrirlo.
+  const { deps, spy } = makeDeps();
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.mediaGuardada.some((m) => /^Informe-Termico/.test(m.filename || '')), 4000));
+  const reg = spy.mediaGuardada.find((m) => /^Informe-Termico/.test(m.filename || ''));
+
+  const ev = spy.convEvents.find((e) => e?.metadata?.informe_number);
+  assert.ok(ev, 'el evento de conversacion trae el correlativo');
+  assert.ok(reg.filename.includes(ev.metadata.informe_number),
+    `el archivo tiene que llevar el correlativo ${ev.metadata.informe_number}, y se llama ${reg.filename}`);
+  assert.match(reg.filename, /\.pdf$/, 'y seguir siendo un .pdf');
+
+  // Lo que RECIBE el cliente no cambia: ese nombre se lee en el telefono.
+  assert.equal(spy.docsEnviados[0].filename, 'Informe-Termico-Temuco.pdf',
+    'al cliente se le sigue mandando el nombre legible');
+});
+
+test('📁 si sales-os se cuelga (no responde nunca), el informe ya salio igual', async () => {
+  // [Codex, compuerta] El test de fallo usaba `throw`, que es un rechazo inmediato. Una
+  // peticion COLGADA es otra cosa: la promesa queda pendiente para siempre. Importa que ni
+  // asi el cliente se quede sin documento — por eso el registro va DESPUES de la entrega.
+  const { deps, spy } = makeDeps();
+  deps.saveMedia = () => new Promise(() => {});      // nunca resuelve
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.docsEnviados.length > 0, 4000),
+    'el informe se entrega aunque el registro quede colgado');
+  assert.ok(spy.convEvents.some((e) => e?.metadata?.informe_number),
+    'y queda visible en la conversacion');
 });

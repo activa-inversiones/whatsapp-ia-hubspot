@@ -71,7 +71,7 @@ import {
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
 import { priceAllEngine } from '../../services/enginePricer.js'; // [2026-06-24] blindaje label↔precio en generarPdf
 import { saveMedia } from '../../mediaStore.js'; // [#5] persistir media ENTRANTE (foto/audio/plano) para el cockpit
-import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal, attachInboundToDeal, archivarEnWorkDrive } from '../../services/zohoCommercial.js';
+import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal, attachInboundToDeal } from '../../services/zohoCommercial.js';
 import {
   shouldSendVoice as realShouldSendVoice,
   synthesizeVoiceBuffer as realSynthesizeVoiceBuffer,
@@ -1392,6 +1392,53 @@ export async function handleWebhook(req, res, deps = {}) {
             },
           }));
 
+          // 🔴 [2026-08-25] EL INFORME ENTRA AL REGISTRO DE MEDIOS — QUE ES LO QUE LO ARCHIVA.
+          //
+          // La propuesta hace esto desde jun-2026 (mas abajo, en `generarPdf.storeMedia`) y por
+          // eso termina en la carpeta COTIZACIONES de WorkDrive: `server.js` engancha el
+          // archivado al INSERT de `media_attachments`, no al envio. Medido 2026-08-25 contra la
+          // BD viva: 149 documentos salientes archivados desde que ese hook existe (07-ago), y
+          // NINGUNO es un informe termico — porque el informe nunca pasaba por aca.
+          //
+          // Se entrego, se dejo nota en el Deal... y de la copia no quedaba nada: ni en Drive,
+          // ni como adjunto del cliente en el cockpit. El bot tenia ademas su propio
+          // `archivarEnWorkDrive`, que nunca subio un byte y hacia parecer que el tema estaba
+          // resuelto; se elimino en este mismo commit para que no vuelva a confundir.
+          //
+          // ⚠️ `direction` y `mediaType` NO son decorativos: `isOutboundArchivable` (sales-os)
+          // solo acepta 'document', y el hook solo mira `direction === 'outbound'`. Con otro
+          // valor la fila entra a la BD y se queda ahi marcada 'skip:no-es-registro'.
+          //
+          // Va DESPUES de la entrega confirmada y en su propio `safe`: si sales-os no contesta,
+          // el cliente ya tiene su informe y eso no se toca.
+          safe('informeTermico.registro', async () => {
+            // 🔴 EL NOMBRE DEL ARCHIVO LLEVA EL CORRELATIVO, Y NO ES UN DETALLE.
+            // Al cliente se le manda `Informe-Termico-Temuco.pdf`, que se lee bien en el
+            // telefono — pero ese nombre NO identifica nada: TODOS los informes de Temuco se
+            // llaman igual. En la carpeta COTIZACIONES conviven con las cotizaciones, que si
+            // son unicas (`${quoteNumber}.pdf`), y se suben con `override-name-exist:false`:
+            // el segundo informe de Temuco quedaria indistinguible del primero, o directamente
+            // no entraria. Un registro ISO que no se puede atribuir a un cliente no es registro.
+            // Se le agrega el correlativo (CM-FR-006-2026-XXXX), que ya va impreso en la portada.
+            // Lo que recibe el cliente NO cambia.
+            const nombreParaElArchivo = numeroInforme
+              ? nombreArchivo.replace(/\.pdf$/i, `-${numeroInforme}.pdf`)
+              : nombreArchivo;
+            await (deps.saveMedia || saveMedia)({
+              phone:         from,
+              direction:     'outbound',
+              mediaType:     'document',
+              mimeType:      'application/pdf',
+              filename:      nombreParaElArchivo,
+              buffer:        pdfBuf,
+              // El mismo id con el que se envio: sin el, el link /api/v5/media/{id} del
+              // cockpit da "not found" y el operador no puede abrir el PDF. Es el mismo
+              // motivo por el que se le agrego a la propuesta en jun-2026.
+              waMediaId:     mediaId,
+              aiDescription: `Informe térmico ${numeroInforme} — ${datos.comuna}`,
+            });
+          });
+
           // 🔴 [2026-08-24] EL PDF SE ARCHIVA, COMO LA COTIZACION.
           // Reclamo del dueño, textual: *"yo abro el sistema y deberia estar guardado...
           // tiene que estar almacenado, al lado de la cotizacion"*. Tenia razon: del
@@ -1967,7 +2014,12 @@ Comuna: ${datos.comuna}`
           if (docSent) {
             safe('generarPdf.video', async () => {
               const claveVistos = `videos_fabrica:vistos:${String(from).replace(/\D/g, '')}`;
-              const ids = await mediaIdsDisponibles(deps.leerEstado || leerEstado);
+              // Inyectable como todo lo demas: sin esto el caso "no hay ningun video
+              // cargado" NO se puede probar. `mediaIdsDisponibles` cae al archivo del repo
+              // si el KV viene vacio, asi que desde que `data/videos-media-ids.json` entro
+              // (commit c4e3052) SIEMPRE devolvia los 6 ids y el test que cubria ese caso
+              // quedo en rojo permanente, midiendo "sin ids en el KV" y no "sin ids".
+              const ids = await (deps.mediaIdsDisponibles || mediaIdsDisponibles)(deps.leerEstado || leerEstado);
               const disponibles = Object.keys(ids);
               if (!disponibles.length) return;            // todavia no se subio ninguno
 
@@ -2043,12 +2095,11 @@ Comuna: ${datos.comuna}`
             }
           });
 
-          // ── Paso 5: WorkDrive (INERTE — no-bloqueante) ───────────────────────
-          // El dueño debe re-autorizar OAuth con scope WorkDrive.files.CREATE antes de activar.
-          // El código queda preparado y falla suave.
-          safe('generarPdf.workdrive', async () => {
-            await archivarEnWorkDrive(pdfBuffer, filename);
-          });
+          // ── Paso 5: [ELIMINADO 2026-08-25] el archivado en WorkDrive NO se hace aca ──
+          // Lo hace sales-os solo, enganchado al `POST /api/v5/media/store` del Paso 3a de
+          // mas arriba: ese INSERT en `media_attachments` dispara la subida a la carpeta
+          // COTIZACIONES. Lo que habia aca era `archivarEnWorkDrive`, un stub que no subia
+          // nada y duplicaba —en intencion— un camino que ya funcionaba. Ver zohoCommercial.js.
 
           // ── Paso 6: Conversión multicanal (anti-cross-inject) ────────────────
           // REGLA: solo se envía AL CANAL QUE TRAJO AL LEAD (skill activa-atribucion-multicanal).

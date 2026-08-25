@@ -160,22 +160,22 @@ async function zhDefaultAcct() {
 }
 
 /* =======================================================
- * WORKDRIVE — INERTE (no-bloqueante)
- * El dueño debe re-autorizar OAuth con scope WorkDrive.files.CREATE.
- * Hasta entonces esta función loguea y retorna sin hacer nada.
+ * WORKDRIVE — ELIMINADO EL 2026-08-25. NO SE REESCRIBE ACA.
+ *
+ * Aca vivia `archivarEnWorkDrive(pdfBuffer, filename)`: un stub que logueaba y devolvia
+ * `{ok:false, skipped:true}` sin subir un solo byte, esperando que "el dueño re-autorizara
+ * OAuth". Se elimino por dos razones, y la segunda importa mas que la primera:
+ *
+ *   1. NUNCA HIZO NADA, pero se leia como que el archivado estaba resuelto y solo faltaba
+ *      una credencial. Costo horas de busqueda en el lugar equivocado.
+ *   2. EL CAMINO REAL YA EXISTE Y FUNCIONA, del otro lado. `sales-os` archiva en WorkDrive
+ *      enganchado al INSERT de `media_attachments` (server.js, POST /api/v5/media/store):
+ *      medido contra la BD viva el 25-ago, 149 documentos salientes archivados desde el
+ *      07-ago. Reactivar este stub habria subido cada PDF DOS VECES.
+ *
+ * ⇒ Para que un documento del bot llegue a Drive, se lo registra con `saveMedia` de
+ *   `mediaStore.js` (direction 'outbound', mediaType 'document'). El resto lo hace sales-os.
  * ======================================================= */
-export async function archivarEnWorkDrive(pdfBuffer, filename) {
-  // TODO: cuando el dueño agregue scope WorkDrive al refresh_token,
-  // descomentar el upload real y actualizar ZOHO_WORKDRIVE_FOLDER_ID en Railway.
-  const folderId = process.env.ZOHO_WORKDRIVE_FOLDER_ID || null;
-  if (!folderId) {
-    console.log('[zohoCommercial] WorkDrive: ZOHO_WORKDRIVE_FOLDER_ID no configurado — archivo pendiente re-autorización OAuth');
-    return { ok: false, skipped: true, reason: 'workdrive_scope_pending' };
-  }
-  // Stub del upload real — se activa cuando el dueño regenere el refresh_token.
-  console.log(`[zohoCommercial] WorkDrive: upload inerte de ${filename} a carpeta ${folderId}`);
-  return { ok: false, skipped: true, reason: 'workdrive_stub' };
-}
 
 /* =======================================================
  * EXPORTS
