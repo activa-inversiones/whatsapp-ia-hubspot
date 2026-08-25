@@ -50,8 +50,14 @@ const axiosWA = axios.create({
  *                  codigo:number|null, motivo:string}>}  vacio si el webhook no trae acuses.
  */
 export function parseStatuses(body) {
-  const lista = body?.entry?.[0]?.changes?.[0]?.value?.statuses;
-  if (!Array.isArray(lista) || !lista.length) return [];
+  // 🔴 [Codex, revision final] TODAS las entradas y TODOS los changes. Meta puede mandar
+  // varios en un mismo webhook; leyendo solo `entry[0].changes[0]` se perdia un `failed`
+  // que viniera en la segunda — y ese candado no se libera nunca: el cliente queda 30 dias
+  // sin informe por un fallo que jamas vimos.
+  const lista = (Array.isArray(body?.entry) ? body.entry : [])
+    .flatMap((e) => (Array.isArray(e?.changes) ? e.changes : []))
+    .flatMap((c) => (Array.isArray(c?.value?.statuses) ? c.value.statuses : []));
+  if (!lista.length) return [];
   return lista.reduce((salida, st) => {
     // Sin id no se puede saber DE QUE mensaje habla: un acuse anonimo no sirve para nada
     // y confundirlo con otro seria peor que ignorarlo.

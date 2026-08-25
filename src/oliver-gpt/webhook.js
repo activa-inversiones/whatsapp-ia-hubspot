@@ -552,6 +552,14 @@ export async function handleWebhook(req, res, deps = {}) {
           const rastro = await (deps.leerEstado || leerEstado)(`wamsg:${ac.msgId}`);
           if (!rastro) return;               // no lo rastreabamos: no hay nada que decir
 
+          // 🔴 [Codex, revision final] EL ACUSE TIENE QUE SER DEL MISMO DESTINATARIO.
+          // Se buscaba por msgId y despues se confiaba en el telefono guardado. Un acuse
+          // cruzado actuaba sobre los candados y la conversacion de un cliente que no era.
+          // Meta dice a quien fue en `recipient_id`: se compara.
+          const soloDigitos = (x) => String(x || '').replace(/\D/g, '');
+          if (ac.telefono && rastro.telefono
+              && soloDigitos(ac.telefono) !== soloDigitos(rastro.telefono)) return;
+
           // 🔴 [Codex, revision final] EL RASTRO SE CONSUME. Meta reintrega los webhooks,
           // asi que el mismo `failed` llega varias veces; sin consumirlo, cada copia
           // generaba su evento, su aviso a Marcelo y su borrado de candado. Se borra ANTES
@@ -565,7 +573,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // puesto, y recien ahi aparece el acuse tardio de A. Borrar el candado por ese
           // fallo viejo le manda un segundo informe al cliente. Solo actua el acuse del
           // ULTIMO envio registrado.
-          let esElVigente = true;
+          let esElVigente = true;   // ¿este envio sigue siendo el ultimo, o ya fue reemplazado?
           if (rastro.telefono) {
             try {
               const ultimo = await (deps.leerEstado || leerEstado)(
@@ -573,6 +581,14 @@ export async function handleWebhook(req, res, deps = {}) {
               if (ultimo && ultimo !== ac.msgId) esElVigente = false;
             } catch { /* sin dato se asume vigente: es el caso normal */ }
           }
+          // 🔴 [Codex, revision final] Si el envio YA FUE REEMPLAZADO por uno posterior, no
+          // se avisa nada: el evento y el aviso decian "reenviarlo" y Marcelo terminaba
+          // mandando de nuevo un documento que el cliente ya tenia.
+          if (!esElVigente) {
+            log('info', 'acuse.obsoleto', `acuse tardio de ${rastro.folio || ac.msgId}: ya fue reemplazado`);
+            return;
+          }
+
           const que = rastro.tipo === 'informe_termico' ? 'Informe térmico' : 'Propuesta';
           const detalle = ac.motivo || `código ${ac.codigo ?? 'desconocido'}`;
 

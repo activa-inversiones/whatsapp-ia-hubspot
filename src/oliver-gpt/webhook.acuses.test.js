@@ -167,3 +167,31 @@ test('🔴 [Codex final] al fallar se suelta TAMBIEN el candado corto', async ()
   assert.ok(spy.borrados.includes('informe_termico:56940415964'), 'el de 30 dias');
   assert.ok(spy.borrados.includes('informe_termico:56940415964:en_curso'), 'y el corto');
 });
+
+test('🔴 [Codex final] un acuse de OTRO destinatario no toca los candados de este', async () => {
+  // Se buscaba por msgId y despues se confiaba en el telefono guardado, sin compararlo con
+  // el `recipient_id` del acuse. Un acuse cruzado actuaba sobre los candados y la
+  // conversacion de un cliente que no era. Meta manda a quien fue: hay que mirarlo.
+  const { deps, spy } = makeDeps({
+    enviado: { msgId: 'wamid.DOC1', tipo: 'informe_termico', folio: 'F1', telefono: '56940415964' },
+  });
+  await handleWebhook({ body: acuse('failed', 'wamid.DOC1', { recipient_id: '56999999999' }) },
+    makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(spy.borrados.filter((k) => k.startsWith('informe_termico:')), [],
+    'no se tocan los candados de un cliente por un acuse que era de otro');
+  assert.equal(spy.avisos.length, 0);
+});
+
+test('🔴 [Codex final] un `failed` YA REEMPLAZADO no ordena reenviar', async () => {
+  // `esElVigente=false` solo evitaba borrar candados: el evento y el aviso salian igual, y
+  // decian "reenviarlo". Marcelo reenviaba un documento que el cliente YA tenia.
+  const { deps, spy } = makeDeps({
+    enviado: { msgId: 'wamid.VIEJO', tipo: 'informe_termico', folio: 'F-A', telefono: '56940415964' },
+  });
+  deps._estado.set('informe_termico:56940415964:ultimo_msg', { valor: 'wamid.NUEVO', expira: null });
+  await handleWebhook({ body: acuse('failed', 'wamid.VIEJO') }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(spy.avisos.length, 0, 'el envio siguiente ya llego: no hay nada que reenviar');
+  assert.equal(spy.convEvents.filter((e) => e.metadata?.source === 'oliver_gpt_acuse').length, 0);
+});

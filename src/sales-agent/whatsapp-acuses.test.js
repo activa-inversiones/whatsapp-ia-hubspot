@@ -84,3 +84,26 @@ test('🔒 parseInbound sigue sin confundir un acuse con un mensaje del cliente'
   assert.equal(parseInbound(acuse('delivered')).ok, false);
   assert.equal(parseInbound(acuse('failed')).ok, false);
 });
+
+test('🔴 [Codex final] se leen los acuses de TODAS las entradas, no solo la primera', async () => {
+  // Meta puede mandar varias `entry`/`changes` en un mismo webhook. Leyendo solo la
+  // primera se pierde un `failed` que venga en la segunda — y ese candado no se libera:
+  // el cliente queda 30 dias sin informe por un fallo que nunca vimos.
+  const body = {
+    entry: [
+      { changes: [{ value: { statuses: [{ id: 'wamid.A', status: 'delivered', recipient_id: '56911111111' }] } }] },
+      { changes: [{ value: { statuses: [{ id: 'wamid.B', status: 'failed', recipient_id: '56922222222', errors: [{ code: 470 }] }] } }] },
+    ],
+  };
+  const r = parseStatuses(body);
+  assert.deepEqual(r.map((x) => x.msgId), ['wamid.A', 'wamid.B']);
+  assert.equal(r[1].fallo, true, 'el fallo de la segunda entrada tiene que llegar');
+});
+
+test('🔴 varios `changes` dentro de una misma entrada tambien se leen', () => {
+  const body = { entry: [{ changes: [
+    { value: { statuses: [{ id: 'wamid.C', status: 'failed', recipient_id: '569333' }] } },
+    { value: { statuses: [{ id: 'wamid.D', status: 'read', recipient_id: '569444' }] } },
+  ] }] };
+  assert.deepEqual(parseStatuses(body).map((x) => x.msgId), ['wamid.C', 'wamid.D']);
+});
