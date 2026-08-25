@@ -1742,14 +1742,19 @@ Comuna: ${datos.comuna}`
             const _falta = datoQuePregunta(_gate.missing);
             if (_falta === 'color' && !state.color_preguntado_at) state.color_preguntado_at = Date.now();
             if (_falta === 'tipo' && !state.tipo_preguntado_at) state.tipo_preguntado_at = Date.now();
-            const _pregunta = _gate.missing.includes('name')
+            // [2026-08-25 · Codex] La pregunta usa EL MISMO `_falta` que el reloj. Tenia su
+            // propia cascada paralela: hoy los dos ordenes coincidian, pero el dia que alguien
+            // cambie la prioridad en una sola se arranca el reloj de un dato y se pregunta otro
+            // — el defecto 2 reintroducido por la puerta de atras. Dos listas paralelas se
+            // desincronizan; por eso `datoQuePregunta` existe.
+            const _pregunta = _falta === 'name'
               ? '¿A nombre de quién emito la Propuesta Técnica Económica? Con eso te la envío al tiro.'
-              : _gate.missing.includes('color')
+              : _falta === 'color'
                 // Los nombres de color NO se parten entre lineas: un "Grafito " + "Antracita"
                 // se lee igual en el chat pero rompe cualquier verificacion sobre la fuente.
                 ? '¿En qué color las quiere? Tenemos Blanco, Nogal, Roble Dorado, Grafito Antracita y Negro.'
                   + ' Se lo pregunto porque el color cambia el precio y prefiero cotizarle el que de verdad quiere.'
-                : _gate.missing.includes('tipo')
+                : _falta === 'tipo'
                   // 🔴 [2026-08-25] LA APERTURA SE PREGUNTA, NO SE SUPONE. El cliente manda la
                   // foto de una proyectante y hasta hoy recibía el precio de una corredera.
                   // Se nombran las cuatro con una explicación de una línea: mucha gente no sabe
@@ -2370,6 +2375,19 @@ Comuna: ${datos.comuna}`
     // [PDF-RACE 2026-07-01] sin este merge se perdería el last_quote (folio de la sesión, estado
     // real de entrega) que generarPdf escribió DURANTE este turno vía toolCalls del LLM.
     if (state.last_quote) newState.last_quote = state.last_quote;
+    // 🔴 [2026-08-25] LOS RELOJES DE LOS GATES, POR LA MISMA RAZON EXACTA QUE `last_quote`.
+    // `agent.handleTurn` saca la foto del estado AL EMPEZAR (`{ ...state }`) y el webhook se
+    // queda con esa copia, asi que todo lo que una tool escriba DURANTE el turno queda afuera.
+    // Los gates marcan `color_preguntado_at` / `tipo_preguntado_at` justo ahi ⇒ se perdian, el
+    // turno siguiente los veia en cero y se volvia a preguntar: el plazo de gracia NO VENCIA
+    // NUNCA y la propuesta asumida no salia jamas. El cliente que no contesta el dato quedaba
+    // en un bucle de preguntas.
+    // Medido contra la BD viva: 794 sesiones · 0 con reloj de color · 224 CON `default_color`
+    // (ese si persiste porque `recordarColor` escribe sobre la copia, DESPUES del turno).
+    // No lo cazaba ningun test porque los `handleTurn` falsos copian el estado DESPUES de
+    // llamar la tool — mas indulgentes que produccion. Ver gate-reloj-persiste.test.js.
+    if (state.color_preguntado_at) newState.color_preguntado_at = state.color_preguntado_at;
+    if (state.tipo_preguntado_at) newState.tipo_preguntado_at = state.tipo_preguntado_at;
     // [CTWA-SALUDO 2026-07-18] one-shot: ya viajó en el contexto de ESTE turno → jamás repetir.
     if (newState.ctwa_saludo_pending) delete newState.ctwa_saludo_pending;
 

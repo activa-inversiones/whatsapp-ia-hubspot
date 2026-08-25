@@ -136,7 +136,11 @@ test('🔴 el mensaje del gate NOMBRA el color y ofrece los 5 del catalogo', asy
   assert.ok(fin > i, 'no se encontro el return del gate');
   const bloque = wh.slice(i, fin);
 
-  assert.match(bloque, /missing\.includes\('color'\)/, 'el color tiene su propio mensaje');
+  // [2026-08-25] Se afirma que el color tiene SU PROPIA RAMA, sin fijar como se escribe la
+  // condicion: cuando la cascada paso de `missing.includes('color')` a `_falta === 'color'`
+  // (para no tener dos listas paralelas) este test fallaba mirando codigo correcto. La
+  // intencion es que exista la rama y que su mensaje sea el del color, no su sintaxis.
+  assert.match(bloque, /'color'/, 'el color tiene su propia rama en la cascada');
   for (const c of ['Blanco', 'Nogal', 'Roble Dorado', 'Grafito Antracita', 'Negro']) {
     assert.ok(bloque.includes(c), `el mensaje ofrece ${c}`);
   }
@@ -145,7 +149,10 @@ test('🔴 el mensaje del gate NOMBRA el color y ofrece los 5 del catalogo', asy
   // que SI dice "Ya te pregunto"— y bastaba que apareciera una rama nueva despues (la de la
   // apertura) para que el test fallara mirando codigo correcto. Lo que se quiere afirmar es
   // que el color no promete una pregunta, no que la palabra no exista en el archivo.
-  const ramaColor = bloque.split("includes('color')").pop().split(': _gate.missing.includes(')[0];
+  // El corte termina donde EMPIEZA la rama siguiente (la apertura). Se ancla en 'tipo', que es
+  // el nombre del dato y no cambia con la sintaxis de la condicion — ya paso dos veces que el
+  // ancla fuera la forma del `if` y el test fallara mirando codigo correcto.
+  const ramaColor = bloque.split("'color'").pop().split("'tipo'")[0];
   assert.doesNotMatch(ramaColor, /Ya te pregunto/,
     'nada de prometer una pregunta: se pregunta ahi mismo');
   assert.match(ramaColor, /En qué color las quiere/, 'y la rama recortada es de verdad la del color');

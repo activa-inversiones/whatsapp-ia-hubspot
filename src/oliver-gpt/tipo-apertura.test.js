@@ -111,7 +111,7 @@ test('🔴 el mensaje del gate NOMBRA las cuatro aperturas', async () => {
   assert.ok(fin > i, 'no se encontro el return del gate');
   const bloque = wh.slice(i, fin);
 
-  assert.match(bloque, /missing\.includes\('tipo'\)/, 'la apertura tiene su propio mensaje');
+  assert.match(bloque, /'tipo'/, 'la apertura tiene su propia rama en la cascada');
   for (const a of ['orredera', 'royectante', 'ija', 'batible']) {
     assert.ok(bloque.includes(a), `el mensaje ofrece ${a}`);
   }
@@ -128,6 +128,20 @@ test('🔴 se pregunta UN dato por vez, y el orden es nombre > color > apertura'
   assert.equal(datoQuePregunta(['tipo']), 'tipo');
   assert.equal(datoQuePregunta([]), null, 'no falta nada: no se pregunta nada');
   assert.equal(datoQuePregunta(), null, 'sin lista tampoco inventa una pregunta');
+});
+
+test('🔴 UNA sola cascada: la pregunta y el reloj no pueden discrepar', async () => {
+  // [2026-08-25 · Codex] El mensaje tenia su propia cascada `missing.includes(...)` en paralelo
+  // a la del reloj. Los dos ordenes coincidian, asi que no habia defecto vivo — pero el dia que
+  // alguien cambiara la prioridad en UNA sola, se arranca el reloj de un dato y se pregunta
+  // otro: el defecto 2 reintroducido por la puerta de atras. Se afirma que la segunda lista no
+  // volvio, sin fijar como se escribe la primera.
+  const { readFile } = await import('node:fs/promises');
+  const wh = await readFile(new URL('./webhook.js', import.meta.url), 'utf8');
+  const i = wh.indexOf('const _gate = quoteDataComplete(input, state');
+  const bloque = wh.slice(i, wh.indexOf("reason: 'datos_incompletos'", i));
+  assert.equal((bloque.match(/_gate\.missing\.includes\(/g) || []).length, 0,
+    'la cascada del mensaje debe salir de `datoQuePregunta`, no reimplementar el orden');
 });
 
 test('🔴 NUNCA se asume un dato que no se pregunto', () => {
