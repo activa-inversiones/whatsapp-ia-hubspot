@@ -6,23 +6,31 @@
 // venta si no contesta, hay un plazo: pasado el minuto sale la blanca (o la corredera) CON
 // aviso. Este archivo prueba que ese plazo VENCE de verdad, en los dos ritmos de cliente.
 //
-// 📌 POR QUE EXISTE, Y QUE SE APRENDIO ESCRIBIENDOLO (25-ago):
-// La compuerta cruzada (Codex y Gemini, por separado) señalo un riesgo en el mismo lugar: los
-// timestamps `color_preguntado_at` / `tipo_preguntado_at` se reescriben mientras el dato siga
-// faltando, asi que —en teoria— un cliente que conteste mas rapido que el plazo lo empujaria
-// hacia adelante para siempre y nunca recibiria su cotizacion.
+// 📌 QUE SE MIDIO ACA (25-ago), Y COMO SE LLEGO — porque la primera conclusion fue la contraria.
+// La compuerta cruzada (Codex y Gemini, por separado) señalo el mismo riesgo: los timestamps
+// `color_preguntado_at` / `tipo_preguntado_at` se reescriben mientras el dato siga faltando, asi
+// que un cliente que conteste MAS rapido que el plazo lo empuja hacia adelante y no vence nunca.
 //
-// SE INTENTO REPRODUCIR Y NO OCURRE. Dos razones, las dos medidas acá:
-//   1. El reloj se LEE antes de reescribirse, asi que el turno siguiente ve la marca vieja.
-//   2. El color deja de faltar despues del primer turno, de modo que el gate ni siquiera
-//      vuelve a entrar por esa rama.
-// Diagnostico crudo con el codigo de produccion puesto: faltantes por turno
-// ["color","tipo","tipo","tipo","PDF OK","PDF OK","PDF OK"] — sale la propuesta.
+// 🔴 EL DEFECTO ES REAL, Y ESTA EN EL GATE DE LA APERTURA. Aislado corriendo este mismo test
+// contra las cuatro combinaciones (cliente contestando cada 60 ms, plazo 150 ms):
+//     los dos sin arreglar        → SIN cotizacion
+//     arreglando solo el color    → SIN cotizacion    ⇒ NO es el gate del color
+//     arreglando solo el tipo     → recibe            ⇒ ES el gate de la apertura
+//     arreglando los dos          → recibe
+// El gate del color solo —lo que corria en produccion— NO produce el bucle: el color deja de
+// faltar despues del primer turno y el gate no vuelve a esa rama. Corregido en `e13fdd3`.
 //
-// ⚠️ LO QUE ESTE ARCHIVO NO PRUEBA, y conviene decirlo: el segundo hallazgo de la compuerta
-// —que se marcan color y apertura a la vez aunque se pregunta UNO solo, y por eso se podria
-// asumir corredera sin haberla preguntado nunca— NO esta cubierto acá. Queda en el tablero.
-// Un test que no distingue el defecto de su ausencia no protege nada, y decirlo es parte del test.
+// ⚠️ ESTE ENCABEZADO DIJO LO CONTRARIO DURANTE UNA HORA. Decia "se intento reproducir y NO
+// ocurre", escrito con una version del test que daba VERDE con el defecto puesto: fallaba por
+// otra razon (usaba "Cliente" como nombre, que `pdf-intent.js:70` rechaza a proposito por
+// generico) y esperaba MAS que el plazo, justo el caso que si funciona. Se deja anotado porque
+// el error no fue el test: fue publicar la conclusion antes de que el test discriminara. Un
+// test que no distingue el defecto de su ausencia da confianza falsa, y un comentario que
+// afirma "esto no pasa" hace que nadie lo vuelva a mirar.
+//
+// ⏳ SIGUE ABIERTO (tablero): el plazo es PASIVO — solo se evalua cuando el cliente vuelve a
+// escribir. Si se va y no vuelve, no hay temporizador que emita la propuesta al minuto. Aplica
+// a los DOS gates, el de la apertura y el del color (este ultimo ya en produccion).
 //
 // Hermetico: `global.fetch` anulado, todo lo que toca red inyectado.
 
