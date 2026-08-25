@@ -98,7 +98,10 @@ function detectarAperturaLocal(text) {
   // [2026-08-25] LA COMPUESTA PRIMERO: "mitad fija mitad proyectante" contiene las
   // palabras "fija" y "proyectante" — cualquier otra rama se la robaria. Es la ventana
   // que mas se vende (dueño) y ahora es UN tipo del motor, no dos items.
-  if (/mitad\s+fij[ao]|fij[ao]\s*(?:\+|y|con|mas|más)\s*proyectante|proyectante\s*(?:\+|y|con|mas|más)\s*(?:paño\s+)?fij[ao]|compuesta/.test(tl)) return "COMPUESTA";
+  // [Gemini, compuerta] "una fija y una proyectante" son DOS ventanas, no una compuesta:
+  // la conjuncion sola no basta. Se exige señal de UNION: "mitad", el signo +, o
+  // "unidas/juntas/en una (sola) ventana". Sin esa señal, cada una sigue su camino.
+  if (/mitad\s+fij[ao]|mitad\s+proyectante|fij[ao]\s*\+\s*proyectante|proyectante\s*\+\s*fij[ao]|(?:fij[ao][^.]{0,30}proyectante|proyectante[^.]{0,30}fij[ao])[^.]{0,25}\b(?:unid[ao]s|juntas|en\s+una(?:\s+sola)?(?:\s+ventana)?)\b|ventana\s+compuesta|\bcompuestas?\b/.test(tl)) return "COMPUESTA";
   if (tl.includes("abatible") || tl.includes("abatir")) return "ABATIBLE";
   if (tl.includes("oscilobatiente") || tl.includes("oscilo")) return "OSCILOBATIENTE";
   if (tl.includes("proyectante") || tl.includes("proy")) return "PROYECTANTE";
