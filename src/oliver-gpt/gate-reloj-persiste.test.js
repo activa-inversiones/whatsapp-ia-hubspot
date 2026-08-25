@@ -140,3 +140,60 @@ test('🔴 el reloj del COLOR tambien — el mismo defecto, y ese ya esta en pro
   assert.ok(guardado.state.color_preguntado_at,
     'se le pregunto el color y el reloj NO quedo guardado');
 });
+
+/* =========================================================================
+ * EL RELOJ RANCIO SE REINICIA — SI NO, VUELVE EL BUCLE POR OTRA PUERTA
+ * ========================================================================= */
+// 🔴 [2026-08-25] La trampa que anticipo Gemini, en su version real. Al hacer que el reloj
+// CADUQUE a las 2 h, el reinicio no puede seguir condicionado a `!state.X`: un cliente que
+// vuelve a los tres dias trae un reloj rancio, `!state.X` da false, el reloj NO se reinicia, la
+// pregunta nunca vuelve a ser vigente y el plazo NO VENCE JAMAS. Es el mismo bucle que ya
+// cerramos, entrando por el reloj viejo. La condicion correcta es `!preguntaVigente(state.X)`.
+
+test('🔴 el cliente que vuelve a los 3 dias: se le pregunta Y el reloj se reinicia', async () => {
+  const rancio = Date.now() - 3 * 24 * 60 * 60 * 1000;
+  let guardado = null;
+  const deps = {
+    conv: new Map(), seen: new Set(), locks: new Map(),
+    dormir: async () => {},
+    leerEstado: async () => null,
+    escribirEstado: () => {},
+    parseInbound: () => ({
+      ok: true, from: '56900000003', type: 'text',
+      text: 'hola, ahora necesito 2 ventanas de 1200x1000',   // proyecto nuevo, sin apertura
+      msgId: `wamid.${Math.random()}`,
+    }),
+    // La sesion vieja vuelve del almacenamiento CON el reloj de hace tres dias.
+    loadSession: async () => ({ history: [], state: { tipo_preguntado_at: rancio } }),
+    sendWhatsAppText: async () => ({ ok: true }),
+    generatePdf: async () => Buffer.from('%PDF-1.4 fake'),
+    uploadWaDocument: async () => 'media-z',
+    sendWaDocument: async () => ({ ok: true, msgId: 'sent-z' }),
+    persistSession: (_from, sesion) => { guardado = sesion; },
+    bridge: {
+      getConversationControl: async () => ({ ai_paused: false, operator_status: 'ai' }),
+      pushConversationEvent: async () => ({ ok: true }),
+      pushLeadEvent: async () => ({ ok: true }),
+      pushQuoteEvent: async () => ({ ok: true }),
+    },
+    handleTurn: async ({ userText, state, toolCtx }) => {
+      const nextState = { ...state };
+      const r = await toolCtx.generarPdf({
+        name: 'Juan Carlos', comuna: 'Temuco',
+        items: [{ producto_label: 'Corredera S60', measures: '1200x1000',
+                  color: 'Blanco', qty: 1, unit_price: 250000 }],
+      });
+      return { reply: r?.message || 'ok', history: [{ role: 'user', content: userText }],
+               toolCalls: [], state: nextState };
+    },
+  };
+
+  await handleWebhook({ body: {} }, makeRes(), deps);
+
+  assert.ok(guardado, 'la sesion tiene que persistirse');
+  assert.notEqual(guardado.state.tipo_preguntado_at, rancio,
+    'el reloj rancio quedo tal cual: la pregunta nunca vuelve a ser vigente y el plazo NO VENCE '
+    + 'jamas — el bucle, entrando por el reloj viejo');
+  assert.ok(Date.now() - guardado.state.tipo_preguntado_at < 60_000,
+    'se le pregunto de nuevo, asi que el reloj tiene que arrancar AHORA');
+});

@@ -99,8 +99,9 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
 
   if (faltaColor) {
     const preguntadoAt = Number(state.color_preguntado_at) || 0;
-    // Ya se le pregunto y paso el tiempo de gracia ⇒ se emite en blanco, avisando.
-    if (preguntadoAt && (Date.now() - preguntadoAt) >= ESPERA_COLOR_MS) colorAsumido = true;
+    // Ya se le pregunto EN ESTA CONVERSACION y paso el tiempo de gracia ⇒ se emite en blanco,
+    // avisando. Si la pregunta es de hace tres dias no cuenta: se vuelve a preguntar.
+    if (preguntaVigente(preguntadoAt) && (Date.now() - preguntadoAt) >= ESPERA_COLOR_MS) colorAsumido = true;
     else missing.push('color');
   }
 
@@ -134,11 +135,40 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
 
   if (faltaTipo) {
     const preguntadoAt = Number(state.tipo_preguntado_at) || 0;
-    if (preguntadoAt && (Date.now() - preguntadoAt) >= ESPERA_TIPO_MS) tipoAsumido = true;
+    if (preguntaVigente(preguntadoAt) && (Date.now() - preguntadoAt) >= ESPERA_TIPO_MS) tipoAsumido = true;
     else missing.push('tipo');
   }
 
   return { ok: missing.length === 0, missing, colorAsumido, tipoAsumido };
+}
+
+/**
+ * ¿Sigue VIGENTE la pregunta que se le hizo al cliente, o es de otra conversacion?
+ *
+ * 🔴 [2026-08-25 · compuerta cruzada] Los relojes de los gates se escribian UNA vez y no se
+ * borraban nunca. Efecto medido en el razonamiento, no en la BD: un cliente que cotiza hoy sin
+ * dar el color —se le pregunta, no contesta, se le asume Blanco— y vuelve EN TRES DIAS con otro
+ * proyecto, trae el reloj ya vencido ⇒ se le asume Blanco **de entrada, sin preguntarle nada**.
+ * Es exactamente el defecto que estos gates vinieron a cerrar, reapareciendo por el paso del
+ * tiempo.
+ *
+ * SE RESUELVE CADUCANDO, NO BORRANDO, y es a proposito. Borrar exigiria propagar un `null` a
+ * traves del merge del webhook, que hoy es `if (state.X) newState.X = …` y NO propaga nulos: la
+ * limpieza no tendria efecto y nadie entenderia por que (lo anticipo Gemini). Una condicion pura
+ * acá no depende de ese merge, no se puede olvidar en el camino, y se prueba sin montar un turno.
+ *
+ * La ventana es la de UNA conversacion, no la de un dato: pasada esa, la pregunta se vuelve a
+ * hacer. Preguntar de mas cuesta un mensaje; asumir de mas cuesta plata y una recotizacion.
+ */
+export function preguntaVigente(preguntadoAt, ahora = Date.now()) {
+  const t = Number(preguntadoAt) || 0;
+  if (!t) return false;
+  const VIGENCIA_MS = Number(process.env.VIGENCIA_PREGUNTA_MS || 2 * 60 * 60 * 1000); // 2 h
+  const edad = ahora - t;
+  // Un reloj del FUTURO (relojes desincronizados, estado editado a mano) no puede dar por
+  // vencido un plazo que nunca corrio.
+  if (edad < 0) return false;
+  return edad <= VIGENCIA_MS;
 }
 
 /**

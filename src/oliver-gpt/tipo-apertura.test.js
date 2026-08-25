@@ -24,7 +24,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { quoteDataComplete, datoQuePregunta } from './pdf-intent.js';
+import { quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js';
 import { aperturaFueExplicita } from '../../services/enginePricer.js';
 
 const itemOk = (extra = {}) => ({
@@ -172,4 +172,37 @@ test('🔴 el aviso de "va corredera" existe, ofrece recotizar Y SE MANDA', asyn
   assert.match(bloque, /corredera/i, 'le dice que va corredera');
   assert.match(bloque, /recotiz|sin costo/i, 'y que se puede cambiar');
   assert.match(wh, /\+ _avisoTipo,/, 'el aviso se concatena al mensaje de la propuesta');
+});
+
+/* =========================================================================
+ * EL RELOJ CADUCA: UNA PREGUNTA DE HACE TRES DIAS NO ES UNA PREGUNTA
+ * ========================================================================= */
+// 🔴 [2026-08-25 · compuerta cruzada] Los relojes se escribian una vez y no se borraban nunca.
+// Un cliente que cotiza hoy sin dar la apertura —se le pregunta, no contesta, se le asume
+// corredera— y vuelve EN TRES DIAS con otro proyecto traia el reloj ya vencido ⇒ se le asumia
+// corredera DE ENTRADA, sin preguntarle. El defecto que este gate vino a cerrar, reapareciendo
+// por el paso del tiempo.
+
+test('🔴 una pregunta de hace tres dias NO habilita asumir: se pregunta de nuevo', () => {
+  const state = { tipo_preguntado_at: Date.now() - 3 * 24 * 60 * 60 * 1000 };
+  const r = quoteDataComplete(base, state, { textoCliente: 'una ventana de 2x2' });
+  assert.equal(r.ok, false, 'proyecto nuevo, conversacion nueva: se vuelve a preguntar');
+  assert.ok(!r.tipoAsumido, 'y sobre todo NO se asume corredera sin preguntar');
+});
+
+test('🔒 dentro de la misma conversacion el reloj SI vale (si no, nunca vencería)', () => {
+  const state = { tipo_preguntado_at: Date.now() - 5 * 60 * 1000 };   // 5 min
+  const r = quoteDataComplete(base, state, { textoCliente: 'una ventana de 2x2' });
+  assert.equal(r.ok, true);
+  assert.equal(r.tipoAsumido, true);
+});
+
+// El reloj vencido TIENE que reiniciarse al volver a preguntar (si no, vuelve el bucle).
+// Eso es comportamiento del turno, no de una funcion pura: se prueba en
+// gate-reloj-persiste.test.js, con un turno de verdad. Acá quedaria una tautologia.
+
+test('🔒 un reloj del FUTURO no da por vencido un plazo que nunca corrio', () => {
+  assert.equal(preguntaVigente(Date.now() + 60 * 60 * 1000), false);
+  assert.equal(preguntaVigente(0), false, 'sin reloj no hay pregunta vigente');
+  assert.equal(preguntaVigente(undefined), false);
 });

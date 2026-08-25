@@ -78,7 +78,7 @@ import {
 } from '../../services/voiceBridge.js'; // [F4] voz saliente
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
-import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
+import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
 import { toFile as realToFile } from 'openai/uploads';
 import {
   loadSession as realLoadSession,
@@ -1740,8 +1740,14 @@ Comuna: ${datos.comuna}`
             // abajo y este reloj TIENEN que estar de acuerdo sobre cual dato se pregunta, y
             // dos copias de esa regla se desincronizan — que es como nacio el defecto 2.
             const _falta = datoQuePregunta(_gate.missing);
-            if (_falta === 'color' && !state.color_preguntado_at) state.color_preguntado_at = Date.now();
-            if (_falta === 'tipo' && !state.tipo_preguntado_at) state.tipo_preguntado_at = Date.now();
+            // `!preguntaVigente(...)` y NO `!state.…`, y la diferencia es un bucle:
+            //   · mientras la pregunta esta VIGENTE el reloj no se reinicia (defecto 1);
+            //   · si es de otra conversacion (vencida), se reinicia — porque se le esta
+            //     preguntando DE NUEVO. Con `!state.…` un reloj viejo bloqueaba el reinicio,
+            //     la pregunta nunca volvia a ser vigente y el plazo no vencia jamas: el mismo
+            //     bucle de antes, entrando por el reloj rancio.
+            if (_falta === 'color' && !preguntaVigente(state.color_preguntado_at)) state.color_preguntado_at = Date.now();
+            if (_falta === 'tipo' && !preguntaVigente(state.tipo_preguntado_at)) state.tipo_preguntado_at = Date.now();
             // [2026-08-25 · Codex] La pregunta usa EL MISMO `_falta` que el reloj. Tenia su
             // propia cascada paralela: hoy los dos ordenes coincidian, pero el dia que alguien
             // cambie la prioridad en una sola se arranca el reloj de un dato y se pregunta otro
