@@ -72,46 +72,6 @@ function hookDeToolCtx(src) {
   return src.slice(i, src.indexOf('\n', i) + 1);
 }
 
-test('calcular_cotizacion DISPARA el informe — es el momento en que el cliente espera', async () => {
-  const src = await leer('../src/oliver-gpt/tools.js');
-  const bloque = src.slice(src.indexOf("case 'calcular_cotizacion'"), src.indexOf("case 'calcular_por_area'"));
-  assert.match(bloque, /ctx\?\.enviarInformeTermico/,
-    'sin esto el informe existe pero nadie lo manda');
-  assert.match(bloque, /ctx\.enviarInformeTermico\(input\.comuna \|\| '',/,
-    'tiene que pasarle la comuna capturada, no inventar una');
-});
-
-test('🔒 el disparo NO puede frenar ni demorar la cotizacion', async () => {
-  const src = await leer('../src/oliver-gpt/tools.js');
-  const bloque = src.slice(src.indexOf("case 'calcular_cotizacion'"), src.indexOf("case 'calcular_por_area'"));
-  // La llamada pasó a ser MULTILÍNEA (lleva el vidrio y el Uw del cliente), así que ya no
-  // sirve mirar una sola línea: se inspecciona el trozo completo alrededor.
-  const i = bloque.indexOf('ctx.enviarInformeTermico(');
-  assert.ok(i > 0, 'no se encontro la llamada');
-  // [2026-08-24] La ventana de inspeccion se toma desde el GUARD (`if (typeof ctx?.enviar…`)
-  // hasta la llamada, no unos caracteres a ojo: al pasar el proyecto entero se sumaron el
-  // mapeo de `ventanas` y su comentario, y una ventana fija de 140 chars dejaba el `try {`
-  // afuera y hacia fallar un test que estaba mirando codigo correcto.
-  const iGuard = bloque.lastIndexOf("if (typeof ctx?.enviarInformeTermico", i);
-  assert.ok(iGuard >= 0 && iGuard < i, "la llamada tiene que ir dentro del guard de existencia");
-  const trozo = bloque.slice(iGuard, i + 1200);
-  assert.doesNotMatch(trozo, /await ctx\.enviarInformeTermico/,
-    'con await, un THERMAL lento demoraria el precio del cliente');
-  assert.match(trozo, /try \{/, 'tiene que ir dentro de un try');
-  assert.match(trozo, /\} catch \{/, 'una excepcion aca no puede tumbar la cotizacion');
-});
-
-test('el disparo va DESPUES de que la cotizacion salio bien, no antes', async () => {
-  // Si se disparara antes del guard de `unit_price > 0`, se le mandaria un informe a alguien
-  // a quien despues no se le puede cotizar. Prometer y no cumplir es peor que no prometer.
-  const src = await leer('../src/oliver-gpt/tools.js');
-  const bloque = src.slice(src.indexOf("case 'calcular_cotizacion'"), src.indexOf("case 'calcular_por_area'"));
-  const iFallo = bloque.indexOf('return falloDeCotizacion');
-  const iInforme = bloque.indexOf('ctx.enviarInformeTermico');
-  assert.ok(iFallo > 0 && iInforme > iFallo,
-    'el informe tiene que ir despues del guard de fallo de cotizacion');
-});
-
 test('webhook.js PROVEE el hook, con candado de una sola vez por cliente', async () => {
   const src = await leer('../src/oliver-gpt/webhook.js');
   assert.match(src, /enviarInformeTermico: \(comuna, opciones/, 'el hook tiene que estar en toolCtx');
@@ -137,15 +97,6 @@ test('🔒 sin dato verificado NO se manda nada — son citas normativas', async
   // THERMAL caido dejaria el candado puesto 5 min sin que nadie haya mandado nada.
   assert.match(bloque, /if \(!datos\) \{ liberar\(\); return; \}/, 'sin datos de THERMAL no se emite documento');
   assert.match(bloque, /if \(!pdfBuf\) \{ liberar\(\); return; \}/, 'si el PDF no se pudo armar, no se manda nada');
-});
-
-test('🔴 el informe se manda SIEMPRE al cotizar — es parte del proceso de venta', async () => {
-  // Decision del dueno, textual: "no, siempre debe entregarlo — es parte del proceso de
-  // venta". Estuvo un rato como tool a pedido y se revirtio a proposito.
-  const src = await leer('../src/oliver-gpt/tools.js');
-  const bloque = src.slice(src.indexOf("case 'calcular_cotizacion'"), src.indexOf("case 'calcular_por_area'"));
-  assert.match(bloque, /ctx\.enviarInformeTermico\(input\.comuna \|\| '',/,
-    'sin esto el informe solo saldria si alguien lo pide, y el dueno lo quiere SIEMPRE');
 });
 
 test('la tool de re-envio existe y SALTA el candado', async () => {
@@ -181,11 +132,14 @@ test('🔴 el informe lleva LA VENTANA DEL CLIENTE, no solo el catalogo', async 
   // El dueno lo cazo mirando el PDF: "entrego un informe tipo con muchos termopaneles".
   // Tenia razon: con los 10 vidrios y nada suyo, se lee como folleto. Ahora el vidrio y el
   // Uw que ACABAN de salir de la cotizacion viajan al informe y se destacan.
-  const tools = await leer('../src/oliver-gpt/tools.js');
-  assert.match(tools, /glassLabel: it\.glass_label/, 'el vidrio del cliente tiene que viajar');
-  assert.match(tools, /uw: it\.termico\?\.uw/, 'y su Uw calculado');
-
+  // [2026-08-24] Los tres campos de resumen salen ahora de la ULTIMA ventana de la
+  // propuesta, JUNTOS. Tomarlos por separado dejaba `producto` de una ventana y `uw` de
+  // otra, y ese par mentiroso terminaba en el registro ISO.
   const wh = await leer('../src/oliver-gpt/webhook.js');
+  const resumen = trozo(wh, 'const ultima = (input.items', 'producto: ultima.producto_label');
+  assert.match(resumen, /glassLabel: ultima\.glass_label/, 'el vidrio del cliente tiene que viajar');
+  assert.match(resumen, /uw: ultima\.termico\?\.uw/, 'y su Uw calculado');
+
   assert.match(wh, /suVidrio: glassLabel, suUw: uw, suProducto: producto/);
 
   const pdf = await leer('./informeTermicoPdf.js');
@@ -368,25 +322,6 @@ test('🔒 el rescate NO puede pisar los datos frescos de una cotizacion', async
     'los datos entrantes van PRIMERO en la llamada: son los que mandan');
 });
 
-// ── 🔴 [2026-08-24] EL PROYECTO ENTERO LLEGA HASTA EL PDF ────────────────────
-// Pedido del dueno, textual: *"no podemos cotizarle una ventana al cliente teniendo ocho
-// ventanas con transmitancias termicas [distintas]"*.
-//
-// El cableado tiene TRES tramos y romper cualquiera deja el informe en singular otra vez.
-// El defecto real que motivo estos tests: el hook ya ACEPTABA `ventanas` en su firma —se
-// veia cableado— pero no lo metia en la memoria ni se lo pasaba al PDF. Un parametro que
-// se recibe y se tira es peor que uno que no existe: aparenta estar hecho.
-test('🔒 tramo 1 — la cotizacion manda las 8 ventanas, no items[0]', async () => {
-  const tools = await leer('../src/oliver-gpt/tools.js');
-  const bloque = tools.slice(tools.indexOf("case 'calcular_cotizacion'"), tools.indexOf("case 'calcular_por_area'"));
-  assert.match(bloque, /const ventanas = \(d\.items \|\| \[\]\)\.map\(/,
-    'tienen que mapearse TODOS los items, no el primero');
-  assert.match(bloque, /uw: w\.termico\?\.uw/,
-    'el Uw de CADA ventana ya viene calculado por el pricer: usarlo, no recalcular');
-  assert.match(bloque, /ctx\.enviarInformeTermico\(input\.comuna \|\| '', \{\s*\n\s*ventanas,/,
-    'y viajar al hook');
-});
-
 test('🔒 tramo 2 — el hook recuerda las ventanas y las recupera en el re-envio', async () => {
   const bloque = cuerpoDelHook(await leer('../src/oliver-gpt/webhook.js'));
   assert.match(bloque, /datosDelInforme\(\{ glassLabel, uw, producto, ventanas \}, recordados\)/,
@@ -413,29 +348,47 @@ test('🔒 tramo 3 — el PDF recibe el proyecto (este es el tramo que faltaba)'
     'el PDF tiene que recibir `ventanas` o vuelve a dibujar UNA sola ventana');
 });
 
-test('🔴 [Codex 3a] la cantidad viaja CRUDA: `input.cantidad`, nunca `w.qty`', async () => {
-  // Mas arriba en el mismo case, `qty` se normaliza con `Math.max(1, Number(...) || 1)`.
-  // Si el informe leyera `w.qty`, un dato ausente le llegaria como un 1 indistinguible de
-  // uno informado y `resumenVentanas` no podria marcarlo como incierto: la marca existiria
-  // pero nunca se encenderia. El supuesto se marca donde se supone, no antes.
+test('🔴 calcular_cotizacion YA NO dispara el informe', async () => {
+  // Dejarlo "por las dudas" no es inofensivo: vuelve a tomar los candados antes que el
+  // despacho bueno y reproduce el defecto entero. Lo cazo Codex en la revision final.
   const tools = await leer('../src/oliver-gpt/tools.js');
   const bloque = tools.slice(tools.indexOf("case 'calcular_cotizacion'"), tools.indexOf("case 'calcular_por_area'"));
-  // Del inicio del `.map(` hasta su cierre `}));` — no "los proximos 1400 caracteres".
-  const mapeo = trozo(bloque, 'const ventanas = (d.items', '}));');
-  assert.match(mapeo, /cantidad: input\.cantidad,/, 'la cantidad del cliente, sin lavar');
-  assert.doesNotMatch(mapeo, /cantidad: w\.qty/, '`w.qty` ya viene normalizado a 1');
-  assert.doesNotMatch(mapeo, /cantidad:[^,]*\|\| 1/, 'un `|| 1` aca vuelve a inventar el dato');
-  // Y sin `id`: cada llamada trae un solo item, asi que numerar aca daba "V1" ocho veces.
-  assert.doesNotMatch(mapeo, /id: `V\$\{i \+ 1\}`/, 'la numeracion la hace resumenVentanas');
+  assert.doesNotMatch(bloque, /ctx\??\.?enviarInformeTermico/,
+    'el informe sale con la propuesta; disparar aca deja al cliente con una ventana de diez');
 });
 
-test('🔒 [Codex 5a] el upsert de Zoho del informe NO va con payload vacio', async () => {
-  // Con tres campos, el upsert sobre un Deal YA EXISTENTE le pisaba nombre y descripcion
-  // con vacio: el informe —un documento secundario— degradaba el registro comercial del
-  // cliente. Se mandan los datos del proyecto, igual que la propuesta.
+test('🔴 el informe se despacha con la PROPUESTA y con el proyecto completo', async () => {
+  const wh = await leer('../src/oliver-gpt/webhook.js');
+  const bloque = trozo(wh, 'Paso 3a·bis', 'Paso 3b');
+  assert.match(bloque, /if \(docSent\) \{/,
+    'solo si la propuesta se entrego: no se le promete un informe a quien no cotizo');
+  assert.match(bloque, /const ventanasProyecto = \(input\.items \|\| \[\]\)\.map/,
+    'las ventanas salen de los items de la propuesta, que es donde esta el proyecto entero');
+  assert.match(bloque, /uw: it\.termico\?\.uw \?\? null/,
+    'con el Uw que el motor ya calculo para cada una');
+  assert.doesNotMatch(bloque, /await despacharInforme/,
+    'sin await: el informe no puede demorar el PDF que el cliente esta esperando');
+});
+
+test('🔒 la cantidad viaja CRUDA desde el item, sin lavarla', async () => {
+  // Un `|| 1` aca convierte un dato ausente en un 1 indistinguible de uno informado, y
+  // `resumenVentanas` ya no puede marcarlo como incierto.
+  const wh = await leer('../src/oliver-gpt/webhook.js');
+  const bloque = trozo(wh, 'const ventanasProyecto', '}));');
+  assert.match(bloque, /cantidad: it\.qty,/);
+  assert.doesNotMatch(bloque, /cantidad:[^,]*\|\| 1/);
+});
+
+test('🔴 [Codex final] el informe NO hace upsert: se cuelga del Deal de la propuesta', async () => {
+  // `upsertZohoDeal` arma el nombre del Deal con `items[0].producto_label` y reescribe la
+  // descripcion. El informe le pasaba items con otra forma, asi que el nombre caia al
+  // generico "Ventanas" y pisaba el bueno — un documento secundario degradando el registro
+  // comercial del cliente. Ademas buscar-y-crear no es atomico y podia duplicar el Deal.
   const wh = await leer('../src/oliver-gpt/webhook.js');
   const bloque = trozo(wh, "safe('informeTermico.zoho'", 'attachPdfToDeal(dealId');
-  assert.match(bloque, /items: ventanas \|\| \[\]/, 'el proyecto viaja al Deal');
-  assert.match(bloque, /comuna: datos\.comuna \|\| state\.comuna/, 'y la comuna real');
-  assert.doesNotMatch(bloque, /items: \[\],/, 'un items vacio pisa lo que ya habia');
+  // Se busca la LLAMADA, no la palabra: el comentario de al lado explica por que no se usa
+  // y mencionarla ahi no es usarla.
+  assert.doesNotMatch(bloque, /await upsertZohoDeal\(/, 'el informe no crea ni actualiza el Deal');
+  assert.match(bloque, /leerEstado\)\(`deal:\$\{String\(from\)/, 'lo lee del que dejo la propuesta');
+  assert.match(bloque, /if \(!dealId\) return;/, 'y sin Deal no archiva: mejor sin copia que a medias');
 });

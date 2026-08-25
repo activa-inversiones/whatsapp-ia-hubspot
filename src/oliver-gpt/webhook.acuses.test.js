@@ -123,3 +123,47 @@ test('un fallo de un mensaje que no rastreamos no rompe nada', async () => {
   assert.equal(res.sentStatus, 200);
   assert.equal(spy.avisos.length, 0);
 });
+
+test('🔴 [Codex final] un acuse REPETIDO no duplica avisos ni borra dos veces', async () => {
+  // Meta reintrega los webhooks: el mismo `failed` puede llegar varias veces. Sin consumir
+  // el rastro, cada copia generaba su evento, su aviso a Marcelo y su borrado de candado.
+  const { deps, spy } = makeDeps({
+    enviado: { msgId: 'wamid.DOC1', tipo: 'informe_termico', folio: 'F9', telefono: '56940415964' },
+  });
+  for (let i = 0; i < 3; i++) {
+    await handleWebhook({ body: acuse('failed', 'wamid.DOC1') }, makeRes(), deps);
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  assert.equal(spy.avisos.length, 1, 'un solo aviso, aunque Meta reintregue');
+  assert.equal(spy.convEvents.filter((e) => e.metadata?.source === 'oliver_gpt_acuse').length, 1);
+});
+
+test('🔴 [Codex final] un `failed` TARDIO no puede borrar el candado de un envio NUEVO', async () => {
+  // Secuencia real: falla el envio A, se reintenta y el B SI llega (candado puesto), y
+  // recien ahi aparece el acuse tardio de A. Si ese acuse borra el candado, el cliente
+  // recibe un segundo informe por un fallo viejo.
+  const { deps, spy } = makeDeps({
+    enviado: { msgId: 'wamid.VIEJO', tipo: 'informe_termico', folio: 'F-A', telefono: '56940415964' },
+  });
+  // el envio B ya entrego y dejo su propio rastro + candado
+  deps._estado.set('wamsg:wamid.NUEVO', { valor: { msgId: 'wamid.NUEVO', tipo: 'informe_termico', folio: 'F-B', telefono: '56940415964' }, expira: null });
+  deps._estado.set('informe_termico:56940415964:ultimo_msg', { valor: 'wamid.NUEVO', expira: null });
+
+  await handleWebhook({ body: acuse('failed', 'wamid.VIEJO') }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 80));
+  assert.ok(!spy.borrados.includes('informe_termico:56940415964'),
+    'el acuse de un envio que ya fue reemplazado no toca el candado del vigente');
+});
+
+test('🔴 [Codex final] al fallar se suelta TAMBIEN el candado corto', async () => {
+  // Si solo se suelta el de 30 dias, el reintento cae dentro de los 5 min del candado
+  // corto, se descarta, y no queda programado para despues: el cliente igual se queda sin
+  // informe.
+  const { deps, spy } = makeDeps({
+    enviado: { msgId: 'wamid.DOC1', tipo: 'informe_termico', folio: 'F1', telefono: '56940415964' },
+  });
+  await handleWebhook({ body: acuse('failed', 'wamid.DOC1') }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 80));
+  assert.ok(spy.borrados.includes('informe_termico:56940415964'), 'el de 30 dias');
+  assert.ok(spy.borrados.includes('informe_termico:56940415964:en_curso'), 'y el corto');
+});

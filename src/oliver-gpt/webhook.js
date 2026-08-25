@@ -42,7 +42,7 @@ import {
   normalizar as normalizarTel,
 } from '../../services/atribucionCotizacion.js';
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
-import { leer as leerEstado, escribir as escribirEstado, reservar as reservarEstado, liberarReserva } from '../../services/estadoPersistente.js';
+import { leer as leerEstado, escribir as escribirEstado, reservar as reservarEstado, liberarReserva, borrar as borrarEstado } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS, datosDelInforme } from '../../services/informeTermico.js';
 import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
@@ -551,6 +551,28 @@ export async function handleWebhook(req, res, deps = {}) {
         await safe('acuse.fallo', async () => {
           const rastro = await (deps.leerEstado || leerEstado)(`wamsg:${ac.msgId}`);
           if (!rastro) return;               // no lo rastreabamos: no hay nada que decir
+
+          // 🔴 [Codex, revision final] EL RASTRO SE CONSUME. Meta reintrega los webhooks,
+          // asi que el mismo `failed` llega varias veces; sin consumirlo, cada copia
+          // generaba su evento, su aviso a Marcelo y su borrado de candado. Se borra ANTES
+          // de actuar: repetir un aviso es ruido, pero repetir el borrado del candado le
+          // manda un segundo informe al cliente.
+          try { (deps.borrarEstado || borrarEstado)(`wamsg:${ac.msgId}`); }
+          catch { /* si no se puede consumir, el peor caso es un aviso repetido */ }
+
+          // 🔴 [Codex, revision final] Y NO SE TOCA EL CANDADO DE UN ENVIO MAS NUEVO.
+          // Secuencia real: falla el envio A, se reintenta, el B SI llega y deja su candado
+          // puesto, y recien ahi aparece el acuse tardio de A. Borrar el candado por ese
+          // fallo viejo le manda un segundo informe al cliente. Solo actua el acuse del
+          // ULTIMO envio registrado.
+          let esElVigente = true;
+          if (rastro.telefono) {
+            try {
+              const ultimo = await (deps.leerEstado || leerEstado)(
+                `${rastro.tipo}:${String(rastro.telefono).replace(/\D/g, '')}:ultimo_msg`);
+              if (ultimo && ultimo !== ac.msgId) esElVigente = false;
+            } catch { /* sin dato se asume vigente: es el caso normal */ }
+          }
           const que = rastro.tipo === 'informe_termico' ? 'Informe térmico' : 'Propuesta';
           const detalle = ac.motivo || `código ${ac.codigo ?? 'desconocido'}`;
 
@@ -567,9 +589,14 @@ export async function handleWebhook(req, res, deps = {}) {
           // 2. Si era el INFORME, soltar el candado de 30 dias. Sin esto el cliente queda
           //    un mes sin informe por un envio que nunca llego — el mismo bug que ya dejo
           //    a 4 clientes bloqueados.
-          if (rastro.tipo === 'informe_termico' && rastro.telefono) {
-            try { (deps.borrarEstado || borrarEstado)(`informe_termico:${String(rastro.telefono).replace(/\D/g, '')}`); }
-            catch { /* si no se puede soltar, vence solo */ }
+          // Se sueltan LOS DOS candados: si solo se soltara el de 30 dias, el reintento
+          // caeria dentro de los 5 min del corto, se descartaria, y no queda programado
+          // para despues — el cliente igual se queda sin informe.
+          if (rastro.tipo === 'informe_termico' && rastro.telefono && esElVigente) {
+            const base = `informe_termico:${String(rastro.telefono).replace(/\D/g, '')}`;
+            for (const k of [base, `${base}:en_curso`]) {
+              try { (deps.borrarEstado || borrarEstado)(k); } catch { /* vence solo */ }
+            }
           }
 
           // 3. Avisarle a Marcelo: un documento que no llego es una venta detenida.
@@ -1316,6 +1343,10 @@ export async function handleWebhook(req, res, deps = {}) {
             await (deps.escribirEstado || escribirEstado)(`wamsg:${envio.msgId}`, {
               msgId: envio.msgId, tipo: 'informe_termico', folio: numeroInforme, telefono: String(from),
             }, 3 * 24 * 3600);              // 3 dias: los acuses de Meta llegan en minutos
+            // Cual es el envio VIGENTE, para que un acuse tardio de uno anterior no suelte
+            // el candado de este.
+            await (deps.escribirEstado || escribirEstado)(
+              `informe_termico:${String(from).replace(/\D/g, '')}:ultimo_msg`, envio.msgId, 3 * 24 * 3600);
           } catch { /* sin rastro solo se pierde el diagnostico, no el informe */ }
 
           // 🔴 [2026-08-24] ESPEJO AL COCKPIT — EL DEFECTO QUE HIZO PREGUNTAR "¿POR QUE NO
@@ -1350,18 +1381,20 @@ export async function handleWebhook(req, res, deps = {}) {
           // propio `safe`: el archivo es trazabilidad NUESTRA y el informe es del cliente.
           // Si Zoho esta caido, el cliente ya tiene su documento y eso no se toca.
           safe('informeTermico.zoho', async () => {
-            // 🔴 [Codex · 5a pasada] SE MANDAN LOS DATOS COMPLETOS. Con un payload de tres
-            // campos, el upsert sobre un Deal YA EXISTENTE le pisaba nombre y descripcion
-            // con vacio: el informe, que es un documento secundario, degradaba el registro
-            // comercial del cliente. Se reusa lo que ya se sabe del proyecto —lo mismo que
-            // manda la propuesta— para que el upsert no borre nada.
-            const dealId = await upsertZohoDeal({
-              phone: from,
-              name: state.name || '',
-              comuna: datos.comuna || state.comuna || '',
-              items: ventanas || [],
-              stageKey: 'informe_termico',
-            });
+            // 🔴 [Codex, revision final] EL INFORME NO CREA NI ACTUALIZA EL DEAL: SE CUELGA
+            // DEL QUE YA HIZO LA PROPUESTA.
+            //
+            // `upsertZohoDeal` arma el nombre con `items[0].producto_label` y reescribe la
+            // descripcion. El informe le pasaba items con OTRA forma ({producto, medidas,
+            // cantidad}), asi que el nombre caia al generico "Ventanas" y pisaba el bueno:
+            // un documento secundario degradando el registro comercial del cliente. Ademas
+            // buscar-y-crear no es atomico y podia terminar creando un Deal duplicado.
+            //
+            // Si la propuesta no dejo Deal, NO se archiva. Mejor sin copia que con un
+            // registro a medias: el cliente ya tiene su informe igual.
+            let dealId = null;
+            try { dealId = await (deps.leerEstado || leerEstado)(`deal:${String(from).replace(/\D/g, '')}`); }
+            catch { /* sin Deal no se archiva */ }
             if (!dealId) return;
             await addZohoNote(dealId,
               `Informe térmico entregado: ${numeroInforme}`,
@@ -1904,6 +1937,11 @@ Comuna: ${datos.comuna}`
                 `PDF enviado al cliente por WhatsApp.\nTotal: $${grandTotal.toLocaleString('es-CL')} CLP (IVA incl.)`);
               // [#6] adjuntar el PDF AL Deal (trazabilidad ISO en el registro Zoho)
               await attachPdfToDeal(dealId, pdfBuffer, filename);
+              // [2026-08-24] Se publica el dealId para que el INFORME se cuelgue de ESTE
+              // Deal en vez de hacer su propio upsert: el suyo iria sin los datos de la
+              // propuesta y pisaria el nombre y la descripcion con un payload pobre.
+              try { await (deps.escribirEstado || escribirEstado)(`deal:${String(from).replace(/\D/g, '')}`, dealId, 7 * 24 * 3600); }
+              catch { /* el informe se las arregla sin archivar */ }
             }
           });
 

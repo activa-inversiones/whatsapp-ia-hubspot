@@ -64,7 +64,7 @@ function makeDeps({ disparos = 1, envioOk = true, ventanas = null, overrides = {
   // Telefono propio por test: el candado de 30 dias va por numero, y compartirlo hacia que
   // el segundo test en adelante quedara bloqueado por el informe del primero.
   const telefono = `5699${String(++SECUENCIA).padStart(7, '0')}`;
-  const spy = { escrituras: [], docsEnviados: [], propuestas: [], convEvents: [], pdfArgs: [], textos: [], adjuntosZoho: [], notasZoho: [] };
+  const spy = { upserts: [], escrituras: [], docsEnviados: [], propuestas: [], convEvents: [], pdfArgs: [], textos: [], adjuntosZoho: [], notasZoho: [] };
   const estado = new Map();
   let tokenSeq = 0;
   const vigente = (e) => e && (!e.expira || e.expira > Date.now());
@@ -110,7 +110,7 @@ function makeDeps({ disparos = 1, envioOk = true, ventanas = null, overrides = {
     laminasParaInforme: async () => null,
     laminaTermopanel: async () => null,
 
-    upsertZohoDeal: async () => 'deal.777',
+    upsertZohoDeal: async (...a) => { spy.upserts.push(a); return 'deal.777'; },
     addZohoNote: async (...a) => { spy.notasZoho.push(a); return { ok: true }; },
     attachPdfToDeal: async (dealId, buf, filename) => {
       spy.adjuntosZoho.push({ dealId, bytes: buf?.length || 0, filename });
@@ -342,4 +342,28 @@ test('🔴 el informe deja RASTRO del msgId, o su acuse no se puede interpretar'
   assert.equal(inf.k, 'wamsg:doc.1', 'indexado por el id que devolvio Meta');
   assert.ok(inf.v.folio, 'con el folio, para poder nombrarlo si falla');
   assert.equal(inf.v.telefono, deps.parseInbound().from, 'y el telefono, para soltar su candado');
+});
+
+test('🔴 [Codex final] el informe REUSA el Deal de la propuesta, no lo pisa', async () => {
+  // `upsertZohoDeal` arma el nombre del Deal con `items[0].producto_label` y reescribe la
+  // descripcion. El informe le pasaba items con otra forma ({producto, medidas, cantidad}),
+  // asi que el nombre caia al generico "Ventanas" y pisaba el bueno: un documento
+  // secundario degradando el registro comercial del cliente.
+  const { deps, spy } = makeDeps();
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.adjuntosZoho.some((a) => /^Informe-Termico/.test(a.filename || ''))));
+
+  // La PROPUESTA hace su upsert (ahi estan los datos completos). El informe, ninguno.
+  assert.equal(spy.upserts.length, 1, 'un solo upsert por turno: el de la propuesta');
+  const adj = spy.adjuntosZoho.find((a) => /^Informe-Termico/.test(a.filename || ''));
+  assert.equal(adj.dealId, 'deal.777', 'y el informe se cuelga de ESE Deal');
+});
+
+test('🔒 sin Deal de la propuesta, el informe NO archiva (pero igual se entrega)', async () => {
+  // Mejor no archivar que crear un Deal a medias con datos incompletos.
+  const { deps, spy } = makeDeps({ overrides: { upsertZohoDeal: async () => null } });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.docsEnviados.length > 0), 'el cliente igual recibe su informe');
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(spy.adjuntosZoho.filter((a) => /^Informe-Termico/.test(a.filename || '')).length, 0);
 });

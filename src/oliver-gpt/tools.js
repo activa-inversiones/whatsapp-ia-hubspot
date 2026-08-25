@@ -718,60 +718,20 @@ export async function runTool(name, input = {}, ctx = {}) {
         return falloDeCotizacion(r, it, ctx);
       }
 
-      // [2026-08-21] EL INFORME TERMICO SALE SIEMPRE, no a pedido.
-      // El dueno lo definio asi: "no, siempre debe entregarlo — es parte del proceso de
-      // venta". Se dispara ACA, que es el instante en que el cliente queda esperando el
-      // precio, y NO en el PDF (ya seria tarde). Va DESPUES del guard de fallo: si no se
-      // le puede cotizar, no se le promete nada.
-      // fire-and-forget A PROPOSITO, sin await: la cotizacion no espera al informe.
-      // El candado de "una sola vez por cliente" vive del lado del webhook.
-      if (typeof ctx?.enviarInformeTermico === 'function') {
-        // [2026-08-21] Se le pasa EL VIDRIO Y EL Uw QUE ACABA DE SALIR de la cotizacion.
-        // Sin esto el informe lista los 10 vidrios del catalogo y se lee como folleto; con
-        // esto el cliente ve el SUYO marcado entre todos, que es lo que lo vuelve un informe
-        // de SU proyecto. El dueno lo cazo mirando el PDF: "entrego un informe tipo con
-        // muchos termopaneles".
-        try {
-          // 🔴 [2026-08-24] EL PROYECTO ENTERO, NO `items[0]`. Pedido del dueno, textual:
-          // *"no podemos cotizarle una ventana al cliente teniendo ocho ventanas con
-          // transmitancias termicas [distintas]"*. Hasta hoy viajaba SOLO la primera y el
-          // informe la declaraba en singular; las otras siete no existian para el documento.
-          //
-          // Y el calculo YA ESTABA HECHO: `enginePricer.js:491` asigna `item.termico` a CADA
-          // item, o sea las seis ventanas ya tienen su Uw contra ACTIVA THERMAL con sus
-          // medidas y su vidrio EFECTIVOS. Se estaba tirando a la basura.
-          const ventanas = (d.items || []).map((w) => ({
-            // 🔴 [2026-08-24 · Codex, 3a compuerta] SIN `id` ACA. Cada llamada trae UN
-            // item, asi que `V${i+1}` daba V1 SIEMPRE: ocho ventanas cotizadas producian
-            // ocho "V1", y el PDF usa ese id para decir cual no cumple ("No cumplen: V1,
-            // V1, V1"). La numeracion la hace `resumenVentanas` sobre el proyecto YA
-            // acumulado, que es el unico lugar que sabe cuantas ventanas hay en total.
-            producto: w.producto_label || w.product || '',
-            medidas: w.measures_original || w.measures || '',
-            vidrio: w.glass_label || '',
-            ambiente: w.ambiente || '',
-            // 🔴 [2026-08-24 · Codex, 2a pasada] SE MANDA `qty` TAL CUAL, sin `|| 1`. El
-            // `|| 1` de antes convertia `undefined`, `0` y `'abc'` en un 1 aca, o sea
-            // ANTES de que `resumenVentanas` pudiera notar que el dato no era fiable: la
-            // marca `cantidadIncierta` nunca se encendia porque le llegaba un 1 limpio.
-            // Un supuesto se marca en el lugar donde se supone, no se lava en el camino.
-            // Y la cantidad va CRUDA desde el input del cliente, no `w.qty`: mas arriba
-            // `qty` se normaliza con `Math.max(1, ...)`, asi que para cuando llega aca un
-            // dato ausente ya se convirtio en un 1 indistinguible de uno informado. El
-            // supuesto se marca donde se supone (`resumenVentanas`), no antes.
-            cantidad: input.cantidad,
-            uw: w.termico?.uw ?? null,
-          }));
-          ctx.enviarInformeTermico(input.comuna || '', {
-            ventanas,
-            // Los tres de siempre siguen viajando: el informe los usa como resumen del
-            // proyecto y son el fallback si `ventanas` viniera vacio.
-            glassLabel: it.glass_label || '',
-            uw: it.termico?.uw ?? null,
-            producto: it.producto_label || '',
-          });
-        } catch { /* nunca frena la cotizacion */ }
-      }
+      // 🔴 [2026-08-24] ACA YA NO SE DISPARA EL INFORME TERMICO.
+      //
+      // Se disparaba en este punto desde el 21-ago, y esa era la causa raiz de que el
+      // cliente recibiera un informe con UNA ventana de diez: `calcular_cotizacion` cotiza
+      // UNA partida por llamada, y el cliente lista su proyecto a lo largo de VARIOS
+      // mensajes. La primera llamada mandaba su informe parcial y se llevaba el candado de
+      // 30 dias, asi que el informe completo ya no podia salir.
+      //
+      // Ahora sale junto con la PROPUESTA (webhook.js, tras `docSent`), que es el unico
+      // punto del flujo donde el proyecto esta completo: ahi viven los `items` acumulados
+      // entre turnos y con su `termico` ya calculado para todos.
+      //
+      // ⚠️ Dejar este disparo "por las dudas" no es inofensivo: vuelve a tomar los candados
+      // antes que el despacho bueno y reproduce el defecto entero. Lo cazo Codex.
 
       return {
         ok: true,
