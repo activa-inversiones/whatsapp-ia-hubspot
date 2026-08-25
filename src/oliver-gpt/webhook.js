@@ -1673,7 +1673,16 @@ Comuna: ${datos.comuna}`
           // Casos reales BD: 0081/0085/0086 (Ximena), 0060 (Vivi), 0090 (Julio) — el PDF salía ANTES
           // de que el cliente respondiera nombre/color/tipo. Sin nombre real o ítems incompletos:
           // NO se quema folio ISO; se devuelve message para que Oliver pida el dato que falta.
-          const _gate = quoteDataComplete(input, state);
+          // 🔴 [2026-08-25] LO QUE DIJO EL CLIENTE, para poder saber si la apertura la eligió
+          // él o se la pusimos nosotros. Se juntan sus mensajes (incluido el texto que la
+          // visión sacó de sus imágenes, que entra al historial como mensaje del cliente) y
+          // el del turno actual. NO se mira lo que escribió Oliver: si él dice "corredera"
+          // ofreciéndola, eso no es que el cliente la haya pedido.
+          const _textoCliente = [
+            ...(history || []).filter((m) => m && m.role === 'user').map((m) => String(m.content || '')),
+            String(userText || ''),
+          ].join('  ');
+          const _gate = quoteDataComplete(input, state, { textoCliente: _textoCliente });
           if (!_gate.ok) {
             log('error', 'generarPdf.gate', `PDF bloqueado por datos incompletos: ${_gate.missing.join(', ')}`);
             // 🔴 [2026-08-25] EL COLOR TIENE SU PROPIA PREGUNTA, y se hace ACÁ.
@@ -1688,6 +1697,9 @@ Comuna: ${datos.comuna}`
             // Se anota CUANDO se pregunto el color: pasado el minuto, la proxima vez sale
             // la blanca con aviso en vez de dejar al cliente sin propuesta.
             if (_gate.missing.includes('color')) state.color_preguntado_at = Date.now();
+            // Igual que el color: se anota CUÁNDO se preguntó la apertura. Pasado el minuto,
+            // la próxima vez sale la corredera con aviso en vez de dejar al cliente sin nada.
+            if (_gate.missing.includes('tipo')) state.tipo_preguntado_at = Date.now();
             const _pregunta = _gate.missing.includes('name')
               ? '¿A nombre de quién emito la Propuesta Técnica Económica? Con eso te la envío al tiro.'
               : _gate.missing.includes('color')
@@ -1695,7 +1707,16 @@ Comuna: ${datos.comuna}`
                 // se lee igual en el chat pero rompe cualquier verificacion sobre la fuente.
                 ? '¿En qué color las quiere? Tenemos Blanco, Nogal, Roble Dorado, Grafito Antracita y Negro.'
                   + ' Se lo pregunto porque el color cambia el precio y prefiero cotizarle el que de verdad quiere.'
-                : 'Antes de emitir la propuesta formal necesito confirmar un detalle de las ventanas. Ya te pregunto.';
+                : _gate.missing.includes('tipo')
+                  // 🔴 [2026-08-25] LA APERTURA SE PREGUNTA, NO SE SUPONE. El cliente manda la
+                  // foto de una proyectante y hasta hoy recibía el precio de una corredera.
+                  // Se nombran las cuatro con una explicación de una línea: mucha gente no sabe
+                  // que "proyectante" es la que se abre hacia afuera, y no puede elegir lo que
+                  // no entiende.
+                  ? '¿Qué tipo de apertura necesita? Corredera (se abre deslizando), proyectante'
+                    + ' (se abre hacia afuera), fija (no se abre) o abatible.'
+                    + ' Se lo pregunto porque la apertura cambia el precio y prefiero cotizarle la que de verdad quiere.'
+                  : 'Antes de emitir la propuesta formal necesito confirmar un detalle de las ventanas. Ya te pregunto.';
             return { ok: false, reason: 'datos_incompletos', missing: _gate.missing, message: _pregunta };
           }
 
@@ -1712,6 +1733,19 @@ Comuna: ${datos.comuna}`
               + 'Si prefiere Nogal, Roble Dorado, Grafito Antracita o Negro, me avisa y se la '
               + 'recotizo sin costo — el color cambia el precio, por eso se lo digo.';
             log('info', 'generarPdf.color', `color asumido Blanco para ${from}: el cliente no contesto`);
+          }
+
+          // 🔴 [2026-08-25] LA APERTURA SE ASUMIO PORQUE EL CLIENTE NO CONTESTO.
+          // Mismo trato que el color y por lo mismo: no cotizar en silencio, pero tampoco
+          // perder la venta esperando un dato que no dio. Sale la corredera —que es la mas
+          // pedida— pero SE LO DECIMOS, y se le nombra la alternativa que suele ser mas
+          // barata en la misma medida.
+          let _avisoTipo = '';
+          if (_gate.tipoAsumido) {
+            _avisoTipo = '\n\n🪟 Se la preparé como *corredera* mientras me confirma la apertura. '
+              + 'Si la quiere proyectante, fija o abatible me avisa y se la recotizo sin costo — '
+              + 'la apertura cambia el precio.';
+            log('info', 'generarPdf.tipo', `apertura asumida CORREDERA para ${from}: el cliente no la nombro`);
           }
 
           // ── [2026-07-06 LOTE2] Medidas RESUELTAS: "AxBmm" es el transporte INTERNO de la confirmación
@@ -2236,7 +2270,7 @@ Comuna: ${datos.comuna}`
               : `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF).\n\n` +
                 '¿Necesita alguna modificación? Medidas, color o tipo de apertura se los cambio '
                 + 'sin problema. Y dígame cuándo lo puedo contactar de nuevo para ver qué decidió.'
-            ) + resumenDeLoCotizado(input.items) + _avisoColor,
+            ) + resumenDeLoCotizado(input.items) + _avisoColor + _avisoTipo,
           };
         }),
     };

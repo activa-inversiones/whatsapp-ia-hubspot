@@ -127,7 +127,10 @@ test('🔴 el mensaje del gate NOMBRA el color y ofrece los 5 del catalogo', asy
   // Se corta por ESTRUCTURA (del gate hasta su `return`), no por el primer renglon vacio:
   // en cuanto alguien agrega un comentario con una linea en blanco, ese corte deja el
   // mensaje afuera y el test falla mirando codigo correcto. Ya paso cuatro veces hoy.
-  const i = wh.indexOf('const _gate = quoteDataComplete(input, state);');
+  // [2026-08-25] Ancla por PREFIJO: el gate recibio un tercer argumento (el texto del
+  // cliente, para la apertura) y el ancla exacta con `);` dejo de existir ⇒ este test
+  // fallaba mirando codigo correcto. Es la cuarta vez que un ancla literal hace eso.
+  const i = wh.indexOf('const _gate = quoteDataComplete(input, state');
   assert.ok(i > 0, 'no se encontro el gate');
   const fin = wh.indexOf("reason: 'datos_incompletos'", i);
   assert.ok(fin > i, 'no se encontro el return del gate');
@@ -192,5 +195,5 @@ test('🔴 el aviso de "va en blanco" existe y ofrece recotizar', async () => {
   // 🔴 Y EL AVISO TIENE QUE LLEGARLE AL CLIENTE. Se construia en una variable que nadie
   // usaba: el cliente recibia su propuesta en blanco sin enterarse, que es justo el defecto
   // que este arreglo vino a cerrar. Un mensaje que no se manda no existe.
-  assert.match(wh, /\) \+ _avisoColor,/, 'el aviso se concatena al mensaje de la propuesta');
+  assert.match(wh, /\) \+ _avisoColor/, 'el aviso se concatena al mensaje de la propuesta');
 });

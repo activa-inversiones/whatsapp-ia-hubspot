@@ -48,9 +48,15 @@ const APERTURAS_ENGINE = new Set([
 
 /**
  * Réplica local de normTipoApertura (index.js) — NO exportada desde index.
- * Devuelve la familia coloquial; luego se mapea al enum del Engine.
+ * Devuelve la familia coloquial, o **null si el texto NO nombra ninguna apertura**.
+ *
+ * 🔴 [2026-08-25] Antes esto devolvía "CORREDERA" cuando no reconocía nada, y ese default
+ * era INDISTINGUIBLE de un cliente que pidió corredera de verdad. Separar "no dijo" de
+ * "dijo corredera" es lo único que permite preguntar en vez de suponer. El default sigue
+ * existiendo (`normTipoAperturaLocal`, abajo): lo que cambia es que ahora se puede saber
+ * que se aplicó.
  */
-function normTipoAperturaLocal(text) {
+function detectarAperturaLocal(text) {
   const t = String(text || "").toLowerCase();
   // [Ronda 3 2026-07-20 · afinada 3.1 por revisión Codex] PUERTAS ABATIBLES — PRIMERO
   // (antes del check "abatible": una "puerta abatible" es PUERTA, no ventana BATIENTE).
@@ -101,7 +107,28 @@ function normTipoAperturaLocal(text) {
   if (tl.includes("batiente")) return "ABATIBLE"; // (oscilobatiente ya capturado arriba)
   if (tl.includes("basculante")) return "BASCULANTE";
   if (tl.includes("plegable")) return "PLEGABLE";
-  return "CORREDERA"; // más común
+  return null; // el texto no nombra ninguna apertura
+}
+
+/** Familia coloquial CON el default histórico. Mismo comportamiento de siempre. */
+function normTipoAperturaLocal(text) {
+  return detectarAperturaLocal(text) || "CORREDERA"; // más común
+}
+
+/**
+ * ¿El cliente NOMBRÓ la apertura, o se la estamos poniendo nosotros?
+ *
+ * Nació de un reclamo del dueño (2026-08-25), textual: *"siempre está enviando imágenes
+ * que igual le cotizamos corredera"*. El mecanismo era este archivo: cualquier texto que
+ * no dijera una apertura —"ventana", "V1 | NO ESPECIFICADO | 2000x1450" que devuelve la
+ * visión cuando no la ve— caía a CORREDERA **en silencio**, y el cliente recibía el precio
+ * de una corredera sin que nadie le avisara. Es el mismo defecto del color, que costó que
+ * TODAS las cotizaciones salieran blancas.
+ *
+ * Solo REPORTA. No cambia ni un peso del cálculo: quién pregunta es el gate del PDF.
+ */
+export function aperturaFueExplicita(text) {
+  return detectarAperturaLocal(text) !== null;
 }
 
 /**

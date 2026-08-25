@@ -24,14 +24,14 @@ function makeDeps(quoteEvents) {
     parseInbound: () => ({
       ok: true,
       from: '56911112222',
-      text: 'Quiero cotizar [Ref:landing-gclid-test]',
+      text: 'Quiero cotizar una corredera [Ref:landing-gclid-test]',
       msgId: 'wamid.LANDING.GCLID',
       type: 'text',
     }),
     parseLandingRef: () => ({
       hasRef: true,
       leadId: 'landing-gclid-test',
-      cleanText: 'Quiero cotizar',
+      cleanText: 'Quiero cotizar una corredera',
     }),
     sendWhatsAppText: async () => ({ ok: true }),
     generatePdf: async () => Buffer.from('%PDF-1.4 fake'),

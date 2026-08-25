@@ -6,6 +6,8 @@
 // principal) dependía 100% de que el LLM llamara la tool → a veces escribía
 // "[Enlace a la cotización]" como texto y el cliente NO recibía el PDF.
 
+import { aperturaFueExplicita } from '../../services/enginePricer.js';
+
 /** ¿El cliente está afirmando que quiere el PDF? (incluye afirmaciones cortas). */
 export function isPdfAffirmative(text) {
   const t = String(text || '').trim().toLowerCase();
@@ -62,7 +64,7 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
  * Regla del dueño: PDF formal SOLO con datos confirmados; el NOMBRE se obtiene ANTES del PDF.
  * NO exige color (política REGLA #13: BLANCO por defecto) para no bloquear PDFs legítimos.
  */
-export function quoteDataComplete(input = {}, state = {}) {
+export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
   const missing = [];
   const name = String(input.name || state.name || '').trim();
   if (!name || /^cliente$/i.test(name)) missing.push('name');
@@ -102,7 +104,35 @@ export function quoteDataComplete(input = {}, state = {}) {
     else missing.push('color');
   }
 
-  return { ok: missing.length === 0, missing, colorAsumido };
+  // 🔴 [2026-08-25] LA APERTURA TAMBIEN ES UN DATO OBLIGATORIO — Y SE MIDE EN LO QUE DIJO
+  // EL CLIENTE, NO EN LO QUE ESCRIBIO EL MODELO.
+  //
+  // Reclamo del dueño, textual: *"siempre está enviando imágenes que igual le cotizamos
+  // corredera"*. Verificado: `enginePricer.js` caia a CORREDERA cuando el texto no nombraba
+  // ninguna apertura, y el cliente recibia ese precio sin enterarse. Es el mismo defecto que
+  // hizo que TODAS las cotizaciones salieran blancas.
+  //
+  // ⚠️ POR QUE NO SE MIRA EL ITEM: para cuando el item existe, la apertura YA se resolvio —
+  // `producto_label` dice "Corredera SLIDING H98" tanto si el cliente la pidio como si nadie
+  // la nombro nunca. Mirar ahi da siempre verde y no caza nada. El unico lugar donde "no
+  // dijo" sigue siendo distinguible de "dijo corredera" es el texto del cliente.
+  //
+  // ⏱️ Mismo trato en dos tiempos que el color, por la misma razon: preguntar no puede
+  // costar la venta. Se pregunta una vez; si no contesta, sale la corredera CON el aviso.
+  const ESPERA_TIPO_MS = Number(process.env.ESPERA_TIPO_MS || 60_000);
+  const textoCliente = String(opciones.textoCliente || '');
+  // Sin texto del cliente NO se activa: un llamador que todavia no lo pasa (IG/FB) se
+  // comporta exactamente como antes en vez de bloquear PDFs por un dato que no recibio.
+  const faltaTipo = textoCliente.trim() !== '' && !aperturaFueExplicita(textoCliente);
+  let tipoAsumido = false;
+
+  if (faltaTipo) {
+    const preguntadoAt = Number(state.tipo_preguntado_at) || 0;
+    if (preguntadoAt && (Date.now() - preguntadoAt) >= ESPERA_TIPO_MS) tipoAsumido = true;
+    else missing.push('tipo');
+  }
+
+  return { ok: missing.length === 0, missing, colorAsumido, tipoAsumido };
 }
 
 /**

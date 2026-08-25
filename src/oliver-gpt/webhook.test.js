@@ -72,7 +72,7 @@ function makeDeps(overrides = {}) {
       body?.__inbound || {
         ok: true,
         from: '56999999999',
-        text: 'Hola, quiero cotizar una ventana',
+        text: 'Hola, quiero cotizar una ventana corredera',
         msgId: 'wamid.TEST1',
         type: 'text',
       },

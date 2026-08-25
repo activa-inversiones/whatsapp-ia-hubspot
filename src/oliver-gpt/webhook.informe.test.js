@@ -101,7 +101,7 @@ function makeDeps({ disparos = 1, envioOk = true, ventanas = null, overrides = {
       estado.delete(k); return true;
     },
 
-    parseInbound: () => ({ ok: true, from: telefono, text: 'dos ventanas', msgId: `wamid.${Math.random()}`, type: 'text' }),
+    parseInbound: () => ({ ok: true, from: telefono, text: 'dos ventanas correderas', msgId: `wamid.${Math.random()}`, type: 'text' }),
     sendWhatsAppText: async (to, text) => { spy.textos.push(text); return { ok: true, msgId: 'm1' }; },
 
     // ── lo que hoy NO es inyectable y por eso este camino no se podia probar ──
