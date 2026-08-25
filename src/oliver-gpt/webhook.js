@@ -1696,6 +1696,28 @@ Comuna: ${datos.comuna}`
             // después.
             // Se anota CUANDO se pregunto el color: pasado el minuto, la proxima vez sale
             // la blanca con aviso en vez de dejar al cliente sin propuesta.
+            //
+            // 🔴 [2026-08-25] DEFECTO MEDIDO Y AISLADO — ESTA EN EL GATE DE LA APERTURA (abajo),
+            // NO EN ESTE. Se deja escrito acá porque las dos lineas comparten el mecanismo.
+            //
+            // El reloj se reescribe mientras el dato siga faltando. Un cliente que conteste MAS
+            // rapido que el plazo lo empuja hacia adelante en cada mensaje y el plazo NO vence:
+            // se queda sin cotizacion. No hace falta que escriba cualquier cosa — basta que
+            // conteste algo fuera del catalogo ("gris", "no se", "el mas barato").
+            //
+            // AISLADO con `webhook.gate-espera.test.js`, cliente contestando cada 60 ms con un
+            // plazo de 150 ms:
+            //     los dos sin arreglar          → SIN cotizacion
+            //     arreglando solo el color      → SIN cotizacion   ⇒ no es esta linea
+            //     arreglando solo el tipo       → recibe            ⇒ es la de abajo
+            //     arreglando los dos            → recibe
+            // ⇒ el gate del COLOR solo (lo que hay hoy en produccion) NO produce el bucle: el
+            //   color deja de faltar despues del primer turno y el gate no vuelve a esa rama.
+            //
+            // EL ARREGLO, cuando se haga: anotar la PRIMERA vez (`&& !state.X_preguntado_at`) y
+            // marcar SOLO el dato que la cadena de abajo pregunta de verdad — es excluyente, y
+            // hoy se marcan los dos, asi que se puede asumir corredera sin haberla preguntado
+            // nunca (2o hallazgo de la compuerta, aun sin test).
             if (_gate.missing.includes('color')) state.color_preguntado_at = Date.now();
             // Igual que el color: se anota CUÁNDO se preguntó la apertura. Pasado el minuto,
             // la próxima vez sale la corredera con aviso en vez de dejar al cliente sin nada.
