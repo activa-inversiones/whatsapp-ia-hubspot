@@ -49,7 +49,7 @@ import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
 import { laminasParaInforme, laminaTermopanel } from '../../services/laminasThermal.js';   // [2026-08-24] isotermas del FEM
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
-import { recordarColor } from './normalizers.js';   // [2026-08-25] el color se recuerda entre turnos
+import { recordarColor, resumenDeLoCotizado } from './normalizers.js';   // [2026-08-25] color recordado + "que le cotice"
 import {
   parseInbound as realParseInbound,
   parseStatuses as realParseStatuses,
@@ -2128,7 +2128,7 @@ Comuna: ${datos.comuna}`
               ? `Le corregí la propuesta N° ${quoteNumber} con esos datos y se la mando acá mismo (PDF). Es la misma propuesta actualizada, no una nueva.`
               : `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF).\n\n` +
                 `Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?`
-            ) + _avisoColor,
+            ) + resumenDeLoCotizado(input.items) + _avisoColor,
           };
         }),
     };

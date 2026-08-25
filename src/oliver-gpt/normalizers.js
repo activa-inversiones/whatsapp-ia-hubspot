@@ -364,6 +364,50 @@ export function recordarColor(state, items) {
   return state;
 }
 
+/** Cuantas ventanas se listan antes de resumir. Mas que esto inunda el chat. */
+const TOPE_RESUMEN = 8;
+
+/**
+ * QUE SE LE COTIZO, en una linea por ventana, para pegar al mensaje de la propuesta.
+ *
+ * 🔴 [2026-08-25] Reclamo del dueño tras la prueba en vivo: *"no le informamos qué cosa le
+ * cotizaríamos, como V1 1200x1000 CORREDERA por ejemplo"*. Oliver mandaba la propuesta con
+ * un "Listo ✅ te envié tu Propuesta N° …" y ni una palabra de que contenia: el cliente
+ * tenia que abrir el PDF para saber si le habian entendido bien, y si no, se enteraba tarde.
+ *
+ * ⚠️ VA EN CODIGO Y NO EN EL PROMPT a proposito. El proyecto ya aprendio esto caro: la
+ * REGLA #12 del prompt prohibia repetir mensajes y Oliver mando el texto identico 73 veces
+ * a 26 clientes. Una instruccion al cerebro se cumple casi siempre, y "casi siempre" sobre
+ * el momento mas importante de la venta no alcanza.
+ *
+ * ⛔ SIN PRECIOS. Regla #13: el monto va SOLO en el PDF formal. Esto dice QUE, no CUANTO.
+ *
+ * @param {Array} items  items de la cotizacion ya resueltos por el motor
+ * @returns {string} texto listo para concatenar, o '' si no hay nada que decir
+ */
+export function resumenDeLoCotizado(items) {
+  const lista = Array.isArray(items) ? items : [];
+  if (!lista.length) return '';
+
+  const linea = (it, i, numerar) => {
+    const tipo = String(it?.producto_label || it?.product || '').trim();
+    const med = String(it?.measures_original || it?.measures || '').trim().replace(/x/i, '×');
+    const cant = Number(it?.qty) > 1 ? `${Number(it.qty)} × ` : '';
+    const color = String(it?.color || '').trim();
+    const amb = String(it?.ambiente || '').trim();
+    // Solo lo que existe: un item incompleto no puede imprimir "undefined" en el chat.
+    const partes = [cant + (tipo || 'Ventana'), med, color, amb].filter(Boolean);
+    return `${numerar ? `V${i + 1} · ` : ''}${partes.join(' · ')}`;
+  };
+
+  const numerar = lista.length > 1;   // "V1" de una sola ventana es ruido
+  const visibles = lista.slice(0, TOPE_RESUMEN).map((x, i) => linea(x, i, numerar));
+  const sobran = lista.length - visibles.length;
+
+  return `\n\nLe coticé:\n${visibles.join('\n')}`
+    + (sobran > 0 ? `\n…y ${sobran} más, todas detalladas en el PDF.` : '');
+}
+
 export function isComplete(d) {
   if (!d.items.length) return false;
   const hasColor = d.default_color || d.items.every((i) => i.color);
