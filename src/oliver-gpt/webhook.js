@@ -2175,8 +2175,16 @@ Comuna: ${datos.comuna}`
             // defecto que este arreglo vino a cerrar. Un mensaje que no se manda no existe.
             message:      (esRevision
               ? `Le corregí la propuesta N° ${quoteNumber} con esos datos y se la mando acá mismo (PDF). Es la misma propuesta actualizada, no una nueva.`
+              // 🔴 [2026-08-25] EL CIERRE PREGUNTA LO QUE IMPORTA AHORA. Instruccion del
+              // dueño: *"Oliver debe seguir al cliente después de entregar la cotización
+              // porque no hace nada y debería al menos preguntar si la cotización necesita
+              // alguna modificación, cuándo la puede contactar nuevamente"*.
+              // El cierre anterior solo ofrecia ir a medir, que es un paso MAS ADELANTE en
+              // la venta: si el cliente todavia no sabe si la propuesta refleja lo que
+              // pidio, ofrecerle una visita tecnica se salta el paso que de verdad importa.
               : `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF).\n\n` +
-                `Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?`
+                '¿Necesita alguna modificación? Medidas, color o tipo de apertura se los cambio '
+                + 'sin problema. Y dígame cuándo lo puedo contactar de nuevo para ver qué decidió.'
             ) + resumenDeLoCotizado(input.items) + _avisoColor,
           };
         }),

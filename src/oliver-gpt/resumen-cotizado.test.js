@@ -91,3 +91,21 @@ test('🔴 el resumen LLEGA al mensaje de la propuesta, no se queda en una varia
   assert.match(bloque, /_resumenCotizado|resumenDeLoCotizado/,
     'el resumen se concatena al mensaje que recibe el cliente');
 });
+
+test('🔴 el cierre pregunta por MODIFICACIONES y CUANDO contactarlo', async () => {
+  // Instruccion del dueño: *"Oliver debe seguir a cliente después de entregar la cotización
+  // porque no hace nada y debería al menos preguntar si la cotización necesita alguna
+  // modificación, cuándo la puede contactar nuevamente"*.
+  //
+  // El cierre anterior solo ofrecia ir a medir. Medir es un paso mas adelante en la venta:
+  // si el cliente todavia no sabe si la cotizacion refleja lo que pidio, ofrecerle una
+  // visita tecnica se salta el paso que importa.
+  const { readFile } = await import('node:fs/promises');
+  const wh = await readFile(new URL('./webhook.js', import.meta.url), 'utf8');
+  const i = wh.indexOf('Te envié tu Propuesta Técnica Económica');
+  assert.ok(i > 0, 'no se encontro el mensaje de cierre');
+  const bloque = wh.slice(i, i + 600);
+
+  assert.match(bloque, /modificaci|cambiar|ajust/i, 'tiene que preguntar si hay que modificar algo');
+  assert.match(bloque, /cuándo|cuando/i, 'y cuándo lo puede contactar');
+});
