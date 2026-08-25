@@ -69,7 +69,7 @@ import {
   sendWaDocument as realSendWaDocument,
 } from '../sales-agent/whatsapp-adapter.js';
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
-import { priceAllEngine } from '../../services/enginePricer.js'; // [2026-06-24] blindaje label↔precio en generarPdf
+import { priceAllEngine, detectHojas } from '../../services/enginePricer.js'; // [2026-06-24] blindaje label↔precio en generarPdf
 import { saveMedia } from '../../mediaStore.js'; // [#5] persistir media ENTRANTE (foto/audio/plano) para el cockpit
 import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal, attachInboundToDeal } from '../../services/zohoCommercial.js';
 import {
@@ -1812,6 +1812,25 @@ Comuna: ${datos.comuna}`
           // 🔴 [2026-08-25] LAS HOJAS SE ASUMIERON (2, el default del motor) PORQUE NO CONTESTO.
           // Con las medidas REALES — el clamp que cobraba una 5560 como si fuera 2930 ya no
           // existe (enginePricer). Se avisa igual que color y apertura: nunca en silencio.
+          // 🔴 [2026-08-25 · Codex 2a pasada] LA ELECCION DE HOJAS VIAJA AL PRECIO EN CODIGO.
+          // El pricer manda `hojas` al motor solo si el LABEL del item las trae ("Corredera 3
+          // hojas"), y eso dependia de que el LLM las copiara: el cliente decia "de 3 hojas",
+          // el label salia "Corredera SLIDING" y el motor cobraba 2. Determinista: si el chat
+          // eligio hojas y el item corredera grande no las tiene, se le escriben al label.
+          // Solo con UN item en el pedido — con varios, un "2 hojas" de la puerta de al lado
+          // contaminaria a la corredera (mismo criterio que el gate en pdf-intent).
+          if ((input.items || []).length === 1) {
+            const _hojasTexto = detectHojas(_textoCliente);
+            const _it0 = input.items[0];
+            const _esCorrGrande = /corredera|sliding/i.test(String(_it0.producto_label || _it0.product || ''))
+              && !detectHojas(String(_it0.producto_label || _it0.product || ''));
+            if (_hojasTexto >= 2 && _hojasTexto <= 4 && _esCorrGrande) {
+              _it0.product = `${_it0.product || 'Corredera'} ${_hojasTexto} hojas`;
+              _it0.producto_label = `${_it0.producto_label || _it0.product} ${_hojasTexto} hojas`.replace(/(\d hojas) \d hojas$/, '$1');
+              log('info', 'generarPdf.hojas', `hojas del chat inyectadas al item: ${_hojasTexto}`);
+            }
+          }
+
           let _avisoHojas = '';
           if (_gate.hojasAsumido) {
             _avisoHojas = '\n\n🪟 Por el ancho, se la coticé de *2 hojas* (quedan grandes y pesadas). '
@@ -2413,6 +2432,7 @@ Comuna: ${datos.comuna}`
     // llamar la tool — mas indulgentes que produccion. Ver gate-reloj-persiste.test.js.
     if (state.color_preguntado_at) newState.color_preguntado_at = state.color_preguntado_at;
     if (state.tipo_preguntado_at) newState.tipo_preguntado_at = state.tipo_preguntado_at;
+    if (state.hojas_preguntado_at) newState.hojas_preguntado_at = state.hojas_preguntado_at;
     // [CTWA-SALUDO 2026-07-18] one-shot: ya viajó en el contexto de ESTE turno → jamás repetir.
     if (newState.ctwa_saludo_pending) delete newState.ctwa_saludo_pending;
 

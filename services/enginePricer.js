@@ -300,8 +300,13 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
       // REAL"*. El motor escala bien con las medidas reales (medido 2000→6000 mm): se le mandan
       // TAL CUAL, y el aviso referencial (visita tecnica) se mantiene.
       return {
-        message: `La corredera de ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${lim.maxAncho}×${lim.maxAlto} mm); precio referencial sujeto a rectificación en terreno.`,
+        message: `La corredera de ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${lim.maxAncho}×${lim.maxAlto} mm); precio referencial sujeto a confirmación en la visita técnica.`,
         referencial: true,
+        // [Codex 2a pasada] Una medida MIXTA (5560×400: ancho gigante, alto enano) entraba
+        // por esta rama y el return temprano se saltaba el clamp-UP del minimo. El minimo
+        // viaja junto: fabricar bajo el minimo cuesta lo del minimo, tambien en las mixtas.
+        clampMinAncho: ancho_mm < lim.minAncho ? lim.minAncho : 0,
+        clampMinAlto: alto_mm < lim.minAlto ? lim.minAlto : 0,
       };
     }
     // [2026-07-06 LOTE2] Bajo el mínimo → REFERENCIAL clamp-UP (pedido del dueño: cotizar igual por
@@ -323,8 +328,10 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
       // [2026-08-25] Mismo defecto y mismo arreglo que la corredera de arriba: el clamp del
       // precio cobraba una puerta gigante como si midiera 1970×2400. Aviso si, clamp no.
       return {
-        message: `La puerta de ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${lim.maxAncho}×${lim.maxAlto} mm); precio referencial sujeto a rectificación en terreno.`,
+        message: `La puerta de ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${lim.maxAncho}×${lim.maxAlto} mm); precio referencial sujeto a confirmación en la visita técnica.`,
         referencial: true,
+        clampMinAncho: ancho_mm < lim.minAncho ? lim.minAncho : 0,
+        clampMinAlto: alto_mm < lim.minAlto ? lim.minAlto : 0,
       };
     }
     // [2026-07-06 LOTE2] Puerta bajo mínimo (800×1500): mismo criterio referencial clamp-up. El PDF

@@ -152,16 +152,27 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
   const anchoCorredera = (it) => {
     const esCorr = /corredera|sliding/i.test(String(it.producto_label || it.product || ''));
     if (!esCorr) return 0;
-    const mm = String(it.measures || '').match(/(\d+)\s*[x×]\s*(\d+)/i);
-    return mm ? Number(mm[1]) : (Number(it.ancho_mm) || 0);
+    // Puntos de miles fuera ("5.560" → 5560) y se toma el MAYOR de los dos numeros: si las
+    // medidas llegaron invertidas ("2160x5560"), el ancho real es el grande — una corredera
+    // de 5,5 m de ALTO no existe (Codex, 2a pasada).
+    const limpio = String(it.measures || '').replace(/(\d)\.(\d{3})(?!\d)/g, '$1$2');
+    const mm = limpio.match(/(\d+)\s*[x×]\s*(\d+)/i);
+    return mm ? Math.max(Number(mm[1]), Number(mm[2])) : (Number(it.ancho_mm) || 0);
   };
   const MAX_ANCHO_2H = _LIMITES?.SLIDING?.H98?.maxAncho || 2930;
-  const hayCorrederaGigante = items.some((it) => anchoCorredera(it) > MAX_ANCHO_2H);
-  // ¿Ya eligio? Vale que lo diga en el chat ("de 3 hojas") o que el item ya lo traiga
-  // ("Corredera 3 hojas"): las dos son eleccion explicita.
-  const hojasElegidas = gateApertura && detectHojas(String(textoCliente))
-    || items.some((it) => detectHojas(String(it.producto_label || it.product || '')));
-  const faltaHojas = hayCorrederaGigante && !hojasElegidas;
+  const gigantes = items.filter((it) => anchoCorredera(it) > MAX_ANCHO_2H);
+  // ¿Ya eligio las hojas? El LABEL del propio item gigante siempre vale ("Corredera 3
+  // hojas"). El TEXTO del chat vale solo cuando el pedido es de UN item: con varios,
+  // "la puerta es de 2 hojas" habilitaria en silencio a la corredera gigante de al lado
+  // (falso positivo cazado por Codex).
+  const hojasElegidas = gigantes.length > 0 && (
+    gigantes.every((it) => detectHojas(String(it.producto_label || it.product || '')))
+    || (items.length === 1 && gateApertura && !!detectHojas(String(textoCliente)))
+  );
+  // Solo se activa con textoCliente presente (WhatsApp): IG/FB todavia no pasa el texto y
+  // tampoco tiene la rama de la pregunta — activarles el gate los dejaria bloqueando PDFs
+  // con el mensaje generico, sin reloj y para siempre (Codex, 2a pasada).
+  const faltaHojas = gateApertura && gigantes.length > 0 && !hojasElegidas;
   let hojasAsumido = false;
 
   if (faltaHojas) {

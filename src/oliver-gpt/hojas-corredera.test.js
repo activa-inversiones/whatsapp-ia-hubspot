@@ -113,3 +113,65 @@ test('🔴 el gate pregunta 3 o 4 hojas, arranca su reloj, y el aviso se CONCATE
   assert.ok(wh.indexOf('_gate.hojasAsumido') > 0, 'el webhook reacciona al default');
   assert.match(wh, /\+ _avisoHojas,/, 'un aviso que no se manda no existe (leccion del color)');
 });
+
+/* =========================================================================
+ * [Codex 2a pasada] LOS CUATRO AGUJEROS QUE LA PRIMERA VERSION DEJO
+ * ========================================================================= */
+
+test('🔴 [Codex] con VARIOS items, un "2 hojas" ajeno NO habilita a la corredera gigante', () => {
+  const r = quoteDataComplete(
+    { name: 'M', items: [
+      { producto_label: 'Puerta doble hoja con zapata S60', product: 'PUERTA_DOBLE', measures: '1600x2000mm', unit_price: 550395, qty: 1, color: 'Roble' },
+      itemGigante(),
+    ] },
+    {}, { textoCliente: 'quiero una puerta corredera... la puerta es de 2 hojas' });
+  assert.equal(r.ok, false, 'la corredera gigante sigue sin hojas elegidas');
+  assert.ok(r.missing.includes('hojas'));
+});
+
+test('🔴 [Codex] medidas invertidas ("2160x5560") igual disparan la pregunta', () => {
+  const r = quoteDataComplete(
+    { name: 'M', items: [itemGigante({ measures: '2160x5560mm' })] },
+    {}, { textoCliente: 'una corredera grande' });
+  assert.ok(r.missing.includes('hojas'), 'el ancho real es el numero grande, venga donde venga');
+});
+
+test('🔴 [Codex] puntos de miles ("5.560x2.160") no achican la ventana', () => {
+  const r = quoteDataComplete(
+    { name: 'M', items: [itemGigante({ measures: '5.560x2.160' })] },
+    {}, { textoCliente: 'una corredera grande' });
+  assert.ok(r.missing.includes('hojas'), '5.560 es 5560, no 5');
+});
+
+test('🔴 [Codex] SIN textoCliente (IG/FB) el gate de hojas NO se activa — sin rama de pregunta seria un bloqueo eterno', () => {
+  const r = quoteDataComplete(base, {});
+  assert.equal(r.ok, true);
+  assert.ok(!r.missing.includes('hojas'));
+});
+
+test('🔴 [Codex] medida MIXTA (5560×400): supera el maximo Y esta bajo el minimo — el minimo viaja igual', () => {
+  const dim = validateDimensionsLocal('CORREDERA', 5560, 400);
+  assert.ok(dim && dim.referencial);
+  assert.ok(!dim.clampAncho && !dim.clampAlto, 'el maximo no acota (cobraba de menos)');
+  assert.equal(dim.clampMinAlto, 500, 'el alto enano se cobra como el minimo fabricable');
+});
+
+test('🔴 [Codex] el reloj de hojas esta en el merge de persistencia — o el plazo no vence nunca (bug 2aaca92)', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const wh = await readFile(new URL('./webhook.js', import.meta.url), 'utf8');
+  const i = wh.indexOf('if (state.color_preguntado_at) newState.color_preguntado_at');
+  assert.ok(i > 0, 'el bloque del merge de relojes existe');
+  const bloque = wh.slice(i, i + 400);
+  assert.ok(bloque.includes('hojas_preguntado_at'),
+    'sin el merge, el reloj se pierde al terminar el turno y se re-pregunta para siempre');
+});
+
+test('🔴 [Codex] la eleccion del chat se INYECTA al item en codigo, no depende del LLM', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const wh = await readFile(new URL('./webhook.js', import.meta.url), 'utf8');
+  const i = wh.indexOf('hojas del chat inyectadas al item');
+  assert.ok(i > 0, 'la inyeccion determinista existe');
+  const bloque = wh.slice(Math.max(0, i - 1200), i);
+  assert.ok(bloque.includes('length === 1'),
+    'y solo con UN item: con varios, el "2 hojas" de la puerta contaminaria a la corredera');
+});
