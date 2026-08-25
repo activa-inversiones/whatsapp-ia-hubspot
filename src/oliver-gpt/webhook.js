@@ -49,6 +49,7 @@ import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
 import { laminasParaInforme, laminaTermopanel } from '../../services/laminasThermal.js';   // [2026-08-24] isotermas del FEM
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
+import { recordarColor } from './normalizers.js';   // [2026-08-25] el color se recuerda entre turnos
 import {
   parseInbound as realParseInbound,
   parseStatuses as realParseStatuses,
@@ -2155,6 +2156,11 @@ Comuna: ${datos.comuna}`
     // [FIX 2026-06-19 PDF-01] capturar la cotización del turno → pending_quote, para poder entregar
     // el PDF determinista si el cliente confirma en el próximo turno (bloque de arriba).
     const _qItems = itemsFromQuoteCalls(toolCalls, newState.default_color || state.default_color);
+    // 🔴 [2026-08-25] EL COLOR SE RECUERDA. `state.default_color` se leia en cuatro lugares
+    // y no se escribia en ninguno: llegaba vacio al motor y **todas** las cotizaciones
+    // salian blancas, sin importar lo que pidiera el cliente. El cliente dice el color UNA
+    // vez y lista sus ventanas en varios mensajes: tiene que sobrevivir a los turnos.
+    recordarColor(newState, _qItems);
     if (_qItems.length) {
       // [FIX 2026-06-19] ACUMULAR ventanas entre turnos: el cliente que lista varias (una por mensaje)
       // debe terminar en UNA sola propuesta con TODAS, no un PDF por ventana. Dedup por producto+medidas+color.

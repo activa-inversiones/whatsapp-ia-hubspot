@@ -29,6 +29,7 @@
 // ESM, Node 18+.
 
 import { handleTurn as realHandleTurn } from './agent.js';
+import { recordarColor } from './normalizers.js';   // [2026-08-25] el color se recuerda entre turnos
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
 import * as realBridge from '../../services/salesOsBridge.js';
 import { sendWhatsAppText as realSendWhatsAppText } from '../sales-agent/whatsapp-adapter.js';
@@ -708,6 +709,8 @@ Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el li
     // Capturar la cotización (ítems con precio REAL del motor) para la ENTREGA DETERMINISTA del PDF al
     // confirmar (ver arriba). Solo se actualiza si este turno cotizó; si no, se conserva la anterior.
     const _quoteItems = itemsFromQuoteCalls(toolCalls, newState.default_color || state.default_color);
+    // [2026-08-25] Mismo recuerdo del color que en webhook.js: ver `recordarColor`.
+    recordarColor(newState, _quoteItems);
     if (_quoteItems.length) {
       newState.pending_quote = {
         items: _quoteItems,

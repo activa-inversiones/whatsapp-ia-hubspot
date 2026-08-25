@@ -324,6 +324,46 @@ export function nextMissing(d) {
   return "";
 }
 
+
+/**
+ * Los 5 colores REALES del catalogo. Ningun otro existe: si el cliente dice "cafe", el
+ * prompt de Oliver lo mapea a Nogal antes de llegar aca.
+ */
+export const COLORES_CATALOGO = ['Blanco', 'Nogal', 'Roble Dorado', 'Grafito Antracita', 'Negro'];
+
+/**
+ * RECUERDA EL COLOR DE LA CONVERSACION.
+ *
+ * 🔴 [2026-08-25] Existe porque `state.default_color` se LEIA en cuatro lugares y no se
+ * ESCRIBIA en ninguno. Resultado: llegaba vacio al motor y **todas** las cotizaciones
+ * salian blancas, sin importar lo que pidiera el cliente. Lo reporto el dueño y se
+ * confirmo contra la BD viva: `default_color` null o vacio en las 10 sesiones de las
+ * ultimas 20 h — en una de ellas el cliente habia escrito "nogal" explicito.
+ *
+ * TOCA PLATA: el perfil en color cuesta mas que el blanco. Cotizar blanco y entregar
+ * nogal es recotizar o comerse la diferencia.
+ *
+ * El cliente dice el color UNA vez y lista sus ventanas en varios mensajes, asi que el
+ * color tiene que sobrevivir a los turnos siguientes. Un color nuevo reemplaza al viejo
+ * (cambio de opinion); una cotizacion SIN color no borra lo recordado.
+ *
+ * @param {object} state  se modifica en el lugar (es el estado de la sesion)
+ * @param {Array} items   items de la cotizacion, con su `color` si el LLM lo capturo
+ */
+export function recordarColor(state, items) {
+  if (!state || typeof state !== 'object') return state;
+  const lista = Array.isArray(items) ? items : [];
+  for (const it of lista) {
+    const crudo = String(it?.color || '').trim();
+    if (!crudo) continue;
+    // Se guarda con la grafia del catalogo: el motor y el PDF comparan por texto, y
+    // "nogal" con minuscula podria no calzar con la lista de precios.
+    const delCatalogo = COLORES_CATALOGO.find((c) => c.toLowerCase() === crudo.toLowerCase());
+    state.default_color = delCatalogo || crudo;
+  }
+  return state;
+}
+
 export function isComplete(d) {
   if (!d.items.length) return false;
   const hasColor = d.default_color || d.items.every((i) => i.color);

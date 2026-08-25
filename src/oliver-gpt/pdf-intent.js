@@ -73,6 +73,21 @@ export function quoteDataComplete(input = {}, state = {}) {
     if (!String(it.measures || '').trim()) missing.push(`items[${i}].measures`);
     if (!(Number(it.unit_price) > 0)) missing.push(`items[${i}].unit_price`);
   });
+  // 🔴 [2026-08-25] EL COLOR TAMBIEN ES UN DATO OBLIGATORIO.
+  //
+  // Este gate validaba nombre, medidas y precio, pero no el color — y era el ULTIMO
+  // eslabon de la cadena que hacia que **todas** las cotizaciones salieran blancas: el
+  // color llegaba vacio y esto lo dejaba pasar sin decir nada.
+  //
+  // Ahora, si no hay color ni en los items ni recordado de la conversacion, el PDF no se
+  // emite y se pide el dato. Es lo que pidio el dueño: *"no cotizar blanco por defecto
+  // altiro, debemos ser mas humanos"*. Preguntar el color cuesta un mensaje; cotizar el
+  // color equivocado cuesta plata y una recotizacion.
+  const colorRecordado = String(state.default_color || '').trim();
+  if (!colorRecordado && items.some((it) => !String(it.color || '').trim())) {
+    missing.push('color');
+  }
+
   return { ok: missing.length === 0, missing };
 }
 

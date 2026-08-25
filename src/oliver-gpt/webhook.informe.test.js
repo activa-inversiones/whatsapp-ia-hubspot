@@ -138,6 +138,7 @@ function makeDeps({ disparos = 1, envioOk = true, ventanas = null, overrides = {
             product: v.producto, producto_label: v.producto, measures: v.medidas,
             measures_original: v.medidas, glass_label: v.vidrio, ambiente: v.ambiente,
             qty: v.cantidad, unit_price: 100000, total_price: 100000,
+            color: 'Nogal',            // [2026-08-25] el gate ahora exige color: sin el no hay PDF
             termico: v.uw === null ? null : { uw: v.uw },
           })),
           comuna: 'Temuco', name: 'Alejandro',

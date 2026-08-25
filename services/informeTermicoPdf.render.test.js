@@ -26,13 +26,26 @@ const DATOS = {
  * todos y se juntan. Los literales van entre parentesis dentro de operadores Tj/TJ.
  */
 function textoDelPdf(pdf) {
-  const crudo = pdf.toString('latin1');
+  // 🔴 [2026-08-25] SE CORTA POR `/Length`, NO POR REGEX SOBRE EL BINARIO.
+  //
+  // La version anterior buscaba `stream … endstream` con una expresion regular perezosa
+  // sobre los bytes crudos. Cuando el contenido binario del stream contenia por casualidad
+  // esa secuencia de corte, el trozo quedaba partido, `inflateSync` lanzaba, y el `catch`
+  // se lo tragaba: el texto de esa pagina desaparecia SIN error. Medido el 25-ago: un
+  // informe cuyo texto real ocupa ~8.000 caracteres devolvia 694, y el test daba rojo
+  // aunque el PDF estuviera perfecto. Un test que dice "verifico el documento" y en
+  // realidad tira una moneda es peor que no tenerlo.
+  //
+  // El PDF declara cuantos bytes mide cada stream en su `/Length`. Se usa ese numero.
+  const buf = Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
+  const crudo = buf.toString('latin1');
   let salida = '';
-  const re = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  const re = /\/Length\s+(\d+)[^>]*>>\s*stream\r?\n/g;
   let m;
   while ((m = re.exec(crudo)) !== null) {
-    try { salida += zlib.inflateSync(Buffer.from(m[1], 'latin1')).toString('latin1'); }
-    catch { /* no todos los streams son texto comprimido (fuentes, imagenes) */ }
+    const ini = m.index + m[0].length;
+    try { salida += zlib.inflateSync(buf.subarray(ini, ini + Number(m[1]))).toString('latin1'); }
+    catch { /* fuentes e imagenes no son texto comprimido: se saltan */ }
   }
   // pdfkit escribe el texto en HEX, no como literal entre parentesis:
   //     [<41> 40 <43544956> 80 <4120494e56455253494f4e4553> 0] TJ
