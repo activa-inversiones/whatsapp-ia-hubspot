@@ -33,6 +33,10 @@ export const APERTURAS = Object.freeze([
   'FIJA',
   'BATIENTE',
   'OSCILOBATIENTE',
+  // [2026-08-25] "Mitad fija + mitad proyectante, unidas" — UNA ventana, la que mas se
+  // vende (decision del dueño, PROPUESTA-COMPUESTA). El motor reparte el vano 50/50 por
+  // defecto; con `partes` explicitas se respetan los anchos del cliente.
+  'COMPUESTA',
   'PUERTA',           // abatible exterior con zapata, 1 hoja (default del motor)
   'PUERTA_INTERIOR',  // abatible interior, 1 hoja
   'PUERTA_DOBLE',     // abatible 2 hojas con zapata
@@ -170,7 +174,7 @@ function normalizeColor(c) {
  * @returns {Promise<{ok:boolean,total?:number,...}>}
  */
 export async function calcularCotizacion(params = {}) {
-  const { tipo, ancho_mm, alto_mm, glass_id, serie, color, comuna, cantidad, hojas } = params;
+  const { tipo, ancho_mm, alto_mm, glass_id, serie, color, comuna, cantidad, hojas, partes } = params;
   const fueraDeAlcance = detectarProductoFueraDeAlcance('', { tipo, serie });
   if (fueraDeAlcance.fueraDeAlcance) {
     throw new EngineError(fueraDeAlcance.razon, { body: fueraDeAlcance });
@@ -193,6 +197,9 @@ export async function calcularCotizacion(params = {}) {
   };
   if (serie !== undefined) payload.serie = serie;
   if (hojas !== undefined) payload.hojas = Number(hojas);
+  // [2026-08-25] Los paños de una COMPUESTA (si el cliente dio los anchos). Sin esto el
+  // motor reparte el vano mitad fija + mitad proyectante (el default del dueño).
+  if (Array.isArray(partes) && partes.length) payload.partes = partes;
   if (color !== undefined) payload.color = normalizeColor(color);
   if (comuna !== undefined) payload.comuna = comuna;
   if (cantidad !== undefined) payload.cantidad = Number(cantidad);

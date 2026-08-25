@@ -1768,7 +1768,8 @@ Comuna: ${datos.comuna}`
                   // que "proyectante" es la que se abre hacia afuera, y no puede elegir lo que
                   // no entiende.
                   ? '¿Qué tipo de apertura necesita? Corredera (se abre deslizando), proyectante'
-                    + ' (se abre hacia afuera), fija (no se abre) o abatible.'
+                    + ' (se abre hacia afuera), fija (no se abre), abatible — o mitad fija y mitad'
+                    + ' proyectante, que es la más pedida y suele salir más conveniente.'
                     + ' Se lo pregunto porque la apertura cambia el precio y prefiero cotizarle la que de verdad quiere.'
                   : _falta === 'hojas'
                     // 🔴 [2026-08-25] CORREDERA MAS ANCHA QUE EL ESTANDAR: SE PREGUNTAN LAS HOJAS.

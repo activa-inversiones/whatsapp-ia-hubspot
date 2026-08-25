@@ -95,6 +95,10 @@ function detectarAperturaLocal(text) {
     if (tl.includes("doble") || /\b(?:2|dos)\s*hojas?\b/.test(tl)) return "PUERTA_DOBLE";
     return "PUERTA";
   }
+  // [2026-08-25] LA COMPUESTA PRIMERO: "mitad fija mitad proyectante" contiene las
+  // palabras "fija" y "proyectante" — cualquier otra rama se la robaria. Es la ventana
+  // que mas se vende (dueño) y ahora es UN tipo del motor, no dos items.
+  if (/mitad\s+fij[ao]|fij[ao]\s*(?:\+|y|con|mas|más)\s*proyectante|proyectante\s*(?:\+|y|con|mas|más)\s*(?:paño\s+)?fij[ao]|compuesta/.test(tl)) return "COMPUESTA";
   if (tl.includes("abatible") || tl.includes("abatir")) return "ABATIBLE";
   if (tl.includes("oscilobatiente") || tl.includes("oscilo")) return "OSCILOBATIENTE";
   if (tl.includes("proyectante") || tl.includes("proy")) return "PROYECTANTE";
@@ -144,6 +148,8 @@ export function mapAperturaToEngine(product) {
   }
   const norm = normTipoAperturaLocal(product);
   switch (norm) {
+    case "COMPUESTA":
+      return "COMPUESTA";
     case "PROYECTANTE":
       return "PROYECTANTE";
     case "OSCILOBATIENTE":

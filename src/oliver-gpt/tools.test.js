@@ -9,7 +9,11 @@ import { TOOL_DEFS, runTool, resolverMedidasMm, conUnitPrice } from './tools.js'
 import { calcularCotizacion, calcularPorArea, APERTURAS } from './engine-client.js';
 
 // [Ronda 3 2026-07-20] + puertas abatibles (BOM real S60 del motor, dato del dueño).
-const APERTURAS_ESPERADAS = ['CORREDERA', 'PROYECTANTE', 'FIJA', 'BATIENTE', 'OSCILOBATIENTE', 'PUERTA', 'PUERTA_INTERIOR', 'PUERTA_DOBLE'];
+const APERTURAS_ESPERADAS = ['CORREDERA', 'PROYECTANTE', 'FIJA', 'BATIENTE', 'OSCILOBATIENTE', 'PUERTA', 'PUERTA_INTERIOR', 'PUERTA_DOBLE',
+  // [2026-08-25] COMPUESTA = mitad fija + mitad proyectante como UNA ventana (decision
+  // del dueño, PROPUESTA-COMPUESTA). El motor la soporta desde 463248c en sales-os.
+  'COMPUESTA',
+];
 
 function getToolDef(name) {
   const def = TOOL_DEFS.find((t) => t.function && t.function.name === name);
@@ -19,7 +23,7 @@ function getToolDef(name) {
 
 // (a) El enum de 'tipo' en calcular_cotizacion excluye TERMOPANEL y solo admite
 //     las 5 aperturas.
-test("(a) calcular_cotizacion: enum 'tipo' = 5 aperturas, SIN TERMOPANEL", () => {
+test("(a) calcular_cotizacion: enum 'tipo' = aperturas, SIN TERMOPANEL", () => {
   const def = getToolDef('calcular_cotizacion');
   const tipoEnum = def.function.parameters.properties.tipo.enum;
 
@@ -45,7 +49,7 @@ test("(a) calcular_cotizacion: enum 'tipo' = 5 aperturas, SIN TERMOPANEL", () =>
   );
 });
 
-test("(a bis) calcular_por_area: enum 'tipo' = 5 aperturas SIN TERMOPANEL y usa area_m2", () => {
+test("(a bis) calcular_por_area: enum 'tipo' = aperturas SIN TERMOPANEL y usa area_m2", () => {
   const def = getToolDef('calcular_por_area');
   const props = def.function.parameters.properties;
   const tipoEnum = props.tipo.enum;
@@ -60,7 +64,7 @@ test("(a bis) calcular_por_area: enum 'tipo' = 5 aperturas SIN TERMOPANEL y usa 
   assert.ok(def.function.parameters.required.includes('glass_id'));
 });
 
-test('(a) APERTURAS del engine-client coincide con las 5 esperadas', () => {
+test('(a) APERTURAS del engine-client coincide con las esperadas', () => {
   assert.deepEqual([...APERTURAS].sort(), [...APERTURAS_ESPERADAS].sort());
 });
 
