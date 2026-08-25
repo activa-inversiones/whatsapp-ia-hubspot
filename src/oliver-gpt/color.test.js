@@ -140,8 +140,15 @@ test('🔴 el mensaje del gate NOMBRA el color y ofrece los 5 del catalogo', asy
   for (const c of ['Blanco', 'Nogal', 'Roble Dorado', 'Grafito Antracita', 'Negro']) {
     assert.ok(bloque.includes(c), `el mensaje ofrece ${c}`);
   }
-  assert.doesNotMatch(bloque.split("includes('color')")[1] || '', /Ya te pregunto/,
+  // [2026-08-25] Se acota a LA RAMA DEL COLOR. Antes se cortaba desde `includes('color')`
+  // hasta el final del bloque, asi que arrastraba el mensaje generico de la ultima rama —el
+  // que SI dice "Ya te pregunto"— y bastaba que apareciera una rama nueva despues (la de la
+  // apertura) para que el test fallara mirando codigo correcto. Lo que se quiere afirmar es
+  // que el color no promete una pregunta, no que la palabra no exista en el archivo.
+  const ramaColor = bloque.split("includes('color')").pop().split(': _gate.missing.includes(')[0];
+  assert.doesNotMatch(ramaColor, /Ya te pregunto/,
     'nada de prometer una pregunta: se pregunta ahi mismo');
+  assert.match(ramaColor, /En qué color las quiere/, 'y la rama recortada es de verdad la del color');
 });
 
 /* =========================================================================

@@ -24,7 +24,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { quoteDataComplete } from './pdf-intent.js';
+import { quoteDataComplete, datoQuePregunta } from './pdf-intent.js';
 import { aperturaFueExplicita } from '../../services/enginePricer.js';
 
 const itemOk = (extra = {}) => ({
@@ -117,12 +117,34 @@ test('🔴 el mensaje del gate NOMBRA las cuatro aperturas', async () => {
   }
 });
 
-test('🔴 se anota CUANDO se pregunto, o el minuto nunca corre', async () => {
-  // Sin esta marca, `tipoAsumido` no se activa jamas y el cliente que no contesta se
-  // queda sin propuesta para siempre: el gate lo bloquea en cada turno.
-  const { readFile } = await import('node:fs/promises');
-  const wh = await readFile(new URL('./webhook.js', import.meta.url), 'utf8');
-  assert.match(wh, /if \(_gate\.missing\.includes\('tipo'\)\) state\.tipo_preguntado_at = Date\.now\(\);/);
+test('🔴 se pregunta UN dato por vez, y el orden es nombre > color > apertura', () => {
+  // 🔴 [2026-08-25 · compuerta cruzada] Antes esto se decidia en DOS lugares —el mensaje por
+  // un lado, los relojes del plazo por otro— y se marcaban color y apertura a la vez aunque
+  // se preguntaba uno solo. El reloj del dato NO preguntado vencia igual y se asumia
+  // CORREDERA sin habersela preguntado nunca: el defecto que este gate vino a cerrar,
+  // entrando por la puerta de atras. Ahora hay UNA respuesta y esta acá.
+  assert.equal(datoQuePregunta(['name', 'color', 'tipo']), 'name');
+  assert.equal(datoQuePregunta(['color', 'tipo']), 'color', 'con los dos, se pregunta el color');
+  assert.equal(datoQuePregunta(['tipo']), 'tipo');
+  assert.equal(datoQuePregunta([]), null, 'no falta nada: no se pregunta nada');
+  assert.equal(datoQuePregunta(), null, 'sin lista tampoco inventa una pregunta');
+});
+
+test('🔴 NUNCA se asume un dato que no se pregunto', () => {
+  // El invariante que faltaba: si en este turno se pregunta el COLOR, el reloj de la apertura
+  // no puede arrancar — porque al cliente nadie le pregunto todavia por la apertura.
+  const falta = ['color', 'tipo'];
+  assert.notEqual(datoQuePregunta(falta), 'tipo',
+    'con color y apertura faltando, la apertura NO es lo que se pregunta ⇒ su reloj no arranca');
+});
+
+test('🔴 una foto ILEGIBLE no es "dijo corredera": se pregunta igual', () => {
+  // ⚠️ "no lo pasa" y "lo pasa vacio" no son lo mismo. Una cotizacion pedida con una sola foto
+  // que la vision no pudo leer llegaba con el texto vacio, el gate se apagaba y salia corredera
+  // sin preguntar ni avisar — el reclamo del dueño intacto, por otro camino.
+  const r = quoteDataComplete(base, {}, { textoCliente: '' });
+  assert.equal(r.ok, false);
+  assert.ok(r.missing.includes('tipo'), 'texto vacio = no nombro la apertura');
 });
 
 test('🔴 el aviso de "va corredera" existe, ofrece recotizar Y SE MANDA', async () => {

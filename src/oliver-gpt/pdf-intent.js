@@ -120,10 +120,16 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
   // ⏱️ Mismo trato en dos tiempos que el color, por la misma razon: preguntar no puede
   // costar la venta. Se pregunta una vez; si no contesta, sale la corredera CON el aviso.
   const ESPERA_TIPO_MS = Number(process.env.ESPERA_TIPO_MS || 60_000);
-  const textoCliente = String(opciones.textoCliente || '');
-  // Sin texto del cliente NO se activa: un llamador que todavia no lo pasa (IG/FB) se
-  // comporta exactamente como antes en vez de bloquear PDFs por un dato que no recibio.
-  const faltaTipo = textoCliente.trim() !== '' && !aperturaFueExplicita(textoCliente);
+  // ⚠️ [2026-08-25 · compuerta cruzada] "NO LO PASA" Y "LO PASA VACIO" NO SON LO MISMO.
+  //   · `undefined` = el llamador todavia no manda el dato (IG/FB): el gate NO se activa y el
+  //     canal se comporta exactamente como antes. No puede bloquear PDFs por algo que no recibio.
+  //   · `''` = el cliente escribio y no dijo NADA util (una foto que la vision no pudo leer, un
+  //     audio sin transcribir). Eso es precisamente "no nombro la apertura" ⇒ SE PREGUNTA.
+  // Cuando las dos se trataban igual, una cotizacion pedida con una sola foto ilegible salia
+  // corredera sin preguntar ni avisar — o sea el reclamo del dueño, intacto, por otro camino.
+  const textoCliente = opciones.textoCliente;
+  const gateApertura = textoCliente !== undefined && textoCliente !== null;
+  const faltaTipo = gateApertura && !aperturaFueExplicita(String(textoCliente));
   let tipoAsumido = false;
 
   if (faltaTipo) {
@@ -133,6 +139,32 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
   }
 
   return { ok: missing.length === 0, missing, colorAsumido, tipoAsumido };
+}
+
+/**
+ * ¿CUAL de los datos que faltan se le va a preguntar al cliente en ESTE turno?
+ *
+ * Existe para que la respuesta sea UNA SOLA y este en un lugar: el mensaje del gate pregunta
+ * un dato por vez, y el reloj del plazo de gracia tiene que arrancar EXACTAMENTE para ese.
+ *
+ * 🔴 [2026-08-25 · compuerta cruzada] Cuando eran dos decisiones separadas —el mensaje por un
+ * lado, los relojes por otro— se marcaban color y apertura a la vez aunque se preguntaba uno
+ * solo. El reloj del dato NO preguntado vencia igual y se asumia CORREDERA sin habersela
+ * preguntado nunca: el defecto que el gate vino a cerrar, entrando por la puerta de atras.
+ *
+ * El orden es el del mensaje y no es arbitrario: sin NOMBRE no hay documento que emitir; el
+ * color y la apertura cambian el precio, y preguntar dos cosas juntas por WhatsApp hace que
+ * el cliente conteste una.
+ *
+ * @param {string[]} missing — el `missing` de quoteDataComplete.
+ * @returns {'name'|'color'|'tipo'|null}
+ */
+export function datoQuePregunta(missing = []) {
+  const f = Array.isArray(missing) ? missing : [];
+  if (f.includes('name')) return 'name';
+  if (f.includes('color')) return 'color';
+  if (f.includes('tipo')) return 'tipo';
+  return null;
 }
 
 /**

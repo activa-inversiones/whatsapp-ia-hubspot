@@ -78,7 +78,7 @@ import {
 } from '../../services/voiceBridge.js'; // [F4] voz saliente
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
-import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, stripAccionesFalsas, quoteDataComplete } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
+import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
 import { toFile as realToFile } from 'openai/uploads';
 import {
   loadSession as realLoadSession,
@@ -1718,10 +1718,30 @@ Comuna: ${datos.comuna}`
             // marcar SOLO el dato que la cadena de abajo pregunta de verdad — es excluyente, y
             // hoy se marcan los dos, asi que se puede asumir corredera sin haberla preguntado
             // nunca (2o hallazgo de la compuerta, aun sin test).
-            if (_gate.missing.includes('color')) state.color_preguntado_at = Date.now();
-            // Igual que el color: se anota CUÁNDO se preguntó la apertura. Pasado el minuto,
-            // la próxima vez sale la corredera con aviso en vez de dejar al cliente sin nada.
-            if (_gate.missing.includes('tipo')) state.tipo_preguntado_at = Date.now();
+            // 🔴 [2026-08-25 · compuerta cruzada] EL RELOJ ARRANCA UNA VEZ, Y SOLO EL DEL DATO
+            // QUE DE VERDAD SE PREGUNTA. Dos defectos que Codex y Gemini cazaron por separado:
+            //
+            //  1. EL CLIENTE ENGANCHADO SE QUEDABA SIN COTIZACION. El sello se reescribia en
+            //     CADA turno mientras el dato faltara, y se reescribia DESPUES de evaluarlo:
+            //     el que tarda mas que el plazo cobra su propuesta, pero el que contesta rapido
+            //     empuja el vencimiento hacia adelante con cada mensaje y no llega NUNCA. El que
+            //     mas ganas tiene de comprar era el unico que se quedaba sin cotizacion, y le
+            //     bastaba contestar algo fuera del catalogo ("gris", "no se", "el mas barato").
+            //     Aislado en webhook.gate-espera.test.js: 7 turnos cada 60 ms con plazo de 150 ms.
+            //
+            //  2. SE ASUMIA UN DATO QUE NUNCA SE PREGUNTO. La cadena de abajo pregunta UNO solo
+            //     (nombre > color > apertura), pero aca se marcaban los dos relojes. El del dato
+            //     no preguntado vencia igual y se asumia CORREDERA sin habersela preguntado
+            //     jamas — el defecto que este gate vino a cerrar, entrando por la puerta de atras.
+            //
+            // Por eso se calcula PRIMERO cual se va a preguntar, con el mismo orden que el
+            // mensaje, y solo ese reloj arranca. `!state.…` es lo que impide reiniciarlo.
+            // La decision vive en `datoQuePregunta` (pdf-intent.js), no aca: el mensaje de
+            // abajo y este reloj TIENEN que estar de acuerdo sobre cual dato se pregunta, y
+            // dos copias de esa regla se desincronizan — que es como nacio el defecto 2.
+            const _falta = datoQuePregunta(_gate.missing);
+            if (_falta === 'color' && !state.color_preguntado_at) state.color_preguntado_at = Date.now();
+            if (_falta === 'tipo' && !state.tipo_preguntado_at) state.tipo_preguntado_at = Date.now();
             const _pregunta = _gate.missing.includes('name')
               ? '¿A nombre de quién emito la Propuesta Técnica Económica? Con eso te la envío al tiro.'
               : _gate.missing.includes('color')
