@@ -171,7 +171,7 @@ test('🔴 el aviso de "va corredera" existe, ofrece recotizar Y SE MANDA', asyn
   const bloque = wh.slice(i, i + 700);
   assert.match(bloque, /corredera/i, 'le dice que va corredera');
   assert.match(bloque, /recotiz|sin costo/i, 'y que se puede cambiar');
-  assert.match(wh, /\+ _avisoTipo,/, 'el aviso se concatena al mensaje de la propuesta');
+  assert.match(wh, /_avisoColor \+ _avisoTipo/, 'el aviso se concatena al mensaje de la propuesta');
 });
 
 /* =========================================================================

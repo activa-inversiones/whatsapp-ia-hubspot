@@ -6,7 +6,7 @@
 // principal) dependía 100% de que el LLM llamara la tool → a veces escribía
 // "[Enlace a la cotización]" como texto y el cliente NO recibía el PDF.
 
-import { aperturaFueExplicita } from '../../services/enginePricer.js';
+import { aperturaFueExplicita, detectHojas, FABRICATION_LIMITS as _LIMITES } from '../../services/enginePricer.js';
 
 /** ¿El cliente está afirmando que quiere el PDF? (incluye afirmaciones cortas). */
 export function isPdfAffirmative(text) {
@@ -139,7 +139,38 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
     else missing.push('tipo');
   }
 
-  return { ok: missing.length === 0, missing, colorAsumido, tipoAsumido };
+  // 🔴 [2026-08-25] CORREDERA MAS ANCHA QUE EL ESTANDAR ⇒ SE PREGUNTA CUANTAS HOJAS.
+  // Instruccion del dueño (caso Martin, 0341 — corredera de 5560 mm cobrada $413 mil de
+  // menos): *"por el tamaño debimos preguntarle al cliente si la quiere en 3 hojas o 4
+  // hojas; si no dice nada, cotizar en 2 hojas como se hizo pero a un precio real"*.
+  // El numero de hojas cambia el precio (medido en el motor: 2h $1.343k · 3h $1.449k ·
+  // 4h $1.509k en 5560×2160 roble) y una hoja de 2,8 m pesa el doble que una de 1,4:
+  // el cliente tiene que elegirlo, no descubrirlo en la instalacion.
+  // Mismo trato en dos tiempos que color y apertura: se pregunta una vez; pasado el plazo
+  // sale de 2 hojas (el default del motor) CON aviso.
+  const ESPERA_HOJAS_MS = Number(process.env.ESPERA_HOJAS_MS || 60_000);
+  const anchoCorredera = (it) => {
+    const esCorr = /corredera|sliding/i.test(String(it.producto_label || it.product || ''));
+    if (!esCorr) return 0;
+    const mm = String(it.measures || '').match(/(\d+)\s*[x×]\s*(\d+)/i);
+    return mm ? Number(mm[1]) : (Number(it.ancho_mm) || 0);
+  };
+  const MAX_ANCHO_2H = _LIMITES?.SLIDING?.H98?.maxAncho || 2930;
+  const hayCorrederaGigante = items.some((it) => anchoCorredera(it) > MAX_ANCHO_2H);
+  // ¿Ya eligio? Vale que lo diga en el chat ("de 3 hojas") o que el item ya lo traiga
+  // ("Corredera 3 hojas"): las dos son eleccion explicita.
+  const hojasElegidas = gateApertura && detectHojas(String(textoCliente))
+    || items.some((it) => detectHojas(String(it.producto_label || it.product || '')));
+  const faltaHojas = hayCorrederaGigante && !hojasElegidas;
+  let hojasAsumido = false;
+
+  if (faltaHojas) {
+    const preguntadoAt = Number(state.hojas_preguntado_at) || 0;
+    if (preguntaVigente(preguntadoAt) && (Date.now() - preguntadoAt) >= ESPERA_HOJAS_MS) hojasAsumido = true;
+    else missing.push('hojas');
+  }
+
+  return { ok: missing.length === 0, missing, colorAsumido, tipoAsumido, hojasAsumido };
 }
 
 /**
@@ -187,13 +218,14 @@ export function preguntaVigente(preguntadoAt, ahora = Date.now()) {
  * el cliente conteste una.
  *
  * @param {string[]} missing — el `missing` de quoteDataComplete.
- * @returns {'name'|'color'|'tipo'|null}
+ * @returns {'name'|'color'|'tipo'|'hojas'|null}
  */
 export function datoQuePregunta(missing = []) {
   const f = Array.isArray(missing) ? missing : [];
   if (f.includes('name')) return 'name';
   if (f.includes('color')) return 'color';
   if (f.includes('tipo')) return 'tipo';
+  if (f.includes('hojas')) return 'hojas';
   return null;
 }
 

@@ -47,7 +47,7 @@ const DATOS_COMUNA = {
 
 const VENTANAS = [
   { id: 'V1', producto: 'Ventana PVC S60 corredera', medidas: '2000x1400mm', vidrio: 'DVH 5/12/5', ambiente: 'Living', cantidad: 1, uw: 2.71 },
-  { id: 'V2', producto: 'Ventana PVC H98 corredera', medidas: '3250x1460mm', vidrio: 'DVH 5/12/5', ambiente: 'Dormitorio', cantidad: 1, uw: null },
+  { id: 'V2', producto: 'Ventana PVC H98 corredera 3 hojas', medidas: '3250x1460mm', vidrio: 'DVH 5/12/5', ambiente: 'Dormitorio', cantidad: 1, uw: null },
 ];
 
 let SECUENCIA = 0;

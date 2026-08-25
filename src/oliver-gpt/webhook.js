@@ -1748,6 +1748,7 @@ Comuna: ${datos.comuna}`
             //     bucle de antes, entrando por el reloj rancio.
             if (_falta === 'color' && !preguntaVigente(state.color_preguntado_at)) state.color_preguntado_at = Date.now();
             if (_falta === 'tipo' && !preguntaVigente(state.tipo_preguntado_at)) state.tipo_preguntado_at = Date.now();
+            if (_falta === 'hojas' && !preguntaVigente(state.hojas_preguntado_at)) state.hojas_preguntado_at = Date.now();
             // [2026-08-25 · Codex] La pregunta usa EL MISMO `_falta` que el reloj. Tenia su
             // propia cascada paralela: hoy los dos ordenes coincidian, pero el dia que alguien
             // cambie la prioridad en una sola se arranca el reloj de un dato y se pregunta otro
@@ -1769,7 +1770,14 @@ Comuna: ${datos.comuna}`
                   ? '¿Qué tipo de apertura necesita? Corredera (se abre deslizando), proyectante'
                     + ' (se abre hacia afuera), fija (no se abre) o abatible.'
                     + ' Se lo pregunto porque la apertura cambia el precio y prefiero cotizarle la que de verdad quiere.'
-                  : 'Antes de emitir la propuesta formal necesito confirmar un detalle de las ventanas. Ya te pregunto.';
+                  : _falta === 'hojas'
+                    // 🔴 [2026-08-25] CORREDERA MAS ANCHA QUE EL ESTANDAR: SE PREGUNTAN LAS HOJAS.
+                    // Instruccion del dueño (caso Martin 0341, corredera de 5560 mm): por el
+                    // tamaño hay que preguntar 3 o 4 hojas; si no contesta, sale de 2 con aviso.
+                    ? 'Por el ancho de esa corredera, ¿la quiere de 3 o de 4 hojas? También se puede de 2,'
+                      + ' pero las hojas quedan más grandes y pesadas.'
+                      + ' Se lo pregunto porque el número de hojas cambia el precio.'
+                    : 'Antes de emitir la propuesta formal necesito confirmar un detalle de las ventanas. Ya te pregunto.';
             return { ok: false, reason: 'datos_incompletos', missing: _gate.missing, message: _pregunta };
           }
 
@@ -1799,6 +1807,17 @@ Comuna: ${datos.comuna}`
               + 'Si la quiere proyectante, fija o abatible me avisa y se la recotizo sin costo — '
               + 'la apertura cambia el precio.';
             log('info', 'generarPdf.tipo', `apertura asumida CORREDERA para ${from}: el cliente no la nombro`);
+          }
+
+          // 🔴 [2026-08-25] LAS HOJAS SE ASUMIERON (2, el default del motor) PORQUE NO CONTESTO.
+          // Con las medidas REALES — el clamp que cobraba una 5560 como si fuera 2930 ya no
+          // existe (enginePricer). Se avisa igual que color y apertura: nunca en silencio.
+          let _avisoHojas = '';
+          if (_gate.hojasAsumido) {
+            _avisoHojas = '\n\n🪟 Por el ancho, se la coticé de *2 hojas* (quedan grandes y pesadas). '
+              + 'Si la prefiere de 3 o de 4 me avisa y se la recotizo sin costo — '
+              + 'el número de hojas cambia el precio.';
+            log('info', 'generarPdf.hojas', `hojas asumidas (2) para ${from}: corredera sobre el estandar sin eleccion del cliente`);
           }
 
           // ── [2026-07-06 LOTE2] Medidas RESUELTAS: "AxBmm" es el transporte INTERNO de la confirmación
@@ -2323,7 +2342,7 @@ Comuna: ${datos.comuna}`
               : `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF).\n\n` +
                 '¿Necesita alguna modificación? Medidas, color o tipo de apertura se los cambio '
                 + 'sin problema. Y dígame cuándo lo puedo contactar de nuevo para ver qué decidió.'
-            ) + resumenDeLoCotizado(input.items) + _avisoColor + _avisoTipo,
+            ) + resumenDeLoCotizado(input.items) + _avisoColor + _avisoTipo + _avisoHojas,
           };
         }),
     };

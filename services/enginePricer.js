@@ -184,7 +184,7 @@ export function mapSerieToEngine(tipoEngine) {
  * Detecta nº de hojas si el cliente/foto lo indica ("3 hojas", "triple").
  * Si no se sabe → undefined (el motor usa su default = 2 hojas / doble riel).
  */
-function detectHojas(product) {
+export function detectHojas(product) {
   const t = String(product || "").toLowerCase();
   const m = t.match(/(\d)\s*hoja/);
   if (m) return Math.max(1, Number(m[1]));
@@ -266,7 +266,7 @@ export function normMeasuresLocal(raw) { // [LOTE2] export para test del sufijo 
   return { ancho_mm: Math.round(a), alto_mm: Math.round(b) };
 }
 
-const FABRICATION_LIMITS = {
+export const FABRICATION_LIMITS = {
   S60: {
     ventana: { minAncho: 400, maxAncho: 1930, minAlto: 400, maxAlto: 1930 },
     puerta: { minAncho: 800, maxAncho: 1970, minAlto: 1500, maxAlto: 2400 },
@@ -288,11 +288,20 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
     const lim = FABRICATION_LIMITS.SLIDING.H98;
     if (ancho_mm > lim.maxAncho || alto_mm > lim.maxAlto) {
       // [2026-06-10 FIX #C/GT-06] ANTES escalate:true → grand_total=null → PDF NUNCA salía aunque
-      // el cliente confirmara (correderas piso-cielo >2150mm son comunísimas; caso Dalia). Ahora
-      // referencial+clamp como index.js:771 (el dueño: "las grandes cotizarlas igual, solo avisar").
+      // el cliente confirmara (correderas piso-cielo >2150mm son comunísimas; caso Dalia).
+      //
+      // 🔴 [2026-08-25] EL CLAMP DEL PRECIO SE ELIMINO — cobraba de menos, mucho y en silencio.
+      // "Las grandes cotizarlas igual, solo avisar" (el dueño, caso Dalia) se habia implementado
+      // como "cobrarlas COMO SI midieran el maximo estandar": una corredera de 5560×2160 roble
+      // se cotizo como si midiera 2930×2150 → salio ~$930 mil cuando el motor con las medidas
+      // REALES da $1.343.048 (caso Martin, CM-FR-004-2026-0341: $413 mil de menos en UNA
+      // ventana). Reclamo del dueño, textual: *"no se esta cobrando el real de la corredera
+      // desde cierto tamaño hacia arriba… cotizar en 2 hojas como se hizo PERO A UN PRECIO
+      // REAL"*. El motor escala bien con las medidas reales (medido 2000→6000 mm): se le mandan
+      // TAL CUAL, y el aviso referencial (visita tecnica) se mantiene.
       return {
-        message: `La corredera de ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${lim.maxAncho}×${lim.maxAlto} mm); precio referencial acotado.`,
-        referencial: true, clampAncho: lim.maxAncho, clampAlto: lim.maxAlto,
+        message: `La corredera de ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${lim.maxAncho}×${lim.maxAlto} mm); precio referencial sujeto a rectificación en terreno.`,
+        referencial: true,
       };
     }
     // [2026-07-06 LOTE2] Bajo el mínimo → REFERENCIAL clamp-UP (pedido del dueño: cotizar igual por
@@ -311,10 +320,11 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
   if (p.includes("PUERTA")) {
     const lim = FABRICATION_LIMITS.S60.puerta;
     if (ancho_mm > lim.maxAncho || alto_mm > lim.maxAlto) {
-      // [2026-06-10 FIX #C] alinear con index.js:781 — referencial+clamp en vez de escalate.
+      // [2026-08-25] Mismo defecto y mismo arreglo que la corredera de arriba: el clamp del
+      // precio cobraba una puerta gigante como si midiera 1970×2400. Aviso si, clamp no.
       return {
-        message: `La puerta de ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${lim.maxAncho}×${lim.maxAlto} mm); precio referencial acotado.`,
-        referencial: true, clampAncho: lim.maxAncho, clampAlto: lim.maxAlto,
+        message: `La puerta de ${ancho_mm}×${alto_mm} mm supera el máximo estándar (${lim.maxAncho}×${lim.maxAlto} mm); precio referencial sujeto a rectificación en terreno.`,
+        referencial: true,
       };
     }
     // [2026-07-06 LOTE2] Puerta bajo mínimo (800×1500): mismo criterio referencial clamp-up. El PDF
@@ -455,8 +465,8 @@ export async function priceAllEngine(d, customer_id = "") {
       item.measures_original = `${m.ancho_mm}x${m.alto_mm}`;
       item.price_warning = dim.message;
       // Acotar SOLO la dimensión que excede (Math.min) — no sobre-cotizar la que sí cabe.
-      if (dim.clampAncho) m.ancho_mm = Math.min(m.ancho_mm, dim.clampAncho);
-      if (dim.clampAlto)  m.alto_mm  = Math.min(m.alto_mm,  dim.clampAlto);
+      // [2026-08-25] Los clamp de MAXIMO ya no existen (cobraban de menos en silencio — caso
+      // Martin 0341). Los de MINIMO quedan: fabricar bajo el minimo cuesta lo del minimo.
       // [2026-07-06 LOTE2] Bajo mínimo → clamp-UP solo en la dimensión que falta (precio del mínimo).
       if (dim.clampMinAncho) m.ancho_mm = Math.max(m.ancho_mm, dim.clampMinAncho);
       if (dim.clampMinAlto)  m.alto_mm  = Math.max(m.alto_mm,  dim.clampMinAlto);

@@ -45,15 +45,19 @@ test("DALIA: ningún ítem ESCALA (escalate=true) — el bug que la perdió no v
   }
 });
 
-test("DALIA: las 2 correderas piso-cielo quedan REFERENCIALES con clamp (se cotizan igual)", () => {
+// [2026-08-25 ACTUALIZADO — instruccion nueva del dueño, caso Martin 0341] El clamp del
+// precio SE ELIMINO: cobraba una corredera de 5560 como si midiera 2930 (~$413 mil de menos
+// en una ventana). Lo que DALIA protegia se mantiene INTACTO: referencial, sin escalate, la
+// cotizacion llega al PDF. Lo que cambia: el precio sale de las medidas REALES.
+test("DALIA: las 2 correderas piso-cielo quedan REFERENCIALES y el precio usa las medidas REALES", () => {
   const grandes = PEDIDO_DALIA.filter(it => it.product.includes("corredera"));
   assert.equal(grandes.length, 2, "el pedido de Dalia tiene 2 correderas grandes");
   for (const it of grandes) {
     const r = validateDimensionsLocal(it.product, it.ancho, it.alto);
     assert.ok(r, `la corredera ${it.ancho}x${it.alto} debe gatillar warning (está fuera de rango)`);
     assert.equal(r.referencial, true, `la corredera ${it.ancho}x${it.alto} debe ser REFERENCIAL (no escalar)`);
-    assert.ok(r.clampAncho > 0 && r.clampAlto > 0, "debe traer medida acotada para estimar precio");
-    assert.ok(r.clampAlto <= 2150, "el alto acotado no supera el máximo fabricable de corredera");
+    assert.ok(!r.clampAncho && !r.clampAlto,
+      "el clamp de maximos cobraba de menos en silencio (caso Martin 0341) — no puede volver");
   }
 });
 

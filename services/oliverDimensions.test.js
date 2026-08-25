@@ -3,13 +3,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateDimensionsLocal } from './enginePricer.js';
 
-test('GT-06: corredera piso-cielo (alto>2150) → REFERENCIAL+clamp, NO escala (eso mataba el PDF)', () => {
+// [2026-08-25 ACTUALIZADO — caso Martin 0341] Lo que GT-06 protege se mantiene: referencial,
+// NO escala, el PDF sale. Lo que cambio por instruccion del dueño: el precio usa las medidas
+// REALES — el clamp cobraba una 5560 como si midiera 2930 (~$413 mil de menos, en silencio).
+test('GT-06: corredera piso-cielo (alto>2150) → REFERENCIAL sin clamp de precio, NO escala', () => {
   const r = validateDimensionsLocal('CORREDERA', 2500, 2250); // alto 2250 > max 2150
   assert.ok(r, 'debe devolver resultado');
-  assert.equal(r.referencial, true, 'debe ser referencial (cotizable acotado)');
+  assert.equal(r.referencial, true, 'debe ser referencial (visita tecnica lo valida)');
   assert.ok(!r.escalate, 'NO debe escalar — escalar dejaba grand_total=null → sin PDF (caso Dalia)');
-  assert.equal(r.clampAlto, 2150, 'acota el alto al máximo estándar');
-  assert.ok(r.clampAncho >= 2500, 'el clamp de ancho no recorta una medida que sí cabe');
+  assert.ok(!r.clampAlto && !r.clampAncho, 'el clamp de maximos cobraba de menos en silencio — no vuelve');
 });
 
 test('corredera dentro de rango → null (cotiza normal, sin avisos)', () => {
