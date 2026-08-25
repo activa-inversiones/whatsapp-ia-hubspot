@@ -86,3 +86,25 @@ export function mensajeDelVideo(video) {
   return `Le dejo un video corto de ${video.titulo}, para que sepa quiénes somos y cómo `
     + 'trabajamos. Fabricamos acá en Temuco, así que cualquier detalle lo resolvemos nosotros.';
 }
+
+/**
+ * De donde salen los `media_id`. Dos fuentes, en orden:
+ *   1. el estado compartido (`videos_fabrica:media_ids`) — se renueva sin deploy;
+ *   2. `data/videos-media-ids.json` del repo — respaldo para cuando la carga se corre desde
+ *      un PC que no tiene las credenciales de sales-os (que es el caso del dueño: las
+ *      credenciales viven en Railway y los videos en su OneDrive).
+ *
+ * Si no hay ninguno, no se manda video. No pasa nada malo: el cliente igual tiene su
+ * propuesta y su informe.
+ */
+export async function mediaIdsDisponibles(leerEstado) {
+  let ids = null;
+  try { ids = await leerEstado('videos_fabrica:media_ids'); } catch { /* se prueba el archivo */ }
+  if (ids && Object.keys(ids).length) return ids;
+  try {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const ruta = fileURLToPath(new URL('../data/videos-media-ids.json', import.meta.url));
+    return JSON.parse(readFileSync(ruta, 'utf8'));
+  } catch { return {}; }          // sin ids cargados: simplemente no se manda video
+}

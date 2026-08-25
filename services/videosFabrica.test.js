@@ -90,3 +90,20 @@ test('🔒 el mensaje no promete nada que no podamos cumplir', () => {
     assert.doesNotMatch(t, /garantiz|el mejor|el más barato|único/i, `"${t}"`);
   }
 });
+
+test('🔴 los media_id se leen del estado compartido, y si no del archivo del repo', async () => {
+  // Dos fuentes a proposito: la carga se corre desde el PC del dueño, que NO tiene las
+  // credenciales de sales-os (viven en Railway) pero SI tiene los videos (OneDrive).
+  // Exigir el estado compartido dejaria el script inutilizable justo en esa maquina.
+  const { mediaIdsDisponibles } = await import('./videosFabrica.js');
+
+  const delEstado = await mediaIdsDisponibles(async () => ({ fabrica: 'media.DEL_ESTADO' }));
+  assert.equal(delEstado.fabrica, 'media.DEL_ESTADO', 'el estado compartido manda');
+
+  // Sin estado, cae al archivo (o a {} si tampoco esta: no se manda video y ya).
+  const sinEstado = await mediaIdsDisponibles(async () => null);
+  assert.equal(typeof sinEstado, 'object', 'siempre devuelve un objeto');
+
+  const conError = await mediaIdsDisponibles(async () => { throw new Error('KV caido'); });
+  assert.equal(typeof conError, 'object', 'un KV caido no puede tumbar la propuesta');
+});

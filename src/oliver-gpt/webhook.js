@@ -50,7 +50,7 @@ import { laminasParaInforme, laminaTermopanel } from '../../services/laminasTher
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import { recordarColor, resumenDeLoCotizado } from './normalizers.js';   // [2026-08-25] color recordado + "que le cotice"
-import { elegirVideo, mensajeDelVideo } from '../../services/videosFabrica.js';   // [2026-08-25] video de fabrica tras la propuesta
+import { elegirVideo, mensajeDelVideo, mediaIdsDisponibles } from '../../services/videosFabrica.js';   // [2026-08-25] video de fabrica tras la propuesta
 
 // Cuanto se espera antes de mandar el video. Cae DESPUES del informe termico (4 s + 35 s)
 // para no encimarle tres mensajes seguidos al cliente: propuesta → informe → video.
@@ -1967,7 +1967,7 @@ Comuna: ${datos.comuna}`
           if (docSent) {
             safe('generarPdf.video', async () => {
               const claveVistos = `videos_fabrica:vistos:${String(from).replace(/\D/g, '')}`;
-              const ids = (await (deps.leerEstado || leerEstado)('videos_fabrica:media_ids')) || {};
+              const ids = await mediaIdsDisponibles(deps.leerEstado || leerEstado);
               const disponibles = Object.keys(ids);
               if (!disponibles.length) return;            // todavia no se subio ninguno
 
