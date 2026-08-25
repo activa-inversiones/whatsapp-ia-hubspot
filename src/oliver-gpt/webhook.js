@@ -1623,10 +1623,42 @@ Comuna: ${datos.comuna}`
           const _gate = quoteDataComplete(input, state);
           if (!_gate.ok) {
             log('error', 'generarPdf.gate', `PDF bloqueado por datos incompletos: ${_gate.missing.join(', ')}`);
-            return { ok: false, reason: 'datos_incompletos', missing: _gate.missing,
-              message: _gate.missing.includes('name')
-                ? '¿A nombre de quién emito la Propuesta Técnica Económica? Con eso te la envío al tiro.'
-                : 'Antes de emitir la propuesta formal necesito confirmar un detalle de las ventanas. Ya te pregunto.' };
+            // 🔴 [2026-08-25] EL COLOR TIENE SU PROPIA PREGUNTA, y se hace ACÁ.
+            //
+            // Al empezar a exigir el color apareció un riesgo nuevo: si Oliver no sabe qué
+            // preguntar, el cliente queda esperando una propuesta que nunca sale. El mensaje
+            // genérico —"necesito confirmar un detalle de las ventanas, ya te pregunto"— no
+            // le sirve a nadie: no dice qué falta y promete una pregunta que quizás no llega.
+            // Pedido del dueño: *"debemos ser más humanos"*. Se ofrecen los 5 del catálogo y
+            // se avisa que el color cambia el precio, que es la verdad y evita el disgusto
+            // después.
+            // Se anota CUANDO se pregunto el color: pasado el minuto, la proxima vez sale
+            // la blanca con aviso en vez de dejar al cliente sin propuesta.
+            if (_gate.missing.includes('color')) state.color_preguntado_at = Date.now();
+            const _pregunta = _gate.missing.includes('name')
+              ? '¿A nombre de quién emito la Propuesta Técnica Económica? Con eso te la envío al tiro.'
+              : _gate.missing.includes('color')
+                // Los nombres de color NO se parten entre lineas: un "Grafito " + "Antracita"
+                // se lee igual en el chat pero rompe cualquier verificacion sobre la fuente.
+                ? '¿En qué color las quiere? Tenemos Blanco, Nogal, Roble Dorado, Grafito Antracita y Negro.'
+                  + ' Se lo pregunto porque el color cambia el precio y prefiero cotizarle el que de verdad quiere.'
+                : 'Antes de emitir la propuesta formal necesito confirmar un detalle de las ventanas. Ya te pregunto.';
+            return { ok: false, reason: 'datos_incompletos', missing: _gate.missing, message: _pregunta };
+          }
+
+          // 🔴 [2026-08-25] EL COLOR SE ASUMIO PORQUE EL CLIENTE NO CONTESTO.
+          // Instruccion del dueño: *"si cliente no dice el color, nosotros le decimos
+          // después de un minuto o algo así que le preparamos mientras una de color blanco"*.
+          // Sale la propuesta en Blanco, pero SE LO DECIMOS. Lo que no vuelve a pasar es
+          // entregar blanco sin avisar: eso es lo que costaba recotizaciones y disgustos.
+          let _avisoColor = '';
+          if (_gate.colorAsumido) {
+            (input.items || []).forEach((it) => { if (!String(it.color || '').trim()) it.color = 'Blanco'; });
+            state.default_color = state.default_color || 'Blanco';
+            _avisoColor = '\n\n🎨 Se la preparé en *Blanco* mientras me confirma el color. '
+              + 'Si prefiere Nogal, Roble Dorado, Grafito Antracita o Negro, me avisa y se la '
+              + 'recotizo sin costo — el color cambia el precio, por eso se lo digo.';
+            log('info', 'generarPdf.color', `color asumido Blanco para ${from}: el cliente no contesto`);
           }
 
           // ── [2026-07-06 LOTE2] Medidas RESUELTAS: "AxBmm" es el transporte INTERNO de la confirmación
@@ -2089,10 +2121,14 @@ Comuna: ${datos.comuna}`
             // el mensaje dice que es una CORRECCIÓN — no "te envié tu propuesta" de nuevo, que
             // es lo que hizo que Jessica leyera tres envíos iguales como un bot trabado. Y no
             // se le repite la pregunta del cierre: ya se la hicimos hace cinco minutos.
-            message:      esRevision
+            // [2026-08-25] `_avisoColor` va PEGADO acá. Si se construyera y no se usara, el
+            // cliente recibiría su propuesta en Blanco sin enterarse — que es exactamente el
+            // defecto que este arreglo vino a cerrar. Un mensaje que no se manda no existe.
+            message:      (esRevision
               ? `Le corregí la propuesta N° ${quoteNumber} con esos datos y se la mando acá mismo (PDF). Es la misma propuesta actualizada, no una nueva.`
               : `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF).\n\n` +
-                `Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?`,
+                `Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?`
+            ) + _avisoColor,
           };
         }),
     };

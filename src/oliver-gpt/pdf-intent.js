@@ -83,12 +83,26 @@ export function quoteDataComplete(input = {}, state = {}) {
   // emite y se pide el dato. Es lo que pidio el dueño: *"no cotizar blanco por defecto
   // altiro, debemos ser mas humanos"*. Preguntar el color cuesta un mensaje; cotizar el
   // color equivocado cuesta plata y una recotizacion.
+  //
+  // ⏱️ Y SI EL CLIENTE NO CONTESTA, NO SE PIERDE LA VENTA. Instruccion del dueño:
+  // *"si cliente no dice el color, nosotros le decimos después de un minuto o algo así que
+  // le preparamos mientras una de color blanco"*. Equilibra las dos cosas que importan: no
+  // cotizar blanco EN SILENCIO (el defecto que costaba plata) y no dejar al cliente sin
+  // propuesta esperando un dato que no dio. Se pregunta primero; pasado el minuto sale la
+  // blanca CON el aviso de que es blanca y de que se recotiza sin costo.
+  const ESPERA_COLOR_MS = Number(process.env.ESPERA_COLOR_MS || 60_000);
   const colorRecordado = String(state.default_color || '').trim();
-  if (!colorRecordado && items.some((it) => !String(it.color || '').trim())) {
-    missing.push('color');
+  const faltaColor = !colorRecordado && items.some((it) => !String(it.color || '').trim());
+  let colorAsumido = false;
+
+  if (faltaColor) {
+    const preguntadoAt = Number(state.color_preguntado_at) || 0;
+    // Ya se le pregunto y paso el tiempo de gracia ⇒ se emite en blanco, avisando.
+    if (preguntadoAt && (Date.now() - preguntadoAt) >= ESPERA_COLOR_MS) colorAsumido = true;
+    else missing.push('color');
   }
 
-  return { ok: missing.length === 0, missing };
+  return { ok: missing.length === 0, missing, colorAsumido };
 }
 
 /**

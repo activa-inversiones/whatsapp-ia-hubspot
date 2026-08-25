@@ -112,3 +112,85 @@ test('recordarColor no rompe con basura', () => {
   }
   assert.equal(state.default_color, undefined, 'y no inventa un color');
 });
+
+/* =========================================================================
+ * CUANDO FALTA EL COLOR, OLIVER PREGUNTA — Y PREGUNTA EL COLOR
+ * ========================================================================= */
+
+test('🔴 el mensaje del gate NOMBRA el color y ofrece los 5 del catalogo', async () => {
+  // Con el gate exigiendo color aparece un riesgo nuevo: si Oliver no sabe QUE preguntar,
+  // el cliente queda esperando una propuesta que nunca sale. El mensaje generico —"necesito
+  // confirmar un detalle de las ventanas, ya te pregunto"— no le sirve a nadie: no dice que
+  // falta y promete una pregunta que quizas no llega.
+  const { readFile } = await import('node:fs/promises');
+  const wh = await readFile(new URL('./webhook.js', import.meta.url), 'utf8');
+  // Se corta por ESTRUCTURA (del gate hasta su `return`), no por el primer renglon vacio:
+  // en cuanto alguien agrega un comentario con una linea en blanco, ese corte deja el
+  // mensaje afuera y el test falla mirando codigo correcto. Ya paso cuatro veces hoy.
+  const i = wh.indexOf('const _gate = quoteDataComplete(input, state);');
+  assert.ok(i > 0, 'no se encontro el gate');
+  const fin = wh.indexOf("reason: 'datos_incompletos'", i);
+  assert.ok(fin > i, 'no se encontro el return del gate');
+  const bloque = wh.slice(i, fin);
+
+  assert.match(bloque, /missing\.includes\('color'\)/, 'el color tiene su propio mensaje');
+  for (const c of ['Blanco', 'Nogal', 'Roble Dorado', 'Grafito Antracita', 'Negro']) {
+    assert.ok(bloque.includes(c), `el mensaje ofrece ${c}`);
+  }
+  assert.doesNotMatch(bloque.split("includes('color')")[1] || '', /Ya te pregunto/,
+    'nada de prometer una pregunta: se pregunta ahi mismo');
+});
+
+/* =========================================================================
+ * SI EL CLIENTE NO CONTESTA EL COLOR, NO SE PIERDE LA VENTA
+ * ========================================================================= */
+// Instruccion del dueño: *"si cliente no dice el color, nosotros le decimos después de un
+// minuto o algo así que le preparamos mientras una de color blanco"*.
+//
+// Equilibra las dos cosas que importan: NO cotizar blanco en silencio (el defecto que
+// costaba plata) y NO dejar al cliente sin propuesta por esperar un dato. Se pregunta
+// primero; si no contesta, sale la blanca CON el aviso de que es blanca y que se recotiza
+// sin costo. Lo que nunca vuelve a pasar es que se entregue blanco sin decirlo.
+
+test('🔴 la PRIMERA vez sin color: se bloquea y se pregunta', () => {
+  const r = quoteDataComplete({ name: 'V', items: [itemOk()] }, {});
+  assert.equal(r.ok, false);
+  assert.ok(r.missing.includes('color'));
+  assert.ok(!r.colorAsumido, 'todavia no se asume nada: recien se pregunta');
+});
+
+test('🔴 si ya se pregunto y paso el minuto, sale la BLANCA con aviso', () => {
+  const state = { color_preguntado_at: Date.now() - 61_000 };
+  const r = quoteDataComplete({ name: 'V', items: [itemOk()] }, state);
+  assert.equal(r.ok, true, 'no se deja al cliente sin propuesta por un dato que no dio');
+  assert.equal(r.colorAsumido, true, 'pero queda marcado que el color se asumio');
+});
+
+test('🔒 antes del minuto NO se asume: se le da tiempo de contestar', () => {
+  const state = { color_preguntado_at: Date.now() - 5_000 };
+  const r = quoteDataComplete({ name: 'V', items: [itemOk()] }, state);
+  assert.equal(r.ok, false, 'cinco segundos no es "no contesto"');
+});
+
+test('🔒 si contesta el color, no se asume nada', () => {
+  const state = { color_preguntado_at: Date.now() - 120_000, default_color: 'Nogal' };
+  const r = quoteDataComplete({ name: 'V', items: [itemOk()] }, state);
+  assert.equal(r.ok, true);
+  assert.ok(!r.colorAsumido, 'dijo Nogal: no hay nada que asumir');
+});
+
+test('🔴 el aviso de "va en blanco" existe y ofrece recotizar', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const wh = await readFile(new URL('./webhook.js', import.meta.url), 'utf8');
+  assert.match(wh, /colorAsumido/, 'el webhook tiene que reaccionar al color asumido');
+  const i = wh.indexOf('_gate.colorAsumido');
+  assert.ok(i > 0, 'no se encontro el manejo del color asumido');
+  const bloque = wh.slice(i, i + 700);
+  assert.match(bloque, /[Bb]lanco/, 'le dice que va en blanco');
+  assert.match(bloque, /recotiz|sin costo|cambio/i, 'y que se puede cambiar');
+
+  // 🔴 Y EL AVISO TIENE QUE LLEGARLE AL CLIENTE. Se construia en una variable que nadie
+  // usaba: el cliente recibia su propuesta en blanco sin enterarse, que es justo el defecto
+  // que este arreglo vino a cerrar. Un mensaje que no se manda no existe.
+  assert.match(wh, /\) \+ _avisoColor,/, 'el aviso se concatena al mensaje de la propuesta');
+});
