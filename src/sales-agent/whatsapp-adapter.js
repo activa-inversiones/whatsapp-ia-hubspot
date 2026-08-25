@@ -287,6 +287,62 @@ export async function sendWaAudio(to, mediaId, asVoice = true) {
  * @param {string} filename   p.ej. 'CM-FR-004-2026-0001.pdf'
  * @returns {Promise<string>} media_id
  */
+/**
+ * Sube un VIDEO a Meta y devuelve su `media_id`.
+ *
+ * 🎥 [2026-08-25] Se usa UNA sola vez por video (script `tools/subir-videos-wa.mjs`), no una
+ * vez por cliente. Condicion del dueño: *"que no gaste almacenamiento de nosotros"* — el
+ * archivo lo aloja Meta y nosotros guardamos solo este id de ~40 caracteres.
+ *
+ * ⚠️ WhatsApp acepta hasta 16 MB de video. Los del catalogo pesan 13–15 MB: no hay margen
+ * para uno mas grande, y por eso el limite se comprueba ANTES de gastar la subida.
+ */
+export async function uploadWaVideo(videoBuffer, filename) {
+  if (!META.TOKEN || !META.PHONE_ID) {
+    throw new Error('[wa-adapter] uploadWaVideo: meta_credentials_missing');
+  }
+  const MAX = 16 * 1024 * 1024;
+  if (videoBuffer.length > MAX) {
+    throw new Error(`[wa-adapter] uploadWaVideo: ${filename} pesa `
+      + `${(videoBuffer.length / 1048576).toFixed(1)} MB y WhatsApp acepta hasta 16 MB`);
+  }
+  const FormData = (await import('form-data')).default;
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', 'video');
+  form.append('file', videoBuffer, { filename, contentType: 'video/mp4' });
+  const resp = await axiosWA.post(`/${META.PHONE_ID}/media`, form, {
+    headers: form.getHeaders(),
+    timeout: 120000,          // 15 MB por una conexion chilena tarda; 30 s no alcanzaba
+  });
+  const mediaId = resp.data?.id;
+  if (!mediaId) throw new Error('[wa-adapter] uploadWaVideo: no se obtuvo media_id de WhatsApp');
+  return mediaId;
+}
+
+/**
+ * Manda un video YA SUBIDO, por su `media_id`.
+ *
+ * Como `sendWaDocument`, NO lanza cuando Meta rechaza: devuelve `{ok:false, error}`. Quien
+ * llama tiene que leerlo — un `media_id` vencido (caducan a los ~30 dias) falla justo asi.
+ */
+export async function sendWaVideo(to, mediaId, caption = '') {
+  if (!META.TOKEN || !META.PHONE_ID) return { ok: false, error: 'meta_credentials_missing' };
+  if (!to || !mediaId) return { ok: false, error: 'missing_to_or_media' };
+  try {
+    const r = await axiosWA.post(`/${META.PHONE_ID}/messages`, {
+      messaging_product: 'whatsapp',
+      to: String(to).replace(/^\+/, ''),
+      type: 'video',
+      video: { id: mediaId, caption: caption || '' },
+    });
+    return { ok: true, msgId: r.data?.messages?.[0]?.id || null };
+  } catch (e) {
+    const errBody = e?.response?.data?.error || e?.message;
+    return { ok: false, error: typeof errBody === 'string' ? errBody : JSON.stringify(errBody) };
+  }
+}
+
 export async function uploadWaDocument(docBuffer, filename) {
   if (!META.TOKEN || !META.PHONE_ID) {
     throw new Error('[wa-adapter] uploadWaDocument: meta_credentials_missing');

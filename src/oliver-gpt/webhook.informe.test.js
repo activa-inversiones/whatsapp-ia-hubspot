@@ -368,3 +368,70 @@ test('🔒 sin Deal de la propuesta, el informe NO archiva (pero igual se entreg
   await new Promise((r) => setTimeout(r, 200));
   assert.equal(spy.adjuntosZoho.filter((a) => /^Informe-Termico/.test(a.filename || '')).length, 0);
 });
+
+test('🎥 tras la propuesta se manda UN video de fabrica, y no se repite', async () => {
+  const { deps, spy } = makeDeps();
+  spy.videos = [];
+  const estadoVideos = { fabrica: 'media.vid1', cnc_corte: 'media.vid2' };
+  const leerOrig = deps.leerEstado;
+  deps.leerEstado = async (k) => (k === 'videos_fabrica:media_ids' ? estadoVideos : leerOrig(k));
+  deps.sendWaVideo = async (to, mediaId, caption) => {
+    spy.videos.push({ to, mediaId, caption });
+    return { ok: true, msgId: 'v1' };
+  };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.videos.length > 0), 'tiene que salir un video');
+  await new Promise((r) => setTimeout(r, 200));
+
+  assert.equal(spy.videos.length, 1, 'UNO, no todos: es un regalo, no una descarga');
+  assert.equal(spy.videos[0].mediaId, 'media.vid1', 'por media_id — nada de almacenar el archivo');
+  assert.match(spy.videos[0].caption, /fábrica|Temuco/i, 'con algo que invite a conocernos');
+});
+
+test('🎥 sin videos cargados no se manda nada (y no rompe la propuesta)', async () => {
+  const { deps, spy } = makeDeps();
+  spy.videos = [];
+  deps.sendWaVideo = async (...a) => { spy.videos.push(a); return { ok: true }; };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(spy.videos.length, 0, 'sin media_id cargado, no se intenta');
+  assert.equal(spy.propuestas.length, 1, 'y la propuesta sale igual');
+});
+
+test('🎥 si el media_id CADUCO, se descarta para que la proxima carga lo reponga', async () => {
+  // Los media_id de Meta vencen a los ~30 dias. Reintentar contra un id muerto es gastar
+  // envios; descartarlo hace que `subir-videos-wa` lo reponga la proxima vez.
+  const { deps, spy } = makeDeps();
+  spy.videos = []; spy.guardado = null;
+  const ids = { fabrica: 'media.VENCIDO' };
+  const leerOrig = deps.leerEstado;
+  deps.leerEstado = async (k) => (k === 'videos_fabrica:media_ids' ? ids : leerOrig(k));
+  const escribirOrig = deps.escribirEstado;
+  deps.escribirEstado = (k, v, ttl) => {
+    if (k === 'videos_fabrica:media_ids') spy.guardado = v;
+    return escribirOrig(k, v, ttl);
+  };
+  deps.sendWaVideo = async () => ({ ok: false, error: 'media id not found' });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.guardado !== null, 4000), 'tiene que reescribir los ids');
+  assert.ok(!('fabrica' in spy.guardado), 'el id vencido se descarta');
+});
+
+test('🎥 al cliente que YA vio uno se le manda OTRO, no el mismo', async () => {
+  // Mandar dos veces el mismo se lee como bot trabado — el proyecto ya pago ese precio:
+  // 73 mensajes identicos a 26 clientes en 60 dias.
+  const { deps, spy } = makeDeps();
+  spy.videos = [];
+  const ids = { fabrica: 'media.vid1', cnc_corte: 'media.vid2' };
+  const leerOrig = deps.leerEstado;
+  deps.leerEstado = async (k) => {
+    if (k === 'videos_fabrica:media_ids') return ids;
+    if (k.startsWith('videos_fabrica:vistos:')) return ['fabrica'];   // ya vio el primero
+    return leerOrig(k);
+  };
+  deps.sendWaVideo = async (to, mediaId) => { spy.videos.push(mediaId); return { ok: true }; };
+
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.videos.length > 0), 'tiene que salir un video');
+  assert.equal(spy.videos[0], 'media.vid2', 'el que NO vio, no el que ya tiene');
+});

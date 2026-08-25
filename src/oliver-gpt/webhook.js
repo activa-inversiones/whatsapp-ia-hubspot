@@ -50,12 +50,18 @@ import { laminasParaInforme, laminaTermopanel } from '../../services/laminasTher
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import { recordarColor, resumenDeLoCotizado } from './normalizers.js';   // [2026-08-25] color recordado + "que le cotice"
+import { elegirVideo, mensajeDelVideo } from '../../services/videosFabrica.js';   // [2026-08-25] video de fabrica tras la propuesta
+
+// Cuanto se espera antes de mandar el video. Cae DESPUES del informe termico (4 s + 35 s)
+// para no encimarle tres mensajes seguidos al cliente: propuesta → informe → video.
+const DEMORA_VIDEO_MS = Number(process.env.INFORME_VIDEO_MS || 50_000);
 import {
   parseInbound as realParseInbound,
   parseStatuses as realParseStatuses,
   sendWhatsAppText as realSendWhatsAppText,
   sendWhatsAppImageUrl as realSendImageUrl,
   sendWhatsAppVideoUrl as realSendVideoUrl,
+  sendWaVideo as realSendWaVideo,
   sendWhatsAppDocumentUrl as realSendDocumentUrl,
   uploadWaAudio as realUploadWaAudio,
   sendWaAudio as realSendWaAudio,
@@ -1945,6 +1951,49 @@ Comuna: ${datos.comuna}`
                 msgId: waDocMsgId, tipo: 'propuesta', folio: quoteNumber, telefono: String(from),
               }, 3 * 24 * 3600);
             } catch { /* solo se pierde el diagnostico */ }
+          }
+
+          // ── 🎥 Paso 3a·ter: UN VIDEO DE LA FABRICA, PARA QUE NOS CONOZCA ─────
+          // Pedido del dueño: *"que Oliver pueda enviar al cliente después de enviar la
+          // propuesta y diga algo para que nos conozca"*.
+          //
+          // 💾 Su condicion —*"que no gaste almacenamiento de nosotros"*— se cumple con el
+          // `media_id`: el video se subio UNA vez a Meta (tools/subir-videos-wa.mjs) y aca
+          // solo se usa ese id de ~40 caracteres. El archivo lo aloja Meta.
+          //
+          // Va fire-and-forget y con espera humana: el video es un regalo, la propuesta es
+          // la venta. Nunca puede demorarla ni tumbarla. Si el media_id caduco (~30 dias),
+          // el envio falla, se descarta ese id y el proximo `subir-videos-wa` lo repone.
+          if (docSent) {
+            safe('generarPdf.video', async () => {
+              const claveVistos = `videos_fabrica:vistos:${String(from).replace(/\D/g, '')}`;
+              const ids = (await (deps.leerEstado || leerEstado)('videos_fabrica:media_ids')) || {};
+              const disponibles = Object.keys(ids);
+              if (!disponibles.length) return;            // todavia no se subio ninguno
+
+              const vistos = (await (deps.leerEstado || leerEstado)(claveVistos)) || [];
+              const video = elegirVideo({ vistos, disponibles });
+              if (!video) return;                          // ya los vio todos
+
+              // Despues del informe termico, para no encimarle tres mensajes seguidos.
+              await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: DEMORA_VIDEO_MS });
+              const env = await (deps.sendWaVideo || realSendWaVideo)(from, ids[video.id], mensajeDelVideo(video));
+              if (!env?.ok) {
+                // Lo mas probable es un media_id vencido: se descarta para que la proxima
+                // carga lo reponga, en vez de reintentar contra un id muerto.
+                delete ids[video.id];
+                try { await (deps.escribirEstado || escribirEstado)('videos_fabrica:media_ids', ids, 25 * 24 * 3600); } catch { /* se repone al re-subir */ }
+                log('warn', 'generarPdf.video', `video ${video.id} no se entrego (${env?.error || 's/detalle'}) — id descartado`);
+                return;
+              }
+              await (deps.escribirEstado || escribirEstado)(claveVistos, [...vistos, video.id], 180 * 24 * 3600);
+              safe('generarPdf.video.espejo', () => bridge.pushConversationEvent({
+                channel: 'whatsapp', external_id: from, direction: 'outbound',
+                actor_type: 'ai', actor_name: 'Oliver', message_type: 'video',
+                body: `🎥 Video ${video.id} (${video.titulo}) enviado al cliente`,
+                metadata: { source: 'oliver_gpt_video', video: video.id, media_id: ids[video.id] },
+              }));
+            });
           }
 
           // ── Paso 3b: ESPEJO al dashboard (visibilidad del PDF) ───────────────
