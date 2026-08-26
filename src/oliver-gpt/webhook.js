@@ -149,6 +149,49 @@ const SEEN_MAX = 5000;
  * ========================================================================= */
 const RATE_MAP = new Map();
 // [2026-06-14] Anti-duplicado de cotización: phone → { quote_number, at }.
+/**
+ * Que numero le toca a ESTE documento: el mismo folio, una letra, o ninguno (folio nuevo).
+ *
+ * 🔴 [2026-08-26] Pura y aparte a proposito: decide el numero de un documento ISO, y eso tiene
+ * que poder probarse sin levantar medio webhook.
+ *
+ * LA REGLA, en una linea: una CORRECCION conserva el numero; una ALTERNATIVA lleva letra.
+ *
+ * Nacio de un caso medido. Paula pidio dos cotizaciones, *"una de color negro y la otra de
+ * color blanco"*. Las dos salieron con el folio 0353 y, como la fila se guarda POR NUMERO,
+ * la segunda PISO a la primera: creada 16:21:08, actualizada 16:21:10, y quedo solo el
+ * blanco. La cotizacion negra que la clienta tiene en la mano NO EXISTE en el registro.
+ *
+ * Regla del dueño: *"agregarle A B C D al final si hay, asi sera mas facil"*.
+ *   0353 = el primero (equivale a la A) · 0353-B = la segunda · 0353-C = la tercera.
+ * Como el numero cambia, cada documento cae en su propia fila y el pisado desaparece solo.
+ *
+ * ⚠️ Solo lleva letra si el anterior YA SE ENTREGO y el contenido es DISTINTO. Corregir una
+ * medida sobre una propuesta que el cliente todavia no recibio sigue siendo la MISMA — eso se
+ * arreglo el 08-ago (caso Jessica: 3 correlativos quemados en 5 minutos) y no se rompe.
+ *
+ * @returns {{numero:string|null, motivo:string}} numero null = pedir correlativo nuevo
+ */
+export function numeroDeDocumento({ lastQuote, sig, ventanaMs, ahora = Date.now() } = {}) {
+  const LETRAS = 'BCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const lq = lastQuote;
+  if (!lq || !lq.quote_number) return { numero: null, motivo: 'sin_folio_previo' };
+  if (!(ahora - (lq.at || 0) < ventanaMs)) return { numero: null, motivo: 'folio_vencido' };
+
+  const base = String(lq.quote_base || lq.quote_number).replace(/-[A-Z]$/, '');
+  const esOtroDocumento = lq.pdf_sent === true && !!lq.sig && lq.sig !== sig;
+  if (!esOtroDocumento) {
+    return { numero: lq.quote_number, motivo: lq.pdf_sent === true ? 'revision' : 'mismo_folio' };
+  }
+  const usadas = Number(lq.alternativas || 0);   // 0 = solo salio la primera
+  if (usadas >= LETRAS.length) {
+    // 26 alternativas para un mismo cliente no es un caso real; si pasa, se avisa y se reusa
+    // el folio base en vez de inventar una numeracion que nadie sabria leer.
+    return { numero: base, motivo: 'sin_letras' };
+  }
+  return { numero: `${base}-${LETRAS[usadas]}`, motivo: 'alternativa' };
+}
+
 // Evita quemar un correlativo ISO nuevo por doble "confirmo", reintentos o
 // re-cálculo por pérdida de estado (el bug que generó 0003 y 0004 en el mismo chat).
 const RECENT_QUOTES = new Map();
@@ -1991,13 +2034,35 @@ Comuna: ${datos.comuna}`
           // lo reportó como "bot en loop", y tenía razón en el síntoma aunque la causa era ésta.
           // El folio se reusa bien (una corrección es una revisión, no un correlativo nuevo);
           // lo que estaba mal era CONTARLO como envío nuevo.
+          //
+          // 🔴 [2026-08-26] UNA CORRECCION ES UNA REVISION; UNA ALTERNATIVA ES OTRO DOCUMENTO.
+          // La regla de reuso, sola, no distinguia las dos cosas y perdia informacion. Caso
+          // real y medido: Paula pidio DOS cotizaciones, *"una de color negro y la otra de
+          // color blanco"*. Las dos salieron con el folio 0353 y, como la fila se guarda POR
+          // NUMERO DE FOLIO, la segunda PISO a la primera: fila creada 16:21:08, actualizada
+          // 16:21:10, y quedo solo el blanco. **La cotizacion negra que recibio la clienta no
+          // existe en el registro.** Si mañana la aprueba, no hay con que respaldarla.
+          //
+          // Regla del dueño: *"agregarle A B C D al final si hay, asi sera mas facil"*.
+          //   0353     → el primer documento (equivale a la A)
+          //   0353-B   → la segunda alternativa
+          //   0353-C   → la tercera
+          // Como el NUMERO cambia, cada documento se guarda en su propia fila y el pisado
+          // desaparece solo: no hay que tocar como se persiste.
+          //
+          // CUANDO LLEVA LETRA, y solo entonces: cuando el anterior YA SE ENTREGO y el
+          // contenido es DISTINTO. Si el cliente corrige una medida sobre una propuesta que
+          // todavia no recibio, sigue siendo la misma y conserva su numero — que es lo que se
+          // arreglo el 08-ago con el caso Jessica (3 correlativos quemados en 5 minutos).
           let esRevision = false;
           const _lq = state.last_quote;
-          if (_lq && _lq.quote_number && (Date.now() - (_lq.at || 0)) < QUOTE_REUSE_MS) {
-            quoteNumber = _lq.quote_number;
+          const _dec = numeroDeDocumento({ lastQuote: _lq, sig: _quoteSig, ventanaMs: QUOTE_REUSE_MS });
+          if (_dec.numero) {
+            quoteNumber = _dec.numero;
             descuentoMercadoPct = Number(_lq.descuento_mercado_pct) || 0;
-            esRevision = _lq.pdf_sent === true; // solo es revisión si el cliente ya recibió uno
-            log('info', 'generarPdf.folio', `Reusando folio de la sesión ${quoteNumber} para ${from} (revisión, no folio nuevo)`);
+            esRevision = _dec.motivo === 'revision';
+            log(_dec.motivo === 'sin_letras' ? 'warn' : 'info', 'generarPdf.folio',
+              `${from}: ${quoteNumber} (${_dec.motivo})`);
           }
           if (!quoteNumber) try {
             const correlativoRes = await fetch(
@@ -2373,7 +2438,12 @@ Comuna: ${datos.comuna}`
           if (!docSent) {
             // [PDF-RACE 2026-07-01] rastro persistente del folio (reuso 48h) + estado real de entrega.
             state.last_quote = { quote_number: quoteNumber, at: Date.now(), pdf_sent: false,
-              descuento_mercado_pct: descuentoMercadoPct };
+              descuento_mercado_pct: descuentoMercadoPct,
+              // La firma y la base viajan con el rastro: sin ellas no se puede saber si el
+              // proximo PDF es una correccion de este o un documento distinto.
+              sig: _quoteSig,
+              quote_base: String(quoteNumber).replace(/-[A-Z]$/, ''),
+              alternativas: Number((state.last_quote || {}).alternativas || 0) };
             await safe('generarPdf.escalate', () =>
               notifyHighValue(enviarSinPausa, from,
                 { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
@@ -2385,8 +2455,18 @@ Comuna: ${datos.comuna}`
             };
           }
           // [PDF-RACE 2026-07-01] entrega OK → registrar folio para reuso (revisiones = mismo folio).
+          const _base = String(quoteNumber).replace(/-[A-Z]$/, '');
+          const _traeLetra = /-[A-Z]$/.test(String(quoteNumber));
           state.last_quote = { quote_number: quoteNumber, at: Date.now(), pdf_sent: true,
-            descuento_mercado_pct: descuentoMercadoPct };
+            descuento_mercado_pct: descuentoMercadoPct,
+            sig: _quoteSig,
+            quote_base: _base,
+            // Se cuenta solo cuando el documento SALIO: una alternativa que no se entrego no
+            // consume su letra, o el proximo documento saltaria de 0353 a 0353-C sin que
+            // exista una B — y un salto en la numeracion, en ISO, hay que poder explicarlo.
+            alternativas: _traeLetra
+              ? Number((state.last_quote || {}).alternativas || 0) + 1
+              : Number((state.last_quote || {}).alternativas || 0) };
           return {
             ok: true,
             quote_number: quoteNumber,
