@@ -192,6 +192,44 @@ export function numeroDeDocumento({ lastQuote, sig, ventanaMs, ahora = Date.now(
   return { numero: `${base}-${LETRAS[usadas]}`, motivo: 'alternativa' };
 }
 
+/**
+ * La HUELLA de un informe termico: que tiene que cambiar para que sea OTRO informe.
+ *
+ * 🔴 [2026-08-26, regla del dueño] El candado de 30 dias existe para no mandarle al mismo
+ * cliente el mismo informe una y otra vez. Pero miraba SOLO el telefono, y con eso bloqueaba
+ * informes que si corresponden. Textual:
+ *
+ *   *"Es de sentido comun que si el cliente coloca que es de la comuna de Temuco al principio,
+ *    despues se equivoca y dice «en realidad yo soy de Cunco», claramente debemos entregarle
+ *    la propuesta nueva con la reglamentacion termica de esa comuna... Lo de los treinta dias
+ *    es solo para si el cliente NO sufre modificaciones."*
+ *
+ * Caso medido: Paula tiene el informe CM-FR-006-2026-0008 emitido para CUNCO y hoy esta en
+ * TEMUCO. Dos comunas, dos exigencias, y el candado la dejaba con la equivocada hasta el 24
+ * de septiembre.
+ *
+ * QUE CAMBIA EL INFORME, y por que estos tres:
+ *   · COMUNA  — define la exigencia normativa. Es el caso del dueño.
+ *   · PRODUCTO — *"mejor necesito correderas en este proyecto, o proyectante en este otro, o
+ *     puertas en este otro: todas van a tener termicas diferentes"*.
+ *   · VIDRIO  — el Uw sale de ahi. Ya lo habia cazado Codex el 24-ago por otro camino.
+ *
+ * QUE **NO** LO CAMBIA: las medidas ni la cantidad de ventanas. Un proyecto de ocho ventanas
+ * es UN informe, y agregarle una novena no lo convierte en otro. Por eso las medidas no
+ * entran en la huella — si entraran, cada ventana nueva dispararia un informe.
+ */
+export function huellaDelInforme({ comuna = '', producto = '', glassLabel = '' } = {}) {
+  const norm = (v) => String(v || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // "cunco" y "Cuncó" son la misma comuna
+    .replace(/[^a-z0-9]+/g, '')
+    .slice(0, 40);
+  const partes = [norm(comuna), norm(producto), norm(glassLabel)];
+  // Sin ningun dato la huella queda vacia: se cae al candado por telefono de siempre, que es
+  // el comportamiento viejo. Degradar al anterior es preferible a inventar una huella.
+  return partes.every((x) => !x) ? '' : partes.join('|');
+}
+
 // Evita quemar un correlativo ISO nuevo por doble "confirmo", reintentos o
 // re-cálculo por pérdida de estado (el bug que generó 0003 y 0004 en el mismo chat).
 const RECENT_QUOTES = new Map();
@@ -659,7 +697,10 @@ export async function handleWebhook(req, res, deps = {}) {
           // caeria dentro de los 5 min del corto, se descartaria, y no queda programado
           // para despues — el cliente igual se queda sin informe.
           if (rastro.tipo === 'informe_termico' && rastro.telefono && esElVigente) {
-            const base = `informe_termico:${String(rastro.telefono).replace(/\D/g, '')}`;
+            // Se usa la clave que dejo el envio; si el rastro es viejo y no la trae, se cae a
+            // la de siempre. Un rastro sin clave es de antes de este cambio, no un error.
+            const base = rastro.clave
+              || `informe_termico:${String(rastro.telefono).replace(/\D/g, '')}`;
             for (const k of [base, `${base}:en_curso`]) {
               try { (deps.borrarEstado || borrarEstado)(k); } catch { /* vence solo */ }
             }
@@ -1139,7 +1180,12 @@ export async function handleWebhook(req, res, deps = {}) {
     // espera a sus propias tools.
 
       const despacharInforme = (comuna, { forzar = false, glassLabel = '', uw = null, producto = '', ventanas = null } = {}) => {
-        const clave = `informe_termico:${String(from).replace(/\D/g, '')}`;
+        // 🔴 La clave del candado incluye la HUELLA del proyecto: mismo cliente + mismo
+        // proyecto = un solo informe en 30 dias; cambia la comuna, el producto o el vidrio =
+        // proyecto distinto y le corresponde el suyo.
+        const _tel = String(from).replace(/\D/g, '');
+        const _huella = huellaDelInforme({ comuna, producto, glassLabel });
+        const clave = _huella ? `informe_termico:${_tel}:${_huella}` : `informe_termico:${_tel}`;
         safe('informeTermico', async () => {
           // 🔴 [2026-08-24 · Codex, compuerta cruzada] LA MEMORIA VA ANTES QUE TODO CANDADO.
           // Primer intento la puse despues, y Codex cazo el agujero: si el cliente YA recibio
@@ -1408,6 +1454,10 @@ export async function handleWebhook(req, res, deps = {}) {
           try {
             await (deps.escribirEstado || escribirEstado)(`wamsg:${envio.msgId}`, {
               msgId: envio.msgId, tipo: 'informe_termico', folio: numeroInforme, telefono: String(from),
+              // La clave viaja con el rastro: sin esto, un acuse de fallo intentaria soltar
+              // `informe_termico:{tel}` y dejaria puesto el candado real (que ahora lleva
+              // huella) — el cliente quedaria un mes sin informe por un envio que no llego.
+              clave,
             }, 3 * 24 * 3600);              // 3 dias: los acuses de Meta llegan en minutos
             // Cual es el envio VIGENTE, para que un acuse tardio de uno anterior no suelte
             // el candado de este.
