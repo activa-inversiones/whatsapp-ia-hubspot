@@ -525,9 +525,30 @@ export async function priceAllEngine(d, customer_id = "") {
     ? _declarado === "alto_ancho"
     : measured.some((mm) => mm && mm.alto_mm > 2400);
   if (_declarado) d.orientacion_declarada = _declarado;   // para el aviso al cliente
+
+  // 🔴 [2026-08-26] EL DOBLE-SWAP MUERE ACA. El riesgo era conocido y HOY se midio: si el
+  // LLM ya manda la medida CORREGIDA (2000x2200) y el texto del cliente declara "alto por
+  // ancho", el swap global la daba vuelta DE NUEVO — una medida correcta terminaba invertida
+  // en el PDF. La declaracion habla de COMO ESCRIBIO EL CLIENTE, no de como vienen los items.
+  //
+  // La resolucion es POR PAR, contra lo que el cliente escribio de verdad:
+  //   · el par del item aparece en el texto EN ESE ORDEN  → viene crudo → se da vuelta;
+  //   · aparece en el orden INVERSO                        → ya fue corregido → NO se toca;
+  //   · no aparece (o aparece en ambos)                    → manda la declaracion global.
+  const _paresTexto = new Set();
+  for (const m of String(d.texto_cliente || "").matchAll(/(\d+(?:[.,]\d+)?)\s*(?:[x×]|por)\s*(\d+(?:[.,]\d+)?)/gi)) {
+    const nm = normMeasuresLocal(`${m[1]}x${m[2]}`);
+    if (nm) _paresTexto.add(`${Math.round(nm.ancho_mm)}|${Math.round(nm.alto_mm)}`);
+  }
   if (tableIsAltoAncho) {
     for (const mm of measured) {
-      if (mm) { const _t = mm.ancho_mm; mm.ancho_mm = mm.alto_mm; mm.alto_mm = _t; }
+      if (!mm) continue;
+      const crudo = `${Math.round(mm.ancho_mm)}|${Math.round(mm.alto_mm)}`;
+      const inverso = `${Math.round(mm.alto_mm)}|${Math.round(mm.ancho_mm)}`;
+      const talCual = _paresTexto.has(crudo);
+      const yaCorregido = _paresTexto.has(inverso) && !talCual;
+      if (yaCorregido) continue;                      // el LLM ya lo dio vuelta: no tocar
+      const _t = mm.ancho_mm; mm.ancho_mm = mm.alto_mm; mm.alto_mm = _t;
     }
   }
 

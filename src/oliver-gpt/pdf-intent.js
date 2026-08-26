@@ -49,6 +49,12 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
         qty: Number(t.result.cantidad) || Number(t.input?.cantidad) || 1,
         unit_price: Number(t.result.unit_price) || 0,
         glass_label: t.result.glass_label || 'Termopanel DVH',
+        // [2026-08-26] La composicion y la hoja viajan con el item del pending_quote: sin
+        // esto el PDF determinista dibujaba la compuesta como un paño (0358 de Paula) y toda
+        // corredera con el grueso por defecto.
+        compuesta: t.result.compuesta || undefined,
+        hoja_mm: (String(t.result.producto_label || '').match(/H(\d{2,3})/i) || [])[1]
+          ? Number(String(t.result.producto_label || '').match(/H(\d{2,3})/i)[1]) : undefined,
         ambiente: t.input?.ambiente || '',
         termico: t.result?.termico || null,   // [thermal] Uw → PDF (camino determinista)
         referencial: !!t.result?.referencial, // [2026-07-07] fuera de estándar → escalación a Marcelo (revisión ingeniería)

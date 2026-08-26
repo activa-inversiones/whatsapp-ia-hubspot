@@ -744,7 +744,19 @@ export async function runTool(name, input = {}, ctx = {}) {
           // catálogo (enginePricer paso 0) por fin VE el producto real, no solo el enum.
           descripcion: input.descripcion_producto || '',
           // [2026-08-25 · Codex] Los paños explicitos del cliente viajan hasta el motor.
-          partes: Array.isArray(input.partes) && input.partes.length ? input.partes : undefined,
+          // 🔴 [2026-08-26] PARTES 50/50 INFERIDAS SE DESCARTAN. La tool dice "solo si el
+          // cliente dio el ancho de cada paño", pero el LLM igual manda mitades calculadas
+          // (2200 → 1100+1100). Con partes explicitas la ventana CRECE 2mm por el acople
+          // (total 2202 ≠ los 2200 que pidio la clienta) y el precio difiere del reparto
+          // canonico del dueño (mitad y mitad DEL VANO, acople adentro). Si todos los paños
+          // son iguales, eso ES el default del motor: se dejan caer y el motor reparte bien.
+          partes: (() => {
+            const ps = Array.isArray(input.partes) ? input.partes : [];
+            if (!ps.length) return undefined;
+            const medidas = ps.map((p) => Number(p.alto_mm ?? p.ancho_mm ?? p.medida_mm));
+            const iguales = medidas.every((m) => Number.isFinite(m) && Math.abs(m - medidas[0]) < 0.6);
+            return iguales ? undefined : ps;
+          })(),
           // [2026-08-25] El eje viaja con el item hasta el motor y hasta el dibujo del PDF.
           orientacion: input.orientacion || undefined }],
         comuna: input.comuna || '',

@@ -289,12 +289,29 @@ test('🔒 una compuesta angosta no produce marcos ni vidrios negativos', () => 
   }
 });
 
-test('🔒 sin datos de composición cae al dibujo de siempre, no rompe', () => {
-  // Una compuesta vieja (cotizada antes de este cambio) no trae `compuesta.partes`.
+test('🛟 [0358] sin datos de composición se DERIVA del label — nunca más un paño único', () => {
+  // La propuesta 0358 de Paula salió con las compuestas como UN PAÑO porque el dato del
+  // motor no llegó al ítem del dibujo. El label visible ya dice todo: de ahí se reconstruye.
   const p = planoDeVentana({ producto_label: 'Ventana compuesta', measures: '2000x1450', color: 'Blanco' }, { x: 0, y: 0, w: 200, h: 120 });
   assert.equal(p.tipo, 'COMPUESTA');
-  assert.ok(p.hojas.length >= 1, 'dibuja algo razonable igual');
-  assert.ok(!p.compuesta, 'y no inventa una composición que no tiene');
+  assert.equal(p.marcos.length, 2, 'dos marcos aunque el dato no haya viajado');
+  assert.equal(p.compuesta.derivado_de, 'label_mitades', 'y queda DECLARADO que se derivó, no medido');
+});
+
+test('🛟 [0358] el caso exacto de producción: product contaminado + label con medidas', () => {
+  // El ítem llegó con product='PROYECTANTE' (enum del LLM) y el label completo del motor.
+  // Antes: product ganaba → proyectante de un paño. Ahora: se leen los dos campos y los
+  // paños salen del label, CON sus medidas reales.
+  const p = planoDeVentana({
+    product: 'PROYECTANTE',
+    producto_label: 'Ventana compuesta vertical: Proyectante 1100mm (arriba) + Fijo 1100mm (abajo)',
+    measures: '1000x2200', color: 'New Black',
+  }, { x: 0, y: 0, w: 156, h: 196 });
+  assert.equal(p.tipo, 'COMPUESTA');
+  assert.equal(p.marcos.length, 2);
+  assert.equal(p.compuesta.orientacion, 'vertical');
+  assert.deepEqual(p.hojas.map((h) => h.tipo), ['PROYECTANTE', 'FIJA'], 'el que abre arriba');
+  assert.equal(p.compuesta.derivado_de, 'label_con_medidas', 'las medidas salieron del label');
 });
 
 // ── COMPUESTA VERTICAL: los paños se APILAN ───────────────────────────────────

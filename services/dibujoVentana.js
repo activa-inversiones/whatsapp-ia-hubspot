@@ -74,7 +74,11 @@ function medidas(m) {
 // cotización como un vidrio sin apertura. Van primero porque "PUERTA_DOBLE" no contiene ninguna
 // de las otras palabras, pero el orden importa para no depender de eso.
 function tipoDe(it) {
-  const p = String(it?.product || it?.producto_label || "").toUpperCase();
+  // 🔴 [2026-08-26] SE MIRAN LOS DOS CAMPOS, no `product` con precedencia: segun el camino
+  // (tool del LLM, pending_quote, pdf determinista) el tipo real puede venir en cualquiera
+  // de los dos, y con que UNO diga "compuesta" alcanza. Con precedencia, un product generico
+  // tapaba un label correcto y la ventana se dibujaba de otro tipo.
+  const p = `${String(it?.product || "")} ${String(it?.producto_label || "")}`.toUpperCase();
   // [2026-08-25] COMPUESTA PRIMERO: su label es "Ventana compuesta: Fijo 1200mm +
   // Proyectante 800mm" — contiene las palabras de los otros tipos y cualquier rama de abajo
   // se la robaba (salia dibujada como una proyectante de un solo paño).
@@ -213,6 +217,57 @@ function tipoDeParte(t) {
   if (s.includes("PROYECT")) return "PROYECTANTE";
   if (s.includes("ABAT") || s.includes("BATIENTE")) return "BATIENTE";
   return "FIJA";
+}
+
+/**
+ * 🛟 ULTIMA RED DEL DIBUJO: si una COMPUESTA llega SIN `compuesta.partes`, la composicion se
+ * deriva DEL PROPIO LABEL que ve el cliente.
+ *
+ * [2026-08-26] Por que existe: la propuesta 0358 de Paula salio con las compuestas dibujadas
+ * como UN PAÑO UNICO **con el dato correcto en todas partes menos en el item que llego al
+ * dibujo**. El label del motor ya dice todo — "Proyectante 1100mm (arriba) + Fijo 1100mm
+ * (abajo)" — asi que el dibujo puede reconstruir los paños de ahi, venga el item del camino
+ * que venga (tool del LLM, pending_quote viejo, pdf determinista). Preferimos derivar del
+ * label VISIBLE que mostrarle al cliente una ventana que no es la suya.
+ *
+ * Devuelve null si el label no es de compuesta o no se puede leer con confianza.
+ */
+function partesDesdeLabel(it, ancho_mm, alto_mm) {
+  const label = `${String(it?.product || "")} ${String(it?.producto_label || "")}`;
+  if (!/compuesta/i.test(label)) return null;
+  const vertical = /vertical|arriba|abajo|superior|inferior/i.test(label);
+
+  // 1) El caso rico: el label trae cada paño con su medida — "Proyectante 1100mm (arriba)".
+  const conMedida = [...label.matchAll(/(fij[ao]|proyectante|abatible|oscilobatiente)[^\d+]{0,12}(\d+(?:[.,]\d+)?)\s*mm/gi)]
+    .map((m) => ({ tipo: m[1].toUpperCase().startsWith('FIJ') ? 'FIJA' : m[1].toUpperCase(),
+                   mm: parseFloat(m[2].replace(',', '.')) }));
+  if (conMedida.length >= 2) {
+    return {
+      orientacion: vertical ? 'vertical' : 'horizontal',
+      partes: conMedida.map((p) => vertical
+        ? { tipo: p.tipo, alto_mm: p.mm, ancho_mm }
+        : { tipo: p.tipo, ancho_mm: p.mm, alto_mm }),
+      derivado_de: 'label_con_medidas',
+    };
+  }
+
+  // 2) El caso pobre: solo se sabe que es compuesta y que aperturas lleva — mitad y mitad,
+  //    que es el default del dueño. Orden: en vertical el que ABRE va arriba.
+  const tipos = [];
+  if (/proyectante/i.test(label)) tipos.push('PROYECTANTE');
+  if (/abatible/i.test(label)) tipos.push('BATIENTE');
+  if (/oscilobatiente/i.test(label)) tipos.push('OSCILOBATIENTE');
+  if (/fij[ao]/i.test(label)) tipos.push('FIJA');
+  if (tipos.length < 2) tipos.splice(0, tipos.length, 'PROYECTANTE', 'FIJA');
+  const eje = vertical ? alto_mm : ancho_mm;
+  const mitad = Math.max(1, (eje - 3) / 2);
+  return {
+    orientacion: vertical ? 'vertical' : 'horizontal',
+    partes: tipos.slice(0, 2).map((t) => vertical
+      ? { tipo: t, alto_mm: mitad, ancho_mm }
+      : { tipo: t, ancho_mm: mitad, alto_mm }),
+    derivado_de: 'label_mitades',
+  };
 }
 
 /**
@@ -417,8 +472,14 @@ function planoDeVentana(it, caja) {
   // entre ellos la junta del acople. La banda ancha del medio no se dibuja a mano: aparece
   // sola, porque son dos perfiles de marco vecinos. Dibujarla de otra forma le mostraría al
   // cliente un producto que no es el que se le fabrica ni el que se le cobra.
-  const partes = (tipo === "COMPUESTA" && Array.isArray(it?.compuesta?.partes) && it.compuesta.partes.length >= 2)
-    ? it.compuesta.partes : null;
+  // La composicion: el dato del motor manda; si no vino, se deriva del label (ultima red).
+  let _cmp = (Array.isArray(it?.compuesta?.partes) && it.compuesta.partes.length >= 2)
+    ? it.compuesta : null;
+  if (!_cmp && tipo === "COMPUESTA") {
+    _cmp = partesDesdeLabel(it, ancho, alto);
+    if (_cmp) it = { ...it, compuesta: _cmp };
+  }
+  const partes = _cmp ? _cmp.partes : null;
   if (partes) {
     // El acople real mide ~2 mm (la cota "2" del plano de Winart). A escala se vería como
     // nada, así que lleva un piso en px para que la junta se distinga en el papel.
@@ -474,6 +535,9 @@ function planoDeVentana(it, caja) {
         orientacion: esVertical ? 'vertical' : 'horizontal',
         partes: partes.map((pt, i) => ({ tipo: tipoDeParte(pt.tipo), ancho_mm: pt.ancho_mm, alto_mm: pt.alto_mm, idx: i })),
         acople,
+        // Si la composicion NO vino del motor sino del label, queda declarado: un dato
+        // derivado no puede hacerse pasar por un dato medido (regla de la casa).
+        ...(_cmp && _cmp.derivado_de ? { derivado_de: _cmp.derivado_de } : {}),
       },
       etiqueta: `${ancho}×${alto} mm`,
     };
