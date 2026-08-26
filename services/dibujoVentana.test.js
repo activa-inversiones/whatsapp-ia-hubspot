@@ -296,3 +296,68 @@ test('🔒 sin datos de composición cae al dibujo de siempre, no rompe', () => 
   assert.ok(p.hojas.length >= 1, 'dibuja algo razonable igual');
   assert.ok(!p.compuesta, 'y no inventa una composición que no tiene');
 });
+
+// ── COMPUESTA VERTICAL: los paños se APILAN ───────────────────────────────────
+// Medido en Winart (version 66979): es la misma ventana rotada 90 grados. El dibujo tiene que
+// mostrar el que ABRE arriba, porque es lo unico que el cliente necesita saber del plano.
+
+function itCompuestaVert(partes, medidas = '1200x2002') {
+  return {
+    producto_label: 'Ventana compuesta vertical',
+    measures: medidas, color: 'Roble',
+    compuesta: { orientacion: 'vertical', partes },
+  };
+}
+
+test('🔴 [vertical] los paños se apilan: mismo ancho, uno encima del otro', () => {
+  const p = planoDeVentana(itCompuestaVert([
+    { tipo: 'PROYECTANTE', alto_mm: 1000 }, { tipo: 'FIJA', alto_mm: 1000 },
+  ]), { x: 10, y: 5, w: 200, h: 300 });
+  assert.equal(p.marcos.length, 2);
+  const [a, b] = p.marcos;
+  assert.equal(a.x, b.x, 'los dos arrancan en el mismo borde izquierdo');
+  assert.equal(a.w, b.w, 'y tienen el mismo ancho: el ancho no se reparte');
+  assert.ok(a.y + a.h <= b.y + 0.01, 'el de arriba termina antes de que empiece el de abajo');
+  assert.ok(b.y - (a.y + a.h) > 0, 'y entre medio queda la junta del acople');
+});
+
+test('🔴 [vertical] el que ABRE va ARRIBA y se ve que abre', () => {
+  const p = planoDeVentana(itCompuestaVert([
+    { tipo: 'PROYECTANTE', alto_mm: 1000 }, { tipo: 'FIJA', alto_mm: 1000 },
+  ]), { x: 0, y: 0, w: 200, h: 300 });
+  assert.equal(p.compuesta.orientacion, 'vertical');
+  assert.ok(p.hojas[0].simbolo.length > 0, 'el proyectante de arriba lleva su simbolo');
+  assert.equal(p.hojas[1].simbolo.length, 0, 'el fijo de abajo, ninguno');
+});
+
+test('🔴 [vertical] la proporcion es la real: un paño de 1400 se ve mas alto que uno de 600', () => {
+  const p = planoDeVentana(itCompuestaVert([
+    { tipo: 'PROYECTANTE', alto_mm: 600 }, { tipo: 'FIJA', alto_mm: 1400 },
+  ]), { x: 0, y: 0, w: 200, h: 300 });
+  const prop = p.marcos[0].h / (p.marcos[0].h + p.marcos[1].h);
+  assert.ok(Math.abs(prop - 0.3) < 0.01, `el de arriba debe ocupar 30%, ocupa ${(prop * 100).toFixed(1)}%`);
+});
+
+test('🔒 [vertical] nada se sale de la caja ni queda negativo', () => {
+  const p = planoDeVentana(itCompuestaVert([
+    { tipo: 'PROYECTANTE', alto_mm: 1 }, { tipo: 'FIJA', alto_mm: 3000 },
+  ]), { x: 4, y: 6, w: 15, h: 12 });
+  for (const m of p.marcos) {
+    assert.ok(m.w > 0 && m.h > 0, 'marco positivo');
+    assert.ok(m.y >= 6 - 0.01 && m.y + m.h <= 18.01, 'dentro de la caja');
+  }
+  for (const h of p.hojas) {
+    assert.ok(h.vidrioRect.w >= 0 && h.vidrioRect.h >= 0, 'vidrio nunca negativo');
+    assert.ok(h.vidrioRect.y >= h.y - 0.01, 'el vidrio no se derrama sobre el marco');
+  }
+});
+
+test('🔒 sin orientacion se dibuja HORIZONTAL: ninguna compuesta vieja cambia de plano', () => {
+  const p = planoDeVentana({
+    producto_label: 'Ventana compuesta', measures: '2002x1450', color: 'Roble',
+    compuesta: { partes: [{ tipo: 'FIJA', ancho_mm: 1200 }, { tipo: 'PROYECTANTE', ancho_mm: 800 }] },
+  }, { x: 0, y: 0, w: 200, h: 120 });
+  assert.equal(p.compuesta.orientacion, 'horizontal');
+  assert.equal(p.marcos[0].y, p.marcos[1].y, 'lado a lado, no apilados');
+  assert.ok(p.marcos[0].w > p.marcos[1].w, '1200 > 800');
+});

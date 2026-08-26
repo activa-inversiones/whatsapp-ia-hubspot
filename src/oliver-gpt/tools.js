@@ -257,6 +257,17 @@ export const TOOL_DEFS = [
           // additionalProperties:false, asi que el campo se caia antes de salir del LLM y la
           // compuesta SIEMPRE quedaba 50/50 — justo lo contrario de la decision del dueño
           // ("a no ser que de el porcentaje o valor exacto de como la quiere").
+          // [2026-08-25] EL EJE DE LA COMPUESTA. Sin esto el LLM no tiene como decir que la
+          // ventana va apilada y toda compuesta salia lado a lado.
+          orientacion: {
+            type: 'string',
+            enum: ['horizontal', 'vertical'],
+            description:
+              'SOLO para tipo COMPUESTA. "horizontal" = paños lado a lado (lo usual: mitad ' +
+              'fija + mitad proyectante). "vertical" = paños APILADOS, uno encima del otro ' +
+              '(ej. "proyectante arriba y fijo abajo"). Si el cliente no lo dice, no mandes ' +
+              'este campo: se asume horizontal.',
+          },
           partes: {
             type: 'array',
             description:
@@ -268,9 +279,10 @@ export const TOOL_DEFS = [
               additionalProperties: false,
               properties: {
                 tipo: { type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE'], description: 'Apertura de ESTE paño.' },
-                ancho_mm: { type: 'number', description: 'Ancho de ESTE paño en milimetros.' },
+                ancho_mm: { type: 'number', description: 'Ancho de ESTE paño en milimetros. Usalo en orientacion HORIZONTAL.' },
+                alto_mm: { type: 'number', description: 'Alto de ESTE paño en milimetros. Usalo en orientacion VERTICAL (paños apilados).' },
               },
-              required: ['tipo', 'ancho_mm'],
+              required: ['tipo'],
             },
           },
           ancho_mm: { type: 'number', description: 'Ancho en milimetros (tu mejor estimación). El sistema RE-CONVIERTE desde medidas_texto si lo incluyes, así que prioriza enviar medidas_texto.' },
@@ -732,7 +744,9 @@ export async function runTool(name, input = {}, ctx = {}) {
           // catálogo (enginePricer paso 0) por fin VE el producto real, no solo el enum.
           descripcion: input.descripcion_producto || '',
           // [2026-08-25 · Codex] Los paños explicitos del cliente viajan hasta el motor.
-          partes: Array.isArray(input.partes) && input.partes.length ? input.partes : undefined }],
+          partes: Array.isArray(input.partes) && input.partes.length ? input.partes : undefined,
+          // [2026-08-25] El eje viaja con el item hasta el motor y hasta el dibujo del PDF.
+          orientacion: input.orientacion || undefined }],
         comuna: input.comuna || '',
         default_color: input.color || '',
       };

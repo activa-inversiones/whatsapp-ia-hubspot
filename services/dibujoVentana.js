@@ -104,15 +104,22 @@ function tipoDeParte(t) {
  * @param {Array<{ancho_mm:number}>} partes
  * @param {number} montante  separación en px entre paño y paño
  */
-function repartirPorPartes(x, y, w, h, partes, montante) {
-  const anchos = partes.map((pt) => Math.max(1, Number(pt.ancho_mm) || 1));
-  const suma = anchos.reduce((a, b) => a + b, 0);
-  const util = Math.max(1, w - montante * (partes.length - 1));
-  let cursor = x;
+function repartirPorPartes(x, y, w, h, partes, montante, vertical = false) {
+  // La compuesta VERTICAL (proyectante arriba + fijo abajo) es la MISMA ventana rotada 90
+  // grados — medido en Winart el 25-ago: las versiones 66979 y 66943 devuelven la misma
+  // estructura (dos marcos completos + Connector ACOPLE_MINI de 2 mm), solo cambia el eje.
+  // Por eso se reparte por un eje parametrizado en vez de escribir la funcion dos veces.
+  const medidas = partes.map((pt) => Math.max(1, Number(vertical ? pt.alto_mm : pt.ancho_mm) || 1));
+  const suma = medidas.reduce((a, b) => a + b, 0);
+  const largo = vertical ? h : w;
+  const util = Math.max(1, largo - montante * (partes.length - 1));
+  let cursor = vertical ? y : x;
   return partes.map((pt, idx) => {
-    const pw = util * (anchos[idx] / suma);
-    const r = { x: cursor, y, w: pw, h, idx };
-    cursor += pw + montante;
+    const t = util * (medidas[idx] / suma);
+    const r = vertical
+      ? { x, y: cursor, w, h: t, idx }
+      : { x: cursor, y, w: t, h, idx };
+    cursor += t + montante;
     return r;
   });
 }
@@ -218,7 +225,10 @@ function planoDeVentana(it, caja) {
     // El acople real mide ~2 mm (la cota "2" del plano de Winart). A escala se vería como
     // nada, así que lleva un piso en px para que la junta se distinga en el papel.
     const acople = Math.max(1, 2 * escala);
-    const marcosC = repartirPorPartes(x, y, w, h, partes, acople);
+    // La orientacion viene del motor. Sin ella se asume horizontal, que es como salieron
+    // todas las compuestas hasta hoy: una cotizacion vieja no cambia de dibujo.
+    const esVertical = String(it?.compuesta?.orientacion || '').toLowerCase() === 'vertical';
+    const marcosC = repartirPorPartes(x, y, w, h, partes, acople, esVertical);
     const hojasC = marcosC.map((r, i) => {
       const tp = tipoDeParte(partes[i].tipo);
       // Cada paño tiene su PROPIO marco de los 4 lados: la hoja arranca adentro de él.
@@ -247,7 +257,11 @@ function planoDeVentana(it, caja) {
       marcoRect: null,
       marcos: marcosC.map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h })),
       marco, perfilHoja, hojas: hojasC,
-      compuesta: { partes: partes.map((pt, i) => ({ tipo: tipoDeParte(pt.tipo), ancho_mm: pt.ancho_mm, idx: i })), acople },
+      compuesta: {
+        orientacion: esVertical ? 'vertical' : 'horizontal',
+        partes: partes.map((pt, i) => ({ tipo: tipoDeParte(pt.tipo), ancho_mm: pt.ancho_mm, alto_mm: pt.alto_mm, idx: i })),
+        acople,
+      },
       etiqueta: `${ancho}×${alto} mm`,
     };
   }

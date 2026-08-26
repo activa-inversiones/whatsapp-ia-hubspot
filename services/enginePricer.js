@@ -290,6 +290,29 @@ export const FABRICATION_LIMITS = {
  * Réplica local de validateDimensions (index.js) — NO exportada desde index.
  * Devuelve null si OK, o { message, escalate, suggest? } si excede.
  */
+/**
+ * ¿La compuesta va APILADA (proyectante arriba + fijo abajo) en vez de lado a lado?
+ *
+ * [2026-08-25] Pedida por el dueño. Se detecta por como habla el cliente: "arriba/abajo",
+ * "encima", "superior/inferior". Sin ninguna de esas señales se asume HORIZONTAL, que es la
+ * que mas se vende y la que ya estaba calibrada — asi ninguna conversacion vieja cambia.
+ *
+ * ⚠️ NO alcanza con que el texto diga "arriba": "la ventana de arriba del living" es una
+ * UBICACION, no una composicion. Por eso se exige que el arriba/abajo aparezca pegado a un
+ * tipo de paño ("proyectante arriba", "arriba la proyectante").
+ */
+export function esCompuestaVertical(texto) {
+  const t = String(texto || "").toLowerCase();
+  const TIPO = "(?:fij[ao]s?|proyectantes?|abatibles?|oscilobatientes?)";
+  const POS = "(?:arriba|abajo|encima|superior(?:es)?|inferior(?:es)?)";
+  return (
+    new RegExp(`\\b${TIPO}\\s{1,3}(?:(?:la|el|de|en|por|va|ir[ao])\\s{1,3}){0,2}${POS}\\b`).test(t) ||
+    new RegExp(`\\b${POS}\\s{1,3}(?:(?:la|el|de|en|por|va|ir[ao])\\s{1,3}){0,2}${TIPO}\\b`).test(t) ||
+    new RegExp(`\\b(?:apilad[ao]s?|vertical(?:es|mente)?)\\b`).test(t) ||
+    new RegExp(`\\buna\\s+(?:encima|sobre)\\s+(?:de\\s+)?(?:la\\s+)?otra\\b`).test(t)
+  );
+}
+
 export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
   const p = String(product || "").toUpperCase();
 
@@ -363,6 +386,20 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
   // en el limite es CADA PAÑO, y de eso ya se encarga el motor (calculateCompuestaQuote valida
   // paño por paño y rechaza con su motivo). Aca solo se valida el ALTO, comun a todos los paños.
   if (p.includes("COMPUESTA")) {
+    // 🔃 [2026-08-25] EN VERTICAL EL EJE COMUN ES EL OTRO. Los paños se apilan: el motor
+    // reparte el ALTO y lo que comparten todos pasa a ser el ANCHO. Validar el alto aca
+    // rechazaria la ventana del dueño (1200x2002: el total supera el maximo de un paño S60,
+    // pero ningun paño mide eso — miden 1000 cada uno y entran de sobra).
+    if (esCompuestaVertical(product)) {
+      const limV = FABRICATION_LIMITS.S60.ventana;
+      if (ancho_mm > limV.maxAncho) {
+        return {
+          message: `La ventana compuesta de ${ancho_mm} mm de ancho supera el máximo estándar (${limV.maxAncho} mm); precio referencial sujeto a confirmación en la visita técnica.`,
+          referencial: true,
+        };
+      }
+      return null;   // el alto lo valida el motor, paño por paño
+    }
     const limC = FABRICATION_LIMITS.S60.ventana;
     if (alto_mm > limC.maxAlto) {
       return {
@@ -534,6 +571,12 @@ export async function priceAllEngine(d, customer_id = "") {
         // [2026-08-25 · Codex] El eslabon que faltaba: sin esto los anchos de paño del
         // cliente morian en el pricer y toda compuesta salia 50/50.
         partes: Array.isArray(item.partes) && item.partes.length ? item.partes : undefined,
+        // [2026-08-25] El eje. `item.orientacion` gana (el LLM la leyo del pedido); si no
+        // viene, se mira como lo pidio el cliente. Sin señal: horizontal, como siempre.
+        orientacion: item.orientacion
+          || (tipo === "COMPUESTA"
+            && esCompuestaVertical(`${item.descripcion || ""} ${item.label || ""} ${item.producto || ""}`)
+            ? "vertical" : undefined),
       });
     } catch (err) {
       item.price_warning = "No se pudo cotizar automáticamente (motor); lo revisa un especialista.";
