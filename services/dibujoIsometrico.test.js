@@ -229,3 +229,16 @@ test('🔒 una ventana que no corre no tiene rieles ni traslape', () => {
     { producto_label: 'Ventana proyectante', measures: '1000x800', color: 'Roble' });
   assert.ok(p.hojas.every((h) => h.riel === null || h.riel === undefined));
 });
+
+test('🔴 [dueño 26-ago] la hoja INTERIOR va adelante, tapando a la exterior', () => {
+  // La ventana se dibuja vista DESDE ADENTRO (por eso se ve el junquillo), así que la hoja
+  // del riel interior es la que queda a la vista. Si se invirtiera, el cliente vería su
+  // ventana espejada: la hoja que él ve por delante quedaría atrás.
+  const p = dibujarVentanaIso(docFalso(), { x: 0, y: 0, w: 300, h: 240 },
+    { producto_label: 'Ventana corredera 2 hojas', measures: '2000x1500', color: 'Blanco' });
+  const orden = p.hojas.map((h) => h.riel);
+  assert.deepEqual(orden, [0, 1], 'se pinta primero la exterior (riel 0) y encima la interior (riel 1)');
+  // Y la de adelante se traslapa sobre la de atrás: por eso al cerrarse se leen como un perfil.
+  const atras = p.hojas.find((h) => h.riel === 0), adelante = p.hojas.find((h) => h.riel === 1);
+  assert.ok(atras.x + atras.w > adelante.x, 'las dos comparten la franja del encuentro');
+});

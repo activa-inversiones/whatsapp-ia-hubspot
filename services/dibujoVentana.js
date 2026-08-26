@@ -290,8 +290,12 @@ function repartirHojas(x, y, w, h, n, corre = false, traslape = 0) {
       w: paso + haciaIzq + haciaDer,
       h,
       idx: i,
-      // Riel: las pares atras, las impares adelante. Es la convencion de la fabrica y define
-      // cual hoja pasa por delante de cual.
+      // 🔴 RIEL, Y CUAL SE VE ADELANTE (dueño, 2026-08-26): *"la hoja INTERIOR va adelante
+      // tapando a la exterior"*. Todas nuestras ventanas se dibujan VISTAS DESDE ADENTRO
+      // —por eso se ve el junquillo—, asi que la hoja que corre por el riel interior es la
+      // que queda a la vista. riel 1 = INTERIOR = adelante; riel 0 = exterior = atras.
+      // Es una convencion declarada, no una medicion: si un modelo invierte los rieles, se
+      // cambia aca y en un solo lugar.
       riel: corre ? (i % 2 === 0 ? 0 : 1) : null,
     };
   });
