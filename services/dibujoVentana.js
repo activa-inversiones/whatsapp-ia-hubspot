@@ -244,7 +244,10 @@ function repartirPorPartes(x, y, w, h, partes, montante, vertical = false) {
 
 function hojasDe(it) {
   if (it?.corredera?.hojas) return Math.max(1, Number(it.corredera.hojas) || 1);
-  const m = String(it?.product || "").toLowerCase().match(/(\d)\s*hoja/);
+  // 🔴 [2026-08-25] LEIA SOLO `product` Y EL MOTOR EMITE `producto_label`. Una corredera de
+  // 3 o 4 hojas caia al default de 2 y se dibujaba con dos: el cliente veia una ventana que
+  // no era la suya. `tipoDe` ya miraba los dos campos; esto se habia quedado atras.
+  const m = String(it?.product || it?.producto_label || "").toLowerCase().match(/(\d)\s*hoja/);
   if (m) return Math.max(1, Number(m[1]));
   const t = tipoDe(it);
   if (t === "PUERTA_DOBLE") return 2;
@@ -360,9 +363,20 @@ function planoDeVentana(it, caja) {
   // cuelga del marco con su Bead y NO hay sash. La estructura del dibujo era correcta; lo que
   // estaba mal eran los gruesos.
   const MARCO_ABRE_MM = 40, MARCO_FIJO_MM = 48, HOJA_MM = 58, JUNQUILLO_MM = 18.5;
+  // 🔴 [2026-08-25, dato del dueño] LA HOJA DE UNA CORREDERA NO MIDE LO MISMO QUE LA DE UNA
+  // S60. Textual: *"la hoja tiene distintas alturas, por ejemplo 80 mm, 98 mm, depende del
+  // modelo"*. Son las mismas opciones que ya cotiza el motor (H80 economica / H98 reforzada,
+  // y en Andes H54 / H66): el dibujo tiene que mostrar la que se le cotizo, no una fija.
+  // Si el item no dice cual, se usa la H80 — que es la que el motor toma por defecto en las
+  // hojas de menos de 900 mm, o sea la corredera tipica.
+  const HOJA_CORREDERA_DEFAULT_MM = 80;
+  const hojaDelItem = Number(it?.hoja_mm ?? it?.hojaMm ?? it?.perfil_hoja_mm);
+  const anchoHojaMm = tipo === "CORREDERA"
+    ? (Number.isFinite(hojaDelItem) && hojaDelItem > 0 ? hojaDelItem : HOJA_CORREDERA_DEFAULT_MM)
+    : (Number.isFinite(hojaDelItem) && hojaDelItem > 0 ? hojaDelItem : HOJA_MM);
   const marcoDe = (t) => Math.max(2, (t === "FIJA" ? MARCO_FIJO_MM : MARCO_ABRE_MM) * escala);
   const marco = marcoDe(tipo);
-  const perfilHoja = Math.max(1.8, HOJA_MM * escala);
+  const perfilHoja = Math.max(1.8, anchoHojaMm * escala);
   const junquillo = Math.max(0.9, JUNQUILLO_MM * escala);
 
   const intX = x + marco, intY = y + marco;
@@ -441,9 +455,10 @@ function planoDeVentana(it, caja) {
     };
   }
 
-  // El traslape de una corredera es el perfil de encuentro de las dos hojas. Winart lo trae
-  // como `il` (interlock) = 58 mm en la S60, igual que el resto del perfil de hoja.
-  const TRASLAPE_MM = 58;
+  // El traslape es el perfil de encuentro de las dos hojas, y mide lo mismo que la hoja:
+  // Winart lo trae como `il` (interlock) con el mismo valor que `sa` (sash). Por eso sigue al
+  // ancho de hoja del modelo — una H98 traslapa mas que una H80.
+  const TRASLAPE_MM = anchoHojaMm;
   const corre = tipo === "CORREDERA";
   const hojas = repartirHojas(intX, intY, intW, intH, n, corre, TRASLAPE_MM * escala).map((r) => {
     // El perfil de la hoja NO puede ser más grueso que la hoja misma. Con un piso fijo en el
@@ -470,11 +485,15 @@ function planoDeVentana(it, caja) {
     };
   });
 
-  // 🔴 Se pintan primero las hojas del riel de ATRAS: si no, la de atras taparia a la de
-  // adelante justo en el traslape y se veria al reves de como esta armada la ventana.
-  if (corre) hojas.sort((a, b) => (a.riel || 0) - (b.riel || 0));
+  // 🔴 [Gemini, compuerta] LOS ROTULOS VAN ANTES DE ORDENAR. Estaban despues, asi que en una
+  // corredera se asignaban en orden de PINTADO y no de izquierda a derecha: la hoja A1 podia
+  // terminar rotulada A2. En una cotizacion eso manda a fabricar la manilla en la hoja
+  // equivocada. El orden visual manda para el rotulo; el de riel, solo para pintar.
   const rotulos = etiquetasDePanos(hojas.map(() => tipo));
   hojas.forEach((hj, i) => { hj.tipo = hj.tipo || tipo; hj.rotulo = rotulos[i]; hj.manilla = manillaDe(hj, escala); });
+  // Recien ahora se ordena para pintar: primero las del riel de ATRAS. Al reves, la de atras
+  // taparia a la de adelante justo en el traslape y se veria como no esta armada la ventana.
+  if (corre) hojas.sort((a, b) => (a.riel || 0) - (b.riel || 0));
   return {
     tipo, ancho, alto, escala, color, vidrio, glassCode: codigoVidrio(it),
     cotas: cotasDe({ x, y, w, h, ancho, alto }),

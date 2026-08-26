@@ -493,3 +493,56 @@ test('🔒 en un paño diminuto la manilla se achica en vez de desbordarse', () 
     assert.ok(q.w > 0 && q.h > 0, 'y nunca negativa');
   }
 });
+
+// ── La hoja mide distinto según el modelo ─────────────────────────────────────
+// [2026-08-25, dato del dueño] "la hoja tiene distintas alturas, por ejemplo 80 mm, 98 mm,
+// depende del modelo". Son las mismas opciones que ya cotiza el motor (H80 económica / H98
+// reforzada). El dibujo tiene que mostrar la que se le cotizó, no una fija para todas.
+
+test('🔴 una corredera H98 tiene la hoja MÁS ANCHA que una H80', () => {
+  const base = { producto_label: 'Ventana corredera 2 hojas', measures: '1500x1200', color: 'Blanco' };
+  const h80 = planoDeVentana({ ...base, hoja_mm: 80 }, { x: 0, y: 0, w: 300, h: 240 });
+  const h98 = planoDeVentana({ ...base, hoja_mm: 98 }, { x: 0, y: 0, w: 300, h: 240 });
+  assert.ok(h98.perfilHoja > h80.perfilHoja, 'la H98 se ve más robusta, que es lo que es');
+  assert.ok(Math.abs(h98.perfilHoja / h80.perfilHoja - 98 / 80) < 0.02, 'en la proporción real');
+});
+
+test('🔴 sin dato, una corredera usa H80 — y NO los 58 mm de la S60', () => {
+  const corr = planoDeVentana({ producto_label: 'Ventana corredera 2 hojas', measures: '1500x1200', color: 'Blanco' }, { x: 0, y: 0, w: 300, h: 240 });
+  assert.ok(Math.abs(corr.perfilHoja - 80 * corr.escala) < 0.01, 'H80, el default del motor');
+});
+
+test('🔒 una proyectante sigue con la hoja S60 de 58 mm', () => {
+  const p = planoDeVentana({ producto_label: 'Ventana proyectante', measures: '1000x800', color: 'Roble' }, { x: 0, y: 0, w: 300, h: 240 });
+  assert.ok(Math.abs(p.perfilHoja - 58 * p.escala) < 0.01);
+});
+
+test('🔴 [Gemini] los rótulos siguen el orden VISUAL, no el de pintado', () => {
+  // En una corredera las hojas se ordenan por riel para pintarlas. Si los rótulos se
+  // asignaran después, A1 podría terminar sobre la hoja de la derecha — y eso manda a
+  // fabricar la manilla en la hoja equivocada.
+  // Con 3 hojas: los rieles quedan 0,1,0 — al ordenar por riel el orden cambia de verdad
+  // (0,2,1). Con 2 hojas el orden no cambia y el test no probaría nada.
+  const p = planoDeVentana({ producto_label: 'Ventana corredera 3 hojas', measures: '2400x1200', color: 'Blanco' }, { x: 0, y: 0, w: 300, h: 240 });
+  assert.equal(p.hojas.length, 3);
+  const izqADer = [...p.hojas].sort((a, b) => a.x - b.x);
+  assert.deepEqual(izqADer.map((h) => h.rotulo), ['A1', 'A2', 'A3'], 'A1 es la de más a la izquierda');
+});
+
+test('🔒 un dato de hoja basura no rompe el dibujo', () => {
+  for (const malo of [0, -80, 'ochenta', null]) {
+    const p = planoDeVentana({ producto_label: 'Ventana corredera 2 hojas', measures: '1500x1200', color: 'Blanco', hoja_mm: malo }, { x: 0, y: 0, w: 300, h: 240 });
+    assert.ok(p.perfilHoja > 0 && Number.isFinite(p.perfilHoja), `hoja_mm=${malo}`);
+  }
+});
+
+test('🔴 una corredera de 3 o 4 hojas se dibuja con 3 o 4, no con 2', () => {
+  // `hojasDe` leía solo `product`, pero el motor emite `producto_label`: una corredera de 3
+  // hojas caía al default de 2 y el cliente veía una ventana que no era la suya.
+  for (const n of [2, 3, 4]) {
+    const p = planoDeVentana({ producto_label: `Ventana corredera ${n} hojas`, measures: '2400x1200', color: 'Blanco' }, { x: 0, y: 0, w: 300, h: 240 });
+    assert.equal(p.hojas.length, n, `${n} hojas`);
+  }
+  // Y sigue funcionando con el campo viejo.
+  assert.equal(planoDeVentana({ product: 'Ventana corredera 3 hojas', measures: '2400x1200', color: 'Blanco' }, { x: 0, y: 0, w: 300, h: 240 }).hojas.length, 3);
+});
