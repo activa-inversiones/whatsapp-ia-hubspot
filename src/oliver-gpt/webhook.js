@@ -1527,6 +1527,15 @@ Comuna: ${datos.comuna}`
     const toolCtx = {
       telefono: from,
 
+      // 🔴 [2026-08-26] LAS PALABRAS DEL CLIENTE VIAJAN HASTA EL MOTOR. Sin esto el motor
+      // solo veia numeros y tenia que ADIVINAR si "220 x 200" era ancho x alto o al reves.
+      // Paula lo habia escrito ("LAS MEDIDAS ESTAN ALTO POR ANCHO") y se le cotizo dado
+      // vuelta igual, porque esa frase no llegaba a donde se decide.
+      textoCliente: [
+        ...(history || []).filter((m) => m && m.role === 'user').map((m) => String(m.content || '')),
+        String(userText || ''),
+      ].join('  '),
+
       // ── [2026-08-21] INFORME TÉRMICO ANTES DE LA COTIZACIÓN ──────────────────
       // Idea del dueño: mandarle al cliente el dato normativo de su comuna JUSTO
       // cuando Oliver empieza a calcular, "para que lo lea mientras le decimos
@@ -1936,7 +1945,22 @@ Comuna: ${datos.comuna}`
             ]),
             total: Number(input.grand_total) || 0,
           });
-          const _prevQuote = RECENT_QUOTES.get(from);
+          //
+          // 🔴 [2026-08-26] EL GUARDIA VIVIA SOLO EN MEMORIA, Y ASI NO GUARDA NADA.
+          // Caso real: Paula (0346) recibio DOS VECES la misma propuesta y DOS VECES el
+          // video de la fabrica. El `Map` se borra en cada deploy de Railway y no se
+          // comparte entre instancias, asi que despues de un redeploy el guardia queda
+          // ciego y el reintento de Meta pasa derecho.
+          // Es EXACTAMENTE el mismo agujero que ya se habia tapado el 08-ago para el
+          // dedupe de msgId (arriba, `msg:${msgId}`) — este se habia quedado atras.
+          // Mismo remedio y mismo fail-safe: se consulta el respaldo solo cuando la
+          // memoria no sabe, y si la red se cae se degrada al comportamiento anterior.
+          const _claveQuote = `quotesig:${String(from).replace(/\D/g, '')}`;
+          let _prevQuote = RECENT_QUOTES.get(from);
+          if (!_prevQuote) {
+            try { _prevQuote = (await (deps.leerEstado || leerEstado)(_claveQuote)) || null; }
+            catch { /* red caida: se degrada al guardia en memoria */ }
+          }
           if (_prevQuote && (Date.now() - _prevQuote.at) < QUOTE_DEDUP_MS && _prevQuote.sig === _quoteSig) {
             log('info', 'generarPdf.dedup',
               `Cotización IDÉNTICA duplicada evitada para ${from}; reusando ${_prevQuote.quote_number}`);
@@ -2000,7 +2024,12 @@ Comuna: ${datos.comuna}`
           }
 
           // Correlativo quemado → registrar (con firma de contenido) para el guard anti-duplicado.
-          RECENT_QUOTES.set(from, { quote_number: quoteNumber, at: Date.now(), sig: _quoteSig });
+          const _marcaQuote = { quote_number: quoteNumber, at: Date.now(), sig: _quoteSig };
+          RECENT_QUOTES.set(from, _marcaQuote);
+          // El respaldo sobrevive al redeploy. TTL corto: solo tiene que cubrir la ventana
+          // de reintentos, no la vida del trato.
+          try { await (deps.escribirEstado || escribirEstado)(_claveQuote, _marcaQuote, 15 * 60); }
+          catch { /* el guardia en memoria sigue cubriendo esta instancia */ }
           if (RECENT_QUOTES.size > 500) RECENT_QUOTES.clear(); // backstop de memoria
 
           // ── Paso 2: Generar PDF premium ──────────────────────────────────────

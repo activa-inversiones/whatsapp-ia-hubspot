@@ -453,6 +453,35 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
  * @param {string} [customer_id]
  * @returns {Promise<{ok:boolean,total?:number,source?:string,escalate:boolean,reason?:string,error?:string,partial?:boolean}>}
  */
+/**
+ * ¿El cliente DIJO en que orden manda las medidas?
+ *
+ * 🔴 [2026-08-26] NACIO DE UN ERROR QUE LE COSTO PLATA AL DUEÑO. Paula escribio, textual:
+ * *"LAS MEDIDAS ESTAN ALTO POR ANCHO — 1 DE 220 x 200 CORREDERA..."* y se le cotizo al
+ * reves: 2200 de ancho x 2000 de alto, cuando pedia 2000 de ancho x 2200 de alto. Una
+ * corredera con esas dos medidas cambiadas NO vale lo mismo ni se fabrica igual.
+ *
+ * La regla que habia deducia la orientacion por FISICA: si algun alto pasaba los 2400 mm,
+ * la tabla venia al reves. Con 2200 de maximo nunca se disparo. La deduccion es un buen
+ * respaldo, pero cuando el cliente lo dice con todas las letras, **lo que dice manda**.
+ *
+ * @returns {'alto_ancho'|'ancho_alto'|null}
+ */
+export function orientacionDeclarada(texto) {
+  const t = String(texto || "")
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "");   // "están" y "estan" son lo mismo
+  const SEP = "(?:por|x|\\*|/|,|-)";
+  if (new RegExp(`\\balto\\s*${SEP}\\s*anch(?:o|as)\\b`).test(t)) return "alto_ancho";
+  if (new RegExp(`\\banch(?:o|as)\\s*${SEP}\\s*alto\\b`).test(t)) return "ancho_alto";
+  // "primero el alto" / "el alto va primero" / "empiezan por el alto"
+  if (new RegExp(`\\b(?:primero|empiezan?\\s+(?:por|con)|va\\s+primero)\\s+(?:el\\s+)?alto\\b`).test(t)
+   || new RegExp(`\\balto\\s+(?:va|viene|esta)\\s+primero\\b`).test(t)) return "alto_ancho";
+  if (new RegExp(`\\b(?:primero|empiezan?\\s+(?:por|con)|va\\s+primero)\\s+(?:el\\s+)?ancho\\b`).test(t)
+   || new RegExp(`\\bancho\\s+(?:va|viene|esta)\\s+primero\\b`).test(t)) return "ancho_alto";
+  return null;
+}
+
 export async function priceAllEngine(d, customer_id = "") {
   if (!d || !Array.isArray(d.items) || d.items.length === 0) {
     return { ok: false, error: "No hay items para cotizar.", escalate: false };
@@ -468,7 +497,20 @@ export async function priceAllEngine(d, customer_id = "") {
   // en TODOS los items (consistente, no solo en algunos). Así "210/270, 150/185, 50/190..."
   // se corrige completa (V16 50/190 → ancho 1900/alto 500), no solo las grandes.
   const measured = d.items.map((it) => normMeasuresLocal(it.measures || ""));
-  const tableIsAltoAncho = measured.some((mm) => mm && mm.alto_mm > 2400);
+  // 🔴 [2026-08-26] LO QUE EL CLIENTE DICE MANDA SOBRE LO QUE NOSOTROS DEDUCIMOS.
+  // La regla de los 2400 mm es una DEDUCCION (ninguna ventana es mas alta que el techo), y
+  // como toda deduccion falla en los casos que no previo: con la lista de Paula, cuyo maximo
+  // era 2200, no se disparo — y ella habia escrito "ESTAN ALTO POR ANCHO". Se le cotizaron
+  // las ventanas dadas vuelta. Ahora la frase del cliente decide, y la fisica queda de
+  // respaldo para cuando no dice nada.
+  const _declarado = orientacionDeclarada([
+    d.texto_cliente,
+    ...d.items.map((it) => [it.descripcion, it.product, it.ambiente].filter(Boolean).join(" ")),
+  ].filter(Boolean).join(" \n "));
+  const tableIsAltoAncho = _declarado
+    ? _declarado === "alto_ancho"
+    : measured.some((mm) => mm && mm.alto_mm > 2400);
+  if (_declarado) d.orientacion_declarada = _declarado;   // para el aviso al cliente
   if (tableIsAltoAncho) {
     for (const mm of measured) {
       if (mm) { const _t = mm.ancho_mm; mm.ancho_mm = mm.alto_mm; mm.alto_mm = _t; }

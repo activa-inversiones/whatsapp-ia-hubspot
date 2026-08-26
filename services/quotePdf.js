@@ -66,7 +66,13 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
 
       const items = data.items || [];
       let neto = 0;
-      const rowH = 60; // [thermal] +4px de aire para la línea Uw bajo la descripción (sin apretar)
+      // 🔴 [2026-08-25, correccion del dueño] LAS FIGURAS SE VEIAN MAL PORQUE ERAN DIMINUTAS.
+      // La fila media 60 px y el dibujo 100x52; de ahi las cotas se comen ~22, asi que la
+      // ventana quedaba en ~30 px de alto — ilegible. Textual: *"se ven mal las figuras,
+      // deberian estar mas grandes"*. La fila pasa a 96 px y el dibujo a 106x86: la ventana
+      // triplica su superficie y se leen los paños, la apertura y las cotas.
+      // Cuesta ~3 filas menos por pagina, y vale la pena: es lo primero que mira el cliente.
+      const rowH = 96;
       items.forEach((it, idx) => {
         if (y + rowH > doc.page.height - 90) {           // salto de página
           doc.addPage(); header(doc, quoteNumber); y = 110; y = tableHead(doc, y);
@@ -74,29 +80,29 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         const bg = idx % 2 === 0 ? "#F7F9FC" : "#FFFFFF";
         doc.rect(50, y, doc.page.width - 100, rowH).fill(bg);
         // dibujo ventana
-        dibujarVentana(doc, { x: 54, y: y + 4, w: 100, h: rowH - 8 }, it);
+        dibujarVentana(doc, { x: 52, y: y + 5, w: 106, h: rowH - 10 }, it);
         // descripción
         const col = COLORES[claveColor(it.color)] || COLORES.blanco;
         const label = it.producto_label || (it.product || "Ventana").replace(/_/g, " ");
         const ms = medidas(it.measures);
         const m2 = ((ms.ancho / 1000) * (ms.alto / 1000)).toFixed(2);
         const vidrio = it.glass_label || "Termopanel DVH";
-        doc.fillColor(DARK).fontSize(9).font("Helvetica-Bold").text(`V${idx + 1} · ${label}`, 165, y + 7, { width: 190 });
+        doc.fillColor(DARK).fontSize(9).font("Helvetica-Bold").text(`V${idx + 1} · ${label}`, 165, y + 22, { width: 190 });
         doc.fillColor(GRAY).fontSize(7.5).font("Helvetica")
-           .text(`${ms.ancho}×${ms.alto} mm · ${m2} m² · ${col.nombre} · ${vidrio}`, 165, y + 22, { width: 190 });
+           .text(`${ms.ancho}×${ms.alto} mm · ${m2} m² · ${col.nombre} · ${vidrio}`, 165, y + 38, { width: 190 });
         // [thermal] Uw discreto bajo la descripción — SOLO si vino del motor (null=H98 → nada)
         if (it.termico && Number(it.termico.uw) > 0) {
           doc.fillColor(GRAY).fontSize(6.8).font("Helvetica-Oblique")
-             .text(`Uw = ${Number(it.termico.uw).toFixed(2)} W/m²K · ISO 10077-1`, 165, y + 34, { width: 190 });
+             .text(`Uw = ${Number(it.termico.uw).toFixed(2)} W/m²K · ISO 10077-1`, 165, y + 51, { width: 190 });
         }
-        doc.fillColor("#1E96F7").fontSize(7).font("Helvetica").text("Ver en 3D / probar en tu pared", 165, y + 46, { width: 190 });
+        doc.fillColor("#1E96F7").fontSize(7).font("Helvetica").text("Ver en 3D / probar en tu pared", 165, y + 64, { width: 190 });
         // números
         const qty = Number(it.qty) || 1, unit = Number(it.unit_price) || 0, sub = unit * qty;
         neto += sub;
         doc.fillColor(DARK).fontSize(9).font("Helvetica");
-        doc.text(String(qty), 360, y + 22, { width: 36, align: "center" });
-        doc.text(fmt(unit), 398, y + 22, { width: 70, align: "right" });
-        doc.font("Helvetica-Bold").text(fmt(sub), 470, y + 22, { width: 75, align: "right" });
+        doc.text(String(qty), 360, y + 40, { width: 36, align: "center" });
+        doc.text(fmt(unit), 398, y + 40, { width: 70, align: "right" });
+        doc.font("Helvetica-Bold").text(fmt(sub), 470, y + 40, { width: 75, align: "right" });
         y += rowH;
         doc.moveTo(50, y).lineTo(doc.page.width - 50, y).lineWidth(0.5).strokeColor(LINE).stroke();
       });

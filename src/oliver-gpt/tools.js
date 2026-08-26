@@ -749,6 +749,10 @@ export async function runTool(name, input = {}, ctx = {}) {
           orientacion: input.orientacion || undefined }],
         comuna: input.comuna || '',
         default_color: input.color || '',
+        // Las palabras del cliente: el motor las necesita para saber si la lista viene
+        // alto x ancho o ancho x alto, en vez de deducirlo por el tamaño.
+        texto_cliente: [ctx.textoCliente, input.medidas_texto, input.descripcion_producto]
+          .filter(Boolean).join(' \n '),
       };
       const r = await priceAllEngine(d);
       const it = d.items[0] || {};
