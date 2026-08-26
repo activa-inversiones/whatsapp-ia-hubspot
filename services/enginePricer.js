@@ -604,8 +604,18 @@ export async function priceAllEngine(d, customer_id = "") {
     // que la ventana era horizontal, validaba el ALTO contra el maximo de un paño S60 y
     // marcaba REFERENCIAL una compuesta vertical perfectamente fabricable. Con el texto del
     // cliente al lado, la rama vertical se activa y valida el eje correcto.
+    // 🔴 [2026-08-26] Y SI EL ITEM NO TRAE LA SEÑAL, SE MIRA LO QUE ESCRIBIO EL CLIENTE.
+    // Medido en la propuesta 0354: las tres compuestas salieron `referencial: true` porque
+    // aca solo llegaba el tipo ("COMPUESTA") — las palabras "superior/inferior" viven en el
+    // mensaje de la clienta, no en el item. El validador creia horizontal, comparaba el ALTO
+    // contra el maximo de un paño y marcaba fuera de estandar una ventana fabricable.
+    // El texto del ITEM manda; el del cliente es el respaldo. ⚠️ Es un texto de la LISTA
+    // completa: si un pedido mezclara una compuesta horizontal con una vertical, las dos se
+    // leerian iguales. Hoy no pasa (o son todas o ninguna) y solo afecta a las COMPUESTAS.
+    const _textoParaEje = `${tipo} ${item.descripcion || ""} ${item.product || ""}`;
     const dim = validateDimensionsLocal(
-      `${tipo} ${item.descripcion || ""} ${item.product || ""}`, m.ancho_mm, m.alto_mm);
+      esCompuestaVertical(_textoParaEje) ? _textoParaEje : `${_textoParaEje} ${d.texto_cliente || ""}`,
+      m.ancho_mm, m.alto_mm);
     if (dim && dim.escalate) {
       item.price_warning = dim.message;
       item.source = "activa_engine"; item.confidence = "manual";
@@ -650,9 +660,11 @@ export async function priceAllEngine(d, customer_id = "") {
         partes: Array.isArray(item.partes) && item.partes.length ? item.partes : undefined,
         // [2026-08-25] El eje. `item.orientacion` gana (el LLM la leyo del pedido); si no
         // viene, se mira como lo pidio el cliente. Sin señal: horizontal, como siempre.
+        // El eje: lo que diga el item manda; si no dice nada, lo que escribio el cliente.
         orientacion: item.orientacion
           || (tipo === "COMPUESTA"
-            && esCompuestaVertical(`${item.descripcion || ""} ${item.label || ""} ${item.producto || ""}`)
+            && esCompuestaVertical(
+              `${item.descripcion || ""} ${item.label || ""} ${item.producto || ""} ${item.product || ""} ${d.texto_cliente || ""}`)
             ? "vertical" : undefined),
       });
     } catch (err) {

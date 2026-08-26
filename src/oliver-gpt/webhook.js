@@ -2015,12 +2015,31 @@ Comuna: ${datos.comuna}`
                 color:    it.color || '',
                 qty:      Number(it.qty) || 1,
                 ambiente: it.ambiente || '',
+                descripcion: it.descripcion || it.ambiente || '',
               })),
               comuna: input.comuna || state.comuna || '',
+              // 🔴 [2026-08-26] SIN EL TEXTO DEL CLIENTE, ACA NO SE CORRIGE NADA. Este es el
+              // punto por donde sale el PDF, y trabajaba a ciegas: no sabia que la clienta
+              // habia escrito "LAS MEDIDAS ESTAN ALTO POR ANCHO".
+              texto_cliente: _textoCliente,
             };
             await priceAllEngine(_therm);
             (input.items || []).forEach((it, k) => {
-              it.termico = _therm.items[k]?.termico || null; // motor manda; sin termico → null
+              const _t = _therm.items[k];
+              // 🔴 [2026-08-26] LA MEDIDA CORREGIDA VUELVE AL ITEM QUE VE EL CLIENTE.
+              // El arreglo anterior escribia la medida dada vuelta en el item... pero ESTE
+              // bloque trabaja sobre COPIAS (el .map de arriba), asi que la correccion moria
+              // en la copia y el PDF seguia mostrando lo que escribio la clienta.
+              // Medido en la propuesta 0354 de Paula: precio de una ventana de 2000x2200
+              // (correcto) impreso sobre "2200x2000". Y de ahi salia ademas el
+              // `referencial: true` de las tres compuestas — el validador veia 2200 de ancho.
+              if (_t && _t.measures_swapped && _t.measures) {
+                it.measures_texto_cliente = it.measures_texto_cliente || it.measures;
+                it.measures = _t.measures;
+                const _mm = String(_t.measures).match(/^(\d+)x(\d+)/);
+                if (_mm) { it.ancho_mm = Number(_mm[1]); it.alto_mm = Number(_mm[2]); }
+              }
+              it.termico = _t?.termico || null; // motor manda; sin termico → null
               // [2026-07-07] referencial = medida fuera de estándar (sobre máx o bajo mín). Motor-truth
               // para TODOS los ítems (no depende de que el LLM lo pase) → dispara la escalación de abajo.
               if (_therm.items[k]?.referencial) {
@@ -2300,9 +2319,31 @@ Comuna: ${datos.comuna}`
               const disponibles = Object.keys(ids);
               if (!disponibles.length) return;            // todavia no se subio ninguno
 
+              // 🔴 [2026-08-26] UN VIDEO DE CORTESIA POR TANDA, NO UNO POR PDF. Medido dos
+              // veces en la conversacion de Paula: pidio DOS cotizaciones (negra y blanca),
+              // salieron dos PDF —los dos correctos— y detras salieron DOS VIDEOS. El bloque
+              // vive dentro del envio del PDF, asi que se dispara una vez por documento.
+              // Dos propuestas son dos documentos; dos videos de la fabrica son spam.
+              const claveTanda = `video_tanda:${String(from).replace(/\D/g, '')}`;
+              try {
+                if (await (deps.leerEstado || leerEstado)(claveTanda)) return;
+                await (deps.escribirEstado || escribirEstado)(claveTanda, true, 10 * 60);
+              } catch { /* sin respaldo, el peor caso vuelve a ser el de hoy */ }
+
               const vistos = (await (deps.leerEstado || leerEstado)(claveVistos)) || [];
               const video = elegirVideo({ vistos, disponibles });
               if (!video) return;                          // ya los vio todos
+
+              // 🔴 SE MARCA ANTES DE MANDAR, NO DESPUES. El orden viejo era leer → elegir →
+              // ENVIAR → marcar, y entre el envio y la marca pasan segundos: dos pasadas leian
+              // la MISMA lista y elegian EL MISMO video. Es exactamente lo que se midio — no
+              // dos videos distintos, el mismo dos veces. Marcar primero invierte el riesgo
+              // hacia el lado correcto: en el peor caso el cliente se pierde UN video de
+              // cortesia; en el otro recibe dos iguales, que es lo que el dueño reporto.
+              try {
+                await (deps.escribirEstado || escribirEstado)(
+                  claveVistos, [...vistos, video.id], 180 * 24 * 3600);
+              } catch { /* sin respaldo queda el riesgo de hoy, no uno peor */ }
 
               // Despues del informe termico, para no encimarle tres mensajes seguidos.
               await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: DEMORA_VIDEO_MS });
@@ -2315,7 +2356,7 @@ Comuna: ${datos.comuna}`
                 log('warn', 'generarPdf.video', `video ${video.id} no se entrego (${env?.error || 's/detalle'}) — id descartado`);
                 return;
               }
-              await (deps.escribirEstado || escribirEstado)(claveVistos, [...vistos, video.id], 180 * 24 * 3600);
+              // (la marca ya quedo puesta ANTES del envio — ver arriba)
               safe('generarPdf.video.espejo', () => bridge.pushConversationEvent({
                 channel: 'whatsapp', external_id: from, direction: 'outbound',
                 actor_type: 'ai', actor_name: 'Oliver', message_type: 'video',
