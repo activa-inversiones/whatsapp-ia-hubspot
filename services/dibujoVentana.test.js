@@ -361,3 +361,33 @@ test('🔒 sin orientacion se dibuja HORIZONTAL: ninguna compuesta vieja cambia 
   assert.equal(p.marcos[0].y, p.marcos[1].y, 'lado a lado, no apilados');
   assert.ok(p.marcos[0].w > p.marcos[1].w, '1200 > 800');
 });
+
+// ── ESCALA REAL DEL PERFIL S60 ────────────────────────────────────────────────
+// [2026-08-25] El dueño preguntó si el dibujo estaba a escala. NO lo estaba. Los gruesos
+// ahora salen del modelo real de Winart (versión 66979, campos `ps` y `fm.ew`):
+// marco 40 mm el que abre · 48 mm el fijo · hoja 58 mm · junquillo 18,5 mm.
+
+test('🔴 la HOJA es más gruesa que el marco, no al revés (58 vs 40 mm)', () => {
+  // El error que tenía: marco 60 / hoja 40. En la ventana real el bastidor que abre es el
+  // perfil más ancho de todos.
+  const p = planoDeVentana({ producto_label: 'Ventana proyectante', measures: '1200x1000', color: 'Roble' }, { x: 0, y: 0, w: 300, h: 250 });
+  assert.ok(p.perfilHoja > p.marco, `hoja (${p.perfilHoja}) debe ser mayor que marco (${p.marco})`);
+  assert.ok(Math.abs(p.perfilHoja / p.marco - 58 / 40) < 0.02, 'y en la proporción real 58:40');
+});
+
+test('🔴 el junquillo es el perfil más FINO de los tres', () => {
+  const p = planoDeVentana({ producto_label: 'Ventana proyectante', measures: '1200x1000', color: 'Roble' }, { x: 0, y: 0, w: 300, h: 250 });
+  assert.ok(p.junquillo < p.marco && p.junquillo < p.perfilHoja, 'junquillo < marco < hoja');
+  assert.ok(Math.abs(p.junquillo / p.marco - 18.5 / 40) < 0.02, 'proporción real 18,5:40');
+});
+
+test('🔴 el paño FIJO lleva marco MÁS ANCHO que el que abre (48 vs 40 mm)', () => {
+  // Winart lo trae así: `ps.f` = 48 en el frame de la fija, 40 en el de la proyectante.
+  const p = planoDeVentana({
+    producto_label: 'Ventana compuesta vertical', measures: '1200x2002', color: 'Roble',
+    compuesta: { orientacion: 'vertical', partes: [{ tipo: 'PROYECTANTE', alto_mm: 1000 }, { tipo: 'FIJA', alto_mm: 1000 }] },
+  }, { x: 0, y: 0, w: 200, h: 300 });
+  const [abre, fijo] = p.marcos;
+  assert.ok(fijo.marco > abre.marco, `el fijo (${fijo.marco}) más ancho que el que abre (${abre.marco})`);
+  assert.ok(Math.abs(fijo.marco / abre.marco - 48 / 40) < 0.02, 'en la proporción real 48:40');
+});

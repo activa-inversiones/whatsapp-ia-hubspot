@@ -218,15 +218,22 @@ function planoDeVentana(it, caja) {
 
   // Marco y hoja a escala real: 60 mm de marco y 40 mm de hoja son medidas de perfil PVC.
   // Con mínimos en px para que una ventana chica no quede con el marco invisible.
-  const marco = Math.max(2.5, 60 * escala);
-  const perfilHoja = Math.max(1.8, 40 * escala);
-  // 🔴 [2026-08-25, correccion del dueño contra el plano de Winart] EL JUNQUILLO NO ES LA
-  // HOJA. El junquillo es la varilla fina que sujeta el vidrio (~15 mm); la hoja es el perfil
-  // grueso del bastidor que ABRE (~40 mm). Se estaban dibujando iguales, y por eso todo salia
-  // con un borde gordo de mas. Textual del dueño: *"el junquillo es mucho mas delgado en la
-  // original de Winart"*. En un paño FIJO ni siquiera hay hoja — el vidrio va directo al
-  // marco con su junquillo, que es lo que se ve en el F1 de su plano.
-  const junquillo = Math.max(0.9, 15 * escala);
+  // 📏 [2026-08-25] MEDIDAS REALES DEL PERFIL S60, LEIDAS DE WINART — no estimadas.
+  // El dueño pregunto si el dibujo estaba a escala. No lo estaba: se usaba marco 60 / hoja 40,
+  // o sea el marco MAS GRUESO que la hoja, cuando en la ventana real es al reves. Los valores
+  // salen del modelo de la version 66979 (campo `ps` y `fm.ew` de cada Frame):
+  //   marco del paño que ABRE .... 40 mm      (ps.f = 40, ew [40,40,40,40])
+  //   marco del paño FIJO ........ 48 mm      (ps.f = 48 — el fijo lleva marco mas ancho)
+  //   hoja / bastidor ............ 58 mm      (ps.sa = 58, ew [58,58,58,58])
+  //   junquillo (Bead) ........... 18,5 mm    (ps.b = 18.5, en los dos paños)
+  // Winart tambien confirma lo que ya habiamos deducido del plano: en el paño FIJO el vidrio
+  // cuelga del marco con su Bead y NO hay sash. La estructura del dibujo era correcta; lo que
+  // estaba mal eran los gruesos.
+  const MARCO_ABRE_MM = 40, MARCO_FIJO_MM = 48, HOJA_MM = 58, JUNQUILLO_MM = 18.5;
+  const marcoDe = (t) => Math.max(2, (t === "FIJA" ? MARCO_FIJO_MM : MARCO_ABRE_MM) * escala);
+  const marco = marcoDe(tipo);
+  const perfilHoja = Math.max(1.8, HOJA_MM * escala);
+  const junquillo = Math.max(0.9, JUNQUILLO_MM * escala);
 
   const intX = x + marco, intY = y + marco;
   const intW = Math.max(1, w - 2 * marco), intH = Math.max(1, h - 2 * marco);
@@ -255,7 +262,9 @@ function planoDeVentana(it, caja) {
     const hojasC = marcosC.map((r, i) => {
       const tp = tipoDeParte(partes[i].tipo);
       // Cada paño tiene su PROPIO marco de los 4 lados: la hoja arranca adentro de él.
-      const mx = Math.min(marco, r.w / 3), my = Math.min(marco, r.h / 3);
+      // Cada paño es una ventana completa y lleva SU marco: 48 mm el fijo, 40 mm el que abre.
+      const marcoP = marcoDe(tp);
+      const mx = Math.min(marcoP, r.w / 3), my = Math.min(marcoP, r.h / 3);
       const hoja = {
         x: r.x + mx, y: r.y + my,
         w: Math.max(0.5, r.w - 2 * mx), h: Math.max(0.5, r.h - 2 * my),
@@ -285,7 +294,8 @@ function planoDeVentana(it, caja) {
       tipo, ancho, alto, escala, color, vidrio,
       // Sin marco exterior único: `marcos` son los marcos completos, uno por paño.
       marcoRect: null,
-      marcos: marcosC.map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h })),
+      // Cada marco viaja con su propio grosor: lo usa el pintado para el inglete.
+      marcos: marcosC.map((r, i) => ({ x: r.x, y: r.y, w: r.w, h: r.h, marco: marcoDe(tipoDeParte(partes[i].tipo)) })),
       marco, perfilHoja, junquillo, hojas: hojasC,
       compuesta: {
         orientacion: esVertical ? 'vertical' : 'horizontal',
@@ -341,7 +351,7 @@ function dibujarVentana(doc, caja, it) {
     // INGLETE: los perfiles de PVC se cortan a 45 grados y se sueldan en la esquina. Winart
     // lo dibuja y es lo que hace que el marco se lea como un marco y no como un rectangulo
     // pintado. Cuatro lineas, y el plano pasa a parecerse al que el cliente ya conoce.
-    const g = Math.min(p.marco, m.w / 2, m.h / 2);
+    const g = Math.min(m.marco || p.marco, m.w / 2, m.h / 2);
     if (g > 0.4) {
       doc.save().lineWidth(0.35).strokeColor(p.color.e);
       doc.moveTo(m.x, m.y).lineTo(m.x + g, m.y + g).stroke();
