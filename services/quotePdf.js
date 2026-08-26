@@ -79,10 +79,19 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       // de 106 a 152 de ancho: cada ventana ocupa mas del doble de superficie que hace una hora.
       // 📏 [2026-08-26] 112 px, y el numero esta MEDIDO con la lista real de Paula (7 ventanas,
       // tres de ellas compuestas con label largo), no elegido a ojo:
-      //     148 → 3 hojas · 126 → 3 · 118 → 3 · **112 → 2** · 106 → 2
-      // Se toma el mayor que entra en 2: el dibujo queda en 98 px de alto, casi el doble de
-      // los 52 originales, y la propuesta no gasta una hoja de mas.
-      const rowH = 112;
+      //     148 → 3 hojas · 126 → 3 · 118 → 3 · 112 → 2 · 106 → 2
+      //
+      // 🔴 [2026-08-26, segunda vuelta] SE ELIGIO 140, NO EL QUE ENTRA EN 2 HOJAS. Con 112 la
+      // propuesta cabia en dos, pero el dueño no veia la division de sus ventanas compuestas:
+      // *"aun no se refleja la mitad proyectante y la mitad fija"*. Y tenia razon — el dibujo
+      // estaba BIEN calculado (dos marcos, corte al medio, proyectante arriba), pero una
+      // ventana de 1000x2200 en una fila de 98 px se dibuja de 45 px de ANCHO, y a ese tamaño
+      // el travesaño no se lee. Medido: 112→45 px · 126→51 · **140→57** · 156→65.
+      //
+      // El desperdicio real —dos hojas EN BLANCO por el pie de pagina— ya se elimino. Una
+      // tercera hoja que lleva el cierre y la firma no sobra: es parte de la propuesta. Un
+      // dibujo que el cliente no puede leer, en cambio, no sirve para nada.
+      const rowH = 140;
       items.forEach((it, idx) => {
         if (y + rowH > doc.page.height - 90) {           // salto de página
           doc.addPage(); header(doc, quoteNumber); y = 110; y = tableHead(doc, y);
