@@ -77,7 +77,12 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       // de colocar diez ventanas en la primera hoja, tal vez colocar cuatro, pero que de esas
       // cuatro la ventana se vea bien representada"*. La fila pasa de 96 a 148 px y el dibujo
       // de 106 a 152 de ancho: cada ventana ocupa mas del doble de superficie que hace una hora.
-      const rowH = 148;
+      // 📏 [2026-08-26] 112 px, y el numero esta MEDIDO con la lista real de Paula (7 ventanas,
+      // tres de ellas compuestas con label largo), no elegido a ojo:
+      //     148 → 3 hojas · 126 → 3 · 118 → 3 · **112 → 2** · 106 → 2
+      // Se toma el mayor que entra en 2: el dibujo queda en 98 px de alto, casi el doble de
+      // los 52 originales, y la propuesta no gasta una hoja de mas.
+      const rowH = 112;
       items.forEach((it, idx) => {
         if (y + rowH > doc.page.height - 90) {           // salto de página
           doc.addPage(); header(doc, quoteNumber); y = 110; y = tableHead(doc, y);
@@ -208,7 +213,15 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       doc.text("Gerente de Ingeniería · Activa Inversiones", 50, y, { lineBreak: false }); y += 10;
       doc.text("mcifuentes@activaspa.cl · +56 9 5729 6035", 50, y, { lineBreak: false }); y += 10;
 
-      // Footer
+      // ── Footer ───────────────────────────────────────────────────────────
+      // 🔴 [2026-08-26] ESTE PIE AGREGABA DOS PAGINAS EN BLANCO A **TODA** COTIZACION.
+      // Se dibuja a 800 px, por DEBAJO del margen inferior (842 - 50 = 792), y pdfkit agrega
+      // una pagina cada vez que un `text()` cae mas abajo del margen. Son dos lineas: dos
+      // paginas fantasma, en cada propuesta que se le mando a un cliente.
+      // Medido: un PDF de CERO items salia con 3 paginas.
+      // Se anula el margen inferior SOLO para pintar el pie, que es contenido fijo y va donde
+      // uno decide, no donde el flujo de texto lo lleve.
+      doc.page.margins.bottom = 0;
       doc.rect(0, doc.page.height - 54, doc.page.width, 54).fill(NAVY);
       doc.fillColor("#fff").fontSize(9).font("Helvetica-Bold").text("Activa Inversiones · Ventanas PVC certificadas · Temuco", 50, doc.page.height - 42, { align: "center", width: doc.page.width - 100 });
       doc.fillColor(GOLD).fontSize(8).font("Helvetica").text("WhatsApp +56 9 5729 6035 · activaspa.cl · Cada ventana se puede ver en 3D y probar en tu pared", 50, doc.page.height - 26, { align: "center", width: doc.page.width - 100 });
