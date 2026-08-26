@@ -174,7 +174,7 @@ function normalizeColor(c) {
  * @returns {Promise<{ok:boolean,total?:number,...}>}
  */
 export async function calcularCotizacion(params = {}) {
-  const { tipo, ancho_mm, alto_mm, glass_id, serie, color, comuna, cantidad, hojas, partes } = params;
+  const { tipo, ancho_mm, alto_mm, glass_id, serie, color, comuna, cantidad, hojas, partes, orientacion } = params;
   const fueraDeAlcance = detectarProductoFueraDeAlcance('', { tipo, serie });
   if (fueraDeAlcance.fueraDeAlcance) {
     throw new EngineError(fueraDeAlcance.razon, { body: fueraDeAlcance });
@@ -200,6 +200,14 @@ export async function calcularCotizacion(params = {}) {
   // [2026-08-25] Los paños de una COMPUESTA (si el cliente dio los anchos). Sin esto el
   // motor reparte el vano mitad fija + mitad proyectante (el default del dueño).
   if (Array.isArray(partes) && partes.length) payload.partes = partes;
+  // 🔴 [2026-08-26] EL EJE DE LA COMPUESTA SE PERDIA EN EL ULTIMO SALTO. Este payload se arma
+  // con una lista EXPLICITA de campos, y `orientacion` no estaba en ella: el pricer la
+  // calculaba bien, la mandaba, y aca se caia en silencio. Toda compuesta vertical salia
+  // cotizada como horizontal.
+  // Es el MISMO bug que Codex cazo con `partes` el 25-ago, en la misma funcion: una lista
+  // blanca que alguien extiende de un lado y olvida del otro. El costo real fue la propuesta
+  // de Paula, donde las 3 compuestas terminaron escaladas con aviso de PROPUESTA PARCIAL.
+  if (orientacion !== undefined) payload.orientacion = orientacion;
   if (color !== undefined) payload.color = normalizeColor(color);
   if (comuna !== undefined) payload.comuna = comuna;
   if (cantidad !== undefined) payload.cantidad = Number(cantidad);

@@ -126,3 +126,51 @@ test('🔒 la declaración SÍ vale cuando viene en el mensaje anterior del mism
   assert.equal(d.orientacion_declarada, 'alto_ancho');
   assert.equal(d.items[0].measures_swapped, true);
 });
+
+// ── Lo que salió de la corrida REAL con Paula (26-ago) ───────────────────────
+// La propuesta volvió con los dos errores intactos aunque el código estaba desplegado.
+// Reproducirlo mostró TRES fallas encadenadas, cada una tapando a la siguiente.
+
+test('🔴 el cliente escribe con faltas y la ventana igual se entiende', async () => {
+  // Paula escribió DOS VECES "MITAD PROYECTACTE SUPERIOR MITAD FIJA INFERIR": le falta una
+  // N a "proyectante" y la R a "inferior". El detector exigía la ortografía del diccionario,
+  // así que no reconocía la ventana vertical y las 3 terminaban escaladas a Marcelo.
+  const { esCompuestaVertical } = await import('./enginePricer.js');
+  assert.equal(esCompuestaVertical('MITAD PROYECTACTE SUPERIOR MITAD FIJA INFERIR'), true);
+  assert.equal(esCompuestaVertical('1 DE 220x100 MITAD PROYECTACTE SUPERIOR MITAD FIJA INFERIR'), true);
+});
+
+test('🔒 …pero "proyecto" NO es "proyectante"', async () => {
+  // Tolerar faltas no puede volverse tolerar cualquier cosa: "proyecto" es una palabra común
+  // en este rubro y no tiene nada que ver con una ventana proyectante.
+  const { esCompuestaVertical } = await import('./enginePricer.js');
+  for (const t of ['el proyecto de arriba', 'los proyectos de arriba', 'mi proyecto de abajo']) {
+    assert.equal(esCompuestaVertical(t), false, `"${t}" no es una ventana vertical`);
+  }
+});
+
+test('🔴 la medida corregida QUEDA EN EL ÍTEM, no solo en el precio', async () => {
+  // El error más caro de los tres: se cotizaba 2000×2200 y el PDF mostraba 2200×2000. Si el
+  // cliente aprueba ese PDF, fábrica construye la ventana equivocada y se descubre instalando.
+  const { priceAllEngine } = await import('./enginePricer.js');
+  const d = {
+    texto_cliente: 'LAS MEDIDAS ESTÁN ALTO POR ANCHO',
+    items: [{ product: 'CORREDERA', measures: '2200x2000', qty: 1 }],
+  };
+  await priceAllEngine(d).catch(() => {});
+  const it = d.items[0];
+  assert.equal(it.measures_swapped, true);
+  assert.equal(it.measures, '2000x2200', 'la medida que se muestra es la que se cotizó');
+  assert.equal(it.measures_texto_cliente, '2200x2000', 'y la del cliente queda rastreable');
+  // Campo propio a propósito: `measures_original` ya tiene otro dueño (la rama "referencial"
+  // guarda ahí la medida pedida antes del recorte) y pisaba este dato sin que nadie lo notara.
+});
+
+test('🔴 el EJE llega hasta el motor: el payload lo lleva', async () => {
+  // Se perdía en el último salto. `engine-client` arma el payload con una lista EXPLÍCITA de
+  // campos y `orientacion` no estaba en ella: el pricer la calculaba, la mandaba, y se caía
+  // en silencio. Mismo bug que Codex cazó con `partes`, en la misma función.
+  const src = await import('node:fs').then((fs) => fs.readFileSync('./src/oliver-gpt/engine-client.js', 'utf8'));
+  assert.match(src, /const\s*\{[^}]*orientacion[^}]*\}\s*=\s*params/, 'se lee de los params');
+  assert.match(src, /payload\.orientacion\s*=\s*orientacion/, 'y se escribe en el payload');
+});

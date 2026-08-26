@@ -303,8 +303,19 @@ export const FABRICATION_LIMITS = {
  */
 export function esCompuestaVertical(texto) {
   const t = String(texto || "").toLowerCase();
-  const TIPO = "(?:fij[ao]s?|proyectantes?|abatibles?|oscilobatientes?)";
-  const POS = "(?:arriba|abajo|encima|superior(?:es)?|inferior(?:es)?)";
+  // 🔴 [2026-08-26] AGUANTA COMO ESCRIBE LA GENTE, NO COMO LO ESCRIBE EL DICCIONARIO.
+  // Caso real y medido: Paula escribio, DOS VECES, *"MITAD PROYECTACTE SUPERIOR MITAD FIJA
+  // INFERIR"*. Falta una N en "proyectante" y la R final de "inferior" — y con eso el
+  // detector no reconocia la ventana vertical, la cotizaba horizontal, el alto se pasaba del
+  // maximo y las 3 ventanas terminaban escaladas a Marcelo con un aviso de PROPUESTA PARCIAL.
+  // Un cliente por WhatsApp escribe con una mano y sin corregir: exigirle la ortografia
+  // exacta es exigirle que use nuestro vocabulario.
+  //
+  // ⚠️ `proyect\w*` matchea tambien "proyecto", que en este rubro es una palabra COMUN ("el
+  // proyecto de la casa"). Se excluye explicitamente: sin ese lookahead, "el proyecto de
+  // arriba" se leeria como una ventana vertical.
+  const TIPO = "(?:fij[ao]s?|proyect(?!os?" + String.fromCharCode(92) + "b)" + String.fromCharCode(92) + "w*|abatib" + String.fromCharCode(92) + "w*|oscilobat" + String.fromCharCode(92) + "w*)";
+  const POS = "(?:arriba|abajo|encima|superi" + String.fromCharCode(92) + "w*|inferi" + String.fromCharCode(92) + "w*)";
   return (
     new RegExp(`\\b${TIPO}\\s{1,3}(?:(?:la|el|un[ao]?|los|las|de|del|en|por|va|ir[ao]|queda|ponemos?|pongo)\\s{1,3}){0,2}${POS}\\b`).test(t) ||
     new RegExp(`\\b${POS}\\s{1,3}(?:(?:la|el|un[ao]?|los|las|de|del|en|por|va|ir[ao]|queda|ponemos?|pongo)\\s{1,3}){0,2}${TIPO}\\b`).test(t) ||
@@ -549,7 +560,22 @@ export async function priceAllEngine(d, customer_id = "") {
 
     // 1) Medidas (normalizadas + orientación corregida en el pre-pass)
     const m = measured[i];
-    if (tableIsAltoAncho && m) item.measures_swapped = true;
+    if (tableIsAltoAncho && m) {
+      // 🔴 [2026-08-26] LA MEDIDA CORREGIDA TIENE QUE QUEDAR EN EL ITEM, NO SOLO EN EL PRECIO.
+      // Hasta hoy el pre-pass daba vuelta las medidas para COTIZAR pero dejaba `item.measures`
+      // con el texto original del cliente. Resultado medido en la propuesta de Paula: se cobro
+      // una ventana de 2000x2200 y el PDF le mostro 2200x2000. Es peor que cualquiera de los
+      // dos errores por separado — si el cliente aprueba ESE PDF, fabrica construye la ventana
+      // equivocada y el error se descubre instalando.
+      // Se guarda tambien la original: el cliente escribio eso y tiene que poder rastrearse.
+      // ⚠️ NO se usa `measures_original`: ese campo YA tiene otro dueño y otro significado —
+      // la rama "referencial" (mas abajo) lo escribe con la medida PEDIDA antes del recorte, y
+      // pisaria esto. Dos significados en un mismo campo es como se pierde un dato sin que
+      // nadie se entere. Este tiene el suyo, con nombre que dice lo que es.
+      item.measures_swapped = true;
+      item.measures_texto_cliente = item.measures_texto_cliente || item.measures;
+      item.measures = `${Math.round(m.ancho_mm)}x${Math.round(m.alto_mm)}`;
+    }
     if (!m) {
       item.price_warning = "No pude normalizar medidas para el cotizador.";
       item.source = "activa_engine"; item.confidence = "manual";
@@ -573,7 +599,13 @@ export async function priceAllEngine(d, customer_id = "") {
 
     // 2) Validación de fabricación (igual que priceAll → marca y escala) — con el TIPO
     // resuelto, no con el texto crudo (límites de puerta ≠ límites de ventana).
-    const dim = validateDimensionsLocal(tipo, m.ancho_mm, m.alto_mm);
+    // 🔴 [2026-08-26] LA VALIDACION TIENE QUE VER EL MISMO TEXTO QUE EL DETECTOR. Recibia
+    // solo `tipo` ("COMPUESTA"), donde las palabras "superior/inferior" no aparecen: creia
+    // que la ventana era horizontal, validaba el ALTO contra el maximo de un paño S60 y
+    // marcaba REFERENCIAL una compuesta vertical perfectamente fabricable. Con el texto del
+    // cliente al lado, la rama vertical se activa y valida el eje correcto.
+    const dim = validateDimensionsLocal(
+      `${tipo} ${item.descripcion || ""} ${item.product || ""}`, m.ancho_mm, m.alto_mm);
     if (dim && dim.escalate) {
       item.price_warning = dim.message;
       item.source = "activa_engine"; item.confidence = "manual";
