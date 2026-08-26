@@ -87,15 +87,35 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         const ms = medidas(it.measures);
         const m2 = ((ms.ancho / 1000) * (ms.alto / 1000)).toFixed(2);
         const vidrio = it.glass_label || "Termopanel DVH";
-        doc.fillColor(DARK).fontSize(9).font("Helvetica-Bold").text(`V${idx + 1} · ${label}`, 165, y + 22, { width: 190 });
-        doc.fillColor(GRAY).fontSize(7.5).font("Helvetica")
-           .text(`${ms.ancho}×${ms.alto} mm · ${m2} m² · ${col.nombre} · ${vidrio}`, 165, y + 38, { width: 190 });
+        // 🔴 [2026-08-26, reporte del dueño] LAS LETRAS SE PISABAN. Cada linea se dibujaba
+        // en un offset FIJO (y+22, y+38, y+51...), asi que un titulo largo —el de una
+        // compuesta lo es— saltaba a dos lineas y se montaba sobre la descripcion. En una
+        // propuesta que va a un cliente eso se lee como un error de imprenta.
+        // Ahora el texto se APILA: se mide cada bloque y el siguiente arranca donde termino
+        // el anterior. El titulo ademas se acota a dos lineas con puntos suspensivos, para
+        // que un label larguisimo no empuje el resto fuera de la fila.
+        const COL_X = 165, COL_W = 190;
+        const titulo = `V${idx + 1} · ${label}`;
+        doc.fillColor(DARK).fontSize(9).font("Helvetica-Bold");
+        const hTitulo = Math.min(24, doc.heightOfString(titulo, { width: COL_W }));
+        let yTxt = y + 8;
+        doc.text(titulo, COL_X, yTxt, { width: COL_W, height: 24, ellipsis: true });
+        yTxt += hTitulo + 3;
+
+        doc.fillColor(GRAY).fontSize(7.5).font("Helvetica");
+        const desc = `${ms.ancho}×${ms.alto} mm · ${m2} m² · ${col.nombre} · ${vidrio}`;
+        const hDesc = doc.heightOfString(desc, { width: COL_W });
+        doc.text(desc, COL_X, yTxt, { width: COL_W });
+        yTxt += hDesc + 2;
+
         // [thermal] Uw discreto bajo la descripción — SOLO si vino del motor (null=H98 → nada)
         if (it.termico && Number(it.termico.uw) > 0) {
           doc.fillColor(GRAY).fontSize(6.8).font("Helvetica-Oblique")
-             .text(`Uw = ${Number(it.termico.uw).toFixed(2)} W/m²K · ISO 10077-1`, 165, y + 51, { width: 190 });
+             .text(`Uw = ${Number(it.termico.uw).toFixed(2)} W/m²K · ISO 10077-1`, COL_X, yTxt, { width: COL_W, lineBreak: false });
+          yTxt += 10;
         }
-        doc.fillColor("#1E96F7").fontSize(7).font("Helvetica").text("Ver en 3D / probar en tu pared", 165, y + 64, { width: 190 });
+        doc.fillColor("#1E96F7").fontSize(7).font("Helvetica")
+           .text("Ver en 3D / probar en tu pared", COL_X, yTxt, { width: COL_W, lineBreak: false });
         // números
         const qty = Number(it.qty) || 1, unit = Number(it.unit_price) || 0, sub = unit * qty;
         neto += sub;
