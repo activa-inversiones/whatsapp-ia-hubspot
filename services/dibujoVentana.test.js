@@ -575,3 +575,14 @@ test('🔴 la corredera usa las medidas MEDIDAS en el DWG, no estimadas', () => 
   assert.ok(izq.x < bordeInterior, 'la hoja entra dentro del marco, no apoya al ras');
   assert.ok(Math.abs((bordeInterior - izq.x) - 8 * p.escala) < 0.01, 'y entra 8 mm');
 });
+
+test('🔒 [Gemini] mencionar "compuesta" DE PASADA no inventa dos paños', () => {
+  // El caso que cazó la compuerta: un label de ventana FIJA que menciona la palabra por otro
+  // motivo. Sin señal estructural (+, mitad, eje, posiciones) la última red NO se activa.
+  const p = planoDeVentana({
+    producto_label: 'Ventana Fija Termopanel (no confundir con la compuesta que cotizamos ayer)',
+    measures: '1000x1000', color: 'Blanco',
+  }, { x: 0, y: 0, w: 156, h: 196 });
+  assert.ok(!p.marcos || p.marcos.length === 1, 'un solo paño: es una fija');
+  assert.ok(p.hojas.every((h) => !h.simbolo || h.simbolo.length === 0), 'sin símbolo de apertura');
+});

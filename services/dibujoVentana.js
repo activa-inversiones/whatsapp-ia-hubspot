@@ -235,6 +235,12 @@ function tipoDeParte(t) {
 function partesDesdeLabel(it, ancho_mm, alto_mm) {
   const label = `${String(it?.product || "")} ${String(it?.producto_label || "")}`;
   if (!/compuesta/i.test(label)) return null;
+  // 🔴 [Gemini, compuerta e0631c4] LA PALABRA SOLA NO ALCANZA: un label que menciona
+  // "compuesta" de pasada ("Ventana Fija — no confundir con la compuesta de ayer") derivaba
+  // dos paños para una ventana de UNO. Se exige señal ESTRUCTURAL de composicion ademas de
+  // la palabra: el "+" de los paños, "mitad", el eje, o las posiciones. Todos los labels
+  // reales del motor la tienen; una mencion suelta, no. Sin señal → null → dibujo simple.
+  if (!/\+|mitad|vertical|horizontal|superior|inferior|arriba|abajo/i.test(label)) return null;
   const vertical = /vertical|arriba|abajo|superior|inferior/i.test(label);
 
   // 1) El caso rico: el label trae cada paño con su medida — "Proyectante 1100mm (arriba)".
