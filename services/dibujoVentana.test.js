@@ -391,3 +391,64 @@ test('🔴 el paño FIJO lleva marco MÁS ANCHO que el que abre (48 vs 40 mm)', 
   assert.ok(fijo.marco > abre.marco, `el fijo (${fijo.marco}) más ancho que el que abre (${abre.marco})`);
   assert.ok(Math.abs(fijo.marco / abre.marco - 48 / 40) < 0.02, 'en la proporción real 48:40');
 });
+
+// ── RÓTULOS, COTAS Y MANILLA ──────────────────────────────────────────────────
+// [2026-08-25] Lo que faltaba para que nuestro plano y el de WinPerfil se lean igual.
+
+test('🔴 cada paño lleva su rótulo del taller: A para el que abre, F para el fijo', () => {
+  const p = planoDeVentana({
+    producto_label: 'Ventana compuesta vertical', measures: '1200x2002', color: 'Roble',
+    glass_label: 'TP-M-4+12+4 DVH 4/12/4',
+    compuesta: { orientacion: 'vertical', partes: [{ tipo: 'PROYECTANTE', alto_mm: 1000 }, { tipo: 'FIJA', alto_mm: 1000 }] },
+  }, { x: 0, y: 0, w: 200, h: 300 });
+  assert.deepEqual(p.hojas.map((h) => h.rotulo), ['A1', 'F1']);
+  assert.equal(p.glassCode, 'TP-M-4+12+4', 'el código de vidrio se extrae, no se inventa');
+});
+
+test('🔒 sin un código de vidrio reconocible NO se inventa uno', () => {
+  const p = planoDeVentana({ producto_label: 'Ventana fija', measures: '1000x1000', color: 'Blanco', glass_label: 'vidrio normal' }, { x: 0, y: 0, w: 200, h: 200 });
+  assert.equal(p.glassCode, null);
+});
+
+test('🔴 la manilla va SOLO en el paño que abre, y abajo en un proyectante', () => {
+  const p = planoDeVentana({
+    producto_label: 'Ventana compuesta vertical', measures: '1200x2002', color: 'Roble',
+    compuesta: { orientacion: 'vertical', partes: [{ tipo: 'PROYECTANTE', alto_mm: 1000 }, { tipo: 'FIJA', alto_mm: 1000 }] },
+  }, { x: 0, y: 0, w: 200, h: 300 });
+  const [abre, fijo] = p.hojas;
+  assert.ok(abre.manilla, 'el proyectante tiene manilla');
+  assert.equal(fijo.manilla, null, 'un fijo NO se toma de ningún lado');
+  const v = abre.vidrioRect;
+  assert.ok(Math.abs((abre.manilla.x + abre.manilla.w / 2) - (v.x + v.w / 2)) < 0.5, 'centrada a lo ancho');
+  assert.ok(abre.manilla.y > v.y + v.h / 2, 'y abajo: las bisagras de un proyectante van arriba');
+});
+
+test('🔴 las cotas dan la medida de CADA paño, no solo el total', () => {
+  // El cliente compara "1000 arriba, 1000 abajo" con el hueco de su casa; un 2002 solo no sirve.
+  const p = planoDeVentana({
+    producto_label: 'Ventana compuesta vertical', measures: '1200x2002', color: 'Roble',
+    compuesta: { orientacion: 'vertical', partes: [{ tipo: 'PROYECTANTE', alto_mm: 1000 }, { tipo: 'FIJA', alto_mm: 1000 }] },
+  }, { x: 0, y: 0, w: 200, h: 300 });
+  const textos = p.cotas.map((c) => c.texto);
+  assert.ok(textos.includes('2002'), 'el alto total');
+  assert.ok(textos.includes('1200'), 'el ancho total');
+  assert.equal(textos.filter((t) => t === '1000').length, 2, 'y los dos paños de 1000');
+  // Los paños van pegados a la ventana (fila 0) y los totales afuera (fila 1).
+  assert.ok(p.cotas.filter((c) => c.fila === 0).every((c) => c.lado === 'izq'), 'en vertical se acota por el costado');
+});
+
+test('🔴 en HORIZONTAL los paños se acotan por ARRIBA', () => {
+  const p = planoDeVentana({
+    producto_label: 'Ventana compuesta', measures: '2002x1450', color: 'Roble',
+    compuesta: { orientacion: 'horizontal', partes: [{ tipo: 'FIJA', ancho_mm: 1200 }, { tipo: 'PROYECTANTE', ancho_mm: 800 }] },
+  }, { x: 0, y: 0, w: 300, h: 200 });
+  const porPano = p.cotas.filter((c) => c.fila === 0);
+  assert.ok(porPano.length === 2 && porPano.every((c) => c.lado === 'sup'));
+  assert.deepEqual(porPano.map((c) => c.texto), ['1200', '800']);
+});
+
+test('🔒 una ventana simple igual se acota, sin cotas por paño', () => {
+  const p = planoDeVentana({ producto_label: 'Ventana corredera 2 hojas', measures: '1500x1200', color: 'Blanco' }, { x: 0, y: 0, w: 250, h: 220 });
+  assert.deepEqual(p.cotas.map((c) => c.texto).sort(), ['1200', '1500']);
+  assert.ok(p.cotas.every((c) => c.fila === 1), 'las dos son totales');
+});

@@ -98,6 +98,74 @@ function tipoDe(it) {
  * era invisible. En el plano de Winart el junquillo se lee como una linea fina alrededor
  * del vidrio. Eso es lo que devuelve esta funcion.
  */
+/**
+ * El CODIGO del vidrio tal como lo rotula la fabrica ("TP-M-4+12+4").
+ *
+ * [2026-08-25] Va adentro de cada paño, como en el plano de WinPerfil. No es decoracion:
+ * es lo que hace que el cliente, el vendedor y el taller esten hablando del mismo vidrio.
+ * Si no viene un codigo reconocible NO se inventa uno: el paño queda sin rotulo.
+ */
+function codigoVidrio(it) {
+  const crudo = String(it?.glass_code || it?.glass_label || it?.vidrio || "");
+  const m = crudo.match(/\b[A-Z]{2,}(?:-[A-Z0-9]+)*-\d+(?:\+\d+)+\b/i);
+  return m ? m[0].toUpperCase() : null;
+}
+
+/**
+ * La ETIQUETA de cada paño: A1, A2… para los que abren; F1, F2… para los fijos.
+ * Es la nomenclatura de Winart/WinPerfil, y la que ya usa el taller.
+ */
+function etiquetasDePanos(tipos) {
+  let a = 0, f = 0;
+  return tipos.map((t) => (t === "FIJA" ? `F${++f}` : `A${++a}`));
+}
+
+/**
+ * La MANILLA del paño que abre. Posicion segun por donde se toma la ventana:
+ *  · proyectante → abajo al centro (bisagras arriba) — es lo que muestra el plano del dueño;
+ *  · el resto con hoja → al costado, del lado contrario a las bisagras.
+ * Un fijo no lleva: no se toma de ningun lado.
+ */
+function manillaDe(hoja) {
+  if (hoja.sinBastidor) return null;
+  const v = hoja.vidrioRect;
+  if (!(v.w > 0 && v.h > 0)) return null;
+  const largo = Math.max(2, Math.min(v.w, v.h) * 0.18);
+  const grueso = Math.max(1, largo * 0.32);
+  if (hoja.tipo === "PROYECTANTE") {
+    return { x: v.x + v.w / 2 - largo / 2, y: v.y + v.h - grueso / 2, w: largo, h: grueso };
+  }
+  const enDerecha = !hoja.manoDerecha;
+  return {
+    x: enDerecha ? v.x + v.w - grueso / 2 : v.x - grueso / 2,
+    y: v.y + v.h / 2 - largo / 2, w: grueso, h: largo,
+  };
+}
+
+/**
+ * Las COTAS del plano: el total afuera, y la medida de cada paño pegada a la ventana.
+ *
+ * Es como acota WinPerfil y por que importa: el cliente compara "1000 arriba, 1000 abajo"
+ * con el hueco de su casa. Un total de 2002 solo no le sirve para eso.
+ */
+function cotasDe({ x, y, w, h, ancho, alto, marcos, partes, vertical }) {
+  const c = [];
+  // Medida de cada paño, en el eje por el que se reparte (la fila interior).
+  if (Array.isArray(marcos) && Array.isArray(partes) && marcos.length === partes.length) {
+    marcos.forEach((m, i) => {
+      const mm = Math.round(Number(vertical ? partes[i].alto_mm : partes[i].ancho_mm) || 0);
+      if (!mm) return;
+      c.push(vertical
+        ? { lado: "izq", desde: m.y, hasta: m.y + m.h, fila: 0, texto: String(mm) }
+        : { lado: "sup", desde: m.x, hasta: m.x + m.w, fila: 0, texto: String(mm) });
+    });
+  }
+  // Los totales, en la fila de afuera.
+  c.push({ lado: "sup", desde: x, hasta: x + w, fila: 1, texto: String(ancho) });
+  c.push({ lado: "izq", desde: y, hasta: y + h, fila: 1, texto: String(alto) });
+  return c;
+}
+
 function rectJunquillo(v, j) {
   return {
     x: v.x - j, y: v.y - j,
@@ -290,12 +358,17 @@ function planoDeVentana(it, caja) {
         flecha: 0,
       };
     });
+    const tiposC = partes.map((pt) => tipoDeParte(pt.tipo));
+    const rotulosC = etiquetasDePanos(tiposC);
+    hojasC.forEach((hj, i) => { hj.rotulo = rotulosC[i]; hj.manilla = manillaDe(hj); });
+    const marcosPub = marcosC.map((r, i) => ({ x: r.x, y: r.y, w: r.w, h: r.h, marco: marcoDe(tiposC[i]) }));
     return {
-      tipo, ancho, alto, escala, color, vidrio,
+      tipo, ancho, alto, escala, color, vidrio, glassCode: codigoVidrio(it),
+      cotas: cotasDe({ x, y, w, h, ancho, alto, marcos: marcosPub, partes, vertical: esVertical }),
       // Sin marco exterior único: `marcos` son los marcos completos, uno por paño.
       marcoRect: null,
       // Cada marco viaja con su propio grosor: lo usa el pintado para el inglete.
-      marcos: marcosC.map((r, i) => ({ x: r.x, y: r.y, w: r.w, h: r.h, marco: marcoDe(tipoDeParte(partes[i].tipo)) })),
+      marcos: marcosPub,
       marco, perfilHoja, junquillo, hojas: hojasC,
       compuesta: {
         orientacion: esVertical ? 'vertical' : 'horizontal',
@@ -331,8 +404,11 @@ function planoDeVentana(it, caja) {
     };
   });
 
+  const rotulos = etiquetasDePanos(hojas.map(() => tipo));
+  hojas.forEach((hj, i) => { hj.tipo = hj.tipo || tipo; hj.rotulo = rotulos[i]; hj.manilla = manillaDe(hj); });
   return {
-    tipo, ancho, alto, escala, color, vidrio,
+    tipo, ancho, alto, escala, color, vidrio, glassCode: codigoVidrio(it),
+    cotas: cotasDe({ x, y, w, h, ancho, alto }),
     marcoRect: { x, y, w, h },
     marco, perfilHoja, junquillo, hojas,
     etiqueta: `${ancho}×${alto} mm`,
@@ -340,9 +416,49 @@ function planoDeVentana(it, caja) {
 }
 
 // ── Pintado con pdfkit ────────────────────────────────────────────────────────
+// Cuanto espacio se le reserva a las cotas alrededor del dibujo (izquierda y arriba).
+// Dos filas: la de los paños pegada a la ventana, y la del total mas afuera.
+const COTA_FILA = 9;
+const COTA_MARGEN = COTA_FILA * 2 + 4;
+
 function dibujarVentana(doc, caja, it) {
-  const p = planoDeVentana(it, { x: caja.x, y: caja.y, w: caja.w, h: caja.h - 10 });
+  // 📏 [2026-08-25] La ventana se achica para dejarle lugar a las cotas. Sin esto el plano
+  // ocupaba toda la caja y las medidas se dibujaban encima del titulo de al lado.
+  const p = planoDeVentana(it, {
+    x: caja.x + COTA_MARGEN, y: caja.y + COTA_MARGEN,
+    w: Math.max(20, caja.w - COTA_MARGEN), h: Math.max(20, caja.h - 10 - COTA_MARGEN),
+  });
   doc.save();
+
+  // ── COTAS: el total afuera, la medida de cada paño pegada a la ventana ──────
+  // Asi acota WinPerfil, y el cliente compara cada paño con el hueco de su casa: un total
+  // de "2002" solo no le sirve para eso.
+  const refX = p.marcoRect ? p.marcoRect.x : Math.min(...p.marcos.map((m) => m.x));
+  const refY = p.marcoRect ? p.marcoRect.y : Math.min(...p.marcos.map((m) => m.y));
+  doc.save().lineWidth(0.3).strokeColor("#9AA7B4").fillColor("#6B7B8D").font("Helvetica").fontSize(5.2);
+  for (const c of (p.cotas || [])) {
+    const largo = Math.abs(c.hasta - c.desde);
+    if (largo < 6) continue;                       // no se rotula lo que no se lee
+    const t = Math.max(1.4, COTA_FILA * 0.28);     // largo de las patitas de la cota
+    if (c.lado === "sup") {
+      const yy = refY - COTA_FILA * (c.fila + 1);
+      doc.moveTo(c.desde, yy).lineTo(c.hasta, yy).stroke();
+      doc.moveTo(c.desde, yy - t).lineTo(c.desde, yy + t).stroke();
+      doc.moveTo(c.hasta, yy - t).lineTo(c.hasta, yy + t).stroke();
+      doc.text(c.texto, c.desde, yy - 6.4, { width: largo, align: "center" });
+    } else {
+      const xx = refX - COTA_FILA * (c.fila + 1);
+      doc.moveTo(xx, c.desde).lineTo(xx, c.hasta).stroke();
+      doc.moveTo(xx - t, c.desde).lineTo(xx + t, c.desde).stroke();
+      doc.moveTo(xx - t, c.hasta).lineTo(xx + t, c.hasta).stroke();
+      // El texto vertical se rota sobre el centro de la cota, como en el plano de la fabrica.
+      const cy = (c.desde + c.hasta) / 2;
+      doc.save().rotate(-90, { origin: [xx, cy] })
+         .text(c.texto, xx - largo / 2, cy - 7.4, { width: largo, align: "center" })
+         .restore();
+    }
+  }
+  doc.restore();
 
   // Marco(s) exterior(es). La compuesta trae UNO POR PAÑO (son ventanas acopladas, no
   // una ventana dividida); el resto de los tipos, uno solo.
@@ -385,6 +501,31 @@ function dibujarVentana(doc, caja, it) {
       doc.save().lineWidth(0.45).dash(1.6, { space: 1.4 }).strokeColor("#6B7B8D");
       for (const s of hoja.simbolo) doc.moveTo(s.x1, s.y1).lineTo(s.x2, s.y2).stroke();
       doc.undash().restore();
+    }
+
+    // ── MANILLA del paño que abre ──────────────────────────────────────────
+    // Un fijo no lleva: no se toma de ningun lado. Es una señal mas de cual abre.
+    if (hoja.manilla) {
+      const q = hoja.manilla;
+      doc.roundedRect(q.x, q.y, q.w, q.h, Math.min(q.w, q.h) / 2)
+         .lineWidth(0.35).fillAndStroke("#F2F4F7", "#5A6672");
+    }
+
+    // ── ROTULO del paño: A1 / F1, y debajo el codigo del vidrio ─────────────
+    // La nomenclatura del taller. Sin esto, "la de arriba" es la unica forma de referirse
+    // a un paño, y por telefono eso se presta a equivocaciones caras.
+    if (hoja.rotulo) {
+      const v = hoja.vidrioRect;
+      const hayCodigo = !!p.glassCode;
+      const alto = hayCodigo ? 12 : 6;
+      if (v.w > 14 && v.h > alto + 4) {
+        doc.fillColor("#44515E").font("Helvetica-Bold").fontSize(5.6)
+           .text(hoja.rotulo, v.x, v.y + v.h / 2 - alto / 2, { width: v.w, align: "center" });
+        if (hayCodigo) {
+          doc.font("Helvetica").fontSize(4.6).fillColor("#6B7B8D")
+             .text(p.glassCode, v.x, v.y + v.h / 2 - alto / 2 + 6.2, { width: v.w, align: "center" });
+        }
+      }
     }
 
     // Flecha de deslizamiento (corredera), centrada en su propia hoja.
