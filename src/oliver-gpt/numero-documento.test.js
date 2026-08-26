@@ -75,3 +75,17 @@ test('🔒 con 26 alternativas se avisa, no se inventa numeración', () => {
   assert.equal(r.numero, 'CM-FR-004-2026-0353');
   assert.equal(r.motivo, 'sin_letras', 'queda en el log para que alguien lo mire');
 });
+
+// ── [2026-08-26 · Codex NO-APTO, defecto 2] el contador de letras es IDEMPOTENTE ────────
+import { alternativasEntregadas } from './webhook.js';
+
+test('🔴 reenviar la 0353-B NO quema la C: el contador se deriva de la letra', () => {
+  // Antes: cada entrega con letra sumaba +1. El cliente pedia "reenviamela" pasados los 2
+  // minutos del dedupe, salia la MISMA 0353-B (motivo revision), el contador subia a 2 y la
+  // proxima alternativa nacia 0353-D — un salto sin C, inexplicable en ISO.
+  assert.equal(alternativasEntregadas('CM-FR-004-2026-0353-B', 1), 1, 'reenvio: sigue en 1');
+  assert.equal(alternativasEntregadas('CM-FR-004-2026-0353-B', 0), 1, 'primera entrega de la B');
+  assert.equal(alternativasEntregadas('CM-FR-004-2026-0353-C', 1), 2, 'la C consume la segunda');
+  assert.equal(alternativasEntregadas('CM-FR-004-2026-0353', 5), 5, 'sin letra: no toca el rastro');
+  assert.equal(alternativasEntregadas(null, 2), 2, 'defensivo ante folio nulo');
+});

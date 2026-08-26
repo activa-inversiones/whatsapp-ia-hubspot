@@ -174,3 +174,23 @@ test('🔴 el EJE llega hasta el motor: el payload lo lleva', async () => {
   assert.match(src, /const\s*\{[^}]*orientacion[^}]*\}\s*=\s*params/, 'se lee de los params');
   assert.match(src, /payload\.orientacion\s*=\s*orientacion/, 'y se escribe en el payload');
 });
+
+// ── [2026-08-26 · Codex NO-APTO, defecto 3] pares tolerantes a UNIDADES ─────────────────
+import { paresDeclaradosEnTexto } from './enginePricer.js';
+
+test('🔴 "2200 mm x 2000 mm" SI se reconoce como par (antes: set vacio → doble-swap)', () => {
+  // El escenario de Codex: el LLM ya corrigio la medida a {ancho 2000, alto 2200}, el texto
+  // declara alto-por-ancho, y el par CON UNIDADES no matcheaba → el fallback global volvia a
+  // invertir la medida correcta. Con el par en el set, "2200|2000" figura tal cual el cliente
+  // lo escribio y la medida ya corregida (inverso presente, crudo ausente) NO se toca.
+  const p = paresDeclaradosEnTexto('mis medidas estan alto por ancho: 2200 mm x 2000 mm');
+  assert.ok(p.has('2200|2000'), `esperaba 2200|2000 en ${[...p]}`);
+  assert.ok(!p.has('2000|2200'), 'solo el orden en que el cliente lo escribio');
+});
+
+test('pares: metros con coma, "por", cm y el formato pelado siguen funcionando', () => {
+  assert.ok(paresDeclaradosEnTexto('2,20 m x 2,00 m').has('2200|2000'));
+  assert.ok(paresDeclaradosEnTexto('150 por 185').has('1500|1850'));
+  assert.ok(paresDeclaradosEnTexto('230x120').has('2300|1200'));
+  assert.ok(paresDeclaradosEnTexto('220 cm x 200 cm').has('2200|2000'));
+});

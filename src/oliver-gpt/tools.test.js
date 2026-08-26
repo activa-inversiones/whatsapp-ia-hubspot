@@ -591,3 +591,31 @@ test('Ronda 2: descripcion_producto declarado en el schema de ambas tools (addit
     );
   }
 });
+
+// ── [2026-08-26 · Codex NO-APTO, hallazgo parcial] partes iguales POR DIMENSION ─────────
+import { partesTodasIguales } from './tools.js';
+
+test('🔴 horizontal con altos iguales y anchos DISTINTOS ya no se descarta', () => {
+  // El escenario de Codex: cada paño trae ambos campos. Con `alto ?? ancho`, la precedencia
+  // del alto (1500 = 1500) declaraba "iguales" y tiraba el reparto 1400+800 EXPLICITO del
+  // cliente — el motor cobraba mitad y mitad de una ventana que no es la pedida.
+  assert.equal(partesTodasIguales([
+    { tipo: 'FIJA', ancho_mm: 1400, alto_mm: 1500 },
+    { tipo: 'PROYECTANTE', ancho_mm: 800, alto_mm: 1500 },
+  ]), false, 'anchos distintos ⇒ NO iguales, se conservan');
+});
+
+test('partes iguales de verdad (el caso 1100+1100 de Paula) se siguen descartando', () => {
+  assert.equal(partesTodasIguales([
+    { tipo: 'PROYECTANTE', alto_mm: 1100 }, { tipo: 'FIJA', alto_mm: 1100 },
+  ]), true, 'mitades calculadas por el LLM ⇒ default del motor');
+  assert.equal(partesTodasIguales([
+    { tipo: 'FIJA', ancho_mm: 1000, alto_mm: 2000 }, { tipo: 'FIJA', ancho_mm: 1000, alto_mm: 2000 },
+  ]), true, 'identicas en ambas dimensiones');
+});
+
+test('partes con datos PARCIALES se conservan (perder el dato del cliente es lo caro)', () => {
+  assert.equal(partesTodasIguales([
+    { tipo: 'FIJA', ancho_mm: 1200 }, { tipo: 'PROYECTANTE' },
+  ]), false, 'una trae medida y la otra no ⇒ no se puede afirmar igualdad');
+});

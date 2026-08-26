@@ -204,6 +204,21 @@ export function numeroDeDocumento({ lastQuote, sig, ventanaMs, ahora = Date.now(
 }
 
 /**
+ * Cuantas letras de alternativa quedan CONSUMIDAS tras ENTREGAR el documento `quoteNumber`.
+ *
+ * 🔴 [2026-08-26 · Codex NO-APTO, defecto 2] El contador sumaba +1 en CADA entrega con letra:
+ * reenviar la 0353-B (mismo contenido, motivo 'revision') volvia a sumar, y la proxima
+ * alternativa salia 0353-D saltandose la C — y un salto en la numeracion, en ISO, hay que
+ * poder explicarlo. La letra YA dice cuantas van: se deriva de ella, y el reenvio queda
+ * idempotente. Math.max por si el rastro previo viniera mas adelantado que la letra.
+ */
+export function alternativasEntregadas(quoteNumber, previas = 0) {
+  const letra = (String(quoteNumber || '').match(/-([A-Z])$/) || [])[1];
+  const base = Number(previas) || 0;
+  return letra ? Math.max(base, 'BCDEFGHIJKLMNOPQRSTUVWXYZ'.indexOf(letra) + 1) : base;
+}
+
+/**
  * La HUELLA de un informe termico: que tiene que cambiar para que sea OTRO informe.
  *
  * 🔴 [2026-08-26, regla del dueño] El candado de 30 dias existe para no mandarle al mismo
@@ -2586,17 +2601,14 @@ Comuna: ${datos.comuna}`
           }
           // [PDF-RACE 2026-07-01] entrega OK → registrar folio para reuso (revisiones = mismo folio).
           const _base = String(quoteNumber).replace(/-[A-Z]$/, '');
-          const _traeLetra = /-[A-Z]$/.test(String(quoteNumber));
           state.last_quote = { quote_number: quoteNumber, at: Date.now(), pdf_sent: true,
             descuento_mercado_pct: descuentoMercadoPct,
             sig: _quoteSig,
             quote_base: _base,
-            // Se cuenta solo cuando el documento SALIO: una alternativa que no se entrego no
-            // consume su letra, o el proximo documento saltaria de 0353 a 0353-C sin que
-            // exista una B — y un salto en la numeracion, en ISO, hay que poder explicarlo.
-            alternativas: _traeLetra
-              ? Number((state.last_quote || {}).alternativas || 0) + 1
-              : Number((state.last_quote || {}).alternativas || 0) };
+            // Se cuenta solo cuando el documento SALIO (una alternativa no entregada no
+            // consume su letra) y DERIVADO de la letra, no +1 por entrega: reenviar la misma
+            // -B no debe quemar la C (Codex, 26-ago).
+            alternativas: alternativasEntregadas(quoteNumber, (state.last_quote || {}).alternativas) };
           return {
             ok: true,
             quote_number: quoteNumber,

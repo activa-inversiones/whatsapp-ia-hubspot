@@ -496,6 +496,26 @@ export function orientacionDeclarada(texto) {
   return null;
 }
 
+/**
+ * Los pares ancho|alto que el cliente ESCRIBIO en su texto, normalizados, para resolver el
+ * swap alto/ancho POR PAR (y no con un volteo global que revierte lo ya corregido).
+ *
+ * 🔴 [2026-08-26 · Codex NO-APTO, defecto 3] El regex original exigia el separador PEGADO al
+ * numero: "2200 mm x 2000 mm" no matcheaba NADA, el set quedaba vacio y el fallback global
+ * re-invertia una medida ya corregida — exactamente lo que este mecanismo vino a impedir, y
+ * los clientes escriben la unidad todo el tiempo. Ahora tolera mm/cm/m/mt/metros (con o sin
+ * punto) entre el numero y el separador.
+ */
+export function paresDeclaradosEnTexto(texto) {
+  const pares = new Set();
+  const re = /(\d+(?:[.,]\d+)?)\s*(?:mm|cms?|mts?|metros?|m)?\.?\s*(?:[x×]|por)\s*(\d+(?:[.,]\d+)?)/gi;
+  for (const m of String(texto || "").matchAll(re)) {
+    const nm = normMeasuresLocal(`${m[1]}x${m[2]}`);
+    if (nm) pares.add(`${Math.round(nm.ancho_mm)}|${Math.round(nm.alto_mm)}`);
+  }
+  return pares;
+}
+
 export async function priceAllEngine(d, customer_id = "") {
   if (!d || !Array.isArray(d.items) || d.items.length === 0) {
     return { ok: false, error: "No hay items para cotizar.", escalate: false };
@@ -535,11 +555,7 @@ export async function priceAllEngine(d, customer_id = "") {
   //   · el par del item aparece en el texto EN ESE ORDEN  → viene crudo → se da vuelta;
   //   · aparece en el orden INVERSO                        → ya fue corregido → NO se toca;
   //   · no aparece (o aparece en ambos)                    → manda la declaracion global.
-  const _paresTexto = new Set();
-  for (const m of String(d.texto_cliente || "").matchAll(/(\d+(?:[.,]\d+)?)\s*(?:[x×]|por)\s*(\d+(?:[.,]\d+)?)/gi)) {
-    const nm = normMeasuresLocal(`${m[1]}x${m[2]}`);
-    if (nm) _paresTexto.add(`${Math.round(nm.ancho_mm)}|${Math.round(nm.alto_mm)}`);
-  }
+  const _paresTexto = paresDeclaradosEnTexto(d.texto_cliente);
   if (tableIsAltoAncho) {
     for (const mm of measured) {
       if (!mm) continue;

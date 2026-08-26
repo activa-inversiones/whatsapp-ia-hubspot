@@ -721,6 +721,24 @@ async function falloDeCotizacion(r, item, ctx) {
  * @param {object} [ctx] - Contexto opcional (sesion, waId, etc.).
  * @returns {Promise<any>}
  */
+/**
+ * ¿Los paños declarados son todos IGUALES? (si lo son, se descartan: el reparto mitad-y-mitad
+ * del vano ES el default del motor y hacerlo explicito solo mete los 2mm del acople de mas).
+ *
+ * 🔴 [2026-08-26 · Codex NO-APTO, hallazgo parcial] Antes comparaba `alto ?? ancho`: en una
+ * compuesta HORIZONTAL cuyos paños traen ambos campos, altos iguales y anchos DISTINTOS, la
+ * precedencia del alto declaraba "iguales" y descartaba un reparto desigual EXPLICITO del
+ * cliente. Ahora se compara CADA dimension presente, y ante datos parciales o dispares se
+ * CONSERVAN las partes — perder el dato explicito del cliente es el error caro.
+ */
+export function partesTodasIguales(ps) {
+  return ['alto_mm', 'ancho_mm', 'medida_mm'].every((k) => {
+    const vals = ps.map((p) => Number(p?.[k]));
+    if (!vals.some(Number.isFinite)) return true;   // ninguna parte trae esta dimension
+    return vals.every((v) => Number.isFinite(v) && Math.abs(v - vals[0]) < 0.6);
+  });
+}
+
 export async function runTool(name, input = {}, ctx = {}) {
   switch (name) {
     case 'listar_vidrios':
@@ -753,9 +771,7 @@ export async function runTool(name, input = {}, ctx = {}) {
           partes: (() => {
             const ps = Array.isArray(input.partes) ? input.partes : [];
             if (!ps.length) return undefined;
-            const medidas = ps.map((p) => Number(p.alto_mm ?? p.ancho_mm ?? p.medida_mm));
-            const iguales = medidas.every((m) => Number.isFinite(m) && Math.abs(m - medidas[0]) < 0.6);
-            return iguales ? undefined : ps;
+            return partesTodasIguales(ps) ? undefined : ps;
           })(),
           // [2026-08-25] El eje viaja con el item hasta el motor y hasta el dibujo del PDF.
           orientacion: input.orientacion || undefined }],
