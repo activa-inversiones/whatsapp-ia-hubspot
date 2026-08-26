@@ -240,7 +240,12 @@ function partesDesdeLabel(it, ancho_mm, alto_mm) {
   // dos paños para una ventana de UNO. Se exige señal ESTRUCTURAL de composicion ademas de
   // la palabra: el "+" de los paños, "mitad", el eje, o las posiciones. Todos los labels
   // reales del motor la tienen; una mencion suelta, no. Sin señal → null → dibujo simple.
-  if (!/\+|mitad|vertical|horizontal|superior|inferior|arriba|abajo/i.test(label)) return null;
+  // Señal estructural O el nombre del producto: 'ventana compuesta' / un label que EMPIEZA
+  // con 'compuesta' es el producto, no una mencion ('...con la compuesta de ayer' no pasa).
+  const senial = /[+]|mitad|vertical|horizontal|superior|inferior|arriba|abajo/i.test(label)
+    || /ventanas?\s+compuestas?/i.test(label)
+    || /^\s*compuesta/i.test(String(it?.producto_label || it?.product || ""));
+  if (!senial) return null;
   const vertical = /vertical|arriba|abajo|superior|inferior/i.test(label);
 
   // 1) El caso rico: el label trae cada paño con su medida — "Proyectante 1100mm (arriba)".
