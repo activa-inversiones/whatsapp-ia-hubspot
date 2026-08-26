@@ -85,7 +85,7 @@ test('🔒 el candado se marca DESPUES del envio, no antes', async () => {
   const src = await leer('../src/oliver-gpt/webhook.js');
   const bloque = cuerpoDelHook(src);
   const iEnvio = bloque.indexOf('sendWaDocument(from, mediaId');
-  const iMarca = bloque.indexOf('escribirEstado)(clave, true');
+  const iMarca = bloque.indexOf('escribirEstado)(clave, { at: Date.now() }');
   assert.ok(iEnvio > 0, 'no se encontro el envio del PDF');
   assert.ok(iMarca > iEnvio, 'el candado se marca despues de enviar: si falla, se reintenta');
 });
@@ -208,7 +208,7 @@ test('el registro va DESPUES del envio: registrar algo que no salio es mentirle 
   const wh = await leer('../src/oliver-gpt/webhook.js');
   const bloque = cuerpoDelHook(wh);
   const iEnvio = bloque.indexOf('sendWaDocument(from, mediaId');
-  const iCandado = bloque.indexOf('escribirEstado)(clave, true');
+  const iCandado = bloque.indexOf('escribirEstado)(clave, { at: Date.now() }');
   const iReg = bloque.indexOf('/internal/informes/registrar');
   assert.ok(iEnvio > 0 && iReg > iEnvio, 'primero sale el documento, despues se registra');
   assert.ok(iReg > iCandado, 'y despues del candado: el registro jamas frena la entrega');
@@ -242,7 +242,7 @@ test('🔴 [P1 · Codex] mediaId NO prueba entrega: el candado y el registro exi
   const wh = await leer('../src/oliver-gpt/webhook.js');
   const bloque = cuerpoDelHook(wh);
   const iGate = bloque.indexOf('envio.ok === true');
-  const iCandado = bloque.indexOf("escribirEstado)(clave, true");
+  const iCandado = bloque.indexOf("escribirEstado)(clave, { at: Date.now() }");
   const iReg = bloque.indexOf('/internal/informes/registrar');
   assert.ok(iGate > 0, 'el gate de entrega existe');
   assert.ok(iGate < iCandado && iGate < iReg, 'candado y registro van DESPUES del gate');
@@ -266,7 +266,7 @@ test('🔴 candado CORTO anti-duplicado: dos cotizaciones seguidas = UN informe'
   const bloque = cuerpoDelHook(wh);
   const iCorto = bloque.indexOf(':en_curso');
   const iPdf = posicionDelPdf(bloque);
-  const iLargo = bloque.indexOf("escribirEstado)(clave, true");
+  const iLargo = bloque.indexOf("escribirEstado)(clave, { at: Date.now() }");
   assert.ok(iCorto > 0, 'falta el candado corto');
   assert.ok(iCorto < iPdf, 'el candado corto va ANTES de todo el trabajo');
   assert.ok(iLargo > iCorto, 'el de 30 dias sigue yendo al final, tras entrega confirmada');
@@ -284,7 +284,7 @@ test('🔒 el candado corto NO reemplaza al de 30 dias', async () => {
   const bloque = cuerpoDelHook(wh);
   assert.ok(bloque.includes('30 * 24 * 3600'), 'el candado de 30 dias sigue existiendo');
   const iGate = bloque.indexOf('envio.ok === true');
-  const iLargo = bloque.indexOf("escribirEstado)(clave, true");
+  const iLargo = bloque.indexOf("escribirEstado)(clave, { at: Date.now() }");
   assert.ok(iGate < iLargo, 'y sigue colgando del gate de entrega');
 });
 
@@ -300,7 +300,7 @@ test('🔴 [Codex · compuerta] la MEMORIA se guarda ANTES de todo candado', asy
   // registro.
   const bloque = cuerpoDelHook(await leer('../src/oliver-gpt/webhook.js'));
   const iMemoria = bloque.indexOf(':datos`');
-  const iCandado30 = bloque.indexOf('yaSeMando = (await');
+  const iCandado30 = bloque.indexOf('yaSeMando = candadoVigente(');
   const iCandadoCorto = bloque.indexOf(':en_curso`');
   assert.ok(iMemoria > 0, 'no se encontro la memoria de la ultima cotizacion');
   assert.ok(iCandado30 > 0 && iCandadoCorto > 0, 'no se encontraron los dos candados');

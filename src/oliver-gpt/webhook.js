@@ -219,6 +219,28 @@ export function alternativasEntregadas(quoteNumber, previas = 0) {
 }
 
 /**
+ * ¿El candado de 30 dias del informe sigue valiendo, dado el ultimo RESET del telefono?
+ *
+ * 🔴 [2026-08-26, caso 0364 medido en BD] El dueño probo un "cliente nuevo" (Andres Pereira)
+ * desde su telefono de siempre, tras un RESET — y el informe no salio: la huella
+ * temuco|proyectantes60|termopaneldvh4124 ya tenia candado de las pruebas de Paula (14:11).
+ * El candado hacia SU trabajo (mismo telefono + mismo proyecto = un informe cada 30 dias),
+ * pero RESET limpiaba la conversacion SIN soltar los candados del informe: imposible probar
+ * dos "clientes" seguidos desde un mismo numero. Reclamo textual: "FALTO EL INFORME TERMICO".
+ *
+ * El arreglo NO borra candados (las huellas no se pueden enumerar en el KV): RESET deja un
+ * MARCADOR con su timestamp, y un candado solo vale si es POSTERIOR al ultimo RESET.
+ * Compatibilidad: los candados viejos guardan `true` (sin fecha). Sin marcador de RESET
+ * siguen valiendo como siempre; con un RESET posterior, quedan sueltos — que es exactamente
+ * lo que el RESET pide.
+ */
+export function candadoVigente(candado, resetAt = 0) {
+  if (!candado) return false;
+  const puestoEn = candado === true ? 0 : Number(candado?.at || 0);
+  return Number(resetAt) > 0 ? puestoEn > Number(resetAt) : true;
+}
+
+/**
  * La HUELLA de un informe termico: que tiene que cambiar para que sea OTRO informe.
  *
  * 🔴 [2026-08-26, regla del dueño] El candado de 30 dias existe para no mandarle al mismo
@@ -1096,6 +1118,12 @@ export async function handleWebhook(req, res, deps = {}) {
     if (/^\s*reset(ear)?\s*$/i.test(userText)) {
       conv.delete(from);
       persistSessionFn(from, { history: [], state: {} }, deps);
+      // [2026-08-26] RESET tambien suelta los candados del INFORME TERMICO (caso 0364: el
+      // dueño probaba un "cliente nuevo" y el informe no salia por el candado de la prueba
+      // anterior). No se borran claves (las huellas no se pueden enumerar): se deja un
+      // marcador con fecha y `candadoVigente` ignora todo candado anterior a el.
+      await safe('reset.informes', () => escribirEstado(
+        `informe_reset:${String(from).replace(/\D/g, '')}`, Date.now(), 30 * 24 * 3600));
       const resetMsg = 'Listo, partimos de cero 🙌 ¿En qué te ayudo con tus ventanas?';
       await safe('reset.send', () => sendWhatsAppText(from, resetMsg));
       await safe('reset.persistIn', () => bridge.pushConversationEvent({
@@ -1244,8 +1272,11 @@ export async function handleWebhook(req, res, deps = {}) {
           // a alguien que lo esta pidiendo.
           let yaSeMando = false;
           if (!forzar) {
-            try { yaSeMando = (await (deps.leerEstado || leerEstado)(clave)) === true; }
-            catch { /* si el estado no se puede leer, se sigue */ }
+            try {
+              const _candado = await (deps.leerEstado || leerEstado)(clave);
+              const _resetAt = Number(await (deps.leerEstado || leerEstado)(`informe_reset:${_tel}`)) || 0;
+              yaSeMando = candadoVigente(_candado, _resetAt);
+            } catch { /* si el estado no se puede leer, se sigue */ }
           }
           if (yaSeMando) return;
 
@@ -1464,7 +1495,8 @@ export async function handleWebhook(req, res, deps = {}) {
             return;
           }
           // Se marca DESPUÉS de que salió DE VERDAD: si el envío falla, el próximo turno reintenta.
-          try { await (deps.escribirEstado || escribirEstado)(clave, true, 30 * 24 * 3600); }
+          // Con fecha: el candado solo vale si es posterior al ultimo RESET (candadoVigente).
+          try { await (deps.escribirEstado || escribirEstado)(clave, { at: Date.now() }, 30 * 24 * 3600); }
           catch { /* no bloquea: el mensaje ya llegó */ }
 
           // El informe SALIO. Se suelta el token sin liberar la reserva: si el `finally` la

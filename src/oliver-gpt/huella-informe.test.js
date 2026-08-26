@@ -62,3 +62,21 @@ test('🔒 la huella no crece sin límite', () => {
   const h = huellaDelInforme({ comuna: 'x'.repeat(300), producto: 'y'.repeat(300), glassLabel: 'z'.repeat(300) });
   assert.ok(h.length <= 3 * 40 + 2, `la huella mide ${h.length}`);
 });
+
+// ── [2026-08-26 · caso 0364] RESET suelta los candados del informe ──────────────────────
+import { candadoVigente } from './webhook.js';
+
+test('🔴 un candado ANTERIOR al RESET ya no vale; uno posterior si', () => {
+  // El caso medido: candado de las 14:11 (pruebas de Paula), RESET a las 19:44, cotizacion
+  // nueva a las 19:44 con la misma huella → el informe debe salir.
+  const t1411 = 1756224660000, t1944 = 1756244640000;
+  assert.equal(candadoVigente({ at: t1411 }, t1944), false, 'candado viejo + RESET → suelto');
+  assert.equal(candadoVigente({ at: t1944 + 60000 }, t1944), true, 'entregado DESPUES del RESET → vale');
+});
+
+test('candados legacy (`true`, sin fecha): sin RESET valen; con RESET quedan sueltos', () => {
+  assert.equal(candadoVigente(true, 0), true, 'sin marcador de RESET, todo sigue como antes');
+  assert.equal(candadoVigente(true, 123), false, 'el RESET pide empezar de cero: suelto');
+  assert.equal(candadoVigente(null, 0), false, 'sin candado nunca hubo envio');
+  assert.equal(candadoVigente(undefined, 999), false);
+});
