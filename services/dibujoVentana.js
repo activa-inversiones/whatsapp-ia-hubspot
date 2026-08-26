@@ -204,6 +204,13 @@ function planoDeVentana(it, caja) {
   // Con mínimos en px para que una ventana chica no quede con el marco invisible.
   const marco = Math.max(2.5, 60 * escala);
   const perfilHoja = Math.max(1.8, 40 * escala);
+  // 🔴 [2026-08-25, correccion del dueño contra el plano de Winart] EL JUNQUILLO NO ES LA
+  // HOJA. El junquillo es la varilla fina que sujeta el vidrio (~15 mm); la hoja es el perfil
+  // grueso del bastidor que ABRE (~40 mm). Se estaban dibujando iguales, y por eso todo salia
+  // con un borde gordo de mas. Textual del dueño: *"el junquillo es mucho mas delgado en la
+  // original de Winart"*. En un paño FIJO ni siquiera hay hoja — el vidrio va directo al
+  // marco con su junquillo, que es lo que se ve en el F1 de su plano.
+  const junquillo = Math.max(0.9, 15 * escala);
 
   const intX = x + marco, intY = y + marco;
   const intW = Math.max(1, w - 2 * marco), intH = Math.max(1, h - 2 * marco);
@@ -238,14 +245,20 @@ function planoDeVentana(it, caja) {
         w: Math.max(0.5, r.w - 2 * mx), h: Math.max(0.5, r.h - 2 * my),
         idx: i,
       };
-      const insetX = Math.min(perfilHoja, hoja.w / 3);
-      const insetY = Math.min(perfilHoja, hoja.h / 3);
+      // Un FIJO no tiene bastidor: el vidrio se apoya en el marco con el junquillo. Un paño
+      // que ABRE si lleva su hoja, y adentro de ella el junquillo.
+      const perfil = tp === "FIJA" ? junquillo : perfilHoja;
+      const insetX = Math.min(perfil, hoja.w / 3);
+      const insetY = Math.min(perfil, hoja.h / 3);
       const vidrioRect = {
         x: hoja.x + insetX, y: hoja.y + insetY,
         w: Math.max(0, hoja.w - 2 * insetX), h: Math.max(0, hoja.h - 2 * insetY),
       };
       return {
         ...hoja, vidrioRect, manoDerecha: true, tipo: tp,
+        // `sinBastidor` le dice al pintado que NO trace el rectangulo de la hoja: en el plano
+        // real ese contorno no existe, y dibujarlo hace parecer que el fijo tambien abre.
+        sinBastidor: tp === "FIJA",
         // Un paño FIJO no lleva símbolo: es justamente lo que lo distingue del que abre.
         simbolo: tp === "FIJA" ? [] : simboloApertura(tp, vidrioRect, true),
         flecha: 0,
@@ -256,7 +269,7 @@ function planoDeVentana(it, caja) {
       // Sin marco exterior único: `marcos` son los marcos completos, uno por paño.
       marcoRect: null,
       marcos: marcosC.map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h })),
-      marco, perfilHoja, hojas: hojasC,
+      marco, perfilHoja, junquillo, hojas: hojasC,
       compuesta: {
         orientacion: esVertical ? 'vertical' : 'horizontal',
         partes: partes.map((pt, i) => ({ tipo: tipoDeParte(pt.tipo), ancho_mm: pt.ancho_mm, alto_mm: pt.alto_mm, idx: i })),
@@ -272,8 +285,10 @@ function planoDeVentana(it, caja) {
     // dejaba el vidrio dibujado FUERA de su hoja, derramado sobre el marco. Se ve en una
     // ventana alta y angosta de 3 hojas. (Bug cazado por Codex; mi test usaba una ventana
     // ancha y por eso pasaba.) Se acota el perfil a un tercio de la hoja en cada eje.
-    const insetX = Math.min(perfilHoja, r.w / 3);
-    const insetY = Math.min(perfilHoja, r.h / 3);
+    // Mismo criterio que en la compuesta: una ventana FIJA no tiene hoja, solo junquillo.
+    const perfil = tipo === "FIJA" ? junquillo : perfilHoja;
+    const insetX = Math.min(perfil, r.w / 3);
+    const insetY = Math.min(perfil, r.h / 3);
     const vidrioRect = {
       x: r.x + insetX, y: r.y + insetY,
       w: Math.max(0, r.w - 2 * insetX), h: Math.max(0, r.h - 2 * insetY),
@@ -282,7 +297,7 @@ function planoDeVentana(it, caja) {
     // En batiente/oscilo, con 2 hojas se abren simétricas hacia afuera (bisagras a los extremos).
     const manoDerecha = n === 1 ? true : r.idx % 2 === 0;
     return {
-      ...r, vidrioRect, manoDerecha,
+      ...r, vidrioRect, manoDerecha, sinBastidor: tipo === "FIJA",
       simbolo: simboloApertura(tipo, vidrioRect, manoDerecha),
       flecha: tipo === "CORREDERA" ? (r.idx % 2 === 0 ? 1 : -1) : 0,
     };
@@ -291,7 +306,7 @@ function planoDeVentana(it, caja) {
   return {
     tipo, ancho, alto, escala, color, vidrio,
     marcoRect: { x, y, w, h },
-    marco, perfilHoja, hojas,
+    marco, perfilHoja, junquillo, hojas,
     etiqueta: `${ancho}×${alto} mm`,
   };
 }
@@ -305,10 +320,25 @@ function dibujarVentana(doc, caja, it) {
   // una ventana dividida); el resto de los tipos, uno solo.
   for (const m of (p.marcos || [p.marcoRect])) {
     doc.rect(m.x, m.y, m.w, m.h).lineWidth(0.7).fillAndStroke(p.color.f, p.color.e);
+    // INGLETE: los perfiles de PVC se cortan a 45 grados y se sueldan en la esquina. Winart
+    // lo dibuja y es lo que hace que el marco se lea como un marco y no como un rectangulo
+    // pintado. Cuatro lineas, y el plano pasa a parecerse al que el cliente ya conoce.
+    const g = Math.min(p.marco, m.w / 2, m.h / 2);
+    if (g > 0.4) {
+      doc.save().lineWidth(0.35).strokeColor(p.color.e);
+      doc.moveTo(m.x, m.y).lineTo(m.x + g, m.y + g).stroke();
+      doc.moveTo(m.x + m.w, m.y).lineTo(m.x + m.w - g, m.y + g).stroke();
+      doc.moveTo(m.x, m.y + m.h).lineTo(m.x + g, m.y + m.h - g).stroke();
+      doc.moveTo(m.x + m.w, m.y + m.h).lineTo(m.x + m.w - g, m.y + m.h - g).stroke();
+      doc.restore();
+    }
   }
 
   for (const hoja of p.hojas) {
-    doc.rect(hoja.x, hoja.y, hoja.w, hoja.h).lineWidth(0.5).fillAndStroke(p.color.f, p.color.e);
+    // El bastidor solo existe donde hay una hoja que abre. En un fijo, dibujarlo es mentir.
+    if (!hoja.sinBastidor) {
+      doc.rect(hoja.x, hoja.y, hoja.w, hoja.h).lineWidth(0.5).fillAndStroke(p.color.f, p.color.e);
+    }
     const v = hoja.vidrioRect;
     doc.rect(v.x, v.y, v.w, v.h).lineWidth(0.4).fillAndStroke(p.vidrio, p.color.e);
 
