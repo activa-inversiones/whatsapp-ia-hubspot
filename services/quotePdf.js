@@ -91,7 +91,10 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       // El desperdicio real —dos hojas EN BLANCO por el pie de pagina— ya se elimino. Una
       // tercera hoja que lleva el cierre y la firma no sobra: es parte de la propuesta. Un
       // dibujo que el cliente no puede leer, en cambio, no sirve para nada.
-      const rowH = 140;
+      // [2026-08-26] 210 px por decision del dueño ("la B"): la compuesta se dibuja 89 px de
+      // ancho en vez de 57, y a ese tamaño el travesaño se lee. Cuesta una hoja mas y la vale
+      // — un dibujo que el cliente no puede leer no sirve para nada.
+      const rowH = 210;
       items.forEach((it, idx) => {
         if (y + rowH > doc.page.height - 90) {           // salto de página
           doc.addPage(); header(doc, quoteNumber); y = 110; y = tableHead(doc, y);

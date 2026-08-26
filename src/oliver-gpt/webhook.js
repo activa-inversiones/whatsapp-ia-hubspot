@@ -100,6 +100,17 @@ import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from '
 // del PDF: solo validamos ítems cuya apertura es inequívoca (si no, no tocamos → conservador).
 function aperturaFromLabel(text) {
   const t = String(text || '').toLowerCase();
+  // 🔴 [2026-08-26] LA COMPUESTA VA PRIMERO, Y POR ESO SE ESCAPABA DEL BLINDAJE.
+  // Este blindaje re-cotiza en el motor y CORRIGE el precio si no corresponde al label. Solo
+  // actuaba sobre items con una apertura inequivoca... y el label de una compuesta —
+  // "Proyectante (arriba) + Fija (abajo)"— tiene DOS aperturas, asi que caia a null y el item
+  // quedaba FUERA de la revision. La compuesta era el unico producto cuyo precio nadie
+  // verificaba contra el motor.
+  // Costo medido: en la propuesta 0356-C/-D las dos compuestas salieron $130.000 MAS BARATAS
+  // cada una que lo que dice el motor ($277.725 contra $407.060). Un error asi no se ve
+  // mirando el PDF — el numero parece razonable.
+  // Una compuesta NO es ambigua: es una COMPUESTA. Se declara como tal y entra a la revision.
+  if (/\bcompuestas?\b/.test(t)) return 'COMPUESTA';
   const f = new Set();
   if (/\boscilo\s?batient/.test(t)) f.add('OSCILOBATIENTE');
   if (/\bproyectant/.test(t)) f.add('PROYECTANTE');
@@ -1982,8 +1993,15 @@ Comuna: ${datos.comuna}`
                   color:    x.it.color || '',
                   qty:      Number(x.it.qty) || 1,
                   ambiente: x.it.ambiente || '',
+                  // Sin la descripcion ni la orientacion, una compuesta VERTICAL se re-cotizaba
+                  // horizontal y el "precio del motor" con el que se compara seria el de otra
+                  // ventana. La revision quedaria peor que no tenerla.
+                  descripcion: x.it.descripcion || '',
+                  orientacion: x.it.compuesta?.orientacion || x.it.orientacion || undefined,
+                  partes: Array.isArray(x.it.compuesta?.partes) ? x.it.compuesta.partes : undefined,
                 })),
                 comuna: input.comuna || state.comuna || '',
+                texto_cliente: _textoCliente,
               };
               await priceAllEngine(_probe);
               _val.forEach((x, k) => {
