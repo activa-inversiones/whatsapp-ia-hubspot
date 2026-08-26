@@ -6,7 +6,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { carasDe, vectorFuga } from './dibujoIsometrico.js';
+import { carasDe, carasPerfil, vectorFuga } from './dibujoIsometrico.js';
 
 const R = { x: 100, y: 100, w: 60, h: 40 };
 
@@ -268,4 +268,22 @@ test('🔒 el vidrio y la manilla de la exterior se encogen CON su hoja', () => 
   if (ext.manilla) {
     assert.ok(ext.manilla.x >= ext.x - 2 && ext.manilla.x <= ext.x + ext.w + 2, 'la manilla acompaña');
   }
+});
+
+// ── [2026-08-26 · Gemini NO-APTO] la esquina trasera del bisel CIERRA ───────────────────
+test("🔴 bisel: las caras superior y derecha terminan en el MISMO vertice (sin fisura)", () => {
+  // El defecto demostrado por Gemini: superior biselaba solo en X y derecha solo en Y, y en
+  // la esquina trasera compartida quedaba una brecha de b·√2 px con el fondo blanco asomando.
+  // Con el inset en ambos ejes, el vertice trasero es uno solo — y el escalon y la veta
+  // doblan la esquina sin quebrarse, a CUALQUIER fraccion de profundidad.
+  const c = carasPerfil({ x: 100, y: 100, w: 60, h: 40 }, { dx: 6, dy: -6 }, 2);
+  const finSup = c.superior[2];      // vertice trasero-derecho de la cara superior
+  const iniDer = c.derecha[3];       // vertice trasero-superior de la cara derecha
+  assert.deepEqual(finSup, iniDer, `fisura en la esquina: ${finSup} vs ${iniDer}`);
+  for (const fr of [0.3, 0.55, 0.8]) {
+    const [sup, der] = c.linea(fr);
+    assert.deepEqual(sup[1], der[0], `la linea al ${fr} de profundidad quiebra en la esquina`);
+  }
+  // Y el escalon ES la linea a media profundidad (misma matematica, no una copia divergente).
+  assert.deepEqual(c.escalones, c.linea(0.55));
 });

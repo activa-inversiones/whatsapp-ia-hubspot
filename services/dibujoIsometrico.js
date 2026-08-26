@@ -115,21 +115,26 @@ export function carasHacia(r, { dx, dy }) {
  */
 export function carasPerfil(r, { dx, dy }, bisel = 0) {
   const { x, y, w, h } = r;
-  const b = Math.min(bisel, Math.abs(dx) * 0.45, w / 4, h / 4);
+  const b = Math.min(bisel, Math.abs(dx) * 0.45, Math.abs(dy) * 0.45, w / 4, h / 4);
+  // 🔴 [2026-08-26 · Gemini NO-APTO] El bisel insetea el rectangulo trasero EN LOS DOS EJES.
+  // El primer intento biselaba cada cara solo en su propio eje (superior en X, derecha en Y)
+  // y en la esquina trasera compartida las caras no cerraban: fisura de b·√2 px con el fondo
+  // blanco asomando, y el escalon/veta quebrados en la junta (demostrado con numeros por el
+  // revisor). Con el inset en ambos ejes, las dos caras terminan en el MISMO vertice
+  // (x+w+dx-b, y+dy+b) y toda linea de detalle es continua doblando la esquina.
+  const linea = (fr) => [
+    [[x + (dx + b) * fr, y + (dy + b) * fr], [x + w + (dx - b) * fr, y + (dy + b) * fr]],
+    [[x + w + (dx - b) * fr, y + (dy + b) * fr], [x + w + (dx - b) * fr, y + h + (dy - b) * fr]],
+  ];
   return {
-    superior: [[x, y], [x + w, y], [x + w + dx - b, y + dy], [x + dx + b, y + dy]],
-    derecha: [[x + w, y], [x + w, y + h], [x + w + dx, y + h + dy - b], [x + w + dx, y + dy + b]],
-    // Lineas paralelas al frente a una fraccion `fr` de la profundidad. SOLO se escala el
-    // desplazamiento de fuga — nunca el ancho/alto de la cara (el primer intento escalaba el
-    // vector completo y una veta al 80% se salia de la caja: lo cazo el test de contencion).
-    linea: (fr) => [
-      [[x + (dx + b) * fr, y + dy * fr], [x + w + (dx - b) * fr, y + dy * fr]],
-      [[x + w + dx * fr, y + (dy + b) * fr], [x + w + dx * fr, y + h + (dy - b) * fr]],
-    ],
-    escalones: [
-      [[x + (dx + b) * 0.55, y + dy * 0.55], [x + w + (dx - b) * 0.55, y + dy * 0.55]],
-      [[x + w + dx * 0.55, y + (dy + b) * 0.55], [x + w + dx * 0.55, y + h + (dy - b) * 0.55]],
-    ],
+    superior: [[x, y], [x + w, y], [x + w + dx - b, y + dy + b], [x + dx + b, y + dy + b]],
+    derecha: [[x + w, y], [x + w, y + h], [x + w + dx - b, y + h + dy - b], [x + w + dx - b, y + dy + b]],
+    // Lineas paralelas al frente a una fraccion `fr` de la profundidad: el corte a esa altura
+    // es el rectangulo del frente corrido fuga·fr e inseteado bisel·fr — SOLO se escalan los
+    // desplazamientos, nunca el ancho/alto (el primer intento escalaba el vector completo y
+    // una veta al 80% se salia de la caja: lo cazo el test de contencion).
+    linea,
+    escalones: linea(0.55),
   };
 }
 
