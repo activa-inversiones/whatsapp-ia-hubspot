@@ -2242,6 +2242,29 @@ Comuna: ${datos.comuna}`
               currency:        'CLP',
               status:          'sent',       // server.js lo mapea a 'quote_sent'
               quote_number:    quoteNumber,
+              // 🔴 [2026-08-25] #203 — LA COTIZACION GUARDA QUE SE COTIZO, no solo cuanto.
+              // Medido contra la BD viva: 343 de 395 cotizaciones de los ultimos 90 dias
+              // tienen un `payload` que solo trae atribucion (lead + click-ids) — ni una
+              // ventana. Consecuencias reales: la ficha del cliente no puede mostrar el
+              // detalle sin re-abrir el PDF, no se puede saber que se vende mas, y una
+              // recotizacion arranca de cero. El dato SIEMPRE estuvo acá (`input.items`, que
+              // dos lineas mas abajo ya se usa para `product_interest` y `windows_qty`):
+              // simplemente no viajaba. `quoteService.upsertQuote` guarda el payload entero,
+              // asi que con mandarlo alcanza — cero cambios del lado del servidor.
+              // Se manda una version FLACA (lo que describe la venta), no el objeto crudo:
+              // el payload va a `quotes.payload` y a `audit_events`, y meter el desglose de
+              // materiales de cada ventana ahi hincharia las dos tablas sin que nadie lo lea.
+              items: (input.items || []).map((it) => ({
+                producto:    it.producto_label || it.product || null,
+                medidas:     it.measures_original || it.measures || null,
+                cantidad:    Number(it.qty) || 1,
+                unitario:    Number(it.unit_price) || null,
+                color:       it.color || null,
+                vidrio:      it.glass_label || null,
+                ambiente:    it.ambiente || null,
+                referencial: !!it.referencial,     // fuera de estandar: precio a confirmar
+                uw:          it.termico?.uw ?? null,
+              })),
               // [ajuste abogado] click-ids a NIVEL RAÍZ: fireConversion (sales-os) los lee de
               // body.fbclid/body.gclid de raíz, NO de payload. Anti-cross-inject: un lead → un canal.
               fbclid:    state.fbclid    || null,

@@ -402,3 +402,70 @@ test('sí manda una respuesta distinta al turno siguiente', async () => {
 
   assert.equal(spy.sendCalls.length, 2, 'dos respuestas distintas se mandan las dos');
 });
+
+/* =========================================================================
+ * [2026-08-25] #203 — LA COTIZACIÓN GUARDA QUÉ SE COTIZÓ
+ * =========================================================================
+ * Medido: 343 de 395 cotizaciones (90 días) tenían un payload con SOLO atribución — ni una
+ * ventana. El dato estaba a mano en `input.items` y no viajaba, así que la ficha del cliente
+ * no podía mostrar el detalle y no se podía saber qué se vende más.
+ */
+test('🔴 #203 el quote-event lleva los ITEMS cotizados, no solo el monto', async () => {
+  const { deps, spy } = makeDeps({
+    generatePdf: async () => Buffer.from('%PDF-1.4 fake'),
+    uploadWaDocument: async () => 'media-203',
+    sendWaDocument: async () => ({ ok: true, msgId: 'sent-203' }),
+    upsertZohoDeal: async () => null,
+    handleTurn: async ({ userText, state, toolCtx }) => {
+      const r = await toolCtx.generarPdf({
+        name: 'Marcelo', comuna: 'Temuco',
+        items: [
+          { producto_label: 'Corredera SLIDING H80', measures: '1500x1200', color: 'Nogal', qty: 2, unit_price: 300000, glass_label: '4+12+4', ambiente: 'Living' },
+          { producto_label: 'Proyectante S60', measures: '800x600', color: 'Nogal', qty: 1, unit_price: 150000, glass_label: '4+12+4', ambiente: 'Baño', referencial: true },
+        ],
+      });
+      return { reply: r.message, history: [{ role: 'user', content: userText }], toolCalls: [{ name: 'generar_pdf_cotizacion' }], state: { ...state } };
+    },
+  });
+  const origFetch = global.fetch;
+  global.fetch = async (url) => String(url).includes('/internal/quotes/next-number')
+    ? { ok: true, json: async () => ({ quote_number: 'CM-FR-004-2026-0203' }) }
+    : { ok: false, json: async () => ({}) };
+  try { await handleWebhook(makeReq(), makeRes(), deps); } finally { global.fetch = origFetch; }
+
+  const ev = spy.quoteEvents.find((e) => e.status === 'sent');
+  assert.ok(ev, 'debe emitir el quote-event sent');
+  assert.ok(Array.isArray(ev.items), 'el payload lleva items');
+  assert.equal(ev.items.length, 2, 'las DOS ventanas, no solo la primera');
+  assert.equal(ev.items[0].producto, 'Corredera SLIDING H80');
+  assert.equal(ev.items[0].medidas, '1500x1200');
+  assert.equal(ev.items[0].cantidad, 2, 'la cantidad real, no 1 por defecto');
+  assert.equal(ev.items[0].unitario, 300000);
+  assert.equal(ev.items[0].color, 'Nogal');
+  assert.equal(ev.items[1].referencial, true, 'lo referencial se marca: su precio se confirma en terreno');
+});
+
+test('🔒 #203 sin ítems el payload no revienta: items queda como lista vacía', async () => {
+  // Un quote-event sin items (camino degradado) no puede tumbar la entrega de la propuesta.
+  const { deps, spy } = makeDeps({
+    generatePdf: async () => Buffer.from('%PDF-1.4 fake'),
+    uploadWaDocument: async () => 'media-203b',
+    sendWaDocument: async () => ({ ok: true, msgId: 'sent-203b' }),
+    upsertZohoDeal: async () => null,
+    handleTurn: async ({ userText, state, toolCtx }) => {
+      const r = await toolCtx.generarPdf({
+        name: 'Marcelo', comuna: 'Temuco',
+        items: [{ producto_label: 'Fijo S60', measures: '500x500', color: 'Blanco', qty: 1, unit_price: 90000 }],
+      });
+      return { reply: r.message, history: [{ role: 'user', content: userText }], toolCalls: [], state: { ...state } };
+    },
+  });
+  const origFetch = global.fetch;
+  global.fetch = async (url) => String(url).includes('/internal/quotes/next-number')
+    ? { ok: true, json: async () => ({ quote_number: 'CM-FR-004-2026-0204' }) }
+    : { ok: false, json: async () => ({}) };
+  try { await handleWebhook(makeReq(), makeRes(), deps); } finally { global.fetch = origFetch; }
+  const ev = spy.quoteEvents.find((e) => e.status === 'sent');
+  assert.ok(Array.isArray(ev?.items));
+  assert.equal(ev.items[0].uw, null, 'sin Uw se declara null, no se inventa');
+});
