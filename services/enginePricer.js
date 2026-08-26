@@ -306,8 +306,8 @@ export function esCompuestaVertical(texto) {
   const TIPO = "(?:fij[ao]s?|proyectantes?|abatibles?|oscilobatientes?)";
   const POS = "(?:arriba|abajo|encima|superior(?:es)?|inferior(?:es)?)";
   return (
-    new RegExp(`\\b${TIPO}\\s{1,3}(?:(?:la|el|de|en|por|va|ir[ao])\\s{1,3}){0,2}${POS}\\b`).test(t) ||
-    new RegExp(`\\b${POS}\\s{1,3}(?:(?:la|el|de|en|por|va|ir[ao])\\s{1,3}){0,2}${TIPO}\\b`).test(t) ||
+    new RegExp(`\\b${TIPO}\\s{1,3}(?:(?:la|el|un[ao]?|los|las|de|del|en|por|va|ir[ao]|queda|ponemos?|pongo)\\s{1,3}){0,2}${POS}\\b`).test(t) ||
+    new RegExp(`\\b${POS}\\s{1,3}(?:(?:la|el|un[ao]?|los|las|de|del|en|por|va|ir[ao]|queda|ponemos?|pongo)\\s{1,3}){0,2}${TIPO}\\b`).test(t) ||
     new RegExp(`\\b(?:apilad[ao]s?|vertical(?:es|mente)?)\\b`).test(t) ||
     new RegExp(`\\buna\\s+(?:encima|sobre)\\s+(?:de\\s+)?(?:la\\s+)?otra\\b`).test(t)
   );

@@ -25,6 +25,13 @@ test('🔴 se detecta cómo habla el cliente de verdad', () => {
     'fijo superior y proyectante inferior',
     'ventana compuesta apilada',
     'compuesta vertical 1200x2000',
+    // 🔴 [Gemini, compuerta] FALSO NEGATIVO REAL: el articulo entre la posicion y el tipo
+    // ("abajo UNA fija") rompia el detector, y es la forma mas natural de decirlo.
+    'una proyectante y abajo una fija',
+    'arriba una proyectante y abajo una fija',
+    'fija abajo, proyectante arriba',
+    'pongo arriba la proyectante',
+    'ARRIBA PROYECTANTE ABAJO FIJO',
   ]) {
     assert.equal(esCompuestaVertical(t), true, `debería ser vertical: "${t}"`);
   }
@@ -39,6 +46,11 @@ test('🔒 "arriba" a secas es una UBICACIÓN, no una composición', () => {
     'mitad fija mitad proyectante',
     'ventana compuesta 1200x1450',
     'corredera 2000x1000',
+    // [Gemini] mas ubicaciones que NO son composicion
+    'la proyectante de mas arriba',
+    'la ventana que esta abajo del techo',
+    'la del dormitorio de arriba',
+    'va arriba en el segundo piso',
     '',
     null,
   ]) {
