@@ -16,7 +16,7 @@
 // convención de dibujo técnico "cabinet" — la cara de frente queda a escala real y sin
 // deformar, que es lo que el cliente necesita para reconocer su ventana.
 
-import { planoDeVentana } from './dibujoVentana.js';
+import { planoDeVentana, pintarTexturaPerfil } from './dibujoVentana.js';
 
 /**
  * Fondo del perfil, por SERIE, en mm.
@@ -227,12 +227,30 @@ export function dibujarVentanaIso(doc, caja, it) {
     const tonoEscalon = p.color.veta || tinte(p.color.f, 0.55);
     doc.save().lineWidth(0.3).strokeColor(tonoEscalon);
     for (const [a, b] of c.escalones) doc.moveTo(a[0], a[1]).lineTo(b[0], b[1]).stroke();
-    // La VETA del relieve: dos hebras mas por cara, paralelas al escalon, solo si la folia
-    // es veteada. Sugerencia sutil — el PDF no puede imprimir textura, pero si insinuarla.
-    if (p.color.veta) {
+    // La TEXTURA del relieve en el canto, segun la folia (muestrario fisico, 26-ago):
+    // madera = hebras largas paralelas al escalon; grano = motas cortas sobre las mismas
+    // guias (el gofrado del grafito y el destello del negro); liso = nada mas que el escalon.
+    if (p.color.veta && p.color.textura !== 'grano') {
       doc.lineWidth(0.2);
       for (const fr of [0.3, 0.8]) {
         for (const [a, b] of c.linea(fr)) doc.moveTo(a[0], a[1]).lineTo(b[0], b[1]).stroke();
+      }
+    } else if (p.color.veta && p.color.textura === 'grano') {
+      // Motas deterministas: se caminan las guias de profundidad y se pinta un punto corto
+      // cada tanto, alternando la veta oscura y un tinte claro (el destello).
+      let sem = (Math.abs(Math.round(m.x * 7 + m.y * 13 + m.w * 31 + m.h * 57)) % 2147483645) + 1;
+      const rnd = () => (sem = (sem * 48271) % 2147483647) / 2147483647;
+      for (const fr of [0.25, 0.5, 0.75]) {
+        for (const [a, b] of c.linea(fr)) {
+          const pasos = Math.max(3, Math.floor(Math.hypot(b[0] - a[0], b[1] - a[1]) / 4));
+          for (let i = 0; i < pasos; i++) {
+            if (rnd() < 0.45) continue;                    // grano salteado, no una linea punteada
+            const t0 = (i + rnd() * 0.6) / pasos;
+            const px = a[0] + (b[0] - a[0]) * t0, py = a[1] + (b[1] - a[1]) * t0;
+            doc.lineWidth(0.25).strokeColor(rnd() < 0.4 ? tinte(p.color.f, p.color.brillo || 1.3) : p.color.veta);
+            doc.moveTo(px, py).lineTo(px + 0.5, py + 0.4).stroke();
+          }
+        }
       }
     }
     doc.restore();
@@ -241,6 +259,8 @@ export function dibujarVentanaIso(doc, caja, it) {
   // ── 2. La cara frontal: el mismo plano de siempre ──
   for (const m of marcos) {
     doc.rect(m.x, m.y, m.w, m.h).lineWidth(0.6).fillAndStroke(p.color.f, p.color.e);
+    // La folia de la cara frontal: misma textura y brillo que el plano 2D (muestrario 26-ago).
+    pintarTexturaPerfil(doc, m, Math.min(m.marco || p.marco, m.w / 2, m.h / 2), p.color);
   }
 
   for (const hoja of p.hojas) {
@@ -260,6 +280,8 @@ export function dibujarVentanaIso(doc, caja, it) {
       poligono(doc, c.superior, claro, p.color.e);
       poligono(doc, c.derecha, oscuro, p.color.e);
       doc.rect(hoja.x, hoja.y, hoja.w, hoja.h).lineWidth(0.45).fillAndStroke(p.color.f, p.color.e);
+      const gB = ((hoja.junquilloRect || hoja.vidrioRect || {}).x ?? hoja.x) - hoja.x;
+      pintarTexturaPerfil(doc, hoja, gB, p.color);
     }
 
     const j = hoja.junquilloRect;

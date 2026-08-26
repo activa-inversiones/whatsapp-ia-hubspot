@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  planoDeVentana, medidas, tipoDe, hojasDe, claveColor, claveVidrio,
+  dibujarVentana, planoDeVentana, medidas, tipoDe, hojasDe, claveColor, claveVidrio,
   encajar, repartirHojas, simboloApertura, COLORES,
 } from "./dibujoVentana.js";
 
@@ -592,4 +592,61 @@ test('🔒 [Gemini] mencionar "compuesta" DE PASADA no inventa dos paños', () =
   }, { x: 0, y: 0, w: 156, h: 196 });
   assert.ok(!p.marcos || p.marcos.length === 1, 'un solo paño: es una fija');
   assert.ok(p.hojas.every((h) => !h.simbolo || h.simbolo.length === 0), 'sin símbolo de apertura');
+});
+
+// ── [2026-08-26] TEXTURA + BRILLO de la folia (pedido del dueno sobre el muestrario) ────
+// "debes darle el relieve veteado a los colores bien brillosos todos con su textura".
+// Grabadora universal: registra cada llamada pdfkit (solo args escalares) y encadena.
+function docGrabadora() {
+  const ops = [];
+  const d = new Proxy({}, {
+    get: (_, k) => {
+      if (k === "_ops") return ops;
+      return (...args) => {
+        ops.push([k, ...args.filter((a) => typeof a === "string" || typeof a === "number")]);
+        return d;
+      };
+    },
+  });
+  return d;
+}
+const ITEM_TEX = { producto_label: "Ventana proyectante", measures: "1000x1000", glass_label: "TP-M-4+12+4", serie: "S60" };
+
+test("textura: DETERMINISTA — dos corridas del mismo plano emiten exactamente lo mismo", () => {
+  // La semilla sale de la geometria, no de Math.random: un PDF re-emitido no cambia por azar
+  // (y este deepEqual es el guardia de que nadie meta azar despues).
+  const a = docGrabadora(), b = docGrabadora();
+  dibujarVentana(a, { x: 10, y: 10, w: 200, h: 200 }, { ...ITEM_TEX, color: "Roble" });
+  dibujarVentana(b, { x: 10, y: 10, w: 200, h: 200 }, { ...ITEM_TEX, color: "Roble" });
+  assert.deepEqual(a._ops, b._ops);
+});
+
+test("textura: el roble dibuja su VETA de madera (la muestra manda)", () => {
+  const d = docGrabadora();
+  dibujarVentana(d, { x: 10, y: 10, w: 200, h: 200 }, { ...ITEM_TEX, color: "Roble" });
+  const colores = d._ops.filter(([m]) => m === "strokeColor").map(([, c]) => c);
+  assert.ok(colores.includes(COLORES.roble.veta), "las hebras de veta se pintan con el tono declarado");
+});
+
+test("textura: el negro dibuja GRANO con destello (veta oscura + mota clara)", () => {
+  const d = docGrabadora();
+  dibujarVentana(d, { x: 10, y: 10, w: 200, h: 200 }, { ...ITEM_TEX, color: "New Black" });
+  const colores = new Set(d._ops.filter(([m]) => m === "strokeColor").map(([, c]) => c));
+  assert.ok(colores.has(COLORES.newblack.veta), "las motas oscuras");
+  // El destello: el tinte claro del brillo (0x26*1.55 etc.) tiene que aparecer tambien.
+  assert.ok([...colores].some((c) => /^#3[b-f]3[b-f]4[0-5]$/i.test(String(c))),
+    `falta la mota clara del destello entre ${[...colores].join(", ")}`);
+});
+
+test("textura: el blanco es LISO — brillo si, hebras de veta no", () => {
+  const d = docGrabadora();
+  dibujarVentana(d, { x: 10, y: 10, w: 200, h: 200 }, { ...ITEM_TEX, color: "Blanco" });
+  const colores = d._ops.filter(([m]) => m === "strokeColor").map(([, c]) => c);
+  for (const v of [COLORES.roble.veta, COLORES.nogal.veta, COLORES.newblack.veta, COLORES.grafito.veta]) {
+    assert.ok(!colores.includes(v), `el blanco no lleva la veta ${v} de otra folia`);
+  }
+  // Y menos trazos que una folia veteada: la diferencia ES la textura.
+  const t = docGrabadora();
+  dibujarVentana(t, { x: 10, y: 10, w: 200, h: 200 }, { ...ITEM_TEX, color: "Nogal" });
+  assert.ok(t._ops.length > d._ops.length + 20, "la folia veteada dibuja bastante mas que la lisa");
 });

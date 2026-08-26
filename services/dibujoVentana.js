@@ -30,13 +30,110 @@
 // en la mano.
 // `f` = relleno del perfil · `e` = linea · `veta` = tono del RELIEVE (la veta de la folia en
 // roble/nogal, el grano en negro); null = folia lisa.
+// [2026-08-26, segunda pasada con el muestrario en la mano] Cada folia declara ademas su
+// TEXTURA y su BRILLO — pedido textual del dueno sobre la foto de las muestras: "debes darle
+// el relieve veteado a los colores bien brillosos todos con su textura". Lo que se ve en las
+// muestras fisicas: roble dorado y nogal con veta de madera marcada y MUY brillosos; el
+// grafito antracita con grano fino tipo gofrado; el negro con granulado que destella; el
+// blanco liso con puro brillo. `textura`: "madera" (hebras onduladas) / "grano" (motas
+// cortas claras y oscuras) / "liso" (solo el brillo). `brillo` = factor de la hebra especular.
 const COLORES = {
-  blanco:    { f: "#F4F4F1", e: "#000000", nombre: "Blanco", veta: null },
-  roble:     { f: "#9A5B1E", e: "#000000", nombre: "Roble", veta: "#6E3C12" },   // roble dorado
-  nogal:     { f: "#7C4A22", e: "#000000", nombre: "Nogal", veta: "#573112" },
-  grafito:   { f: "#474C54", e: "#2A2D33", nombre: "Grafito", veta: null },      // antracita real
-  newblack:  { f: "#26262A", e: "#4F4F4F", nombre: "New Black", veta: "#111114" },
+  blanco:    { f: "#F4F4F1", e: "#000000", nombre: "Blanco", veta: null, textura: "liso", brillo: 1.08 },
+  roble:     { f: "#9A5B1E", e: "#000000", nombre: "Roble", veta: "#6E3C12", textura: "madera", brillo: 1.30 },   // roble dorado
+  nogal:     { f: "#7C4A22", e: "#000000", nombre: "Nogal", veta: "#573112", textura: "madera", brillo: 1.26 },
+  grafito:   { f: "#474C54", e: "#2A2D33", nombre: "Grafito", veta: "#383D45", textura: "grano", brillo: 1.16 },  // antracita real, gofrado fino
+  newblack:  { f: "#26262A", e: "#4F4F4F", nombre: "New Black", veta: "#101014", textura: "grano", brillo: 1.55 }, // granulado con destello
 };
+
+/** Mezcla multiplicativa de un hex (misma matematica que el `tinte` del isometrico). */
+function tono(hex, f) {
+  const m = String(hex || "").match(/^#?([0-9a-f]{6})$/i);
+  if (!m) return "#8A8F96";
+  const n = parseInt(m[1], 16);
+  const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+    .map((v) => Math.max(0, Math.min(255, Math.round(v * f))));
+  return `#${c.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/**
+ * Pinta la TEXTURA y el BRILLO de la folia sobre UNA banda de perfil ya rellenada.
+ *
+ * Por que por banda y no sobre el rectangulo entero: la folia envuelve el perfil, asi que la
+ * veta corre A LO LARGO de cada tramo — vertical en las jambas, horizontal en el cabezal. Una
+ * veta vertical cruzando el travesano de arriba delataria el dibujo al primer vistazo.
+ *
+ * Determinista a proposito: la semilla sale de la geometria de la banda, asi el MISMO plano
+ * dibuja las MISMAS hebras en cada corrida (los tests comparan corridas y los PDF re-emitidos
+ * no cambian por azar). Nada de Math.random.
+ *
+ * Todo con la superficie pdfkit que los dobles de test ya conocen (save/rect/clip/moveTo/
+ * lineTo/stroke) — sin opacity ni gradientes, que no estan en todos lados.
+ */
+function pintarTexturaBanda(doc, bnd, color, horizontal) {
+  const g = horizontal ? bnd.h : bnd.w;            // grosor visible de la banda
+  const largo = horizontal ? bnd.w : bnd.h;
+  if (!(g > 1.4) || !(largo > 3)) return;          // no hay lugar ni para una hebra
+  const textura = color.textura || (color.veta ? "madera" : "liso");
+  const brillo = tono(color.f, color.brillo || 1.14);
+  let sem = (Math.abs(Math.round(bnd.x * 7 + bnd.y * 13 + bnd.w * 31 + bnd.h * 57)) % 2147483645) + 1;
+  const rnd = () => (sem = (sem * 48271) % 2147483647) / 2147483647;
+  const linea = (off, ancho, colorHebra, ondula) => {
+    doc.lineWidth(ancho).strokeColor(colorHebra);
+    const tramos = ondula ? 4 : 1;
+    if (horizontal) {
+      const y = bnd.y + off;
+      doc.moveTo(bnd.x + 0.3, y);
+      for (let i = 1; i <= tramos; i++) {
+        doc.lineTo(bnd.x + (bnd.w * i) / tramos - 0.3, y + (ondula ? (rnd() - 0.5) * g * 0.22 : 0));
+      }
+    } else {
+      const x = bnd.x + off;
+      doc.moveTo(x, bnd.y + 0.3);
+      for (let i = 1; i <= tramos; i++) {
+        doc.lineTo(x + (ondula ? (rnd() - 0.5) * g * 0.22 : 0), bnd.y + (bnd.h * i) / tramos - 0.3);
+      }
+    }
+    doc.stroke();
+  };
+  doc.save().rect(bnd.x, bnd.y, bnd.w, bnd.h).clip();
+  // El BRILLO: la hebra especular de la folia, corrida hacia un borde (la luz nunca pega en
+  // el centro), mas una sombra fina en el borde opuesto. Es lo que la hace verse "brillosa".
+  linea(g * 0.28, Math.min(0.7, g * 0.22), brillo, false);
+  if (g > 3) linea(g * 0.88, 0.25, tono(color.f, 0.8), false);
+  if (textura === "madera" && color.veta) {
+    // La VETA: hebras onduladas a lo largo, gruesas y finas alternadas, como la muestra.
+    const n = Math.max(1, Math.min(4, Math.floor(g / 2.4)));
+    for (let i = 0; i < n; i++) {
+      linea(g * (0.15 + 0.72 * rnd()), rnd() < 0.35 ? 0.3 : 0.18, color.veta, true);
+      if (g > 5 && rnd() < 0.5) linea(g * (0.15 + 0.72 * rnd()), 0.14, tono(color.f, 1.14), true);
+    }
+  } else if (textura === "grano" && color.veta) {
+    // El GRANO: motas cortas repartidas, oscuras y claras mezcladas — el gofrado del grafito
+    // y el destello del negro salen de la misma receta con distinto `brillo`.
+    const motas = Math.max(6, Math.min(70, Math.round((bnd.w * bnd.h) / 12)));
+    for (let i = 0; i < motas; i++) {
+      const mx = bnd.x + rnd() * (bnd.w - 0.8) + 0.3;
+      const my = bnd.y + rnd() * (bnd.h - 0.8) + 0.3;
+      const lm = 0.35 + rnd() * 0.55;
+      doc.lineWidth(0.28).strokeColor(rnd() < 0.42 ? brillo : color.veta);
+      doc.moveTo(mx, my).lineTo(mx + (horizontal ? lm : 0), my + (horizontal ? 0 : lm)).stroke();
+    }
+  }
+  doc.restore();
+}
+
+/**
+ * La textura de un PERFIL EN MARCO (4 bandas: cabezal, umbral y las dos jambas), para el
+ * marco exterior y el bastidor de la hoja. `grosor` = ancho visible del perfil en px.
+ */
+export function pintarTexturaPerfil(doc, r, grosor, color) {
+  const g = Math.max(0, Math.min(grosor, r.w / 2, r.h / 2));
+  if (!(g > 1.4)) return;
+  pintarTexturaBanda(doc, { x: r.x, y: r.y, w: r.w, h: g }, color, true);
+  pintarTexturaBanda(doc, { x: r.x, y: r.y + r.h - g, w: r.w, h: g }, color, true);
+  pintarTexturaBanda(doc, { x: r.x, y: r.y + g, w: g, h: r.h - 2 * g }, color, false);
+  pintarTexturaBanda(doc, { x: r.x + r.w - g, y: r.y + g, w: g, h: r.h - 2 * g }, color, false);
+}
 
 // Tinte del vidrio según categoría. Winart los expone en glassCategory.hexa; acá se mapea
 // por etiqueta porque la cotización de Oliver trae texto ("DVH 4+12+4"), no el id de Winart.
@@ -673,6 +770,7 @@ function dibujarVentana(doc, caja, it) {
     // lo dibuja y es lo que hace que el marco se lea como un marco y no como un rectangulo
     // pintado. Cuatro lineas, y el plano pasa a parecerse al que el cliente ya conoce.
     const g = Math.min(m.marco || p.marco, m.w / 2, m.h / 2);
+    pintarTexturaPerfil(doc, m, g, p.color);   // la folia, antes del inglete (que va encima)
     if (g > 0.4) {
       doc.save().lineWidth(0.35).strokeColor(p.color.e);
       doc.moveTo(m.x, m.y).lineTo(m.x + g, m.y + g).stroke();
@@ -691,6 +789,9 @@ function dibujarVentana(doc, caja, it) {
       doc.rect(hoja.x, hoja.y, hoja.w, hoja.h).lineWidth(0.45).stroke(p.color.e);
     } else {
       doc.rect(hoja.x, hoja.y, hoja.w, hoja.h).lineWidth(0.5).fillAndStroke(p.color.f, p.color.e);
+      // El bastidor tambien es folia: mismo tratamiento que el marco.
+      const gB = ((hoja.junquilloRect || hoja.vidrioRect || {}).x ?? hoja.x) - hoja.x;
+      pintarTexturaPerfil(doc, hoja, gB, p.color);
     }
     // El junquillo: la varilla fina que aprieta el vidrio. Se dibuja como su propio contorno,
     // que es exactamente como se lee en el plano de Winart.
