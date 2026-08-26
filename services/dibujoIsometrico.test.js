@@ -242,3 +242,30 @@ test('🔴 [dueño 26-ago] la hoja INTERIOR va adelante, tapando a la exterior',
   const atras = p.hojas.find((h) => h.riel === 0), adelante = p.hojas.find((h) => h.riel === 1);
   assert.ok(atras.x + atras.w > adelante.x, 'las dos comparten la franja del encuentro');
 });
+
+test('🔴 [dueño 26-ago] la hoja EXTERIOR se ve más chica que la interior', () => {
+  // "si están en distintos rieles eso es imposible, debería verse la exterior más pequeña".
+  // Es una proyección paralela: sin este ajuste las dos salen idénticas y el dibujo miente.
+  const p = dibujarVentanaIso(docFalso(), { x: 0, y: 0, w: 300, h: 240 },
+    { producto_label: 'Ventana corredera 2 hojas', measures: '2000x1500', color: 'Blanco' });
+  const ext = p.hojas.find((h) => h.riel === 0), int = p.hojas.find((h) => h.riel === 1);
+  assert.ok(ext.h < int.h, `la exterior (${ext.h.toFixed(2)}) más baja que la interior (${int.h.toFixed(2)})`);
+  assert.ok(ext.w < int.w, 'y más angosta');
+  // El encogimiento es SUTIL: una ventana no está en fuga, está a 1,7 m. Si se pasara, el
+  // cliente vería una hoja notoriamente más chica que la otra, que tampoco es lo que ve.
+  const razon = ext.h / int.h;
+  assert.ok(razon > 0.94 && razon < 1, `razón ${razon.toFixed(3)} fuera del rango creíble`);
+});
+
+test('🔒 el vidrio y la manilla de la exterior se encogen CON su hoja', () => {
+  // Si la hoja se encoge pero su vidrio no, el vidrio se sale del bastidor.
+  const p = dibujarVentanaIso(docFalso(), { x: 0, y: 0, w: 300, h: 240 },
+    { producto_label: 'Ventana corredera 2 hojas', measures: '2000x1500', color: 'Blanco' });
+  const ext = p.hojas.find((h) => h.riel === 0);
+  const v = ext.vidrioRect;
+  assert.ok(v.x >= ext.x - 0.01 && v.x + v.w <= ext.x + ext.w + 0.01, 'el vidrio sigue dentro de su hoja');
+  assert.ok(v.y >= ext.y - 0.01 && v.y + v.h <= ext.y + ext.h + 0.01, 'también en vertical');
+  if (ext.manilla) {
+    assert.ok(ext.manilla.x >= ext.x - 2 && ext.manilla.x <= ext.x + ext.w + 2, 'la manilla acompaña');
+  }
+});

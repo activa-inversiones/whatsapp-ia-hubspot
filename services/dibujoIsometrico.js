@@ -133,6 +133,49 @@ export function dibujarVentanaIso(doc, caja, it) {
 
   doc.save();
 
+  // ── 🔭 LA HOJA EXTERIOR SE VE MÁS CHICA, PORQUE ESTÁ MÁS LEJOS ──────────────
+  // 🔴 [2026-08-26, correccion del dueño] *"la hoja exterior e interior se ven iguales en la
+  // misma cota; si estan en distintos rieles eso es imposible, deberia verse la exterior mas
+  // pequeña"*. Tenia razon, y el error era de fondo: esta es una proyeccion PARALELA, y en
+  // una proyeccion paralela la profundidad no achica nada — dos objetos a distinta distancia
+  // salen identicos. Correcto para un plano tecnico; falso para una foto.
+  //
+  // Se le agrega la unica perspectiva que importa aca: la hoja del riel EXTERIOR se dibuja
+  // levemente mas chica, encogida hacia el centro de la ventana.
+  //
+  // 📐 DE DONDE SALE EL FACTOR, para que no sea un numero lindo: la hoja exterior esta ~45 mm
+  // mas lejos que la interior (el fondo del riel), y una ventana se mira desde ~1,7 m. La
+  // reduccion aparente es 1 - 45/1700 ≈ 0,974. La distancia de observacion es un SUPUESTO
+  // DECLARADO, no una medicion: es lo que hace ver la ventana como se ve parado frente a ella.
+  const ENCOGE_EXTERIOR = 0.974;
+  const hojasExt = p.hojas.filter((h) => h.riel === 0);
+  if (hojasExt.length) {
+    const marcos = p.marcos || [p.marcoRect];
+    const cx = marcos.reduce((a, m) => a + m.x + m.w / 2, 0) / marcos.length;
+    const cy = marcos.reduce((a, m) => a + m.y + m.h / 2, 0) / marcos.length;
+    const encoger = (r) => {
+      if (!r) return r;
+      return {
+        ...r,
+        x: cx + (r.x - cx) * ENCOGE_EXTERIOR, y: cy + (r.y - cy) * ENCOGE_EXTERIOR,
+        w: r.w * ENCOGE_EXTERIOR, h: r.h * ENCOGE_EXTERIOR,
+      };
+    };
+    for (const h of hojasExt) {
+      const antes = { x: h.x, y: h.y, w: h.w, h: h.h };
+      Object.assign(h, encoger(antes));
+      h.vidrioRect = encoger(h.vidrioRect);
+      h.junquilloRect = encoger(h.junquilloRect);
+      h.manilla = encoger(h.manilla);
+      if (Array.isArray(h.simbolo)) {
+        h.simbolo = h.simbolo.map((sg) => ({
+          x1: cx + (sg.x1 - cx) * ENCOGE_EXTERIOR, y1: cy + (sg.y1 - cy) * ENCOGE_EXTERIOR,
+          x2: cx + (sg.x2 - cx) * ENCOGE_EXTERIOR, y2: cy + (sg.y2 - cy) * ENCOGE_EXTERIOR,
+        }));
+      }
+    }
+  }
+
   // ── 1. Las caras de profundidad, primero: quedan DETRÁS de la cara frontal ──
   // La de arriba recibe la luz (más clara) y la lateral queda en sombra. Es lo único que
   // convierte un rectángulo plano en un volumen.
