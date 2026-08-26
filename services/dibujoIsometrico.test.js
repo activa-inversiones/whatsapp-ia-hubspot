@@ -195,3 +195,37 @@ test('🔒 carasHacia elige el par correcto en las cuatro direcciones', async ()
   assert.deepEqual(carasHacia(r, { dx: 3, dy: -3 }).horizontal[0], [0, 0], 'arriba');
   assert.deepEqual(carasHacia(r, { dx: 3, dy: 3 }).horizontal[0], [0, 10], 'abajo');
 });
+
+test('🔴 [dueño 25-ago] la corredera lleva sus flechas también en la vista con volumen', () => {
+  // El plano 2D ya las dibujaba y en la isométrica se habían quedado afuera. En una corredera
+  // son la única señal de hacia dónde corre cada hoja.
+  const d = docFalso();
+  const p = dibujarVentanaIso(d, { x: 0, y: 0, w: 250, h: 220 },
+    { producto_label: 'Ventana corredera 2 hojas', measures: '1500x1200', color: 'Blanco' });
+  const conFlecha = p.hojas.filter((h) => h.flecha);
+  assert.equal(conFlecha.length, 2, 'las dos hojas tienen sentido de deslizamiento');
+  assert.equal(conFlecha[0].flecha, -conFlecha[1].flecha, 'y corren en sentidos opuestos');
+});
+
+test('🔒 una ventana que NO corre no lleva flechas', () => {
+  const p = dibujarVentanaIso(docFalso(), { x: 0, y: 0, w: 250, h: 220 },
+    { producto_label: 'Ventana proyectante', measures: '1000x800', color: 'Roble' });
+  assert.ok(p.hojas.every((h) => !h.flecha), 'un proyectante no desliza');
+});
+
+test('🔴 [dueño 25-ago] las hojas de una corredera van en RIELES distintos', () => {
+  // "las estás colocando sobre el mismo riel y eso no es posible para que puedan deslizarse".
+  const p = dibujarVentanaIso(docFalso(), { x: 0, y: 0, w: 250, h: 220 },
+    { producto_label: 'Ventana corredera 2 hojas', measures: '1500x1200', color: 'Blanco' });
+  const rieles = p.hojas.map((h) => h.riel);
+  assert.deepEqual([...new Set(rieles)].sort(), [0, 1], 'una en cada riel');
+  // Y se TRASLAPAN: si no, quedaría una rendija abierta al cerrar.
+  const [a, b] = [...p.hojas].sort((x, y) => x.x - y.x);
+  assert.ok(a.x + a.w > b.x + 0.01, 'la hoja izquierda se monta sobre la derecha');
+});
+
+test('🔒 una ventana que no corre no tiene rieles ni traslape', () => {
+  const p = dibujarVentanaIso(docFalso(), { x: 0, y: 0, w: 250, h: 220 },
+    { producto_label: 'Ventana proyectante', measures: '1000x800', color: 'Roble' });
+  assert.ok(p.hojas.every((h) => h.riel === null || h.riel === undefined));
+});

@@ -87,17 +87,6 @@ function tipoDe(it) {
   return "FIJA";
 }
 
-// El tipo de UN paño de la compuesta (lo que devuelve el motor en compuesta.partes[].tipo).
-// FIJA/PROYECTANTE/BATIENTE/OSCILOBATIENTE — los cuatro que el motor acepta como paño.
-/**
- * El contorno del JUNQUILLO: el vidrio crecido por el ancho de la varilla.
- *
- * 🔴 [2026-08-25, segunda correccion del dueño] *"no se ve el junquillo"*. Tenia razon:
- * estaba en el CALCULO (el vidrio se separaba del marco lo justo) pero no en el DIBUJO —
- * la banda quedaba del mismo color que el marco y sin una linea que la separara, asi que
- * era invisible. En el plano de Winart el junquillo se lee como una linea fina alrededor
- * del vidrio. Eso es lo que devuelve esta funcion.
- */
 /**
  * El CODIGO del vidrio tal como lo rotula la fabrica ("TP-M-4+12+4").
  *
@@ -200,6 +189,15 @@ function cotasDe({ x, y, w, h, ancho, alto, marcos, partes, vertical }) {
   return c;
 }
 
+/**
+ * El contorno del JUNQUILLO: el vidrio crecido por el ancho de la varilla.
+ *
+ * 🔴 [2026-08-25, segunda correccion del dueño] *"no se ve el junquillo"*. Tenia razon:
+ * estaba en el CALCULO (el vidrio se separaba del marco lo justo) pero no en el DIBUJO — la
+ * banda quedaba del mismo color que el marco y sin una linea que la separara, asi que era
+ * invisible. En el plano de Winart el junquillo se lee como una linea fina alrededor del
+ * vidrio. Eso es lo que devuelve esta funcion.
+ */
 function rectJunquillo(v, j) {
   return {
     x: v.x - j, y: v.y - j,
@@ -207,6 +205,8 @@ function rectJunquillo(v, j) {
   };
 }
 
+// El tipo de UN paño de la compuesta (lo que devuelve el motor en compuesta.partes[].tipo).
+// FIJA/PROYECTANTE/BATIENTE/OSCILOBATIENTE — los cuatro que el motor acepta como paño.
 function tipoDeParte(t) {
   const s = String(t || "").toUpperCase();
   if (s.includes("OSCILO")) return "OSCILOBATIENTE";
@@ -261,9 +261,37 @@ function encajar(ancho, alto, cajaW, cajaH) {
 }
 
 // Reparte el ancho interior en n hojas iguales, devolviendo el rect de cada una.
-function repartirHojas(x, y, w, h, n) {
+/**
+ * Reparte el hueco interior entre n hojas.
+ *
+ * 🔴 [2026-08-25, correccion del dueño] EN UNA CORREDERA LAS HOJAS NO ESTAN EN EL MISMO PLANO.
+ * Textual: *"la corredera tiene 2 rieles donde corren las hojas, las estas colocando sobre el
+ * mismo riel y eso no es posible para que puedan deslizarse"*. Correcto: iban pegadas una al
+ * lado de la otra, tocandose — asi chocarian. Van en rieles distintos (una adelante y otra
+ * atras) y se TRASLAPAN en el encuentro, que es lo que permite que una pase por delante de la
+ * otra y que no quede una rendija abierta al cerrar.
+ *
+ * @param {boolean} corre  true en una corredera: aplica traslape y asigna riel
+ * @param {number}  traslape  ancho del traslape en px (el perfil de encuentro)
+ */
+function repartirHojas(x, y, w, h, n, corre = false, traslape = 0) {
   const paso = w / n;
-  return Array.from({ length: n }, (_, i) => ({ x: x + i * paso, y, w: paso, h, idx: i }));
+  return Array.from({ length: n }, (_, i) => {
+    // Cada hoja se estira hacia sus vecinas por medio traslape: la primera y la ultima no se
+    // estiran hacia afuera, porque ahi no hay vecina — ahi topan contra el marco.
+    const haciaIzq = corre && i > 0 ? traslape / 2 : 0;
+    const haciaDer = corre && i < n - 1 ? traslape / 2 : 0;
+    return {
+      x: x + i * paso - haciaIzq,
+      y,
+      w: paso + haciaIzq + haciaDer,
+      h,
+      idx: i,
+      // Riel: las pares atras, las impares adelante. Es la convencion de la fabrica y define
+      // cual hoja pasa por delante de cual.
+      riel: corre ? (i % 2 === 0 ? 0 : 1) : null,
+    };
+  });
 }
 
 // Símbolo de apertura, en coordenadas relativas al paño.
@@ -413,7 +441,11 @@ function planoDeVentana(it, caja) {
     };
   }
 
-  const hojas = repartirHojas(intX, intY, intW, intH, n).map((r) => {
+  // El traslape de una corredera es el perfil de encuentro de las dos hojas. Winart lo trae
+  // como `il` (interlock) = 58 mm en la S60, igual que el resto del perfil de hoja.
+  const TRASLAPE_MM = 58;
+  const corre = tipo === "CORREDERA";
+  const hojas = repartirHojas(intX, intY, intW, intH, n, corre, TRASLAPE_MM * escala).map((r) => {
     // El perfil de la hoja NO puede ser más grueso que la hoja misma. Con un piso fijo en el
     // ancho del vidrio (max(0.5, …)) pero la posición corrida por el perfil, una hoja angosta
     // dejaba el vidrio dibujado FUERA de su hoja, derramado sobre el marco. Se ve en una
@@ -438,6 +470,9 @@ function planoDeVentana(it, caja) {
     };
   });
 
+  // 🔴 Se pintan primero las hojas del riel de ATRAS: si no, la de atras taparia a la de
+  // adelante justo en el traslape y se veria al reves de como esta armada la ventana.
+  if (corre) hojas.sort((a, b) => (a.riel || 0) - (b.riel || 0));
   const rotulos = etiquetasDePanos(hojas.map(() => tipo));
   hojas.forEach((hj, i) => { hj.tipo = hj.tipo || tipo; hj.rotulo = rotulos[i]; hj.manilla = manillaDe(hj, escala); });
   return {

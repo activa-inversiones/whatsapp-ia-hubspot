@@ -154,7 +154,14 @@ export function dibujarVentanaIso(doc, caja, it) {
       doc.rect(hoja.x, hoja.y, hoja.w, hoja.h).lineWidth(0.4).stroke(p.color.e);
     } else {
       // La hoja SOBRESALE del marco hacia el que mira: por eso lleva su propia sombra.
-      const c = carasDe(hoja, { dx: fuga.dx * 0.28, dy: fuga.dy * 0.28 });
+      //
+      // 🔴 [2026-08-25, correccion del dueño] EN UNA CORREDERA HAY DOS RIELES. Textual: *"las
+      // estas colocando sobre el mismo riel y eso no es posible para que puedan deslizarse"*.
+      // Tenia razon. La hoja del riel de ADELANTE sale mas hacia el observador que la de
+      // atras, y esa diferencia de profundidad es justamente lo que hace ver que una pasa por
+      // delante de la otra. En una ventana de un solo riel (`riel` null) no cambia nada.
+      const salto = hoja.riel === 1 ? 0.5 : 0.28;
+      const c = carasDe(hoja, { dx: fuga.dx * salto, dy: fuga.dy * salto });
       poligono(doc, c.superior, claro, p.color.e);
       poligono(doc, c.derecha, oscuro, p.color.e);
       doc.rect(hoja.x, hoja.y, hoja.w, hoja.h).lineWidth(0.45).fillAndStroke(p.color.f, p.color.e);
@@ -182,6 +189,24 @@ export function dibujarVentanaIso(doc, caja, it) {
       doc.save().lineWidth(0.4).dash(1.6, { space: 1.4 }).strokeColor('#6B7B8D');
       for (const sg of hoja.simbolo) doc.moveTo(sg.x1, sg.y1).lineTo(sg.x2, sg.y2).stroke();
       doc.undash().restore();
+    }
+
+    // ── FLECHA DE DESLIZAMIENTO (corredera) ────────────────────────────────
+    // 🔴 [2026-08-25, correccion del dueño] Faltaban en la vista con volumen: el plano 2D ya
+    // las dibujaba y aca se habian quedado afuera. En una corredera son la unica señal de
+    // HACIA DONDE corre cada hoja — sin ellas el cliente no sabe por que lado va a abrir.
+    // Van sobre el vidrio, que es donde no estorban al perfil ni a la manilla.
+    if (hoja.flecha) {
+      const v = hoja.vidrioRect;
+      const cy = v.y + v.h / 2, cx = v.x + v.w / 2, dir = hoja.flecha;
+      const a = Math.min(5, v.w * 0.14);
+      if (a > 0.8) {
+        doc.polygon(
+          [cx - a * dir, cy - 1.8], [cx + a * 0.25 * dir, cy - 1.8], [cx + a * 0.25 * dir, cy - 3.6],
+          [cx + a * 1.05 * dir, cy], [cx + a * 0.25 * dir, cy + 3.6], [cx + a * 0.25 * dir, cy + 1.8],
+          [cx - a * dir, cy + 1.8],
+        ).lineWidth(0.35).fillAndStroke('#FFFFFF', '#1A2332');
+      }
     }
 
     // ── MANILLA EN RELIEVE ─────────────────────────────────────────────────
