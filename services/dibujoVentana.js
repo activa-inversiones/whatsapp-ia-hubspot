@@ -370,11 +370,23 @@ function planoDeVentana(it, caja) {
   // Si el item no dice cual, se usa la H80 — que es la que el motor toma por defecto en las
   // hojas de menos de 900 mm, o sea la corredera tipica.
   const HOJA_CORREDERA_DEFAULT_MM = 80;
+  // 🔴 [2026-08-26, correccion del dueño] LOS 70/75 SON PROFUNDIDAD, NO ALTO DE FRENTE.
+  // Textual: *"ese setenta o setenta y cinco que es el marco, que es la PROFUNDIDAD, o sea
+  // desde el exterior hacia el interior... si es de setenta tiene una altura mas alta de
+  // frente, y si es de setenta y cinco tiene una altura mas baja"*. Yo estaba por dibujar
+  // un marco de 70 mm de frente, que habria salido gordisimo.
+  // El alto de frente sale de la MISMA cota del catalogo de WinHouse, que trae los dos
+  // numeros juntos: "Marco doble riel corredera: 70 · 54" → 70 de fondo, 54 DE FRENTE.
+  // (Cotas del proyectista, leidas del DWG original — ver activa-thermal
+  //  data/cotas_catalogo_sliding.json.)
+  const MARCO_CORREDERA_FRENTE_MM = 54;
   const hojaDelItem = Number(it?.hoja_mm ?? it?.hojaMm ?? it?.perfil_hoja_mm);
   const anchoHojaMm = tipo === "CORREDERA"
     ? (Number.isFinite(hojaDelItem) && hojaDelItem > 0 ? hojaDelItem : HOJA_CORREDERA_DEFAULT_MM)
     : (Number.isFinite(hojaDelItem) && hojaDelItem > 0 ? hojaDelItem : HOJA_MM);
-  const marcoDe = (t) => Math.max(2, (t === "FIJA" ? MARCO_FIJO_MM : MARCO_ABRE_MM) * escala);
+  const marcoDe = (t) => Math.max(2, (
+    tipo === "CORREDERA" ? MARCO_CORREDERA_FRENTE_MM
+      : t === "FIJA" ? MARCO_FIJO_MM : MARCO_ABRE_MM) * escala);
   const marco = marcoDe(tipo);
   const perfilHoja = Math.max(1.8, anchoHojaMm * escala);
   const junquillo = Math.max(0.9, JUNQUILLO_MM * escala);
@@ -460,7 +472,16 @@ function planoDeVentana(it, caja) {
   // ancho de hoja del modelo — una H98 traslapa mas que una H80.
   const TRASLAPE_MM = anchoHojaMm;
   const corre = tipo === "CORREDERA";
-  const hojas = repartirHojas(intX, intY, intW, intH, n, corre, TRASLAPE_MM * escala).map((r) => {
+  // 🔴 LA HOJA NO APOYA AL RAS DEL MARCO: LO PISA. Dueño: *"la hoja no queda encima del
+  // perfil al tiro, sino traspasa el perfil... como cuatro, cinco, seis o siete milimetros
+  // sobre el marco"*. Se toma 6 mm, el medio del rango que dio. Sin esto la hoja queda
+  // dibujada adentro del hueco y el conjunto se ve mas chico de lo que es.
+  const PISA_MARCO_MM = 6;
+  // En una corredera las hojas arrancan ANTES del borde interior del marco, porque lo pisan.
+  const pisa = corre ? Math.min(PISA_MARCO_MM * escala, marco * 0.8) : 0;
+  const hojas = repartirHojas(
+    intX - pisa, intY - pisa, intW + 2 * pisa, intH + 2 * pisa, n, corre, TRASLAPE_MM * escala,
+  ).map((r) => {
     // El perfil de la hoja NO puede ser más grueso que la hoja misma. Con un piso fijo en el
     // ancho del vidrio (max(0.5, …)) pero la posición corrida por el perfil, una hoja angosta
     // dejaba el vidrio dibujado FUERA de su hoja, derramado sobre el marco. Se ve en una

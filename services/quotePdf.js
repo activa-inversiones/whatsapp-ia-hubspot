@@ -7,6 +7,7 @@
 // NO inventa precios: usa it.unit_price tal cual viene del motor.
 
 import { dibujarVentana, medidas, claveColor, COLORES } from "./dibujoVentana.js";
+import { dibujarVentanaIso } from "./dibujoIsometrico.js";
 
 const NAVY = "#0B3D6F", GOLD = "#C4993B", GRAY = "#6B7B8D", DARK = "#1A2332", LINE = "#E2E8F0";
 
@@ -72,7 +73,11 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       // deberian estar mas grandes"*. La fila pasa a 96 px y el dibujo a 106x86: la ventana
       // triplica su superficie y se leen los paños, la apertura y las cotas.
       // Cuesta ~3 filas menos por pagina, y vale la pena: es lo primero que mira el cliente.
-      const rowH = 96;
+      // 🔴 [2026-08-26, dueño] MENOS VENTANAS POR HOJA Y MEJOR DIBUJADAS. Textual: *"en vez
+      // de colocar diez ventanas en la primera hoja, tal vez colocar cuatro, pero que de esas
+      // cuatro la ventana se vea bien representada"*. La fila pasa de 96 a 148 px y el dibujo
+      // de 106 a 152 de ancho: cada ventana ocupa mas del doble de superficie que hace una hora.
+      const rowH = 148;
       items.forEach((it, idx) => {
         if (y + rowH > doc.page.height - 90) {           // salto de página
           doc.addPage(); header(doc, quoteNumber); y = 110; y = tableHead(doc, y);
@@ -80,7 +85,11 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         const bg = idx % 2 === 0 ? "#F7F9FC" : "#FFFFFF";
         doc.rect(50, y, doc.page.width - 100, rowH).fill(bg);
         // dibujo ventana
-        dibujarVentana(doc, { x: 52, y: y + 5, w: 106, h: rowH - 10 }, it);
+        // 🧊 VISTA EN VOLUMEN, no el plano plano. Pedido del dueño: *"la idea es que sea una
+        // imagen tridimensional de la forma, y asociada a que los colores tambien sean los
+        // reales"*. Los colores ya salian de la paleta real de Winart; lo que faltaba era el
+        // volumen. El plano tecnico 2D sigue existiendo y se usa donde hacen falta las cotas.
+        dibujarVentanaIso(doc, { x: 46, y: y + 6, w: 156, h: rowH - 14 }, it);
         // descripción
         const col = COLORES[claveColor(it.color)] || COLORES.blanco;
         const label = it.producto_label || (it.product || "Ventana").replace(/_/g, " ");
@@ -94,7 +103,7 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         // Ahora el texto se APILA: se mide cada bloque y el siguiente arranca donde termino
         // el anterior. El titulo ademas se acota a dos lineas con puntos suspensivos, para
         // que un label larguisimo no empuje el resto fuera de la fila.
-        const COL_X = 165, COL_W = 190;
+        const COL_X = 212, COL_W = 146;
         const titulo = `V${idx + 1} · ${label}`;
         doc.fillColor(DARK).fontSize(9).font("Helvetica-Bold");
         const hTitulo = Math.min(24, doc.heightOfString(titulo, { width: COL_W }));
