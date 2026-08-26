@@ -175,3 +175,80 @@ test('🔴 [Codex] la eleccion del chat se INYECTA al item en codigo, no depende
   assert.ok(bloque.includes('length === 1'),
     'y solo con UN item: con varios, el "2 hojas" de la puerta contaminaria a la corredera');
 });
+
+/* =========================================================================
+ * [2026-08-25 · compuerta Codex] LA COMPUESTA: DETECCIÓN, `partes` Y LÍMITES
+ * =========================================================================
+ * Codex encontró 3 defectos reales en la Fase 2 y uno era BLOQUEANTE: `partes` se descartaba
+ * en silencio (el schema de la tool tiene additionalProperties:false y el pricer no lo
+ * reenviaba) ⇒ los anchos que daba el cliente NUNCA llegaban y toda compuesta salía 50/50,
+ * justo lo contrario de la decisión del dueño. Además la matriz de detección la corrí a mano
+ * y no la dejé como test — su crítica era correcta y acá queda.
+ */
+test('🔴 [Codex] matriz de detección de COMPUESTA — 14 frases chilenas reales', async () => {
+  const { mapAperturaToEngine } = await import('../../services/enginePricer.js');
+  const casos = [
+    ['mitad fija mitad proyectante', true],
+    ['fija + proyectante', true],
+    ['fija y proyectante unidas', true],
+    ['una ventana compuesta', true],
+    ['la mitad fija y la otra que abra', true],
+    ['quiero compuesta', true],
+    // negaciones: la palabra aparece pero el cliente la está DESCARTANDO
+    ['no quiero una ventana compuesta, quiero proyectante', false],
+    ['no quiero compuesta, prefiero corredera', false],
+    ['sin ventana compuesta', false],
+    // DOS ventanas distintas, no una compuesta
+    ['necesito una ventana fija y una proyectante', false],
+    ['una fija para el baño y una proyectante para la pieza', false],
+    // simples
+    ['proyectante', false],
+    ['corredera', false],
+    ['puerta ventana compuesta', false],   // "puerta" manda (rama PUERTA, va antes)
+  ];
+  for (const [texto, esperaCompuesta] of casos) {
+    let r; try { r = mapAperturaToEngine(texto); } catch { r = 'ESCALA'; }
+    assert.equal(r === 'COMPUESTA', esperaCompuesta, `"${texto}" → ${r}`);
+  }
+});
+
+test('🔴 [Codex BLOQUEANTE] `partes` llega hasta el motor — o toda compuesta sale 50/50', async () => {
+  const { priceAllEngine } = await import('../../services/enginePricer.js');
+  let recibido = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    const body = JSON.parse(opts?.body || '{}');
+    if (String(url).includes('/api/quotes/calculate')) {
+      recibido = body;
+      return { ok: true, status: 200, json: async () => ({ ok: true, total_clp: 400000, producto_label: 'Ventana compuesta: Fijo 1200mm + Proyectante 800mm', items: [] }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const d = { comuna: 'Temuco', default_color: 'BLANCO', items: [{
+      measures: '2002x1450mm', product: 'COMPUESTA', qty: 1, color: 'BLANCO',
+      partes: [{ tipo: 'FIJA', ancho_mm: 1200 }, { tipo: 'PROYECTANTE', ancho_mm: 800 }],
+    }] };
+    await priceAllEngine(d);
+  } finally { globalThis.fetch = origFetch; }
+  assert.ok(recibido, 'el pricer tiene que llamar al motor');
+  assert.ok(Array.isArray(recibido.partes), 'los paños del cliente DEBEN viajar en el payload');
+  assert.equal(recibido.partes.length, 2);
+  assert.equal(recibido.partes[0].ancho_mm, 1200, 'el ancho que dijo el cliente, no la mitad del vano');
+});
+
+test('🔴 [Codex] los LÍMITES de la compuesta son los suyos, no los de una ventana simple', async () => {
+  const { validateDimensionsLocal } = await import('../../services/enginePricer.js');
+  // El ancho de una compuesta es la SUMA de sus paños: el límite S60 de 1930 no aplica al
+  // total. Antes, la Pos.1 del dueño (2002) recibía "sugerencia: corredera" y la Pos.2
+  // (3250) ESCALABA y no se cotizaba nunca.
+  for (const [w, h] of [[2002, 1450], [3250, 1460], [1500, 1000], [4000, 1800]]) {
+    const d = validateDimensionsLocal('COMPUESTA', w, h);
+    assert.ok(!d || !d.escalate, `${w}x${h} no puede escalar: el motor valida paño por paño`);
+    assert.ok(!d?.suggest, `${w}x${h} no puede sugerir corredera: el cliente pidió compuesta`);
+  }
+  // El ALTO sí es común a todos los paños y sí se avisa.
+  const alto = validateDimensionsLocal('COMPUESTA', 2000, 2500);
+  assert.ok(alto?.referencial, 'un alto sobre el estándar avisa (referencial), no escala');
+  assert.ok(!alto.escalate);
+});

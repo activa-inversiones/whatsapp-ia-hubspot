@@ -253,6 +253,26 @@ export const TOOL_DEFS = [
               'Puertas abatibles: PUERTA (1 hoja exterior), PUERTA_DOBLE (2 hojas), PUERTA_INTERIOR. ' +
               'La puerta corredera de patio va como CORREDERA. NUNCA TERMOPANEL (es vidrio).',
           },
+          // [2026-08-25 · Codex] SIN ESTO `partes` SE DESCARTABA EN SILENCIO: el schema tiene
+          // additionalProperties:false, asi que el campo se caia antes de salir del LLM y la
+          // compuesta SIEMPRE quedaba 50/50 — justo lo contrario de la decision del dueño
+          // ("a no ser que de el porcentaje o valor exacto de como la quiere").
+          partes: {
+            type: 'array',
+            description:
+              'SOLO para tipo COMPUESTA y SOLO si el cliente dio el ancho de cada paño ' +
+              '(ej. "1200 el fijo y 800 el que abre"). Si no lo dijo, NO mandes este campo: ' +
+              'el sistema reparte el vano mitad fija + mitad proyectante, que es lo usual.',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                tipo: { type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE'], description: 'Apertura de ESTE paño.' },
+                ancho_mm: { type: 'number', description: 'Ancho de ESTE paño en milimetros.' },
+              },
+              required: ['tipo', 'ancho_mm'],
+            },
+          },
           ancho_mm: { type: 'number', description: 'Ancho en milimetros (tu mejor estimación). El sistema RE-CONVIERTE desde medidas_texto si lo incluyes, así que prioriza enviar medidas_texto.' },
           alto_mm: { type: 'number', description: 'Alto en milimetros (tu mejor estimación). El sistema RE-CONVIERTE desde medidas_texto si lo incluyes.' },
           medidas_texto: {
@@ -710,7 +730,9 @@ export async function runTool(name, input = {}, ctx = {}) {
         items: [{ measures: `${med.ancho_mm}x${med.alto_mm}mm`, product: input.tipo, qty, color: input.color || '', ambiente: input.ambiente || '',
           // [Ronda 2 2026-07-20] texto LITERAL del cliente → la guarda de alcance del
           // catálogo (enginePricer paso 0) por fin VE el producto real, no solo el enum.
-          descripcion: input.descripcion_producto || '' }],
+          descripcion: input.descripcion_producto || '',
+          // [2026-08-25 · Codex] Los paños explicitos del cliente viajan hasta el motor.
+          partes: Array.isArray(input.partes) && input.partes.length ? input.partes : undefined }],
         comuna: input.comuna || '',
         default_color: input.color || '',
       };

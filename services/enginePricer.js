@@ -72,17 +72,17 @@ function detectarAperturaLocal(text) {
   // ABATIBLE, necesito ventana corredera" dejaba vivo "abatible" (→ BATIENTE mal).
   // [3.3] La negación también viene POSPUESTA en chileno: "…, no puerta doble" (sin
   // verbo) y "puerta doble no; puerta simple sí" (negación después del sustantivo).
-  const MODS = '(?:\\s+(?:abatibles?|dobles?|simples?|interior(?:es)?|exterior(?:es)?|correderas?|corredizas?|deslizantes?|fij[ao]s?|batientes?|oscilobatientes?|proyectantes?|basculantes?|plegables?|de\\s+(?:una|dos|1|2)\\s+hojas?))*';
+  const MODS = '(?:\\s+(?:abatibles?|dobles?|simples?|interior(?:es)?|exterior(?:es)?|correderas?|corredizas?|deslizantes?|fij[ao]s?|batientes?|oscilobatientes?|proyectantes?|compuestas?|basculantes?|plegables?|de\\s+(?:una|dos|1|2)\\s+hojas?))*';
   const tl = t
     .replace(
-      new RegExp(`\\b(?:no\\s+(?:quiero|necesito|busco)|no|sin|que\\s+no\\s+sea)\\s+(?:(?:una?|la|el)\\s+)?(?:puertas?|ventanas?|ventanal(?:es)?)${MODS}\\b`, 'g'),
+      new RegExp(`\\b(?:no\\s+(?:quiero|necesito|busco)|no|sin|que\\s+no\\s+sea)\\s+(?:(?:una?|la|el)\\s+)?(?:puertas?|ventanas?|ventanal(?:es)?|compuestas?)${MODS}\\b`, 'g'),
       " "
     )
     .replace(
       new RegExp(`\\b(?:puertas?|ventanas?|ventanal(?:es)?)${MODS}[\\s,;]*\\b(?:no|tampoco)\\b`, 'g'),
       " "
-    );
-  const iPuerta = tl.indexOf("puerta");
+    )
+      const iPuerta = tl.indexOf("puerta");
   const iVentana = tl.search(/ventan/);
   // "cambiar/reemplazar X POR Y": el producto pedido es Y aunque aparezca después
   // ("reemplazar la ventana por una puerta abatible" ES una puerta — regresión Codex).
@@ -356,6 +356,29 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
     return null;
   }
 
+  // 🔴 [2026-08-25 · Codex] LA COMPUESTA TIENE SUS PROPIOS LIMITES. Sin esta rama caia al
+  // branch de ventana S60 (max 1930 de ancho) y el resultado era absurdo: la Pos.1 del dueño
+  // (2002 mm) recibia "sugerencia: ventana corredera", y la Pos.2 (3250 mm) ESCALABA y no se
+  // cotizaba nunca. El ancho de una compuesta es la SUMA de sus paños: lo que tiene que caber
+  // en el limite es CADA PAÑO, y de eso ya se encarga el motor (calculateCompuestaQuote valida
+  // paño por paño y rechaza con su motivo). Aca solo se valida el ALTO, comun a todos los paños.
+  if (p.includes("COMPUESTA")) {
+    const limC = FABRICATION_LIMITS.S60.ventana;
+    if (alto_mm > limC.maxAlto) {
+      return {
+        message: `La ventana compuesta de ${alto_mm} mm de alto supera el máximo estándar (${limC.maxAlto} mm); precio referencial sujeto a confirmación en la visita técnica.`,
+        referencial: true,
+      };
+    }
+    if (alto_mm < limC.minAlto) {
+      return {
+        message: `La ventana compuesta de ${alto_mm} mm de alto está bajo el mínimo estándar (${limC.minAlto} mm); precio referencial del mínimo de fabricación.`,
+        referencial: true, clampMinAlto: limC.minAlto,
+      };
+    }
+    return null;   // el ancho lo valida el motor, paño por paño
+  }
+
   const lim = FABRICATION_LIMITS.S60.ventana;
   if (ancho_mm > lim.maxAncho || alto_mm > lim.maxAlto) {
     const slidingLim = FABRICATION_LIMITS.SLIDING.H98;
@@ -508,6 +531,9 @@ export async function priceAllEngine(d, customer_id = "") {
         tipo, serie, hojas,
         ancho_mm: m.ancho_mm, alto_mm: m.alto_mm,
         color, glass_id, comuna, cantidad,
+        // [2026-08-25 · Codex] El eslabon que faltaba: sin esto los anchos de paño del
+        // cliente morian en el pricer y toda compuesta salia 50/50.
+        partes: Array.isArray(item.partes) && item.partes.length ? item.partes : undefined,
       });
     } catch (err) {
       item.price_warning = "No se pudo cotizar automáticamente (motor); lo revisa un especialista.";
