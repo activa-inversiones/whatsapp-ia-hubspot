@@ -33,14 +33,21 @@ test("encajar: la ventana queda centrada en la caja", () => {
   assert.ok(r.dx > 0 && Math.abs(r.dy) < 1e-9, "cuadrada en caja apaisada: centra en x");
 });
 
-test("colores: usa el hex REAL de Winart, no el aproximado que había", () => {
-  // El PDF venía dibujando grafito #3C4856; el real de Winart es #1c1c1c.
-  assert.equal(COLORES.grafito.f, "#1c1c1c");
-  assert.equal(COLORES.blanco.f, "#FFFFFF");
-  assert.equal(COLORES.newblack.f, "#000000");
+test("colores: calibrados contra las MUESTRAS FISICAS del dueño (26-ago), no el hex del sistema", () => {
+  // Historia del dato, porque cambio dos veces: primero se dibujaba grafito #3C4856 (a ojo);
+  // el 09-ago se corrigio al hex de la API de Winart (#1c1c1c); el 26-ago el dueño mando la
+  // FOTO de las muestras reales ("estos colores son reales y con el relieve que tienen") y
+  // la muestra desmintio a la API: el GRAFITO ANTRACITA fisico es un gris azulado medio, no
+  // un casi-negro — en el PDF grafito y negro se veian iguales. La muestra fisica manda: es
+  // lo que el cliente compara en la mano.
+  assert.equal(COLORES.grafito.f, "#474C54", 'grafito antracita real, distinguible del negro');
+  assert.notEqual(COLORES.grafito.f, COLORES.newblack.f, 'grafito ≠ negro, que era el sintoma');
   assert.equal(claveColor("Grafito"), "grafito");
   assert.equal(claveColor("New Black"), "newblack");
   assert.equal(claveColor(undefined), "blanco", "sin color -> blanco");
+  // El relieve: las folias veteadas lo declaran; las lisas no.
+  assert.ok(COLORES.roble.veta && COLORES.nogal.veta, 'roble y nogal son folias con veta');
+  assert.equal(COLORES.blanco.veta, null, 'el blanco es liso');
 });
 
 test("claveVidrio: distingue bronce y satinado del incoloro", () => {

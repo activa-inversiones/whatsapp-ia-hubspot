@@ -22,14 +22,20 @@
 // (`PI-CMP-ACM`), no un marco único con poste. Por eso el dibujo NO lleva un marco exterior
 // con divisiones adentro: lleva UN MARCO COMPLETO POR PAÑO, pegados por la junta del acople.
 
-// Paleta real de Winart. `f` = relleno del perfil, `e` = color de línea.
-// Blanco y roble/nogal traen lineHexa #000000; grafito y new black traen #4F4F4F.
+// Paleta CALIBRADA CONTRA LAS MUESTRAS FISICAS del dueño (foto 2026-08-26, textual: *"estos
+// colores son reales y con el relieve que tienen"*). Antes venia de los hex de la API de
+// Winart (2026-08-09), y la muestra real desmintio uno grande: el GRAFITO ANTRACITA fisico
+// es un gris azulado medio — el #1c1c1c de la API es casi negro y en el PDF grafito y negro
+// se veian iguales. La muestra manda sobre el hex del sistema: es lo que el cliente compara
+// en la mano.
+// `f` = relleno del perfil · `e` = linea · `veta` = tono del RELIEVE (la veta de la folia en
+// roble/nogal, el grano en negro); null = folia lisa.
 const COLORES = {
-  blanco:    { f: "#FFFFFF", e: "#000000", nombre: "Blanco" },
-  roble:     { f: "#A64A14", e: "#000000", nombre: "Roble" },
-  nogal:     { f: "#885728", e: "#000000", nombre: "Nogal" },
-  grafito:   { f: "#1c1c1c", e: "#4F4F4F", nombre: "Grafito" },
-  newblack:  { f: "#000000", e: "#4F4F4F", nombre: "New Black" },
+  blanco:    { f: "#F4F4F1", e: "#000000", nombre: "Blanco", veta: null },
+  roble:     { f: "#9A5B1E", e: "#000000", nombre: "Roble", veta: "#6E3C12" },   // roble dorado
+  nogal:     { f: "#7C4A22", e: "#000000", nombre: "Nogal", veta: "#573112" },
+  grafito:   { f: "#474C54", e: "#2A2D33", nombre: "Grafito", veta: null },      // antracita real
+  newblack:  { f: "#26262A", e: "#4F4F4F", nombre: "New Black", veta: "#111114" },
 };
 
 // Tinte del vidrio según categoría. Winart los expone en glassCategory.hexa; acá se mapea

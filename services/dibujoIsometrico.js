@@ -102,6 +102,37 @@ export function carasHacia(r, { dx, dy }) {
   return { lateral, horizontal };
 }
 
+/**
+ * Las dos caras de profundidad de un PERFIL, no de un cubo.
+ *
+ * 🔴 [2026-08-26, correccion del dueño] *"¿existira la posibilidad de que los bordes queden
+ * un poco menos rectos? parece cubos en vez de perfil"*. Tenia razon: la extrusion recta
+ * lee como losa de madera maciza. Un perfil de PVC tiene el canto BISELADO (el borde de
+ * atras entra hacia el centro) y un ESCALON a media profundidad (la silueta escalonada del
+ * perfil). Las dos señas juntas convierten el cubo en perfil sin cambiar la proyeccion.
+ *
+ * `bisel` = cuanto entra el borde trasero, en px (fraccion de la fuga).
+ */
+export function carasPerfil(r, { dx, dy }, bisel = 0) {
+  const { x, y, w, h } = r;
+  const b = Math.min(bisel, Math.abs(dx) * 0.45, w / 4, h / 4);
+  return {
+    superior: [[x, y], [x + w, y], [x + w + dx - b, y + dy], [x + dx + b, y + dy]],
+    derecha: [[x + w, y], [x + w, y + h], [x + w + dx, y + h + dy - b], [x + w + dx, y + dy + b]],
+    // Lineas paralelas al frente a una fraccion `fr` de la profundidad. SOLO se escala el
+    // desplazamiento de fuga — nunca el ancho/alto de la cara (el primer intento escalaba el
+    // vector completo y una veta al 80% se salia de la caja: lo cazo el test de contencion).
+    linea: (fr) => [
+      [[x + (dx + b) * fr, y + dy * fr], [x + w + (dx - b) * fr, y + dy * fr]],
+      [[x + w + dx * fr, y + (dy + b) * fr], [x + w + dx * fr, y + h + (dy - b) * fr]],
+    ],
+    escalones: [
+      [[x + (dx + b) * 0.55, y + dy * 0.55], [x + w + (dx - b) * 0.55, y + dy * 0.55]],
+      [[x + w + dx * 0.55, y + (dy + b) * 0.55], [x + w + dx * 0.55, y + h + (dy - b) * 0.55]],
+    ],
+  };
+}
+
 function poligono(doc, pts, relleno, borde) {
   doc.polygon(...pts).lineWidth(0.35).fillAndStroke(relleno, borde);
 }
@@ -182,9 +213,24 @@ export function dibujarVentanaIso(doc, caja, it) {
   const claro = tinte(p.color.f, 1.18);
   const oscuro = tinte(p.color.f, 0.68);
   for (const m of marcos) {
-    const c = carasDe(m, fuga);
+    const c = carasPerfil(m, fuga, fuga.dx * 0.35);
     poligono(doc, c.superior, claro, p.color.e);
     poligono(doc, c.derecha, oscuro, p.color.e);
+    // El escalon del perfil — es lo que rompe la lectura de "cubo". En el tono de la VETA si
+    // la folia la tiene (roble/nogal/negro, muestras fisicas del dueño 26-ago); si no, un
+    // tinte del canto. Sin opacity: no todos los pdfkit (ni el doble de tests) la tienen.
+    const tonoEscalon = p.color.veta || tinte(p.color.f, 0.55);
+    doc.save().lineWidth(0.3).strokeColor(tonoEscalon);
+    for (const [a, b] of c.escalones) doc.moveTo(a[0], a[1]).lineTo(b[0], b[1]).stroke();
+    // La VETA del relieve: dos hebras mas por cara, paralelas al escalon, solo si la folia
+    // es veteada. Sugerencia sutil — el PDF no puede imprimir textura, pero si insinuarla.
+    if (p.color.veta) {
+      doc.lineWidth(0.2);
+      for (const fr of [0.3, 0.8]) {
+        for (const [a, b] of c.linea(fr)) doc.moveTo(a[0], a[1]).lineTo(b[0], b[1]).stroke();
+      }
+    }
+    doc.restore();
   }
 
   // ── 2. La cara frontal: el mismo plano de siempre ──
@@ -204,7 +250,8 @@ export function dibujarVentanaIso(doc, caja, it) {
       // atras, y esa diferencia de profundidad es justamente lo que hace ver que una pasa por
       // delante de la otra. En una ventana de un solo riel (`riel` null) no cambia nada.
       const salto = hoja.riel === 1 ? 0.5 : 0.28;
-      const c = carasDe(hoja, { dx: fuga.dx * salto, dy: fuga.dy * salto });
+      const fugaHoja = { dx: fuga.dx * salto, dy: fuga.dy * salto };
+      const c = carasPerfil(hoja, fugaHoja, fugaHoja.dx * 0.4);
       poligono(doc, c.superior, claro, p.color.e);
       poligono(doc, c.derecha, oscuro, p.color.e);
       doc.rect(hoja.x, hoja.y, hoja.w, hoja.h).lineWidth(0.45).fillAndStroke(p.color.f, p.color.e);
