@@ -18,15 +18,40 @@
 
 import { planoDeVentana } from './dibujoVentana.js';
 
-/** Profundidad del perfil S60: 60 mm de fondo. Es la serie que fabrica ACTIVA. */
+/**
+ * Fondo del perfil, por SERIE, en mm.
+ *
+ * 🔴 [Gemini, compuerta] Estaba fijo en 60 para todo. Una corredera NO tiene el mismo fondo
+ * que una ventana S60, asi que el volumen que veia el cliente no era el de su ventana.
+ *
+ * ⚠️ SOLO ENTRA ACA LO MEDIDO. El 60 de S60 sale del modelo real de Winart (`ps.sc = 60`,
+ * version 66979). Las correderas todavia no se midieron: hasta que se saque el dato de una
+ * version de Winart de esa linea, caen al fondo por defecto y el dibujo puede quedar corto o
+ * largo en la profundidad. Inventar un numero seria peor: quedaria como medido para siempre.
+ */
+const FONDO_POR_SERIE = { S60: 60 };
 const FONDO_MM = 60;
+
+/** El fondo que corresponde al item; sin serie reconocida, el de la S60. */
+export function fondoDe(it) {
+  const serie = String(it?.serie || it?.linea || '').trim().toUpperCase();
+  return FONDO_POR_SERIE[serie] || FONDO_MM;
+}
 /** En proyección "cabinet" la profundidad se dibuja a la mitad para que no se vea deformada. */
 const FACTOR_FUGA = 0.5;
 
-/** Aclara u oscurece un color #RRGGBB. f > 1 aclara, f < 1 oscurece. */
+/**
+ * Aclara u oscurece un color #RRGGBB. f > 1 aclara, f < 1 oscurece.
+ *
+ * 🔴 [Gemini, compuerta] Ante un color que no sea hex devolvia el valor tal cual, y pdfkit
+ * revienta con eso ("blanco" no es un color). Hoy no es alcanzable — los colores salen de la
+ * tabla COLORES, que son todos hex — pero un PDF que no se genera es una cotizacion que no
+ * sale, y el seguro cuesta una linea.
+ */
+const GRIS_SEGURO = '#9AA0A6';
 function tinte(hex, f) {
   const m = String(hex || '').match(/^#?([0-9a-f]{6})$/i);
-  if (!m) return hex;
+  if (!m) return GRIS_SEGURO;
   const n = parseInt(m[1], 16);
   const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255]
     .map((v) => Math.max(0, Math.min(255, Math.round(v * f))));
@@ -37,8 +62,9 @@ function tinte(hex, f) {
  * El vector de fuga: hacia dónde y cuánto se va la profundidad.
  * Arriba y a la derecha, que es como se mira una ventana desde adentro de la pieza.
  */
-export function vectorFuga(escala) {
-  const d = Math.max(2, FONDO_MM * escala * FACTOR_FUGA);
+export function vectorFuga(escala, fondo_mm = FONDO_MM) {
+  const f = Number(fondo_mm);
+  const d = Math.max(2, (Number.isFinite(f) && f > 0 ? f : FONDO_MM) * escala * FACTOR_FUGA);
   return { dx: d, dy: -d };
 }
 
@@ -77,7 +103,7 @@ export function dibujarVentanaIso(doc, caja, it) {
     x: caja.x, y: caja.y + reserva,
     w: Math.max(20, caja.w - reserva), h: Math.max(20, caja.h - reserva),
   });
-  const fuga = vectorFuga(p.escala);
+  const fuga = vectorFuga(p.escala, fondoDe(it));
   const marcos = p.marcos || [p.marcoRect];
 
   doc.save();

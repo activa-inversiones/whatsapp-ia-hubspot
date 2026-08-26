@@ -140,3 +140,34 @@ test('🔒 una caja ridículamente chica no rompe ni produce coordenadas inváli
     }
   }
 });
+
+// ── Los dos hallazgos de Gemini en la compuerta ───────────────────────────────
+
+test('🔴 [Gemini] el fondo sale de la SERIE, no fijo en 60 para todo', async () => {
+  const { fondoDe } = await import('./dibujoIsometrico.js');
+  assert.equal(fondoDe({ serie: 'S60' }), 60, 'S60: el valor medido en Winart');
+  assert.equal(fondoDe({ serie: 's60' }), 60, 'sin importar cómo venga escrito');
+  // Una serie que todavía NO se midió cae al fondo por defecto — no se le inventa un número,
+  // porque un número inventado queda como medido para siempre.
+  assert.equal(fondoDe({ serie: 'SLIDING' }), 60);
+  assert.equal(fondoDe({}), 60);
+  assert.equal(fondoDe(null), 60);
+});
+
+test('🔴 [Gemini] un color que no es hex NO rompe el PDF', async () => {
+  // Una cotización que no se genera es una venta que no sale. Hoy no es alcanzable (los
+  // colores salen de una tabla de hex), pero el seguro cuesta una línea.
+  const { dibujarVentanaIso } = await import('./dibujoIsometrico.js');
+  const d = docFalso();
+  assert.doesNotThrow(() => dibujarVentanaIso(d, { x: 0, y: 0, w: 200, h: 200 },
+    { producto_label: 'Ventana fija', measures: '1000x1000', color: 'un color que no existe' }));
+  assert.ok(d.pts.length > 4, 'igual dibujó la ventana');
+});
+
+test('🔒 un fondo basura no produce una profundidad inválida', async () => {
+  const { vectorFuga } = await import('./dibujoIsometrico.js');
+  for (const malo of [0, -80, NaN, 'ochenta', null, undefined]) {
+    const f = vectorFuga(0.1, malo);
+    assert.ok(Number.isFinite(f.dx) && f.dx >= 2, `fondo=${malo} → profundidad válida`);
+  }
+});
