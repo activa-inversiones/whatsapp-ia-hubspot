@@ -19,8 +19,8 @@
 //
 // 📐 QUÉ SE APRENDIÓ DE WINART, y por qué se dibuja así: el modelo real de una compuesta
 // (proyecto 56570, medido 25-ago) son DOS MARCOS COMPLETOS acoplados por el perfil ACOPLE MINI
-// (`PI-CMP-ACM`), no un marco único con poste. Por eso el dibujo lleva un montante ANCHO entre
-// paños (dos perfiles de marco juntos + el acople), no una línea fina.
+// (`PI-CMP-ACM`), no un marco único con poste. Por eso el dibujo NO lleva un marco exterior
+// con divisiones adentro: lleva UN MARCO COMPLETO POR PAÑO, pegados por la junta del acople.
 
 // Paleta real de Winart. `f` = relleno del perfil, `e` = color de línea.
 // Blanco y roble/nogal traen lineHexa #000000; grafito y new black traen #4F4F4F.
@@ -98,11 +98,11 @@ function tipoDeParte(t) {
 }
 
 /**
- * Reparte el ancho interior entre los paños según su ancho REAL (no en partes iguales),
- * dejando el montante entre medio. Un fijo de 1200 y un proyectante de 800 tienen que verse
- * 60/40 en el dibujo: el cliente compara la proporción con el hueco de su casa.
+ * Reparte un ancho total entre los paños según su ancho REAL (no en partes iguales),
+ * dejando una separación entre medio. Un fijo de 1200 y un proyectante de 800 tienen que
+ * verse 60/40 en el dibujo: el cliente compara la proporción con el hueco de su casa.
  * @param {Array<{ancho_mm:number}>} partes
- * @param {number} montante  ancho del montante en px (los dos marcos + el acople)
+ * @param {number} montante  separación en px entre paño y paño
  */
 function repartirPorPartes(x, y, w, h, partes, montante) {
   const anchos = partes.map((pt) => Math.max(1, Number(pt.ancho_mm) || 1));
@@ -201,35 +201,53 @@ function planoDeVentana(it, caja) {
   const intX = x + marco, intY = y + marco;
   const intW = Math.max(1, w - 2 * marco), intH = Math.max(1, h - 2 * marco);
 
-  // ── COMPUESTA: cada paño con su ancho real y su propia apertura ──────────────
-  // El montante es GRUESO a propósito: en la ventana real son dos marcos completos pegados
-  // por el acople, no un perfil delgado. Dibujarlo fino mentiría sobre el vidrio que se ve.
+  // ── COMPUESTA: DOS VENTANAS COMPLETAS ACOPLADAS, no una con divisiones ───────
+  // 🔴 [2026-08-25, corrección del dueño sobre el dibujo] La primera versión dibujaba UN
+  // marco exterior con los paños adentro compartiendo los lados. Eso NO es la ventana:
+  // el dueño lo cazó comparando con el plano de Winart — *"quedaron unidas y deben ser
+  // como separadas, ahí va la unión mini que le sacaste"*.
+  // La compuesta se FABRICA como dos ventanas terminadas, cada una con sus cuatro lados de
+  // marco, unidas por el perfil ACOPLE MINI (`PI-CMP-ACM`) — que es justamente el que el
+  // motor cobra aparte por cada unión. Por eso acá se dibuja UN MARCO COMPLETO POR PAÑO y
+  // entre ellos la junta del acople. La banda ancha del medio no se dibuja a mano: aparece
+  // sola, porque son dos perfiles de marco vecinos. Dibujarla de otra forma le mostraría al
+  // cliente un producto que no es el que se le fabrica ni el que se le cobra.
   const partes = (tipo === "COMPUESTA" && Array.isArray(it?.compuesta?.partes) && it.compuesta.partes.length >= 2)
     ? it.compuesta.partes : null;
   if (partes) {
-    const montante = Math.max(3, 2 * marco * 0.8);
-    const hojasC = repartirPorPartes(intX, intY, intW, intH, partes, montante).map((r, i) => {
+    // El acople real mide ~2 mm (la cota "2" del plano de Winart). A escala se vería como
+    // nada, así que lleva un piso en px para que la junta se distinga en el papel.
+    const acople = Math.max(1, 2 * escala);
+    const marcosC = repartirPorPartes(x, y, w, h, partes, acople);
+    const hojasC = marcosC.map((r, i) => {
       const tp = tipoDeParte(partes[i].tipo);
-      const insetX = Math.min(perfilHoja, r.w / 3);
-      const insetY = Math.min(perfilHoja, r.h / 3);
+      // Cada paño tiene su PROPIO marco de los 4 lados: la hoja arranca adentro de él.
+      const mx = Math.min(marco, r.w / 3), my = Math.min(marco, r.h / 3);
+      const hoja = {
+        x: r.x + mx, y: r.y + my,
+        w: Math.max(0.5, r.w - 2 * mx), h: Math.max(0.5, r.h - 2 * my),
+        idx: i,
+      };
+      const insetX = Math.min(perfilHoja, hoja.w / 3);
+      const insetY = Math.min(perfilHoja, hoja.h / 3);
       const vidrioRect = {
-        x: r.x + insetX, y: r.y + insetY,
-        w: Math.max(0, r.w - 2 * insetX), h: Math.max(0, r.h - 2 * insetY),
+        x: hoja.x + insetX, y: hoja.y + insetY,
+        w: Math.max(0, hoja.w - 2 * insetX), h: Math.max(0, hoja.h - 2 * insetY),
       };
       return {
-        ...r, vidrioRect, manoDerecha: true, tipo: tp,
+        ...hoja, vidrioRect, manoDerecha: true, tipo: tp,
         // Un paño FIJO no lleva símbolo: es justamente lo que lo distingue del que abre.
-        // (Redundante hoy — simboloApertura("FIJA") ya devuelve [] — pero explícito a
-        // propósito: si mañana alguien le agrega un símbolo a FIJA, acá no cambia nada.)
         simbolo: tp === "FIJA" ? [] : simboloApertura(tp, vidrioRect, true),
         flecha: 0,
       };
     });
     return {
       tipo, ancho, alto, escala, color, vidrio,
-      marcoRect: { x, y, w, h },
+      // Sin marco exterior único: `marcos` son los marcos completos, uno por paño.
+      marcoRect: null,
+      marcos: marcosC.map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h })),
       marco, perfilHoja, hojas: hojasC,
-      compuesta: { partes: partes.map((pt, i) => ({ tipo: tipoDeParte(pt.tipo), ancho_mm: pt.ancho_mm, idx: i })), montante },
+      compuesta: { partes: partes.map((pt, i) => ({ tipo: tipoDeParte(pt.tipo), ancho_mm: pt.ancho_mm, idx: i })), acople },
       etiqueta: `${ancho}×${alto} mm`,
     };
   }
@@ -269,9 +287,11 @@ function dibujarVentana(doc, caja, it) {
   const p = planoDeVentana(it, { x: caja.x, y: caja.y, w: caja.w, h: caja.h - 10 });
   doc.save();
 
-  // Marco exterior.
-  doc.rect(p.marcoRect.x, p.marcoRect.y, p.marcoRect.w, p.marcoRect.h)
-     .lineWidth(0.7).fillAndStroke(p.color.f, p.color.e);
+  // Marco(s) exterior(es). La compuesta trae UNO POR PAÑO (son ventanas acopladas, no
+  // una ventana dividida); el resto de los tipos, uno solo.
+  for (const m of (p.marcos || [p.marcoRect])) {
+    doc.rect(m.x, m.y, m.w, m.h).lineWidth(0.7).fillAndStroke(p.color.f, p.color.e);
+  }
 
   for (const hoja of p.hojas) {
     doc.rect(hoja.x, hoja.y, hoja.w, hoja.h).lineWidth(0.5).fillAndStroke(p.color.f, p.color.e);

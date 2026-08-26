@@ -224,7 +224,9 @@ test('🔴 cada paño con su ANCHO REAL, no en partes iguales (la Pos.1 del due�
   const p = planoDeVentana(itCompuesta([{ tipo: 'FIJA', ancho_mm: 1200 }, { tipo: 'PROYECTANTE', ancho_mm: 800 }]), { x: 0, y: 0, w: 200, h: 120 });
   assert.equal(p.tipo, 'COMPUESTA');
   assert.equal(p.hojas.length, 2);
-  const prop = p.hojas[0].w / (p.hojas[0].w + p.hojas[1].w);
+  // La proporción se mide sobre los MARCOS: cada paño es una ventana completa, y su ancho
+  // real es el del marco, no el del vidrio (el perfil descuenta lo mismo en los dos).
+  const prop = p.marcos[0].w / (p.marcos[0].w + p.marcos[1].w);
   assert.ok(Math.abs(prop - 0.6) < 0.01, `el fijo debe ocupar 60%, ocupa ${(prop * 100).toFixed(1)}%`);
 });
 
@@ -241,19 +243,49 @@ test('🔴 tres paños (la Pos.2 del dueño): fijo + proyectante + fijo, en su p
   const p = planoDeVentana(itCompuesta(partes, '3250x1460'), { x: 0, y: 0, w: 200, h: 120 });
   assert.equal(p.hojas.length, 3);
   assert.deepEqual(p.hojas.map((h) => h.tipo), ['FIJA', 'PROYECTANTE', 'FIJA']);
-  assert.ok(p.hojas[0].w > p.hojas[1].w && p.hojas[1].w > p.hojas[2].w, '1530 > 900 > 820 también en el dibujo');
+  assert.ok(p.marcos[0].w > p.marcos[1].w && p.marcos[1].w > p.marcos[2].w, '1530 > 900 > 820 también en el dibujo');
   assert.equal(p.hojas[0].simbolo.length + p.hojas[2].simbolo.length, 0, 'los dos fijos, sin símbolo');
 });
 
-test('🔒 los paños no se pisan ni se salen del marco', () => {
+test('🔴 [dueño 25-ago] son VENTANAS SEPARADAS: cada paño con su marco completo y el acople entre medio', () => {
+  // La 1a version dibujaba UN marco exterior con los paños adentro, compartiendo los lados.
+  // El dueño lo cazó contra el plano de Winart: *"quedaron unidas y deben ser como separadas,
+  // ahí va la unión mini que le sacaste"*. Se fabrican dos ventanas terminadas y se acoplan.
   const p = planoDeVentana(itCompuesta([{ tipo: 'FIJA', ancho_mm: 1200 }, { tipo: 'PROYECTANTE', ancho_mm: 800 }]), { x: 10, y: 5, w: 200, h: 120 });
-  const [a, b] = p.hojas;
-  assert.ok(a.x + a.w <= b.x + 0.01, 'el primer paño termina antes de que empiece el segundo');
-  assert.ok(b.x - (a.x + a.w) >= 3, 'y entre medio va el montante (dos marcos + acople), no una línea');
-  assert.ok(a.x >= p.marcoRect.x, 'nada se sale del marco por la izquierda');
-  assert.ok(b.x + b.w <= p.marcoRect.x + p.marcoRect.w + 0.01, 'ni por la derecha');
+  assert.equal(p.marcoRect, null, 'no hay un marco exterior único que los envuelva');
+  assert.equal(p.marcos.length, 2, 'hay un marco COMPLETO por paño');
+  const [m1, m2] = p.marcos;
+  assert.ok(m1.x + m1.w <= m2.x + 0.01, 'el primer marco termina antes de que empiece el segundo');
+  assert.ok(m2.x - (m1.x + m1.w) > 0, 'y entre medio queda la junta del acople, no un borde compartido');
+  assert.equal(m1.y, m2.y, 'los dos arrancan arriba a la misma altura');
+  assert.equal(m1.h, m2.h, 'y tienen el mismo alto');
+  assert.ok(m1.x >= 10 && m2.x + m2.w <= 210.01, 'el conjunto no se sale de la caja');
+  for (let i = 0; i < 2; i++) {
+    const h = p.hojas[i], m = p.marcos[i];
+    assert.ok(h.x > m.x && h.x + h.w < m.x + m.w + 0.01, `la hoja ${i} queda DENTRO de su propio marco`);
+    assert.ok(h.y > m.y && h.y + h.h < m.y + m.h + 0.01, `la hoja ${i} respeta el marco arriba y abajo`);
+    assert.ok(h.vidrioRect.x >= h.x && h.vidrioRect.x + h.vidrioRect.w <= h.x + h.w + 0.01, 'el vidrio queda DENTRO de su hoja');
+  }
+});
+
+test('🔒 el acople se cobra y se ve: una unión por cada junta', () => {
+  const p = planoDeVentana(itCompuesta([
+    { tipo: 'FIJA', ancho_mm: 1530 }, { tipo: 'PROYECTANTE', ancho_mm: 900 }, { tipo: 'FIJA', ancho_mm: 820 },
+  ], '3250x1460'), { x: 0, y: 0, w: 200, h: 120 });
+  assert.equal(p.marcos.length, 3);
+  assert.ok(p.compuesta.acople > 0, 'la junta tiene ancho propio');
+  for (let i = 1; i < 3; i++) {
+    const prev = p.marcos[i - 1];
+    assert.ok(Math.abs((p.marcos[i].x - (prev.x + prev.w)) - p.compuesta.acople) < 0.01, `junta ${i} = el acople`);
+  }
+});
+
+test('🔒 una compuesta angosta no produce marcos ni vidrios negativos', () => {
+  const p = planoDeVentana(itCompuesta([{ tipo: 'FIJA', ancho_mm: 1 }, { tipo: 'PROYECTANTE', ancho_mm: 3000 }]), { x: 0, y: 0, w: 12, h: 10 });
+  for (const m of p.marcos) assert.ok(m.w > 0 && m.h > 0, 'marco con ancho positivo');
   for (const h of p.hojas) {
-    assert.ok(h.vidrioRect.x >= h.x && h.vidrioRect.x + h.vidrioRect.w <= h.x + h.w + 0.01, 'el vidrio queda DENTRO de su paño');
+    assert.ok(h.w > 0 && h.h > 0, 'hoja con ancho positivo');
+    assert.ok(h.vidrioRect.w >= 0 && h.vidrioRect.h >= 0, 'vidrio nunca negativo');
   }
 });
 
