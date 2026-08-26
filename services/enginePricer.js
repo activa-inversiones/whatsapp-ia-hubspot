@@ -472,8 +472,11 @@ export function orientacionDeclarada(texto) {
     .toLowerCase()
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "");   // "están" y "estan" son lo mismo
   const SEP = "(?:por|x|\\*|/|,|-)";
-  if (new RegExp(`\\balto\\s*${SEP}\\s*anch(?:o|as)\\b`).test(t)) return "alto_ancho";
-  if (new RegExp(`\\banch(?:o|as)\\s*${SEP}\\s*alto\\b`).test(t)) return "ancho_alto";
+  // [Gemini] "altura/anchura" es igual de comun que "alto/ancho" al dictar medidas.
+  const ALTO = "alt(?:o|ura)";
+  const ANCHO = "anch(?:o|as|ura)";
+  if (new RegExp(`\\b${ALTO}\\s*${SEP}\\s*${ANCHO}\\b`).test(t)) return "alto_ancho";
+  if (new RegExp(`\\b${ANCHO}\\s*${SEP}\\s*${ALTO}\\b`).test(t)) return "ancho_alto";
   // "primero el alto" / "el alto va primero" / "empiezan por el alto"
   if (new RegExp(`\\b(?:primero|empiezan?\\s+(?:por|con)|va\\s+primero)\\s+(?:el\\s+)?alto\\b`).test(t)
    || new RegExp(`\\balto\\s+(?:va|viene|esta)\\s+primero\\b`).test(t)) return "alto_ancho";

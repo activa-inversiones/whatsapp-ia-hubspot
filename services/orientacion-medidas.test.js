@@ -87,3 +87,42 @@ test('🔒 si el cliente dice ANCHO por ALTO, no se da vuelta nada', async () =>
   assert.equal(d.orientacion_declarada, 'ancho_alto');
   assert.ok(!d.items[0].measures_swapped, 'se respeta el orden que declaró');
 });
+
+// ── Los dos hallazgos de Gemini en la compuerta ───────────────────────────────
+
+test('🔴 [Gemini] "altura/anchura" también cuenta — es igual de común al dictar medidas', () => {
+  assert.equal(orientacionDeclarada('las medidas están altura por anchura'), 'alto_ancho');
+  assert.equal(orientacionDeclarada('anchura x altura'), 'ancho_alto');
+});
+
+test('🔴 [Gemini] BUG CRÍTICO: una declaración VIEJA no puede dar vuelta una lista NUEVA', async () => {
+  // El cableado mandaba TODO el historial del cliente al motor. Escenario que abría:
+  // el lunes la clienta dice "alto x ancho" y se le cotiza bien; el martes pide otra
+  // ventana en orden normal y esa frase del lunes le da vuelta la cotización nueva.
+  // Un bug PEOR que el que se estaba arreglando, porque rompe pedidos que estaban bien.
+  //
+  // El arreglo vive en webhook.js (`.slice(-2)` sobre los mensajes del cliente). Acá se
+  // prueba la propiedad que importa: el motor solo da vuelta si la declaración está en el
+  // texto que RECIBE — o sea, quien arma ese texto es responsable de acotarlo.
+  const { priceAllEngine } = await import('./enginePricer.js');
+  const nueva = {
+    texto_cliente: 'hola, cotízame también 1 ventana de 180x120',   // sin declaración
+    items: [{ product: 'CORREDERA', measures: '180x120', qty: 1 }],
+  };
+  await priceAllEngine(nueva).catch(() => {});
+  assert.equal(nueva.orientacion_declarada, undefined, 'no hay declaración en el pedido actual');
+  assert.ok(!nueva.items[0].measures_swapped, 'y la lista NUEVA no se toca');
+});
+
+test('🔒 la declaración SÍ vale cuando viene en el mensaje anterior del mismo pedido', async () => {
+  // El caso legítimo que hay que preservar: "las medidas van alto por ancho" en un mensaje
+  // y la lista en el siguiente. Por eso la ventana son los últimos mensajes, no solo el actual.
+  const { priceAllEngine } = await import('./enginePricer.js');
+  const d = {
+    texto_cliente: 'las medidas van alto por ancho  1 de 220x200 corredera',
+    items: [{ product: 'CORREDERA', measures: '220x200', qty: 1 }],
+  };
+  await priceAllEngine(d).catch(() => {});
+  assert.equal(d.orientacion_declarada, 'alto_ancho');
+  assert.equal(d.items[0].measures_swapped, true);
+});

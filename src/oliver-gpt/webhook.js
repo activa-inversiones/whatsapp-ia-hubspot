@@ -1531,8 +1531,15 @@ Comuna: ${datos.comuna}`
       // solo veia numeros y tenia que ADIVINAR si "220 x 200" era ancho x alto o al reves.
       // Paula lo habia escrito ("LAS MEDIDAS ESTAN ALTO POR ANCHO") y se le cotizo dado
       // vuelta igual, porque esa frase no llegaba a donde se decide.
+      //
+      // ⚠️ [Gemini, compuerta] SOLO EL PEDIDO ACTUAL, NO TODA LA CONVERSACION. Mandar el
+      // historial completo abria un bug peor que el que arregla: si el cliente declaro
+      // "alto por ancho" en una cotizacion de la semana pasada, una lista NUEVA que viene
+      // en orden normal se daria vuelta por una frase vieja. Se toman los ULTIMOS 3
+      // mensajes del cliente — alcanza para el caso real en que la declaracion va en un
+      // mensaje y la lista en el siguiente, y no arrastra tandas anteriores.
       textoCliente: [
-        ...(history || []).filter((m) => m && m.role === 'user').map((m) => String(m.content || '')),
+        ...(history || []).filter((m) => m && m.role === 'user').slice(-2).map((m) => String(m.content || '')),
         String(userText || ''),
       ].join('  '),
 
