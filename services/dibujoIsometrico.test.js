@@ -171,3 +171,27 @@ test('🔒 un fondo basura no produce una profundidad inválida', async () => {
     assert.ok(Number.isFinite(f.dx) && f.dx >= 2, `fondo=${malo} → profundidad válida`);
   }
 });
+
+test('🔴 la manilla SALE hacia el que mira, no hacia atrás como el marco', async () => {
+  // Es la única pieza que sobresale del plano de la ventana. Si fugara para el mismo lado que
+  // el marco, se vería hundida en la hoja — al revés de lo que es.
+  const { carasHacia, vectorFuga } = await import('./dibujoIsometrico.js');
+  const f = vectorFuga(0.1);
+  const hacia = { dx: -f.dx * 0.5, dy: f.dx * 0.5 };
+  assert.ok(hacia.dx < 0 && hacia.dy > 0, 'abajo-izquierda: hacia el observador');
+  const r = { x: 100, y: 100, w: 20, h: 8 };
+  const c = carasHacia(r, hacia);
+  // Con esa dirección, las caras visibles son la IZQUIERDA y la de ABAJO — las contrarias
+  // a las del marco, que se ve por arriba y por la derecha.
+  assert.deepEqual(c.lateral[0], [r.x, r.y], 'la cara lateral arranca en el borde izquierdo');
+  assert.deepEqual(c.horizontal[0], [r.x, r.y + r.h], 'y la horizontal, en el de abajo');
+});
+
+test('🔒 carasHacia elige el par correcto en las cuatro direcciones', async () => {
+  const { carasHacia } = await import('./dibujoIsometrico.js');
+  const r = { x: 0, y: 0, w: 10, h: 10 };
+  assert.deepEqual(carasHacia(r, { dx: 3, dy: -3 }).lateral[0], [10, 0], 'derecha');
+  assert.deepEqual(carasHacia(r, { dx: -3, dy: -3 }).lateral[0], [0, 0], 'izquierda');
+  assert.deepEqual(carasHacia(r, { dx: 3, dy: -3 }).horizontal[0], [0, 0], 'arriba');
+  assert.deepEqual(carasHacia(r, { dx: 3, dy: 3 }).horizontal[0], [0, 10], 'abajo');
+});

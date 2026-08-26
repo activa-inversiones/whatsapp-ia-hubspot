@@ -83,6 +83,25 @@ export function carasDe(r, { dx, dy }) {
   };
 }
 
+/**
+ * Las dos caras visibles de un prisma que se va en CUALQUIER direccion.
+ *
+ * `carasDe` sirve para el marco, que siempre fuga hacia atras (arriba-derecha). La manilla va
+ * al reves: SOBRESALE hacia quien mira, o sea abajo-izquierda. Con una fuga asi, las caras
+ * que se ven son la de abajo y la izquierda — las contrarias a las del marco. Esta funcion
+ * elige el par correcto segun el signo del vector, en vez de duplicar la logica invertida.
+ */
+export function carasHacia(r, { dx, dy }) {
+  const { x, y, w, h } = r;
+  const lateral = dx >= 0
+    ? [[x + w, y], [x + w, y + h], [x + w + dx, y + h + dy], [x + w + dx, y + dy]]
+    : [[x, y], [x, y + h], [x + dx, y + h + dy], [x + dx, y + dy]];
+  const horizontal = dy <= 0
+    ? [[x, y], [x + w, y], [x + w + dx, y + dy], [x + dx, y + dy]]
+    : [[x, y + h], [x + w, y + h], [x + w + dx, y + h + dy], [x + dx, y + h + dy]];
+  return { lateral, horizontal };
+}
+
 function poligono(doc, pts, relleno, borde) {
   doc.polygon(...pts).lineWidth(0.35).fillAndStroke(relleno, borde);
 }
@@ -99,6 +118,12 @@ export function dibujarVentanaIso(doc, caja, it) {
   // La fuga se come espacio arriba y a la derecha: se reserva ANTES de encajar la ventana,
   // si no la profundidad se sale de la caja y pisa lo que esté al lado.
   const reserva = Math.max(6, Math.min(caja.w, caja.h) * 0.16);
+  // NO se reserva lugar para el saliente de la manilla, y esta medido: la manilla vive
+  // pegada al vidrio, que ya esta metido hacia adentro el ancho del marco MAS el de la hoja
+  // (98 mm entre los dos) — muchisimo mas de lo que sobresale. En la ventana mas chica que
+  // dibujamos le sobran 15 px de margen contra el borde. Se habia agregado una reserva "por
+  // las dudas"; el test de mutacion mostro que sacarla no rompe nada, asi que no va: codigo
+  // defensivo que ningun caso justifica es codigo que despues nadie se atreve a tocar.
   const p = planoDeVentana(it, {
     x: caja.x, y: caja.y + reserva,
     w: Math.max(20, caja.w - reserva), h: Math.max(20, caja.h - reserva),
@@ -159,9 +184,27 @@ export function dibujarVentanaIso(doc, caja, it) {
       doc.undash().restore();
     }
 
+    // ── MANILLA EN RELIEVE ─────────────────────────────────────────────────
+    // Es la unica pieza que SALE hacia afuera del plano de la ventana; todo lo demas se va
+    // hacia atras. Dibujarla plana sobre un dibujo con volumen la hacia ver pegada.
+    //
+    // ⚠️ EL SALIENTE NO ESTA MEDIDO: es un realce visual, proporcional al fondo del perfil.
+    // No sale de Winart y no se usa para nada que se fabrique ni se cobre. Si algun dia hace
+    // falta la medida real de la manilla, se saca del modelo — no de aca.
     if (hoja.manilla) {
       const q = hoja.manilla;
-      doc.roundedRect(q.x, q.y, q.w, q.h, Math.min(q.w, q.h) / 2)
+      const saliente = Math.max(1, fuga.dx * 0.5);
+      const hacia = { dx: -saliente, dy: saliente };
+      const radio = Math.min(q.w, q.h) / 2;
+
+      // La roseta: la base que queda apoyada contra la hoja.
+      doc.roundedRect(q.x, q.y, q.w, q.h, radio).lineWidth(0.3).fillAndStroke('#C8CDD3', '#5A6672');
+      // El cuerpo que sale hacia el que mira, con su cara iluminada y su sombra.
+      const c = carasHacia(q, hacia);
+      poligono(doc, c.lateral, '#AEB5BC', '#5A6672');
+      poligono(doc, c.horizontal, '#8F979F', '#5A6672');
+      // Y la cara de agarre, la mas clara: es la que recibe la luz de frente.
+      doc.roundedRect(q.x + hacia.dx, q.y + hacia.dy, q.w, q.h, radio)
          .lineWidth(0.3).fillAndStroke('#F2F4F7', '#5A6672');
     }
   }
