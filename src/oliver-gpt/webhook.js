@@ -2040,6 +2040,27 @@ Comuna: ${datos.comuna}`
                 if (_mm) { it.ancho_mm = Number(_mm[1]); it.alto_mm = Number(_mm[2]); }
               }
               it.termico = _t?.termico || null; // motor manda; sin termico → null
+
+              // 🔴 [2026-08-26] LA COMPOSICION DE LA VENTANA VIAJA AL DIBUJO. Sin esto el PDF
+              // dibujaba las tres compuestas de Paula como UN PAÑO UNICO: el dibujo necesita
+              // `compuesta.partes` para saber donde va el travesaño y cual paño abre, y ese
+              // dato lo produce el MOTOR — vive en la copia de este bloque, no en el item que
+              // llega al PDF. El dueño lo vio de inmediato: *"la imagen de la cotizacion no
+              // representa lo que necesitamos que vea el cliente"*.
+              if (_t && _t.compuesta) it.compuesta = _t.compuesta;
+
+              // Y el ancho de hoja de una corredera (H80 / H98): el dibujo lo usa para el
+              // grueso real del bastidor. Sale del label que devuelve el motor, que es quien
+              // sabe que hoja le toco a esa medida.
+              if (!Number(it.hoja_mm)) {
+                const _h = String((_t && _t.producto_label) || it.producto_label || it.product || '')
+                  // ⚠️ Regex LITERAL y sin \b: dentro de una cadena JS, '\b' es el caracter
+                  // BACKSPACE, no el limite de palabra — el patron nunca matcheaba y toda
+                  // corredera caia al ancho de hoja por defecto. Aca no hace falta: basta
+                  // con una H seguida de digitos, y en estos labels eso solo es la hoja.
+                  .match(/H(\d{2,3})/i);
+                if (_h) it.hoja_mm = Number(_h[1]);
+              }
               // [2026-07-07] referencial = medida fuera de estándar (sobre máx o bajo mín). Motor-truth
               // para TODOS los ítems (no depende de que el LLM lo pase) → dispara la escalación de abajo.
               if (_therm.items[k]?.referencial) {
