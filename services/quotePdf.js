@@ -137,14 +137,47 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       doc.text("TOTAL:", 365, y + 3, { width: 100, align: "right" }); doc.text(fmt(total), 470, y + 3, { width: 70, align: "right" });
       y += 42;
 
-      // Incluye / garantías
+      // ── Cierre: INCLUYE + FIRMA ──────────────────────────────────────────
+      // 🔴 [2026-08-26, reporte del dueño] EL PDF SALIA CON HOJAS DE MAS Y EN BLANCO.
+      // Causa: pdfkit AGREGA PAGINAS SOLO cuando un `text()` cae mas abajo del margen. Al
+      // agrandar las figuras el bloque de cierre empezaba mas abajo, se desbordaba, y
+      // pdfkit paginaba por su cuenta: quedaba una hoja vacia y el pie solo en la ultima.
+      // Ahora se mide el alto del cierre ANTES de empezar y, si no cabe, se pasa de pagina
+      // a proposito. Nunca mas se le delega el salto a la libreria.
+      const ALTO_INCLUYE = 14 + 4 * 12;
+      const ALTO_FIRMA = 96;
+      if (y + ALTO_INCLUYE + ALTO_FIRMA > doc.page.height - 80) {
+        doc.addPage(); header(doc, quoteNumber); y = 110;
+      }
+
       doc.fillColor(DARK).fontSize(9.5).font("Helvetica-Bold").text("INCLUYE", 50, y); y += 14;
       doc.font("Helvetica").fontSize(8).fillColor(GRAY);
       ["• Perfiles PVC WinHouse certificados (IFT Rosenheim) · termopanel DVH.",
        "• Instalación profesional por equipo propio. Sellado incluido.",
        "• Cumple OGUC 4.1.10 (acondicionamiento térmico). Evaluador MINVU Res. 266/2025.",
        "• Garantía 5 años estructura · 1 año herrajes. Sujeto a rectificación en terreno."]
-       .forEach(t => { doc.text(t, 50, y); y += 12; });
+       .forEach(t => { doc.text(t, 50, y, { lineBreak: false }); y += 12; });
+
+      // ── FIRMA ────────────────────────────────────────────────────────────
+      // Pedido del dueño: cerrar la propuesta con su firma y "algun texto de compromiso con
+      // las cosas bien hechas". Va sobria y con lo que respalda el compromiso —la
+      // acreditacion MINVU— no con adjetivos: quien firma se hace responsable, y eso es
+      // justamente lo que distingue a una propuesta de una lista de precios.
+      y += 10;
+      doc.moveTo(50, y).lineTo(doc.page.width - 50, y).lineWidth(0.5).strokeColor(LINE).stroke();
+      y += 12;
+      doc.fillColor(DARK).fontSize(8.5).font("Helvetica-Oblique")
+         .text("Esta propuesta la reviso y la firmo yo. Si algo no queda como corresponde, se corrige.",
+               50, y, { width: doc.page.width - 100, lineBreak: false });
+      y += 16;
+      doc.fillColor(DARK).fontSize(9.5).font("Helvetica-Bold")
+         .text("Marcelo Cifuentes Méndez", 50, y, { lineBreak: false }); y += 12;
+      doc.fillColor("#2E7D32").fontSize(8).font("Helvetica-Bold")
+         .text("Calificador Energético MINVU · Res. 266/2025", 50, y, { lineBreak: false }); y += 11;
+      doc.fillColor(GRAY).fontSize(7.5).font("Helvetica");
+      doc.text("Ingeniero Civil Industrial · Ingeniero Electrónico · MBA Administración y Negocios", 50, y, { lineBreak: false }); y += 10;
+      doc.text("Gerente de Ingeniería · Activa Inversiones", 50, y, { lineBreak: false }); y += 10;
+      doc.text("mcifuentes@activaspa.cl · +56 9 5729 6035", 50, y, { lineBreak: false }); y += 10;
 
       // Footer
       doc.rect(0, doc.page.height - 54, doc.page.width, 54).fill(NAVY);

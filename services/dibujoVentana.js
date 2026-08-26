@@ -594,9 +594,22 @@ function dibujarVentana(doc, caja, it) {
     // ── MANILLA del paño que abre ──────────────────────────────────────────
     // Un fijo no lleva: no se toma de ningun lado. Es una señal mas de cual abre.
     if (hoja.manilla) {
+      // 🔴 [2026-08-26, correccion del dueño con la foto de su manilla] NO ES UN BLOQUE.
+      // Es una ROSETA alargada con la PALANCA adentro, corrida hacia un extremo. Dibujada
+      // como un rectangulo lleno parecia un tirador de mueble; asi se lee como lo que es.
       const q = hoja.manilla;
+      const horiz = q.w >= q.h;
       doc.roundedRect(q.x, q.y, q.w, q.h, Math.min(q.w, q.h) / 2)
          .lineWidth(0.35).fillAndStroke("#F2F4F7", "#5A6672");
+      // La palanca: mas corta que la roseta y pegada al extremo por donde se toma.
+      const m = Math.min(q.w, q.h) * 0.26;
+      const pl = horiz
+        ? { x: q.x + q.w * 0.30, y: q.y + m, w: q.w * 0.62, h: Math.max(0.4, q.h - 2 * m) }
+        : { x: q.x + m, y: q.y + q.h * 0.30, w: Math.max(0.4, q.w - 2 * m), h: q.h * 0.62 };
+      if (pl.w > 0.4 && pl.h > 0.4) {
+        doc.roundedRect(pl.x, pl.y, pl.w, pl.h, Math.min(pl.w, pl.h) / 2)
+           .lineWidth(0.3).fillAndStroke("#C8CDD3", "#5A6672");
+      }
     }
 
     // ── ROTULO del paño: A1 / F1, y debajo el codigo del vidrio ─────────────

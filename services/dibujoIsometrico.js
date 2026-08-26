@@ -229,8 +229,19 @@ export function dibujarVentanaIso(doc, caja, it) {
       poligono(doc, c.lateral, '#AEB5BC', '#5A6672');
       poligono(doc, c.horizontal, '#8F979F', '#5A6672');
       // Y la cara de agarre, la mas clara: es la que recibe la luz de frente.
-      doc.roundedRect(q.x + hacia.dx, q.y + hacia.dy, q.w, q.h, radio)
-         .lineWidth(0.3).fillAndStroke('#F2F4F7', '#5A6672');
+      const fx = q.x + hacia.dx, fy = q.y + hacia.dy;
+      doc.roundedRect(fx, fy, q.w, q.h, radio).lineWidth(0.3).fillAndStroke('#F2F4F7', '#5A6672');
+      // [2026-08-26] La PALANCA adentro de la roseta, corrida al extremo por donde se toma
+      // — la forma real, segun la foto del dueño. Sin esto parecia un tirador de mueble.
+      const horiz = q.w >= q.h;
+      const mg = Math.min(q.w, q.h) * 0.26;
+      const pl = horiz
+        ? { x: fx + q.w * 0.30, y: fy + mg, w: q.w * 0.62, h: Math.max(0.3, q.h - 2 * mg) }
+        : { x: fx + mg, y: fy + q.h * 0.30, w: Math.max(0.3, q.w - 2 * mg), h: q.h * 0.62 };
+      if (pl.w > 0.4 && pl.h > 0.4) {
+        doc.roundedRect(pl.x, pl.y, pl.w, pl.h, Math.min(pl.w, pl.h) / 2)
+           .lineWidth(0.28).fillAndStroke('#C8CDD3', '#5A6672');
+      }
     }
   }
 
