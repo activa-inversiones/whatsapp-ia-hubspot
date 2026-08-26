@@ -194,3 +194,73 @@ test("plano: sin datos (ítem vacío) devuelve un dibujo válido y no tira", () 
   assert.equal(p.color.nombre, "Blanco");
   assert.equal(p.hojas.length, 1);
 });
+
+/* =========================================================================
+ * [2026-08-25] LA COMPUESTA SE DIBUJA COMO UNA SOLA VENTANA
+ * =========================================================================
+ * Hasta hoy el encabezado de este módulo declaraba que no se podía ("se cotiza como dos ítems
+ * ⇒ no se puede dibujar como una sola"). Con el tipo COMPUESTA en el motor, `compuesta.partes`
+ * trae el tipo y el ancho REAL de cada paño. Codex lo marcó en la compuerta: sin esto la
+ * compuesta salía dibujada como UN paño (y encima como proyectante, porque su label contiene
+ * la palabra).
+ *
+ * 📐 Se dibuja según el modelo REAL de Winart (proyecto 56570, medido): dos marcos completos
+ * acoplados, no un marco con poste — por eso el montante es grueso.
+ */
+const itCompuesta = (partes, measures = '2002x1450') => ({
+  producto_label: 'Ventana compuesta: ' + partes.map((p) => `${p.tipo} ${p.ancho_mm}mm`).join(' + '),
+  product: 'COMPUESTA', measures, color: 'Roble', glass_label: '4+12+4',
+  compuesta: { partes },
+});
+
+test('🔴 tipoDe reconoce COMPUESTA antes que las palabras de sus paños', () => {
+  assert.equal(tipoDe(itCompuesta([{ tipo: 'FIJA', ancho_mm: 1200 }, { tipo: 'PROYECTANTE', ancho_mm: 800 }])), 'COMPUESTA');
+  // sin la rama COMPUESTA primero, el label "…+ Proyectante 800mm" caía en PROYECTANTE
+  assert.equal(tipoDe({ producto_label: 'Proyectante S60' }), 'PROYECTANTE');
+  assert.equal(tipoDe({ producto_label: 'Corredera SLIDING H98' }), 'CORREDERA');
+});
+
+test('🔴 cada paño con su ANCHO REAL, no en partes iguales (la Pos.1 del dueño: 60/40)', () => {
+  const p = planoDeVentana(itCompuesta([{ tipo: 'FIJA', ancho_mm: 1200 }, { tipo: 'PROYECTANTE', ancho_mm: 800 }]), { x: 0, y: 0, w: 200, h: 120 });
+  assert.equal(p.tipo, 'COMPUESTA');
+  assert.equal(p.hojas.length, 2);
+  const prop = p.hojas[0].w / (p.hojas[0].w + p.hojas[1].w);
+  assert.ok(Math.abs(prop - 0.6) < 0.01, `el fijo debe ocupar 60%, ocupa ${(prop * 100).toFixed(1)}%`);
+});
+
+test('🔴 el paño FIJO no lleva símbolo y el que ABRE sí — es lo que los distingue', () => {
+  const p = planoDeVentana(itCompuesta([{ tipo: 'FIJA', ancho_mm: 1200 }, { tipo: 'PROYECTANTE', ancho_mm: 800 }]), { x: 0, y: 0, w: 200, h: 120 });
+  assert.equal(p.hojas[0].tipo, 'FIJA');
+  assert.equal(p.hojas[0].simbolo.length, 0, 'un fijo dibujado con diagonales miente: parece que abre');
+  assert.equal(p.hojas[1].tipo, 'PROYECTANTE');
+  assert.ok(p.hojas[1].simbolo.length > 0, 'el que abre tiene que verse que abre');
+});
+
+test('🔴 tres paños (la Pos.2 del dueño): fijo + proyectante + fijo, en su proporción', () => {
+  const partes = [{ tipo: 'FIJA', ancho_mm: 1530 }, { tipo: 'PROYECTANTE', ancho_mm: 900 }, { tipo: 'FIJA', ancho_mm: 820 }];
+  const p = planoDeVentana(itCompuesta(partes, '3250x1460'), { x: 0, y: 0, w: 200, h: 120 });
+  assert.equal(p.hojas.length, 3);
+  assert.deepEqual(p.hojas.map((h) => h.tipo), ['FIJA', 'PROYECTANTE', 'FIJA']);
+  assert.ok(p.hojas[0].w > p.hojas[1].w && p.hojas[1].w > p.hojas[2].w, '1530 > 900 > 820 también en el dibujo');
+  assert.equal(p.hojas[0].simbolo.length + p.hojas[2].simbolo.length, 0, 'los dos fijos, sin símbolo');
+});
+
+test('🔒 los paños no se pisan ni se salen del marco', () => {
+  const p = planoDeVentana(itCompuesta([{ tipo: 'FIJA', ancho_mm: 1200 }, { tipo: 'PROYECTANTE', ancho_mm: 800 }]), { x: 10, y: 5, w: 200, h: 120 });
+  const [a, b] = p.hojas;
+  assert.ok(a.x + a.w <= b.x + 0.01, 'el primer paño termina antes de que empiece el segundo');
+  assert.ok(b.x - (a.x + a.w) >= 3, 'y entre medio va el montante (dos marcos + acople), no una línea');
+  assert.ok(a.x >= p.marcoRect.x, 'nada se sale del marco por la izquierda');
+  assert.ok(b.x + b.w <= p.marcoRect.x + p.marcoRect.w + 0.01, 'ni por la derecha');
+  for (const h of p.hojas) {
+    assert.ok(h.vidrioRect.x >= h.x && h.vidrioRect.x + h.vidrioRect.w <= h.x + h.w + 0.01, 'el vidrio queda DENTRO de su paño');
+  }
+});
+
+test('🔒 sin datos de composición cae al dibujo de siempre, no rompe', () => {
+  // Una compuesta vieja (cotizada antes de este cambio) no trae `compuesta.partes`.
+  const p = planoDeVentana({ producto_label: 'Ventana compuesta', measures: '2000x1450', color: 'Blanco' }, { x: 0, y: 0, w: 200, h: 120 });
+  assert.equal(p.tipo, 'COMPUESTA');
+  assert.ok(p.hojas.length >= 1, 'dibuja algo razonable igual');
+  assert.ok(!p.compuesta, 'y no inventa una composición que no tiene');
+});

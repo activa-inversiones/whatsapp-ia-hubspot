@@ -567,6 +567,10 @@ export async function priceAllEngine(d, customer_id = "") {
     item.serie = serie;
     if (r.producto_label) item.producto_label = r.producto_label;
     if (r.corredera) item.corredera = r.corredera;
+    // [2026-08-25 · Codex #4] La composicion de la compuesta se descartaba y el PDF la
+    // dibujaba como UN paño solo. Con esto viaja: cada paño con su tipo y su ancho real,
+    // que es lo que el dibujo necesita para poner el travesaño donde va y marcar cual abre.
+    if (r.compuesta) item.compuesta = r.compuesta;
     if (r.termico) item.termico = r.termico; // [thermal] hoja Uw (aditivo; null en H98/sin match → no se muestra)
     if (dim && dim.suggest) item.price_warning = dim.message;
 

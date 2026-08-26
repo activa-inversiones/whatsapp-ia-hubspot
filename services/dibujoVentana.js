@@ -11,10 +11,16 @@
 // en el lado de las bisagras. Un cliente que muestra el PDF a su maestro tiene que poder leer
 // hacia dónde abre cada hoja; una hoja dibujada sin símbolo es indistinguible de un paño fijo.
 //
-// LÍMITE CONOCIDO: el motor cotiza 5 tipos SUELTOS (FIJA/CORREDERA/PROYECTANTE/BATIENTE/
-// OSCILOBATIENTE). La ventana COMPUESTA que más se vende ("mitad fija, mitad proyectante,
-// unidas", dueño 2026-08-08) hoy se cotiza como dos ítems ⇒ no se puede dibujar como una sola.
-// Eso NO se arregla acá: necesita un tipo compuesto en quoteEngine.js (toca precio ⇒ propuesta).
+// [2026-08-25] LA COMPUESTA YA SE DIBUJA COMO UNA SOLA VENTANA. El límite que este comentario
+// declaraba desde el 08-ago ("se cotiza como dos ítems ⇒ no se puede dibujar como una sola")
+// murió: el motor tiene el tipo COMPUESTA y devuelve `compuesta.partes` con el tipo y el ancho
+// REAL de cada paño. Acá se usa ese dato para poner el travesaño donde de verdad va y marcar
+// cuál paño abre — antes salía como un paño único, que es lo que Codex marcó en la compuerta.
+//
+// 📐 QUÉ SE APRENDIÓ DE WINART, y por qué se dibuja así: el modelo real de una compuesta
+// (proyecto 56570, medido 25-ago) son DOS MARCOS COMPLETOS acoplados por el perfil ACOPLE MINI
+// (`PI-CMP-ACM`), no un marco único con poste. Por eso el dibujo lleva un montante ANCHO entre
+// paños (dos perfiles de marco juntos + el acople), no una línea fina.
 
 // Paleta real de Winart. `f` = relleno del perfil, `e` = color de línea.
 // Blanco y roble/nogal traen lineHexa #000000; grafito y new black traen #4F4F4F.
@@ -69,12 +75,46 @@ function medidas(m) {
 // de las otras palabras, pero el orden importa para no depender de eso.
 function tipoDe(it) {
   const p = String(it?.product || it?.producto_label || "").toUpperCase();
+  // [2026-08-25] COMPUESTA PRIMERO: su label es "Ventana compuesta: Fijo 1200mm +
+  // Proyectante 800mm" — contiene las palabras de los otros tipos y cualquier rama de abajo
+  // se la robaba (salia dibujada como una proyectante de un solo paño).
+  if (p.includes("COMPUESTA")) return "COMPUESTA";
   if (p.includes("PUERTA")) return p.includes("DOBLE") || p.includes("2H") ? "PUERTA_DOBLE" : "PUERTA";
   if (p.includes("CORREDERA") || p.includes("SLIDING")) return "CORREDERA";
   if (p.includes("OSCILO")) return "OSCILOBATIENTE";
   if (p.includes("PROYECT")) return "PROYECTANTE";
   if (p.includes("ABAT") || p.includes("BATIENTE")) return "BATIENTE";
   return "FIJA";
+}
+
+// El tipo de UN paño de la compuesta (lo que devuelve el motor en compuesta.partes[].tipo).
+// FIJA/PROYECTANTE/BATIENTE/OSCILOBATIENTE — los cuatro que el motor acepta como paño.
+function tipoDeParte(t) {
+  const s = String(t || "").toUpperCase();
+  if (s.includes("OSCILO")) return "OSCILOBATIENTE";
+  if (s.includes("PROYECT")) return "PROYECTANTE";
+  if (s.includes("ABAT") || s.includes("BATIENTE")) return "BATIENTE";
+  return "FIJA";
+}
+
+/**
+ * Reparte el ancho interior entre los paños según su ancho REAL (no en partes iguales),
+ * dejando el montante entre medio. Un fijo de 1200 y un proyectante de 800 tienen que verse
+ * 60/40 en el dibujo: el cliente compara la proporción con el hueco de su casa.
+ * @param {Array<{ancho_mm:number}>} partes
+ * @param {number} montante  ancho del montante en px (los dos marcos + el acople)
+ */
+function repartirPorPartes(x, y, w, h, partes, montante) {
+  const anchos = partes.map((pt) => Math.max(1, Number(pt.ancho_mm) || 1));
+  const suma = anchos.reduce((a, b) => a + b, 0);
+  const util = Math.max(1, w - montante * (partes.length - 1));
+  let cursor = x;
+  return partes.map((pt, idx) => {
+    const pw = util * (anchos[idx] / suma);
+    const r = { x: cursor, y, w: pw, h, idx };
+    cursor += pw + montante;
+    return r;
+  });
 }
 
 function hojasDe(it) {
@@ -160,6 +200,40 @@ function planoDeVentana(it, caja) {
 
   const intX = x + marco, intY = y + marco;
   const intW = Math.max(1, w - 2 * marco), intH = Math.max(1, h - 2 * marco);
+
+  // ── COMPUESTA: cada paño con su ancho real y su propia apertura ──────────────
+  // El montante es GRUESO a propósito: en la ventana real son dos marcos completos pegados
+  // por el acople, no un perfil delgado. Dibujarlo fino mentiría sobre el vidrio que se ve.
+  const partes = (tipo === "COMPUESTA" && Array.isArray(it?.compuesta?.partes) && it.compuesta.partes.length >= 2)
+    ? it.compuesta.partes : null;
+  if (partes) {
+    const montante = Math.max(3, 2 * marco * 0.8);
+    const hojasC = repartirPorPartes(intX, intY, intW, intH, partes, montante).map((r, i) => {
+      const tp = tipoDeParte(partes[i].tipo);
+      const insetX = Math.min(perfilHoja, r.w / 3);
+      const insetY = Math.min(perfilHoja, r.h / 3);
+      const vidrioRect = {
+        x: r.x + insetX, y: r.y + insetY,
+        w: Math.max(0, r.w - 2 * insetX), h: Math.max(0, r.h - 2 * insetY),
+      };
+      return {
+        ...r, vidrioRect, manoDerecha: true, tipo: tp,
+        // Un paño FIJO no lleva símbolo: es justamente lo que lo distingue del que abre.
+        // (Redundante hoy — simboloApertura("FIJA") ya devuelve [] — pero explícito a
+        // propósito: si mañana alguien le agrega un símbolo a FIJA, acá no cambia nada.)
+        simbolo: tp === "FIJA" ? [] : simboloApertura(tp, vidrioRect, true),
+        flecha: 0,
+      };
+    });
+    return {
+      tipo, ancho, alto, escala, color, vidrio,
+      marcoRect: { x, y, w, h },
+      marco, perfilHoja, hojas: hojasC,
+      compuesta: { partes: partes.map((pt, i) => ({ tipo: tipoDeParte(pt.tipo), ancho_mm: pt.ancho_mm, idx: i })), montante },
+      etiqueta: `${ancho}×${alto} mm`,
+    };
+  }
+
   const hojas = repartirHojas(intX, intY, intW, intH, n).map((r) => {
     // El perfil de la hoja NO puede ser más grueso que la hoja misma. Con un piso fijo en el
     // ancho del vidrio (max(0.5, …)) pero la posición corrida por el perfil, una hoja angosta
@@ -231,6 +305,6 @@ function dibujarVentana(doc, caja, it) {
 
 export {
   dibujarVentana, planoDeVentana,
-  medidas, tipoDe, hojasDe, claveColor, claveVidrio, encajar, repartirHojas, simboloApertura,
+  medidas, tipoDe, tipoDeParte, hojasDe, claveColor, claveVidrio, encajar, repartirHojas, repartirPorPartes, simboloApertura,
   COLORES, VIDRIOS,
 };
