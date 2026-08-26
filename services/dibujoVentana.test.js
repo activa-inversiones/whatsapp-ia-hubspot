@@ -452,3 +452,44 @@ test('🔒 una ventana simple igual se acota, sin cotas por paño', () => {
   assert.deepEqual(p.cotas.map((c) => c.texto).sort(), ['1200', '1500']);
   assert.ok(p.cotas.every((c) => c.fila === 1), 'las dos son totales');
 });
+
+// ── La manilla va SOBRE LA HOJA, y del tamaño de una mano ─────────────────────
+// [2026-08-25, corrección del dueño] Estaba centrada en el borde del vidrio, o sea montada
+// sobre el junquillo: "va sobre la hoja de la ventana". Y salía corta — una manilla se toma
+// con la mano y mide unos 120 mm, no un puñado de píxeles proporcionales al paño.
+
+test('🔴 la manilla NO pisa el vidrio: se apoya en el perfil de la hoja', () => {
+  const p = planoDeVentana({ producto_label: 'Ventana proyectante', measures: '1000x800', color: 'Roble' }, { x: 0, y: 0, w: 300, h: 240 });
+  const h = p.hojas[0], q = h.manilla, v = h.vidrioRect;
+  assert.ok(q, 'hay manilla');
+  assert.ok(q.y >= v.y + v.h - 0.01, 'arranca donde TERMINA el vidrio, no encima de él');
+  assert.ok(q.y + q.h <= h.y + h.h + 0.01, 'y no se pasa del borde de la hoja');
+});
+
+test('🔴 la manilla mide ~120 mm de verdad, no una fracción del paño', () => {
+  // Dos ventanas de MUY distinto tamaño dibujadas a la misma escala tienen que dar la misma
+  // manilla: es la misma pieza de ferretería en las dos.
+  const grande = planoDeVentana({ producto_label: 'Ventana proyectante', measures: '2000x1600', color: 'Roble' }, { x: 0, y: 0, w: 300, h: 240 });
+  const chica = planoDeVentana({ producto_label: 'Ventana proyectante', measures: '1000x800', color: 'Roble' }, { x: 0, y: 0, w: 150, h: 120 });
+  assert.ok(Math.abs(grande.escala - chica.escala) < 1e-9, 'misma escala en las dos');
+  assert.ok(Math.abs(grande.hojas[0].manilla.w - chica.hojas[0].manilla.w) < 0.01,
+    'la misma manilla, aunque una ventana sea el doble que la otra');
+  assert.ok(Math.abs(grande.hojas[0].manilla.w - 120 * grande.escala) < 0.01, '120 mm a escala');
+});
+
+test('🔴 en una corredera la manilla va en el montante del costado, parada', () => {
+  const p = planoDeVentana({ producto_label: 'Ventana corredera 2 hojas', measures: '1500x1200', color: 'Blanco' }, { x: 0, y: 0, w: 300, h: 240 });
+  const q = p.hojas[0].manilla;
+  assert.ok(q.h > q.w, 'una manilla de corredera se toma en vertical');
+  const v = p.hojas[0].vidrioRect;
+  assert.ok(q.x >= v.x + v.w - 0.01 || q.x + q.w <= v.x + 0.01, 'fuera del vidrio, sobre el perfil');
+});
+
+test('🔒 en un paño diminuto la manilla se achica en vez de desbordarse', () => {
+  const p = planoDeVentana({ producto_label: 'Ventana proyectante', measures: '400x300', color: 'Blanco' }, { x: 0, y: 0, w: 30, h: 24 });
+  const h = p.hojas[0], q = h.manilla;
+  if (q) {
+    assert.ok(q.w <= h.w + 0.01 && q.h <= h.h + 0.01, 'nunca más grande que su propia hoja');
+    assert.ok(q.w > 0 && q.h > 0, 'y nunca negativa');
+  }
+});

@@ -120,25 +120,59 @@ function etiquetasDePanos(tipos) {
   return tipos.map((t) => (t === "FIJA" ? `F${++f}` : `A${++a}`));
 }
 
+// Tamaño de la manilla, en mm.
+// ⚠️ NO SALE DE WINART: es el tamaño real aproximado de una manilla de cremona, puesto para
+// que se vea como lo que es — algo que se agarra con la mano. No alimenta nada que se
+// fabrique ni se cobre. Si algun dia hace falta la medida exacta, se saca del modelo.
+const MANILLA_LARGO_MM = 120;
+const MANILLA_ANCHO_MM = 26;
+
 /**
- * La MANILLA del paño que abre. Posicion segun por donde se toma la ventana:
- *  · proyectante → abajo al centro (bisagras arriba) — es lo que muestra el plano del dueño;
- *  · el resto con hoja → al costado, del lado contrario a las bisagras.
+ * La MANILLA del paño que abre.
+ *
+ * 🔴 [2026-08-25, correccion del dueño] VA SOBRE LA HOJA, NO SOBRE EL VIDRIO. Estaba centrada
+ * en el borde del vidrio, o sea montada sobre el junquillo — textual: *"la colocaste sobre el
+ * junquillo y va sobre la hoja de la ventana"*. Y salia corta: una manilla se toma con la
+ * mano, mide unos 120 mm, no un puñado de pixeles proporcionales al paño.
+ *
+ * Ahora se apoya en la BANDA de perfil de la hoja (lo que queda entre el vidrio y el borde
+ * exterior del bastidor), que es donde va atornillada en la ventana real:
+ *  · proyectante → en el travesaño de ABAJO, al centro (las bisagras van arriba);
+ *  · el resto con hoja → en el montante del costado, del lado contrario a las bisagras.
  * Un fijo no lleva: no se toma de ningun lado.
+ *
+ * @param {object} hoja
+ * @param {number} escala  px por mm, para que la manilla tenga su tamaño real
  */
-function manillaDe(hoja) {
+function manillaDe(hoja, escala) {
   if (hoja.sinBastidor) return null;
   const v = hoja.vidrioRect;
   if (!(v.w > 0 && v.h > 0)) return null;
-  const largo = Math.max(2, Math.min(v.w, v.h) * 0.18);
-  const grueso = Math.max(1, largo * 0.32);
+  const esc = Number(escala) > 0 ? Number(escala) : 0.05;
+
   if (hoja.tipo === "PROYECTANTE") {
-    return { x: v.x + v.w / 2 - largo / 2, y: v.y + v.h - grueso / 2, w: largo, h: grueso };
+    // La banda de perfil de abajo: entre el borde inferior del vidrio y el de la hoja.
+    const banda = (hoja.y + hoja.h) - (v.y + v.h);
+    if (banda <= 0) return null;
+    const largo = Math.max(3, Math.min(MANILLA_LARGO_MM * esc, v.w * 0.7));
+    const grueso = Math.max(1.2, Math.min(MANILLA_ANCHO_MM * esc, banda * 0.75));
+    return {
+      x: v.x + v.w / 2 - largo / 2,
+      y: (v.y + v.h) + (banda - grueso) / 2,   // centrada EN la banda, no encima del vidrio
+      w: largo, h: grueso,
+    };
   }
+
+  // Montante vertical del lado que se abre.
   const enDerecha = !hoja.manoDerecha;
+  const banda = enDerecha ? (hoja.x + hoja.w) - (v.x + v.w) : v.x - hoja.x;
+  if (banda <= 0) return null;
+  const largo = Math.max(3, Math.min(MANILLA_LARGO_MM * esc, v.h * 0.7));
+  const grueso = Math.max(1.2, Math.min(MANILLA_ANCHO_MM * esc, banda * 0.75));
   return {
-    x: enDerecha ? v.x + v.w - grueso / 2 : v.x - grueso / 2,
-    y: v.y + v.h / 2 - largo / 2, w: grueso, h: largo,
+    x: enDerecha ? (v.x + v.w) + (banda - grueso) / 2 : hoja.x + (banda - grueso) / 2,
+    y: v.y + v.h / 2 - largo / 2,
+    w: grueso, h: largo,
   };
 }
 
@@ -360,7 +394,7 @@ function planoDeVentana(it, caja) {
     });
     const tiposC = partes.map((pt) => tipoDeParte(pt.tipo));
     const rotulosC = etiquetasDePanos(tiposC);
-    hojasC.forEach((hj, i) => { hj.rotulo = rotulosC[i]; hj.manilla = manillaDe(hj); });
+    hojasC.forEach((hj, i) => { hj.rotulo = rotulosC[i]; hj.manilla = manillaDe(hj, escala); });
     const marcosPub = marcosC.map((r, i) => ({ x: r.x, y: r.y, w: r.w, h: r.h, marco: marcoDe(tiposC[i]) }));
     return {
       tipo, ancho, alto, escala, color, vidrio, glassCode: codigoVidrio(it),
@@ -405,7 +439,7 @@ function planoDeVentana(it, caja) {
   });
 
   const rotulos = etiquetasDePanos(hojas.map(() => tipo));
-  hojas.forEach((hj, i) => { hj.tipo = hj.tipo || tipo; hj.rotulo = rotulos[i]; hj.manilla = manillaDe(hj); });
+  hojas.forEach((hj, i) => { hj.tipo = hj.tipo || tipo; hj.rotulo = rotulos[i]; hj.manilla = manillaDe(hj, escala); });
   return {
     tipo, ancho, alto, escala, color, vidrio, glassCode: codigoVidrio(it),
     cotas: cotasDe({ x, y, w, h, ancho, alto }),
