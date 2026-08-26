@@ -383,7 +383,15 @@ function planoDeVentana(it, caja) {
   // numeros juntos: "Marco doble riel corredera: 70 · 54" → 70 de fondo, 54 DE FRENTE.
   // (Cotas del proyectista, leidas del DWG original — ver activa-thermal
   //  data/cotas_catalogo_sliding.json.)
-  const MARCO_CORREDERA_FRENTE_MM = 54;
+  // ✅ MEDIDO EN EL DWG, no estimado (2026-08-26). El dueño pregunto derecho: *"lo calculaste
+  // con el dwg o solo lo hiciste al ojo sin calcular nada"*. Era al ojo. Se midio.
+  // Sobre Ventana_Corredera_80_S75.dxf, seccion A-A, separando la geometria del MARCO de los
+  // bloques 'Hoja 80' y acotando cada uno:
+  //     jamba del marco ... 48,00 mm de frente · 75,00 mm de profundidad
+  //     hoja ............... 80,10 mm
+  // Los 75,00 confirman el "S75" y los 80,10 la H80: el dibujo devuelve sus propios nominales
+  // clavados, que es la mejor señal de que la medida esta bien tomada.
+  const MARCO_CORREDERA_FRENTE_MM = 48;
   const hojaDelItem = Number(it?.hoja_mm ?? it?.hojaMm ?? it?.perfil_hoja_mm);
   const anchoHojaMm = tipo === "CORREDERA"
     ? (Number.isFinite(hojaDelItem) && hojaDelItem > 0 ? hojaDelItem : HOJA_CORREDERA_DEFAULT_MM)
@@ -480,7 +488,10 @@ function planoDeVentana(it, caja) {
   // perfil al tiro, sino traspasa el perfil... como cuatro, cinco, seis o siete milimetros
   // sobre el marco"*. Se toma 6 mm, el medio del rango que dio. Sin esto la hoja queda
   // dibujada adentro del hueco y el conjunto se ve mas chico de lo que es.
-  const PISA_MARCO_MM = 6;
+  // ✅ MEDIDO: 8,00 mm exactos. El borde interior del marco cae en x=3134,98 y el borde
+  // exterior de la hoja en x=3126,98. El dueño lo habia estimado en "cuatro, cinco, seis o
+  // siete"; yo habia puesto 6 por ser el medio de su rango. La medicion da 8,00.
+  const PISA_MARCO_MM = 8;
   // En una corredera las hojas arrancan ANTES del borde interior del marco, porque lo pisan.
   const pisa = corre ? Math.min(PISA_MARCO_MM * escala, marco * 0.8) : 0;
   const hojas = repartirHojas(

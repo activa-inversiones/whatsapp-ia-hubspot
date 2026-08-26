@@ -546,3 +546,15 @@ test('🔴 una corredera de 3 o 4 hojas se dibuja con 3 o 4, no con 2', () => {
   // Y sigue funcionando con el campo viejo.
   assert.equal(planoDeVentana({ product: 'Ventana corredera 3 hojas', measures: '2400x1200', color: 'Blanco' }, { x: 0, y: 0, w: 300, h: 240 }).hojas.length, 3);
 });
+
+test('🔴 la corredera usa las medidas MEDIDAS en el DWG, no estimadas', () => {
+  // Marco 48 de frente y la hoja entrando 8 mm: los dos salen de medir
+  // Ventana_Corredera_80_S75.dxf, sección A-A. Antes eran 54 y 6, estimados.
+  const p = planoDeVentana({ producto_label: 'Ventana corredera 2 hojas', measures: '2000x1500', color: 'Blanco' }, { x: 0, y: 0, w: 300, h: 240 });
+  assert.ok(Math.abs(p.marco - 48 * p.escala) < 0.01, 'marco de corredera = 48 mm de frente');
+  // La hoja PISA el marco: arranca antes del borde interior del hueco.
+  const izq = [...p.hojas].sort((a, b) => a.x - b.x)[0];
+  const bordeInterior = p.marcoRect.x + p.marco;
+  assert.ok(izq.x < bordeInterior, 'la hoja entra dentro del marco, no apoya al ras');
+  assert.ok(Math.abs((bordeInterior - izq.x) - 8 * p.escala) < 0.01, 'y entra 8 mm');
+});
