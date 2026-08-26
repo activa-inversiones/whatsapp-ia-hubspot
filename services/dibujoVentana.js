@@ -89,6 +89,22 @@ function tipoDe(it) {
 
 // El tipo de UN paño de la compuesta (lo que devuelve el motor en compuesta.partes[].tipo).
 // FIJA/PROYECTANTE/BATIENTE/OSCILOBATIENTE — los cuatro que el motor acepta como paño.
+/**
+ * El contorno del JUNQUILLO: el vidrio crecido por el ancho de la varilla.
+ *
+ * 🔴 [2026-08-25, segunda correccion del dueño] *"no se ve el junquillo"*. Tenia razon:
+ * estaba en el CALCULO (el vidrio se separaba del marco lo justo) pero no en el DIBUJO —
+ * la banda quedaba del mismo color que el marco y sin una linea que la separara, asi que
+ * era invisible. En el plano de Winart el junquillo se lee como una linea fina alrededor
+ * del vidrio. Eso es lo que devuelve esta funcion.
+ */
+function rectJunquillo(v, j) {
+  return {
+    x: v.x - j, y: v.y - j,
+    w: Math.max(0, v.w + 2 * j), h: Math.max(0, v.h + 2 * j),
+  };
+}
+
 function tipoDeParte(t) {
   const s = String(t || "").toUpperCase();
   if (s.includes("OSCILO")) return "OSCILOBATIENTE";
@@ -255,7 +271,8 @@ function planoDeVentana(it, caja) {
         w: Math.max(0, hoja.w - 2 * insetX), h: Math.max(0, hoja.h - 2 * insetY),
       };
       return {
-        ...hoja, vidrioRect, manoDerecha: true, tipo: tp,
+        ...hoja, vidrioRect, junquilloRect: rectJunquillo(vidrioRect, Math.min(junquillo, insetX, insetY)),
+        manoDerecha: true, tipo: tp,
         // `sinBastidor` le dice al pintado que NO trace el rectangulo de la hoja: en el plano
         // real ese contorno no existe, y dibujarlo hace parecer que el fijo tambien abre.
         sinBastidor: tp === "FIJA",
@@ -297,7 +314,8 @@ function planoDeVentana(it, caja) {
     // En batiente/oscilo, con 2 hojas se abren simétricas hacia afuera (bisagras a los extremos).
     const manoDerecha = n === 1 ? true : r.idx % 2 === 0;
     return {
-      ...r, vidrioRect, manoDerecha, sinBastidor: tipo === "FIJA",
+      ...r, vidrioRect, junquilloRect: rectJunquillo(vidrioRect, Math.min(junquillo, insetX, insetY)),
+      manoDerecha, sinBastidor: tipo === "FIJA",
       simbolo: simboloApertura(tipo, vidrioRect, manoDerecha),
       flecha: tipo === "CORREDERA" ? (r.idx % 2 === 0 ? 1 : -1) : 0,
     };
@@ -335,9 +353,19 @@ function dibujarVentana(doc, caja, it) {
   }
 
   for (const hoja of p.hojas) {
-    // El bastidor solo existe donde hay una hoja que abre. En un fijo, dibujarlo es mentir.
-    if (!hoja.sinBastidor) {
+    // El bastidor solo existe donde hay una hoja que abre. En un fijo NO se rellena — pero
+    // SI se traza su contorno: es el borde interior del marco, y sin esa linea el junquillo
+    // se funde con el marco y desaparece (lo que el dueño vio: "no se ve el junquillo").
+    if (hoja.sinBastidor) {
+      doc.rect(hoja.x, hoja.y, hoja.w, hoja.h).lineWidth(0.45).stroke(p.color.e);
+    } else {
       doc.rect(hoja.x, hoja.y, hoja.w, hoja.h).lineWidth(0.5).fillAndStroke(p.color.f, p.color.e);
+    }
+    // El junquillo: la varilla fina que aprieta el vidrio. Se dibuja como su propio contorno,
+    // que es exactamente como se lee en el plano de Winart.
+    const j = hoja.junquilloRect;
+    if (j && j.w > 0 && j.h > 0) {
+      doc.rect(j.x, j.y, j.w, j.h).lineWidth(0.35).stroke(p.color.e);
     }
     const v = hoja.vidrioRect;
     doc.rect(v.x, v.y, v.w, v.h).lineWidth(0.4).fillAndStroke(p.vidrio, p.color.e);
