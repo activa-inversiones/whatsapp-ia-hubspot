@@ -679,3 +679,26 @@ test("🔩 manilla sin lugar: null (el pintor cae al pill simple)", () => {
   assert.equal(manillaFormas({ x: 0, y: 0, w: 5, h: 1.6 }), null);
   assert.equal(manillaFormas(null), null);
 });
+
+test('🔴 [2026-08-27] americana monorriel: UN paño fijo (sin hoja) + uno que corre', () => {
+  // Corrección del dueño con el plano de Winart: "un lado no tiene hoja". Una hoja corre
+  // (bastidor + manilla + flecha), la otra es vidrio fijo en el marco.
+  const p = planoDeVentana(
+    { producto_label: 'Corredera AMERICANA Monorriel', product: 'CORREDERA', measures: '1000x1000' },
+    { x: 0, y: 0, w: 250, h: 250 });
+  const fijos = p.hojas.filter((h) => h.sinBastidor);
+  const corren = p.hojas.filter((h) => !h.sinBastidor);
+  assert.equal(fijos.length, 1, 'exactamente un paño fijo');
+  assert.equal(corren.length, 1, 'exactamente un paño que corre');
+  assert.ok(corren[0].manilla, 'el que corre lleva manilla');
+  assert.ok(!fijos[0].manilla, 'el fijo NO lleva manilla');
+  assert.ok(corren[0].flecha !== 0, 'el que corre lleva flecha');
+  assert.equal(fijos[0].flecha, 0, 'el fijo no lleva flecha');
+});
+
+test('una corredera SLIDING normal NO tiene paño fijo (las dos hojas corren)', () => {
+  const p = planoDeVentana(
+    { producto_label: 'Corredera SLIDING H80 Doble Riel S75', product: 'CORREDERA', measures: '1500x1200' },
+    { x: 0, y: 0, w: 250, h: 250 });
+  assert.equal(p.hojas.filter((h) => h.sinBastidor).length, 0, 'ninguna hoja fija en una sliding');
+});

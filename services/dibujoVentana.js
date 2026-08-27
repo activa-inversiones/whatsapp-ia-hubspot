@@ -722,6 +722,10 @@ function planoDeVentana(it, caja) {
   // ancho de hoja del modelo — una H98 traslapa mas que una H80.
   const TRASLAPE_MM = anchoHojaMm;
   const corre = tipo === "CORREDERA";
+  // 🔴 [2026-08-27, correccion del dueño con el plano de Winart] LA AMERICANA MONORRIEL TIENE
+  // UN PAÑO FIJO: "un lado no tiene hoja". Una hoja CORRE (bastidor + flecha + manilla) y la
+  // otra es vidrio FIJO en el marco (sin bastidor). No es una corredera de dos hojas moviles.
+  const esAmericana = /american[ao]/i.test(`${it?.product || ""} ${it?.producto_label || ""} ${it?.label || ""}`);
   // 🔴 LA HOJA NO APOYA AL RAS DEL MARCO: LO PISA. Dueño: *"la hoja no queda encima del
   // perfil al tiro, sino traspasa el perfil... como cuatro, cinco, seis o siete milimetros
   // sobre el marco"*. Se toma 6 mm, el medio del rango que dio. Sin esto la hoja queda
@@ -753,9 +757,14 @@ function planoDeVentana(it, caja) {
     const manoDerecha = n === 1 ? true : r.idx % 2 === 0;
     return {
       ...r, vidrioRect, junquilloRect: rectJunquillo(vidrioRect, Math.min(junquillo, insetX, insetY)),
-      manoDerecha, sinBastidor: tipo === "FIJA",
+      manoDerecha,
+      // Americana: el paño derecho (idx>=1) es FIJO — no lleva bastidor (manillaDe le devuelve
+      // null solo por eso) ni flecha. El izquierdo corre hacia el fijo.
+      sinBastidor: tipo === "FIJA" || (esAmericana && r.idx >= 1),
       simbolo: simboloApertura(tipo, vidrioRect, manoDerecha),
-      flecha: tipo === "CORREDERA" ? (r.idx % 2 === 0 ? 1 : -1) : 0,
+      flecha: esAmericana
+        ? (r.idx === 0 ? 1 : 0)
+        : (tipo === "CORREDERA" ? (r.idx % 2 === 0 ? 1 : -1) : 0),
     };
   });
 
