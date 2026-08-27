@@ -650,3 +650,32 @@ test("textura: el blanco es LISO — brillo si, hebras de veta no", () => {
   dibujarVentana(t, { x: 10, y: 10, w: 200, h: 200 }, { ...ITEM_TEX, color: "Nogal" });
   assert.ok(t._ops.length > d._ops.length + 20, "la folia veteada dibuja bastante mas que la lisa");
 });
+
+// ── [2026-08-26] la manilla REAL: roseta en el extremo + palanca en voladizo ────────────
+import { manillaFormas } from "./dibujoVentana.js";
+
+test("🔩 manilla: roseta compacta en el extremo, palanca hasta la punta, todo dentro de q", () => {
+  // "Una manilla mas real, la otra se ve muy falsa": la roseta ya no ocupa el largo entero.
+  const q = { x: 10, y: 20, w: 24, h: 6 };
+  const f = manillaFormas(q);
+  assert.ok(f && f.horiz);
+  assert.ok(f.roseta.w <= q.w * 0.3 + 0.01, "la roseta es compacta, no el largo completo");
+  assert.ok(f.palanca.x > f.roseta.x, "la palanca nace en el cuello");
+  assert.ok(Math.abs((f.palanca.x + f.palanca.w) - (q.x + q.w)) < 0.01, "y llega hasta la punta");
+  for (const r of [f.roseta, f.palanca, f.cuello]) {
+    assert.ok(r.x >= q.x - 0.01 && r.y >= q.y - 0.01
+      && r.x + r.w <= q.x + q.w + 0.01 && r.y + r.h <= q.y + q.h + 0.01, "todo dentro de q");
+  }
+});
+
+test("🔩 manilla vertical: cerrada apunta hacia ABAJO (roseta arriba)", () => {
+  const f = manillaFormas({ x: 0, y: 0, w: 6, h: 24 });
+  assert.ok(f && !f.horiz);
+  assert.ok(f.roseta.y === 0 && f.roseta.h <= 24 * 0.3 + 0.01, "roseta arriba y compacta");
+  assert.ok(f.palanca.y + f.palanca.h > 23, "la palanca cuelga hasta abajo");
+});
+
+test("🔩 manilla sin lugar: null (el pintor cae al pill simple)", () => {
+  assert.equal(manillaFormas({ x: 0, y: 0, w: 5, h: 1.6 }), null);
+  assert.equal(manillaFormas(null), null);
+});

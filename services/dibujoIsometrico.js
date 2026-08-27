@@ -16,7 +16,7 @@
 // convención de dibujo técnico "cabinet" — la cara de frente queda a escala real y sin
 // deformar, que es lo que el cliente necesita para reconocer su ventana.
 
-import { planoDeVentana, pintarTexturaPerfil } from './dibujoVentana.js';
+import { planoDeVentana, pintarTexturaPerfil, manillaFormas, pintarManilla } from './dibujoVentana.js';
 
 /**
  * Fondo del perfil, por SERIE, en mm.
@@ -334,30 +334,36 @@ export function dibujarVentanaIso(doc, caja, it) {
     // No sale de Winart y no se usa para nada que se fabrique ni se cobre. Si algun dia hace
     // falta la medida real de la manilla, se saca del modelo — no de aca.
     if (hoja.manilla) {
+      // 🔩 [2026-08-26, "una manilla mas real"] En una manilla REAL solo el CUELLO toca la
+      // hoja: la palanca queda en VOLADIZO. La caja extruida anterior (roseta doble + caras
+      // laterales completas) parecia un boton gigante. Ahora: (1) la SOMBRA de la silueta
+      // sobre la hoja, en el tono del perfil; (2) el cuello cilindrico que conecta; (3) la
+      // manilla realista (roseta+cuello+palanca con su brillo) elevada hacia el observador.
       const q = hoja.manilla;
       const saliente = Math.max(1, fuga.dx * 0.5);
       const hacia = { dx: -saliente, dy: saliente };
-      const radio = Math.min(q.w, q.h) / 2;
-
-      // La roseta: la base que queda apoyada contra la hoja.
-      doc.roundedRect(q.x, q.y, q.w, q.h, radio).lineWidth(0.3).fillAndStroke('#C8CDD3', '#5A6672');
-      // El cuerpo que sale hacia el que mira, con su cara iluminada y su sombra.
-      const c = carasHacia(q, hacia);
-      poligono(doc, c.lateral, '#AEB5BC', '#5A6672');
-      poligono(doc, c.horizontal, '#8F979F', '#5A6672');
-      // Y la cara de agarre, la mas clara: es la que recibe la luz de frente.
-      const fx = q.x + hacia.dx, fy = q.y + hacia.dy;
-      doc.roundedRect(fx, fy, q.w, q.h, radio).lineWidth(0.3).fillAndStroke('#F2F4F7', '#5A6672');
-      // [2026-08-26] La PALANCA adentro de la roseta, corrida al extremo por donde se toma
-      // — la forma real, segun la foto del dueño. Sin esto parecia un tirador de mueble.
-      const horiz = q.w >= q.h;
-      const mg = Math.min(q.w, q.h) * 0.26;
-      const pl = horiz
-        ? { x: fx + q.w * 0.30, y: fy + mg, w: q.w * 0.62, h: Math.max(0.3, q.h - 2 * mg) }
-        : { x: fx + mg, y: fy + q.h * 0.30, w: Math.max(0.3, q.w - 2 * mg), h: q.h * 0.62 };
-      if (pl.w > 0.4 && pl.h > 0.4) {
-        doc.roundedRect(pl.x, pl.y, pl.w, pl.h, Math.min(pl.w, pl.h) / 2)
-           .lineWidth(0.28).fillAndStroke('#C8CDD3', '#5A6672');
+      const f = manillaFormas(q);
+      if (f) {
+        const sombra = tinte(p.color.f, 0.52);
+        const R = (r, ddx, ddy) => doc.roundedRect(r.x + ddx, r.y + ddy, r.w, r.h, Math.min(r.r, r.w / 2, r.h / 2));
+        // 1. La sombra que la palanca tira sobre la hoja (corrida al reves del realce).
+        R(f.palanca, saliente * 0.35, saliente * 0.35).lineWidth(0).fill(sombra);
+        R(f.roseta, saliente * 0.2, saliente * 0.2).lineWidth(0).fill(sombra);
+        // 2. El cuello: el unico contacto real con la hoja — un lateral corto lo conecta.
+        const c = carasHacia(f.cuello, hacia);
+        poligono(doc, c.lateral, '#8F979F', '#5A6672');
+        poligono(doc, c.horizontal, '#7A8188', '#5A6672');
+        // 3. La manilla entera, elevada.
+        pintarManilla(doc, f, hacia.dx, hacia.dy);
+      } else {
+        // Sin lugar para el detalle: el realce simple anterior.
+        const radio = Math.min(q.w, q.h) / 2;
+        doc.roundedRect(q.x, q.y, q.w, q.h, radio).lineWidth(0.3).fillAndStroke('#C8CDD3', '#5A6672');
+        const c = carasHacia(q, hacia);
+        poligono(doc, c.lateral, '#AEB5BC', '#5A6672');
+        poligono(doc, c.horizontal, '#8F979F', '#5A6672');
+        doc.roundedRect(q.x + hacia.dx, q.y + hacia.dy, q.w, q.h, radio)
+           .lineWidth(0.3).fillAndStroke('#F2F4F7', '#5A6672');
       }
     }
   }

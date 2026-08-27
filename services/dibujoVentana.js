@@ -224,6 +224,66 @@ const MANILLA_LARGO_MM = 120;
 const MANILLA_ANCHO_MM = 26;
 
 /**
+ * 🔩 [2026-08-26, 2ª correccion del dueño: "una manilla mas real, la otra se ve muy falsa"]
+ * Las FORMAS de una manilla de cremona real, dentro del rectangulo `q` que ya calculo
+ * manillaDe(): ROSETA compacta en el extremo del pivote + CUELLO + PALANCA LIBRE en voladizo
+ * con punta redondeada. El intento anterior dibujaba la roseta ocupando el largo COMPLETO
+ * con la palanca adentro — leia como una calcomania, no como algo que se toma con la mano.
+ * Devuelve null si no hay lugar ni para leerla (se cae al pill simple).
+ */
+export function manillaFormas(q) {
+  if (!q) return null;
+  const horiz = q.w >= q.h;
+  const g = horiz ? q.h : q.w;              // grosor visible
+  if (g < 2.4 || Math.max(q.w, q.h) < 7) return null;
+  if (horiz) {
+    // Cerrada apunta al costado: roseta a la IZQUIERDA, palanca hacia la derecha.
+    const roseta = { x: q.x, y: q.y, w: Math.min(g * 0.95, q.w * 0.28), h: q.h, r: g * 0.3 };
+    const ph = g * 0.58;
+    const px = roseta.x + roseta.w * 0.45;
+    const palanca = { x: px, y: q.y + (q.h - ph) / 2, w: (q.x + q.w) - px, h: ph, r: ph / 2 };
+    const cl = g * 0.44;
+    const cuello = { x: roseta.x + roseta.w / 2 - cl / 2, y: q.y + q.h / 2 - cl / 2, w: cl, h: cl, r: cl / 2 };
+    return { horiz, roseta, palanca, cuello };
+  }
+  // Vertical: cerrada apunta hacia ABAJO — roseta ARRIBA, palanca colgando.
+  const roseta = { x: q.x, y: q.y, w: q.w, h: Math.min(g * 0.95, q.h * 0.28), r: g * 0.3 };
+  const pw = g * 0.58;
+  const py = roseta.y + roseta.h * 0.45;
+  const palanca = { x: q.x + (q.w - pw) / 2, y: py, w: pw, h: (q.y + q.h) - py, r: pw / 2 };
+  const cl = g * 0.44;
+  const cuello = { x: q.x + q.w / 2 - cl / 2, y: roseta.y + roseta.h / 2 - cl / 2, w: cl, h: cl, r: cl / 2 };
+  return { horiz, roseta, palanca, cuello };
+}
+
+/**
+ * Pinta la manilla realista en `origen` (las formas de manillaFormas, opcionalmente
+ * desplazadas). El acabado es lo que la vende: palanca clara con HEBRA DE LUZ arriba y
+ * sombra fina abajo (cilindro), roseta un tono mas abajo (la palanca queda ENCIMA), cuello
+ * mas oscuro (esta en sombra bajo la palanca).
+ */
+export function pintarManilla(doc, f, dx = 0, dy = 0) {
+  const R = (r) => doc.roundedRect(r.x + dx, r.y + dy, r.w, r.h, Math.min(r.r, r.w / 2, r.h / 2));
+  R(f.roseta).lineWidth(0.32).fillAndStroke("#D8DCE1", "#4A5560");
+  R(f.palanca).lineWidth(0.32).fillAndStroke("#F1F3F5", "#4A5560");
+  R(f.cuello).lineWidth(0.28).fillAndStroke("#B9BFC6", "#4A5560");
+  // La hebra de luz y la sombra del cilindro, a lo largo de la palanca.
+  const p = f.palanca;
+  doc.lineWidth(Math.max(0.25, (f.horiz ? p.h : p.w) * 0.16));
+  if (f.horiz) {
+    doc.strokeColor("#FFFFFF").moveTo(p.x + dx + p.r, p.y + dy + p.h * 0.24)
+       .lineTo(p.x + dx + p.w - p.r, p.y + dy + p.h * 0.24).stroke();
+    doc.strokeColor("#9AA1A8").lineWidth(0.25).moveTo(p.x + dx + p.r, p.y + dy + p.h * 0.82)
+       .lineTo(p.x + dx + p.w - p.r, p.y + dy + p.h * 0.82).stroke();
+  } else {
+    doc.strokeColor("#FFFFFF").moveTo(p.x + dx + p.w * 0.24, p.y + dy + p.r)
+       .lineTo(p.x + dx + p.w * 0.24, p.y + dy + p.h - p.r).stroke();
+    doc.strokeColor("#9AA1A8").lineWidth(0.25).moveTo(p.x + dx + p.w * 0.82, p.y + dy + p.r)
+       .lineTo(p.x + dx + p.w * 0.82, p.y + dy + p.h - p.r).stroke();
+  }
+}
+
+/**
  * La MANILLA del paño que abre.
  *
  * 🔴 [2026-08-25, correccion del dueño] VA SOBRE LA HOJA, NO SOBRE EL VIDRIO. Estaba centrada
@@ -816,17 +876,13 @@ function dibujarVentana(doc, caja, it) {
       // Es una ROSETA alargada con la PALANCA adentro, corrida hacia un extremo. Dibujada
       // como un rectangulo lleno parecia un tirador de mueble; asi se lee como lo que es.
       const q = hoja.manilla;
-      const horiz = q.w >= q.h;
-      doc.roundedRect(q.x, q.y, q.w, q.h, Math.min(q.w, q.h) / 2)
-         .lineWidth(0.35).fillAndStroke("#F2F4F7", "#5A6672");
-      // La palanca: mas corta que la roseta y pegada al extremo por donde se toma.
-      const m = Math.min(q.w, q.h) * 0.26;
-      const pl = horiz
-        ? { x: q.x + q.w * 0.30, y: q.y + m, w: q.w * 0.62, h: Math.max(0.4, q.h - 2 * m) }
-        : { x: q.x + m, y: q.y + q.h * 0.30, w: Math.max(0.4, q.w - 2 * m), h: q.h * 0.62 };
-      if (pl.w > 0.4 && pl.h > 0.4) {
-        doc.roundedRect(pl.x, pl.y, pl.w, pl.h, Math.min(pl.w, pl.h) / 2)
-           .lineWidth(0.3).fillAndStroke("#C8CDD3", "#5A6672");
+      const f = manillaFormas(q);
+      if (f) {
+        pintarManilla(doc, f);
+      } else {
+        // Sin lugar para el detalle: el pill simple de siempre, mejor que nada ilegible.
+        doc.roundedRect(q.x, q.y, q.w, q.h, Math.min(q.w, q.h) / 2)
+           .lineWidth(0.35).fillAndStroke("#F2F4F7", "#5A6672");
       }
     }
 
