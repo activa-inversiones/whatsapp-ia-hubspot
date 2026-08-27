@@ -240,7 +240,7 @@ export const TOOL_DEFS = [
         'Cotiza ventanas estándar S60/SLIDING, PUERTAS ABATIBLES (PUERTA 1 hoja / PUERTA_DOBLE 2 hojas / ' +
         'PUERTA_INTERIOR) y la línea AMERICANA corredera (hasta 2,5 m por lado; escribí "corredera ' +
         'línea americana" en descripcion_producto). Para mosquiteros, plegables (incluida puerta plegable), formas ' +
-        'irregulares o líneas Andes, Zenia o Venau, NO ejecutes esta tool: llama notificar_marcelo.',
+        'irregulares o líneas Zenia o Venau, NO ejecutes esta tool: llama notificar_marcelo. (La línea Andes corredera doble riel grande y la Americana SÍ se cotizan.)',
       parameters: {
         type: 'object',
         properties: {
@@ -314,7 +314,7 @@ export const TOOL_DEFS = [
             description:
               'IGNORADO — no la pases (la serie se elige sola). La línea Americana se detecta por la ' +
               'palabra "americana" en descripcion_producto. Si el cliente pide mosquitero, plegable, ' +
-              'forma irregular o las líneas Andes, Zenia o Venau, no cotices y usa notificar_marcelo.',
+              'forma irregular o las líneas Zenia o Venau, no cotices y usa notificar_marcelo.',
           },
           color: { type: 'string', description: 'Color del perfil. Opcional.' },
           comuna: { type: 'string', description: 'Comuna de despacho/instalacion. Opcional.' },

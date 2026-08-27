@@ -16,7 +16,7 @@ test('detecta las cuatro categorías fuera del alcance', () => {
     ['Necesito una puerta plegable para el patio', 'plegable'],
     ['Busco una ventana plegable tipo acordeón', 'plegable'],
     ['Quiero una ventana circular para el living', 'forma_irregular'],
-    ['Quiero cotizar una ventana de la línea Andes', 'linea_no_soportada'],
+    ['Quiero cotizar una ventana de la línea Venau', 'linea_no_soportada'],
   ];
 
   for (const [texto, categoria] of casos) {
@@ -61,7 +61,7 @@ test('usa tipo y serie normalizados como segunda señal determinística', () => 
     'forma_irregular',
   );
   assert.equal(
-    detectarProductoFueraDeAlcance('', { serie: 'ANDES' }).categoria,
+    detectarProductoFueraDeAlcance('', { serie: 'ZENIA' }).categoria,
     'linea_no_soportada',
   );
 });
@@ -119,8 +119,9 @@ test('[2026-08-27] la línea Americana YA NO escala (se cotiza con tope en engin
   assert.equal(detectarProductoFueraDeAlcance('quiero una ventana americana').fueraDeAlcance, false);
   assert.equal(detectarProductoFueraDeAlcance('sistema americano').fueraDeAlcance, false);
   assert.equal(detectarProductoFueraDeAlcance('línea americana').fueraDeAlcance, false);
-  assert.equal(detectarProductoFueraDeAlcance('línea Andes').categoria, 'linea_no_soportada');
+  assert.equal(detectarProductoFueraDeAlcance('línea Andes').fueraDeAlcance, false); // andes: la maneja enginePricer
   assert.equal(detectarProductoFueraDeAlcance('serie Venau').categoria, 'linea_no_soportada');
+  assert.equal(detectarProductoFueraDeAlcance('línea Zenia').categoria, 'linea_no_soportada');
 });
 
 test('Ronda 2: negación con verbo NO escala — "sin incluir malla mosquitera"', () => {

@@ -88,7 +88,7 @@ export function detectarProductoFueraDeAlcance(textoCliente, normalizados = {}) 
   // abatibles con BOM real S60 (PUERTA / PUERTA_INTERIOR / PUERTA_DOBLE, verificado en
   // vivo + dato del dueño). Las puertas PLEGABLES siguen cayendo por la categoría
   // 'plegable' de abajo; mosquiteras de puerta por 'mosquitero'.
-  if (/(?:^|[ _])(?:andes|zenia|venau)(?:[ _]|$)/.test(senalEstructurada)) {  // [2026-08-27] americana SALE: la maneja enginePricer (corredera, con tope)
+  if (/(?:^|[ _])(?:zenia|venau)(?:[ _]|$)/.test(senalEstructurada)) {  // [2026-08-27] americana Y andes SALEN: las maneja enginePricer (corredera, con envelope)
     return resultado('linea_no_soportada');
   }
 
@@ -116,8 +116,8 @@ export function detectarProductoFueraDeAlcance(textoCliente, normalizados = {}) 
   // [2026-08-27] americana quitada de esta lista: la línea Americana (corredera) YA se cotiza
   // con tope de tamaño en enginePricer. Andes/Zenia/Venau siguen fuera de alcance.
   const lineaNoSoportada =
-    /\b(?:linea|serie|sistema|modelo|estilo)\s+(?:de\s+)?(?:andes|zenia|venau)\b/.test(textoDetectable) ||
-    /\b(?:andes|zenia|venau)\s+(?:linea|serie|sistema|modelo|estilo)\b/.test(textoDetectable);
+    /\b(?:linea|serie|sistema|modelo|estilo)\s+(?:de\s+)?(?:zenia|venau)\b/.test(textoDetectable) ||
+    /\b(?:zenia|venau)\s+(?:linea|serie|sistema|modelo|estilo)\b/.test(textoDetectable);
   if (lineaNoSoportada) return resultado('linea_no_soportada');
 
   return SIN_DETECCION;

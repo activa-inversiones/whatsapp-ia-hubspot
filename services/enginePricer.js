@@ -209,16 +209,65 @@ export function esLineaAmericana(item) {
       || new RegExp(`\\bamerican[ao]s?\\s+${CTX}\\b`).test(t);
 }
 
+// [2026-08-27] Línea ANDES: sólo el envelope CALIBRADO contra Winart (decisión del dueño) — doble
+// riel, 2 hojas, hoja 66 (ventanas ≥ 3,5 m²), hasta 2,5 m/lado. Todo lo demás (hoja 54 chica,
+// monorriel, 3-4 hojas, más grande) ESCALA: no está contrastado y podría cobrar mal.
+export const ANDES_MAX_MM = 2500;
+export const ANDES_MIN_AREA_M2 = 3.5;   // bajo esto el motor usa hoja 54, que NO está calibrada.
+export function esLineaAndes(item) {
+  const t = [item?.descripcion, item?.product, item?.label, item?.producto].filter(Boolean).join(" | ")
+    .replace(/_/g, " ").normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  // Mismo criterio de contexto que la americana: "andes" pegado a un sustantivo de ventana/línea.
+  // Así "línea andes"/"corredera andes" matchean pero la COMUNA "Los Andes" no (los ≠ sustantivo).
+  const CTX = '(?:linea|serie|sistema|modelo|estilo|ventanas?|ventanal(?:es)?|correderas?|corredizas?|deslizantes?)';
+  return new RegExp(`\\b${CTX}\\s+(?:de\\s+)?andes\\b`).test(t)
+      || new RegExp(`\\bandes\\s+${CTX}\\b`).test(t);
+}
+
 /**
- * Detecta nº de hojas si el cliente/foto lo indica ("3 hojas", "triple").
+ * Detecta nº de hojas si el cliente/foto lo indica ("3 hojas", "tres hojas", "triple").
  * Si no se sabe → undefined (el motor usa su default = 2 hojas / doble riel).
+ * [Codex 3a vuelta] Se toma el MÁXIMO de todas las menciones "N hoja(s)" (dígito o palabra):
+ * si el texto dice "2 y 3 hojas" no puede cotizar la de 2 (subcobro). La palabra-número solo
+ * cuenta PEGADA a "hoja" — "una corredera grande" NO es 1 hoja (lo fija el test chileno).
  */
 export function detectHojas(product) {
-  const t = String(product || "").toLowerCase();
-  const m = t.match(/(\d)\s*hoja/);
-  if (m) return Math.max(1, Number(m[1]));
-  if (/triple/.test(t)) return 3;
+  const t = String(product || "").toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const NUMP = { un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4 };
+  let max;
+  const re = /(\d+|una|uno|un|dos|tres|cuatro)\s*hojas?/g;
+  let m;
+  while ((m = re.exec(t))) {
+    const v = /^\d+$/.test(m[1]) ? Number(m[1]) : NUMP[m[1]];
+    if (Number.isFinite(v) && v >= 1) max = Math.max(max ?? 0, v);
+  }
+  if (max) return max;
+  if (/\btriple\b/.test(t)) return 3;
+  if (/\bcuadruple\b/.test(t)) return 4;
   return undefined;
+}
+
+/**
+ * [Codex/Gemini 4a vuelta] ¿El texto trae ALGÚN indicio de un nº de hojas que detectHojas podría
+ * no resolver limpio? Dígito o palabra pegada a "hoja" AUNQUE el separador no sea espacio
+ * ("3-hojas", "hojas: 3"), doble/triple/cuádruple, o una corrección ("sino"). Se usa en el envelope
+ * Andes: si hay mención pero no se confirma 2, se escala (anti-subcobro), en vez de perseguir frases.
+ */
+export function mencionaConteoHojas(texto) {
+  const t = String(texto || "").toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const NUMS = '(?:\\d+|un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|doble|triple|cuadruple|multiple)';
+  // [Gemini 5ª/6ª vuelta] El sustantivo cubre TODO el vocabulario chileno de "sección de ventana"
+  // + el typo común "oja" (hoja sin h). hoja · paño · cuerpo · sección · división · tramo · módulo.
+  // NO se incluye "riel/carril" a propósito: "doble riel" es la descripción del config VÁLIDO.
+  const NOUN = '(?:hojas?|panos?|ojas?|cuerpos?|secciones?|seccion|divisiones?|division|tramos?|modulos?)';
+  // [Gemini 7ª vuelta] Entre el número y el sustantivo puede haber adjetivos ("3 grandes hojas",
+  // "tres amplias secciones"): se permiten hasta 3 palabras intermedias. El límite de 3 evita ligar
+  // números lejanos no relacionados ("3 dormitorios con ventana de 2 hojas" NO liga el 3 con hojas).
+  const GAP = '(?:[\\s\\-–—,]+(?:\\w+[\\s\\-–—,]+){0,3})?';
+  return new RegExp(`\\b${NUMS}\\b${GAP}${NOUN}\\b`).test(t)
+      || new RegExp(`\\b${NOUN}${GAP}${NUMS}\\b`).test(t)
+      || /\b(?:triple|cuadruple)\b/.test(t)
+      || /\bsino\b/.test(t);
 }
 
 /**
@@ -705,6 +754,67 @@ export async function priceAllEngine(d, customer_id = "") {
         const razon = tipo !== "CORREDERA"
           ? `La línea Americana solo tiene corredera; una "${tipo}" americana no existe en catálogo.`
           : `Ventana Americana ${m.ancho_mm}×${m.alto_mm} mm supera el máximo cotizable automático (${AMERICANA_MAX_MM} mm por lado).`;
+        item.price_warning = `${razon} La revisa Marcelo para darte el precio exacto.`;
+        item.source = "activa_engine"; item.confidence = "manual"; item.fuera_de_alcance = true;
+        return { escalada: true };
+      }
+    }
+    // [2026-08-27] LINEA ANDES: sólo el envelope CALIBRADO contra Winart (doble riel · 2 hojas ·
+    // hoja 66, ≥3,5 m², ≤2,5 m/lado). Fuera de eso (hoja 54 chica, monorriel, 3-4 hojas, grande)
+    // ESCALA: esos configs no están contrastados y podrían cobrar mal (decisión del dueño).
+    if (esLineaAndes(item)) {
+      // [Codex 3a vuelta] Se leen los MISMOS campos que esLineaAndes (incluido item.producto en
+      // español): si la ruta se activó por "línea Andes 3 hojas" en item.producto, ese "3 hojas"
+      // tiene que contarse aquí también, o cotiza 3 como 2 (subcobro real que cazó Codex).
+      const _txt = `${item.descripcion || ""} ${item.product || ""} ${item.label || ""} ${item.producto || ""} ${d.texto_cliente || ""}`;
+      const _areaM2 = (m.ancho_mm / 1000) * (m.alto_mm / 1000);
+      // [compuerta] nº de hojas y riel se leen de TODO el texto (incluido el del cliente): un
+      // "3 hojas" ahí no puede terminar cotizado como 2 (subcobro real, lo cazó Codex).
+      // [Codex/Gemini 4a vuelta] El envelope calibrado es de EXACTAMENTE 2 hojas. Regla robusta
+      // anti-subcobro, en vez de perseguir cada frase: se cotiza SOLO si el texto confirma 2, o si
+      // NO dice NADA del nº de hojas (default calibrado = 2). Cualquier mención que no resuelva
+      // limpio a 2 — otro número, palabra ("tres"), guión ("3-hojas"), corrección/negación ("no de
+      // dos hojas", "sino de 3") — ESCALA. Los revisores cazaron esas tres variantes, una por una.
+      const _conteo = detectHojas(_txt);                      // dígito o palabra pegada a "hoja", o undefined
+      const _mencionaHojas = mencionaConteoHojas(_txt);       // ¿hay ALGÚN indicio de un nº de hojas?
+      const _negacionHojas = /\bno\s+(?:de\s+|es\s+|sea\s+|son\s+)?(?:\d+|un|uno|una|dos|tres|cuatro)\s*hojas?\b/i.test(_txt)
+        || /\bsino\b/i.test(_txt);
+      const _dosHojasOk = !_negacionHojas && (_conteo === 2 || (_conteo === undefined && !_mencionaHojas));
+      // monorriel, salvo NEGACIÓN ("que NO sea monorriel"): no escalar algo que sí es cotizable.
+      const _esMono = /\b(?:monorriel|mono\s*riel|un\s*riel)\b/i.test(_txt)
+        && !/\b(?:no|sin|que\s+no)\s+(?:sea\s+|es\s+)?(?:monorriel|mono\s*riel|un\s*riel)\b/i.test(_txt);
+      // hoja 54 (chica, sin calibrar): si el cliente la pide explícito, se escala (no se fuerza 66).
+      const _pideHoja54 = /\bhoja\s*54\b|\bh\s*54\b|\b54\s*mm\b/i.test(_txt);
+      // [Codex 6a/8a vuelta] Config COMPUESTO: el envelope válido es 2 hojas corredizas LIMPIAS y se
+      // describe solo con "hojas"/"doble riel"/medidas. Cualquier otra palabra señala un 2+1, 3 paños,
+      // triple riel, etc. — más perfiles que lo calibrado ⇒ subcobro. Se escala ante:
+      //  · un sustantivo de sección distinto de "hoja" (paño/cuerpo/sección/división/tramo/módulo),
+      //  · un elemento FIJO por palabra ("fija/fijo") o por descripción ("sin apertura", "no abre"),
+      //  · 3+ rieles ("tres rieles", "3 rieles", "triple/cuádruple riel"). "doble riel"/"2 rieles" NO.
+      const _txtN = _txt.normalize('NFD').replace(/[̀-ͯ]/g, '');
+      // [Gemini 9a] "panel/paneles" es sección (boundary seguro ante "termopanel"). "vidrio" NO se
+      // incluye: es el CRISTAL, no una hoja — casi toda cotización lo menciona ("5+12+5","termopanel")
+      // y escalar por eso rompería el auto-quote. "3 vidrios" = triple vidriado, no 3 hojas.
+      const _configCompuesto =
+        /\b(?:panos?|paneles?|panel|cuerpos?|secciones?|seccion|divisiones?|division|tramos?|modulos?)\b/i.test(_txtN)
+        || /\bfij[ao]s?\b/i.test(_txtN)
+        || /\bsin\s+apertura\b|\bno\s+abren?\b/i.test(_txtN)
+        || /\b(?:tres|cuatro|cinco|seis|siete|ocho|nueve|[3-9])\s+rieles?\b/i.test(_txtN)
+        || /\b(?:triple|cuadruple)\s+riel/i.test(_txtN);
+      const _enEnvelope = tipo === "CORREDERA" && _dosHojasOk && !_esMono && !_pideHoja54 && !_configCompuesto
+        && _areaM2 >= ANDES_MIN_AREA_M2 && m.ancho_mm <= ANDES_MAX_MM && m.alto_mm <= ANDES_MAX_MM;
+      if (_enEnvelope) {
+        serie = "ANDES";
+      } else {
+        const razon = tipo !== "CORREDERA" ? `La línea Andes solo tiene corredera.`
+          : _esMono ? `El Andes monorriel todavía no está en el cotizador automático.`
+          : _configCompuesto ? `Esa Andes no es una corredera simple de 2 hojas (lleva paño fijo, más secciones o riel distinto); la reviso con Marcelo para el precio exacto.`
+          : !_dosHojasOk ? (_conteo && _conteo !== 2
+              ? `El Andes de ${_conteo} hojas todavía no está en el cotizador automático.`
+              : `No me quedó claro el número de hojas; lo reviso con Marcelo para darte el precio exacto.`)
+          : _pideHoja54 ? `El Andes hoja 54 (económica) todavía no está en el cotizador automático.`
+          : _areaM2 < ANDES_MIN_AREA_M2 ? `Esa ventana Andes es de las chicas (hoja 54), que reviso aparte.`
+          : `Ventana Andes ${m.ancho_mm}×${m.alto_mm} mm supera el máximo cotizable automático (${ANDES_MAX_MM} mm por lado).`;
         item.price_warning = `${razon} La revisa Marcelo para darte el precio exacto.`;
         item.source = "activa_engine"; item.confidence = "manual"; item.fuera_de_alcance = true;
         return { escalada: true };

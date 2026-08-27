@@ -96,7 +96,9 @@ test("calcular_cotizacion documenta los productos fuera de alcance y su escalaci
   assert.match(texto, /notificar_marcelo/i);
 });
 
-test("calcularCotizacion rechaza serie ANDES sin tocar la red", async () => {
+test("calcularCotizacion rechaza una línea no soportada (VENAU) sin tocar la red", async () => {
+  // [2026-08-27] ANDES y AMERICANA ya NO se rechazan acá (las enruta enginePricer con su envelope).
+  // El guardia sigue frenando las líneas que de verdad no existen en el cotizador (Zenia/Venau).
   const fetchOriginal = globalThis.fetch;
   let fetchCalls = 0;
   globalThis.fetch = async () => {
@@ -109,7 +111,7 @@ test("calcularCotizacion rechaza serie ANDES sin tocar la red", async () => {
       () =>
         calcularCotizacion({
           tipo: 'CORREDERA',
-          serie: 'ANDES',
+          serie: 'VENAU',
           ancho_mm: 1500,
           alto_mm: 1200,
           glass_id: 34,

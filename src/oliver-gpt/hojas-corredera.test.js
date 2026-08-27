@@ -98,6 +98,15 @@ test('🔒 detectHojas entiende chileno: "3 hojas", "triple", y no inventa', () 
   assert.equal(detectHojas('una corredera grande'), undefined);
 });
 
+test('🔒 [Codex 3a] detectHojas: palabras-número, cuádruple y MÁXIMO (anti-subcobro)', () => {
+  assert.equal(detectHojas('corredera línea andes tres hojas'), 3);
+  assert.equal(detectHojas('ventana de cuatro hojas'), 4);
+  assert.equal(detectHojas('corredera cuádruple'), 4);
+  assert.equal(detectHojas('una hoja monorriel'), 1);       // "una hoja" sí es 1 (pegado a hoja)
+  assert.equal(detectHojas('2 fijas y 3 hojas corredizas'), 3); // toma el máximo, no la primera
+  assert.equal(detectHojas('dos ventanas para la casa'), undefined); // "dos" no pegado a hoja
+});
+
 /* =========================================================================
  * LA PREGUNTA Y EL AVISO EXISTEN EN EL WEBHOOK — Y SE MANDAN
  * ========================================================================= */
