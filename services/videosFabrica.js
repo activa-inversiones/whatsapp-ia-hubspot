@@ -28,6 +28,13 @@
  * Orden = prioridad. Primero lo que mejor explica quienes somos.
  */
 export const CATALOGO_VIDEOS = [
+  // [2026-08-27] Pedido del dueño ("que Oliver envíe el mejorado"): su video de presentación
+  // (él a cámara + sello ISO), con color y luz mejorados. Va PRIMERO: es el que mejor presenta.
+  {
+    id: 'presentacion',
+    archivo: 'PRESENTACION MARCELO ACTIVA MEJORADO.mp4',
+    titulo: 'la presentación de nuestra empresa — con Marcelo, el dueño',
+  },
   {
     id: 'fabrica',
     archivo: 'V2 FABRICA DE VENTANAS ACTIVA.mp4',
