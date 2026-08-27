@@ -240,7 +240,7 @@ export const TOOL_DEFS = [
         'Cotiza ventanas estándar S60/SLIDING, PUERTAS ABATIBLES (PUERTA 1 hoja / PUERTA_DOBLE 2 hojas / ' +
         'PUERTA_INTERIOR) y la línea AMERICANA corredera (hasta 2,5 m por lado; escribí "corredera ' +
         'línea americana" en descripcion_producto). Para mosquiteros, plegables (incluida puerta plegable), formas ' +
-        'irregulares o líneas Zenia o Venau, NO ejecutes esta tool: llama notificar_marcelo. (La línea Andes corredera doble riel grande y la Americana SÍ se cotizan.)',
+        'irregulares o líneas Andes, Zenia o Venau, NO ejecutes esta tool: llama notificar_marcelo. (La Americana SÍ se cotiza.)',
       parameters: {
         type: 'object',
         properties: {
@@ -314,7 +314,7 @@ export const TOOL_DEFS = [
             description:
               'IGNORADO — no la pases (la serie se elige sola). La línea Americana se detecta por la ' +
               'palabra "americana" en descripcion_producto. Si el cliente pide mosquitero, plegable, ' +
-              'forma irregular o las líneas Zenia o Venau, no cotices y usa notificar_marcelo.',
+              'forma irregular o las líneas Andes, Zenia o Venau, no cotices y usa notificar_marcelo.',
           },
           color: { type: 'string', description: 'Color del perfil. Opcional.' },
           comuna: { type: 'string', description: 'Comuna de despacho/instalacion. Opcional.' },
@@ -865,6 +865,10 @@ export async function runTool(name, input = {}, ctx = {}) {
           descripcion: input.descripcion_producto || '' }], // [LOTE2] sufijo mm = literal aguas abajo · [Ronda 2] descripcion → guarda de alcance
         comuna: input.comuna || '',
         default_color: input.color || '',
+        // [Codex 2026-08-27] Esta ruta omitía las palabras del cliente y por eso una "línea Andes"
+        // pedida solo en el chat se colaba al motor como SLIDING (producto equivocado), esquivando
+        // el apagado. Se pasan igual que en la ruta principal.
+        texto_cliente: [ctx.textoCliente, input.descripcion_producto].filter(Boolean).join(' \n '),
       };
       const r = await priceAllEngine(d);
       const it = d.items[0] || {};

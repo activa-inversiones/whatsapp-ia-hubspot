@@ -119,9 +119,31 @@ test('[2026-08-27] la línea Americana YA NO escala (se cotiza con tope en engin
   assert.equal(detectarProductoFueraDeAlcance('quiero una ventana americana').fueraDeAlcance, false);
   assert.equal(detectarProductoFueraDeAlcance('sistema americano').fueraDeAlcance, false);
   assert.equal(detectarProductoFueraDeAlcance('línea americana').fueraDeAlcance, false);
-  assert.equal(detectarProductoFueraDeAlcance('línea Andes').fueraDeAlcance, false); // andes: la maneja enginePricer
   assert.equal(detectarProductoFueraDeAlcance('serie Venau').categoria, 'linea_no_soportada');
   assert.equal(detectarProductoFueraDeAlcance('línea Zenia').categoria, 'linea_no_soportada');
+});
+
+test('🔴 [2026-08-27] la línea ANDES VUELVE a escalar (auto-cotizado apagado tras el barrido)', () => {
+  // Se abrió y se apagó el mismo día: 96 de 98 entradas adversariales se colaban como "2 hojas"
+  // siendo de 3-4 o con paño fijo (subcobro medido hasta $155.000). Primera línea de defensa.
+  assert.equal(detectarProductoFueraDeAlcance('línea Andes').categoria, 'linea_no_soportada');
+  assert.equal(detectarProductoFueraDeAlcance('corredera línea andes de 3 hojitas').categoria, 'linea_no_soportada');
+  assert.equal(detectarProductoFueraDeAlcance('', { serie: 'ANDES' }).categoria, 'linea_no_soportada');
+  // Pero la COMUNA Los Andes no es un producto: no debe escalar por el despacho.
+  assert.equal(detectarProductoFueraDeAlcance('despacho a Los Andes').fueraDeAlcance, false);
+  // [Codex] ...ni siquiera cuando el pedido SÍ es cotizable: una americana con despacho a Los Andes
+  // matcheaba el patrón invertido "andes linea" y escalaba una venta perfectamente automatizable.
+  assert.equal(detectarProductoFueraDeAlcance('despacho a Los Andes linea americana').fueraDeAlcance, false);
+});
+
+test('🔴 [Codex] el lookbehind de la comuna NO puede apagar Zenia/Venau (no son comunas)', () => {
+  // Regresión introducida al poner el lookbehind en la alternancia compartida: "las Zenia línea"
+  // y "los Venau modelo" dejaban de detectarse. El lookbehind aplica SOLO a "andes".
+  assert.equal(detectarProductoFueraDeAlcance('las Zenia linea').categoria, 'linea_no_soportada');
+  assert.equal(detectarProductoFueraDeAlcance('los Venau modelo').categoria, 'linea_no_soportada');
+  assert.equal(detectarProductoFueraDeAlcance('linea zenia').categoria, 'linea_no_soportada');
+  // Y "las Andes" no es la comuna (esa es "Los Andes"): sigue escalando como línea.
+  assert.equal(detectarProductoFueraDeAlcance('las andes linea').categoria, 'linea_no_soportada');
 });
 
 test('Ronda 2: negación con verbo NO escala — "sin incluir malla mosquitera"', () => {

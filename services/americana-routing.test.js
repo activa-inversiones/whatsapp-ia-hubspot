@@ -98,8 +98,13 @@ test('🔴 [compuerta] "corredera para la cocina americana" NO se enruta a AMERI
 });
 
 
-// ── [2026-08-27] Envelope del ANDES (decisión del dueño: solo lo calibrado) ──────────────
-import { esLineaAndes, ANDES_MAX_MM, ANDES_MIN_AREA_M2 } from './enginePricer.js';
+// ── [2026-08-27] LÍNEA ANDES — AUTO-COTIZADO APAGADO (decisión del dueño) ─────────────
+// El envelope de 2 hojas se abrió y se APAGÓ el mismo día: un barrido adversarial de 98 entradas
+// de cliente chilenas midió que 96 se colaban como "2 hojas" siendo de 3-4 hojas o con paño fijo.
+// Subcobro medido en la clase peor (4 hojas cotizadas como 2, 2200x2000): $139.000-$155.000.
+// Causa raíz: el nº de hojas se ADIVINA por regex del texto libre. Se reabre cuando el LLM lo
+// DECLARE en un campo estructurado. Estos tests fijan que, hasta entonces, TODA Andes escala.
+import { esLineaAndes, ANDES_MAX_MM, ANDES_MIN_AREA_M2, ANDES_AUTO_COTIZA, detectHojas, mencionaConteoHojas } from './enginePricer.js';
 
 test('esLineaAndes detecta la línea, NO la comuna Los Andes', () => {
   assert.equal(esLineaAndes({ descripcion: 'corredera línea andes' }), true);
@@ -107,195 +112,109 @@ test('esLineaAndes detecta la línea, NO la comuna Los Andes', () => {
   assert.equal(ANDES_MAX_MM, 2500); assert.equal(ANDES_MIN_AREA_M2, 3.5);
 });
 
-test('🎯 andes doble riel 2 hojas ≥3,5m² ≤2,5m: enruta a serie=ANDES', async () => {
-  await conMotorStub(async (enviados) => {
-    await priceAllEngine({ comuna: 'Temuco', items: [{ measures: '2000x2000mm', product: 'CORREDERA', descripcion: 'línea andes', qty: 1 }] });
-    assert.ok(enviados.some((b) => b.serie === 'ANDES'), `esperaba serie=ANDES; llegó ${JSON.stringify(enviados.map((e) => e.serie))}`);
-  });
+test('KILL-SWITCH: el auto-cotizado de ANDES está APAGADO', () => {
+  assert.equal(ANDES_AUTO_COTIZA, false,
+    'Si esto es true, el envelope volvió a cotizar por regex: exigir que el nº de hojas venga DECLARADO.');
 });
 
-test('🔴 andes chica (<3,5m², hoja 54 sin calibrar) ESCALA, no cotiza', async () => {
+// Toda Andes escala: no se manda nada al motor y queda marcada para revisión manual.
+async function assertEscalaAndes(descripcion, texto_cliente) {
   await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '1200x1000mm', product: 'CORREDERA', descripcion: 'corredera andes', qty: 1 }] };
+    const d = { comuna: 'Temuco', texto_cliente: texto_cliente || '', items: [{ measures: '2200x2000mm', product: 'CORREDERA', descripcion, qty: 1 }] };
     await priceAllEngine(d);
-    assert.equal(enviados.length, 0);
-    assert.equal(d.items[0].fuera_de_alcance, true);
+    assert.equal(enviados.length, 0, 'NO debe cotizar automatico: ' + descripcion);
+    assert.equal(d.items[0].confidence, 'manual', 'debe quedar para revision manual: ' + descripcion);
+  });
+}
+
+test('el caso que ANTES cotizaba (canónico 2 hojas doble riel) ahora ESCALA', async () => {
+  await assertEscalaAndes('corredera línea andes doble riel');
+  await assertEscalaAndes('corredera línea andes 2 hojas');
+  await assertEscalaAndes('línea andes');
+});
+
+test('[barrido adversarial] las frases que evadían el envelope ahora TODAS escalan', async () => {
+  // Muestra representativa de las 96 evasiones medidas (3 hojas, 4 hojas y paño fijo encubierto).
+  const EVASIONES = [
+    'corredera andes de 3 hojitas corredizas, doble riel',        // el diminutivo rompia el regex
+    'ventana línea andes de 3 luces, corredera',                  // sinonimo de vidrieria
+    'corredera andes con 4 postigos que corren',                  // chilenismo
+    'corredera andes dividida en 4 partes',                       // "parte" no estaba en la lista
+    'línea andes, 3 panitos que corren en doble riel',            // diminutivo de "pano"
+    'corredera andes en XOX',                                     // notacion de instalador
+    'corredera andes, dos que corren y un lado muerto',           // fijo sin la palabra "fijo"
+    'corredera andes de 2 hojas y al lado un vidrio pegado que queda quieto',
+    'línea andes 2 hojas corredizas y una parte de vidrio que no se abre',
+    'corredera andes de 3 modulitos, doble riel',
+    'necesito línea andes de 4 carros corredizos',
+    'corredera andes con banderola arriba',
+  ];
+  for (const frase of EVASIONES) await assertEscalaAndes(frase);
+});
+
+test('🔴 [Codex] la COMUNA "Los Andes" no escala una AMERICANA cotizable (falso positivo)', async () => {
+  // "despacho a Los Andes línea americana" matcheaba el patrón invertido "andes linea" y escalaba
+  // una americana perfectamente cotizable. El lookbehind descarta el "los/las" de la comuna.
+  assert.equal(esLineaAndes({ descripcion: 'despacho a Los Andes linea americana' }), false);
+  assert.equal(esLineaAndes({ descripcion: 'vivo en los andes' }), false);
+  // pero la línea real se sigue cazando, en los dos órdenes
+  assert.equal(esLineaAndes({ descripcion: 'corredera linea andes' }), true);
+  assert.equal(esLineaAndes({ descripcion: 'andes linea' }), true);
+  await conMotorStub(async (enviados) => {
+    await priceAllEngine({ comuna: 'Los Andes', items: [{ measures: '2200x2000mm', product: 'CORREDERA', descripcion: 'despacho a Los Andes linea americana', qty: 1 }] });
+    assert.ok(enviados.some((b) => b.serie === 'AMERICANA'), 'la americana debe cotizar igual');
   });
 });
 
-test('🔴 andes monorriel (sin calibrar) ESCALA', async () => {
+test('🔴 [Codex] la línea Andes pedida SOLO en el texto del cliente también escala (no se cuela a SLIDING)', async () => {
+  // Antes: si el LLM no copiaba "andes" al item, se cotizaba como SLIDING — otra línea. Sobrecobra,
+  // pero es el producto equivocado y contradice el apagado.
   await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '2000x2000mm', product: 'CORREDERA', descripcion: 'corredera andes monorriel', qty: 1 }] };
+    const d = { comuna: 'Temuco', texto_cliente: 'quiero una linea andes por favor', items: [{ measures: '2200x2000mm', product: 'CORREDERA', descripcion: 'corredera', qty: 1 }] };
     await priceAllEngine(d);
-    assert.equal(enviados.length, 0);
-    assert.equal(d.items[0].fuera_de_alcance, true);
+    assert.equal(enviados.length, 0, 'no cotiza ninguna serie');
+    assert.equal(d.items[0].confidence, 'manual');
+  });
+  // ...pero una corredera normal (sin andes) sigue cotizando como SLIDING
+  await conMotorStub(async (enviados) => {
+    await priceAllEngine({ comuna: 'Temuco', texto_cliente: 'quiero una corredera grande', items: [{ measures: '2200x2000mm', product: 'CORREDERA', descripcion: 'corredera', qty: 1 }] });
+    assert.ok(enviados.some((b) => b.serie === 'SLIDING'), 'SLIDING normal no se toca');
   });
 });
 
-test('🔴 andes de 3 hojas (sin calibrar) ESCALA', async () => {
+test('🔴 [Codex] la palabra "Andes" a secas tampoco se cuela a SLIDING (última ruta)', async () => {
+  // descripcion_producto:"Andes" no matcheaba el patrón con contexto y cotizaba como SLIDING: otra
+  // línea. Con el apagado la detección es amplia — basta la palabra, salvo la comuna "Los Andes".
   await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '2400x2000mm', product: 'CORREDERA', descripcion: 'corredera andes 3 hojas', qty: 1 }] };
+    const d = { comuna: 'Temuco', items: [{ measures: '2200x2000mm', product: 'CORREDERA', descripcion: 'Andes', qty: 1 }] };
     await priceAllEngine(d);
-    assert.equal(enviados.length, 0);
-    assert.equal(d.items[0].fuera_de_alcance, true);
+    assert.equal(enviados.length, 0, 'no cotiza ninguna serie');
+    assert.equal(d.items[0].confidence, 'manual');
+  });
+  // ...pero la COMUNA no es un producto: una americana con despacho a Los Andes sigue cotizando
+  await conMotorStub(async (enviados) => {
+    await priceAllEngine({ comuna: 'Los Andes', items: [{ measures: '2200x2000mm', product: 'CORREDERA', descripcion: 'despacho a Los Andes linea americana', qty: 1 }] });
+    assert.ok(enviados.some((b) => b.serie === 'AMERICANA'), 'la americana cotiza igual');
+  });
+  // ...y una corredera normal sigue yendo a SLIDING
+  await conMotorStub(async (enviados) => {
+    await priceAllEngine({ comuna: 'Temuco', items: [{ measures: '2200x2000mm', product: 'CORREDERA', descripcion: 'corredera', qty: 1 }] });
+    assert.ok(enviados.some((b) => b.serie === 'SLIDING'), 'SLIDING intacta');
   });
 });
 
-test('🔴 andes más grande que 2,5m/lado ESCALA', async () => {
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '3000x2000mm', product: 'CORREDERA', descripcion: 'línea andes', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0);
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
+test('detectHojas entiende dígitos, palabras y toma el MÁXIMO (se usará en el fix estructurado)', () => {
+  assert.equal(detectHojas('corredera de 3 hojas'), 3);
+  assert.equal(detectHojas('corredera línea andes tres hojas'), 3);
+  assert.equal(detectHojas('ventana de cuatro hojas'), 4);
+  assert.equal(detectHojas('2 fijas y 3 hojas corredizas'), 3);
+  assert.equal(detectHojas('una corredera grande'), undefined);
 });
 
-test('🔴 [compuerta] "3 hojas" SOLO en texto_cliente escala (no cotiza andes como 2 hojas = subcobro)', async () => {
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', texto_cliente: 'quiero de 3 hojas', items: [{ measures: '2400x2000mm', product: 'CORREDERA', descripcion: 'línea andes', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0, 'no cotiza: 3 hojas no está calibrado');
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
-});
-
-test('🔴 [compuerta] "que NO sea monorriel" NO escala en falso (es doble riel, cotizable)', async () => {
-  await conMotorStub(async (enviados) => {
-    await priceAllEngine({ comuna: 'Temuco', texto_cliente: 'que no sea monorriel', items: [{ measures: '2000x2000mm', product: 'CORREDERA', descripcion: 'línea andes', qty: 1 }] });
-    assert.ok(enviados.some((b) => b.serie === 'ANDES'), 'la negación no debe frenar un doble riel válido');
-  });
-});
-
-test('🔴 [compuerta] "hoja 54" explícita escala (perfil chico sin calibrar)', async () => {
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '2000x2000mm', product: 'CORREDERA', descripcion: 'línea andes hoja 54', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0);
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
-});
-
-test('🔴 [Codex 3a vuelta] "3 hojas" en item.producto (español) escala, no cotiza como 2 (subcobro)', async () => {
-  // esLineaAndes lee item.producto; el contador de hojas debe leer el MISMO campo, o la ruta
-  // se activa por "3 hojas" pero cotiza 2. Antes de este arreglo, enviados.length era 1 (subcobro).
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '2400x2000mm', product: 'CORREDERA', producto: 'corredera línea Andes 3 hojas', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0, 'no cotiza: 3 hojas en item.producto no está calibrado');
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
-});
-
-test('🔴 [Codex 3a vuelta] "tres hojas" (palabra) escala, no cotiza como 2 (subcobro)', async () => {
-  // detectHojas antes solo leía dígitos: "tres hojas" caía a 2 y cotizaba de menos.
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '2400x2000mm', product: 'CORREDERA', descripcion: 'línea andes tres hojas', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0, 'no cotiza: "tres hojas" no está calibrado');
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
-});
-
-test('🔴 [Codex 3a vuelta] corrección "no de 2 hojas, sino de 3" escala (conteo ambiguo)', async () => {
-  // El "3" va elidido (sin "hoja"); detectHojas se queda con el "2". La guarda de ambigüedad escala.
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', texto_cliente: 'no de 2 hojas, sino de 3', items: [{ measures: '2400x2000mm', product: 'CORREDERA', descripcion: 'línea andes', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0, 'no cotiza: el número de hojas es ambiguo');
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
-});
-
-test('🔴 [Codex 4a vuelta] "3-hojas" con guión escala (detectHojas no lo parsea, pero se menciona)', async () => {
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '2400x2000mm', product: 'CORREDERA', descripcion: 'línea andes 3-hojas', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0, 'no cotiza: "3-hojas" se menciona pero no confirma 2');
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
-});
-
-test('🔴 [Gemini 4a vuelta] "no de dos hojas" (palabra negada) escala, no cotiza como 2', async () => {
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', texto_cliente: 'no de dos hojas', items: [{ measures: '2400x2000mm', product: 'CORREDERA', descripcion: 'línea andes', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0, 'no cotiza: negación con palabra-número');
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
-});
-
-test('🔴 [Gemini 5a vuelta] "3 paños" (sinónimo chileno) escala, no cotiza como 2', async () => {
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '2400x2000mm', product: 'CORREDERA', descripcion: 'corredera andes de 3 paños', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0, 'no cotiza: "3 paños" no confirma 2');
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
-});
-
-test('🔴 [Gemini 6a vuelta] "3 cuerpos" (sinónimo chileno) escala, no cotiza como 2', async () => {
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '2400x2000mm', product: 'CORREDERA', descripcion: 'corredera línea andes de 3 cuerpos', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0, 'no cotiza: "3 cuerpos" no confirma 2');
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
-});
-
-test('🔴 [Gemini 7a vuelta] "3 grandes hojas" (adjetivo intermedio) escala, no cotiza como 2', async () => {
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '2400x2000mm', product: 'CORREDERA', descripcion: 'corredera línea andes de 3 grandes hojas', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0, 'no cotiza: "3 grandes hojas" son 3');
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
-});
-
-test('🔴 [Codex 6a vuelta] "2 hojas + 1 fija" (2+1 = 3 secciones) escala, no cotiza como 2 hojas', async () => {
-  // El envelope es 2 hojas CORREDIZAS sin paño fijo; un fijo adicional agrega perfiles ⇒ subcobro.
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '2400x2000mm', product: 'CORREDERA', descripcion: 'corredera línea andes 2 hojas y una fija', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0, 'no cotiza: lleva un paño fijo adicional');
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
-});
-
-test('🔴 [Gemini 8a vuelta] "tres rieles" (triple riel) escala; "doble riel" NO', async () => {
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '2400x2000mm', product: 'CORREDERA', descripcion: 'corredera línea andes tres rieles', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0, 'no cotiza: tres rieles = 3+ hojas');
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
-});
-
-test('🔴 [Codex 8a vuelta] paño fijo descrito SIN la palabra "fijo" ("un paño lateral sin apertura") escala', async () => {
-  await conMotorStub(async (enviados) => {
-    const d = { comuna: 'Temuco', items: [{ measures: '2400x2000mm', product: 'CORREDERA', descripcion: 'corredera línea andes, dos hojas móviles y un paño lateral sin apertura', qty: 1 }] };
-    await priceAllEngine(d);
-    assert.equal(enviados.length, 0, 'no cotiza: es un 2+1 (2 corredizas + 1 fijo)');
-    assert.equal(d.items[0].fuera_de_alcance, true);
-  });
-});
-
-test('🔴 [Gemini 9a vuelta] "3 paneles" escala; pero "vidrio termopanel 5+12+5" NO (vidrio ≠ sección)', async () => {
-  await conMotorStub(async (enviados) => {
-    const d1 = { comuna: 'Temuco', items: [{ measures: '2400x2000mm', product: 'CORREDERA', descripcion: 'corredera línea andes 3 paneles', qty: 1 }] };
-    await priceAllEngine(d1);
-    assert.equal(d1.items[0].fuera_de_alcance, true, '"3 paneles" escala');
-  });
-  await conMotorStub(async (enviados) => {
-    const d2 = { comuna: 'Temuco', items: [{ measures: '2000x2000mm', product: 'CORREDERA', descripcion: 'corredera línea andes doble riel con vidrio termopanel 5+12+5', qty: 1 }] };
-    await priceAllEngine(d2);
-    assert.ok(enviados.some((b) => b.serie === 'ANDES'), 'mencionar el vidrio/termopanel NO debe escalar');
-  });
-});
-
-test('🎯 [Codex 4a vuelta] "línea andes doble riel" (canónico, sin nº de hojas) SÍ enruta al envelope', async () => {
-  // "doble riel" no debe leerse como conteo de hojas: es la descripción del config calibrado.
-  await conMotorStub(async (enviados) => {
-    await priceAllEngine({ comuna: 'Temuco', items: [{ measures: '2000x2000mm', product: 'CORREDERA', descripcion: 'corredera línea andes doble riel', qty: 1 }] });
-    assert.ok(enviados.some((b) => b.serie === 'ANDES'), 'el canónico doble riel debe cotizar');
-  });
+test('mencionaConteoHojas reconoce sinónimos, pero NO "doble riel" ni el vidrio', () => {
+  assert.equal(mencionaConteoHojas('3 grandes hojas'), true);
+  assert.equal(mencionaConteoHojas('3 paños'), true);
+  assert.equal(mencionaConteoHojas('3 cuerpos'), true);
+  assert.equal(mencionaConteoHojas('doble riel'), false);
+  assert.equal(mencionaConteoHojas('corredera termopanel 4+12+4'), false);
 });

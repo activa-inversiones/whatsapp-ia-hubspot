@@ -88,7 +88,7 @@ export function detectarProductoFueraDeAlcance(textoCliente, normalizados = {}) 
   // abatibles con BOM real S60 (PUERTA / PUERTA_INTERIOR / PUERTA_DOBLE, verificado en
   // vivo + dato del dueño). Las puertas PLEGABLES siguen cayendo por la categoría
   // 'plegable' de abajo; mosquiteras de puerta por 'mosquitero'.
-  if (/(?:^|[ _])(?:zenia|venau)(?:[ _]|$)/.test(senalEstructurada)) {  // [2026-08-27] americana Y andes SALEN: las maneja enginePricer (corredera, con envelope)
+  if (/(?:^|[ _])(?:andes|zenia|venau)(?:[ _]|$)/.test(senalEstructurada)) {  // [2026-08-27] americana SALE (la maneja enginePricer). ANDES VUELVE: ver KILL-SWITCH en enginePricer.
     return resultado('linea_no_soportada');
   }
 
@@ -116,7 +116,12 @@ export function detectarProductoFueraDeAlcance(textoCliente, normalizados = {}) 
   // [2026-08-27] americana quitada de esta lista: la línea Americana (corredera) YA se cotiza
   // con tope de tamaño en enginePricer. Andes/Zenia/Venau siguen fuera de alcance.
   const lineaNoSoportada =
-    /\b(?:linea|serie|sistema|modelo|estilo)\s+(?:de\s+)?(?:zenia|venau)\b/.test(textoDetectable) ||
+    /\b(?:linea|serie|sistema|modelo|estilo)\s+(?:de\s+)?(?:andes|zenia|venau)\b/.test(textoDetectable) ||
+    // [Codex 2026-08-27] Lookbehind: "despacho a Los Andes línea americana" matcheaba "andes linea"
+    // y escalaba una AMERICANA cotizable. El "los" delata la COMUNA Los Andes, no la línea.
+    // El lookbehind aplica SOLO a "andes": Zenia y Venau no son comunas y ponerlo en la alternancia
+    // compartida hacía que "las Zenia línea..." dejara de detectarse (regresión que cazó Codex).
+    /(?<!\blos\s)\bandes\s+(?:linea|serie|sistema|modelo|estilo)\b/.test(textoDetectable) ||
     /\b(?:zenia|venau)\s+(?:linea|serie|sistema|modelo|estilo)\b/.test(textoDetectable);
   if (lineaNoSoportada) return resultado('linea_no_soportada');
 

@@ -214,14 +214,52 @@ export function esLineaAmericana(item) {
 // monorriel, 3-4 hojas, más grande) ESCALA: no está contrastado y podría cobrar mal.
 export const ANDES_MAX_MM = 2500;
 export const ANDES_MIN_AREA_M2 = 3.5;   // bajo esto el motor usa hoja 54, que NO está calibrada.
-export function esLineaAndes(item) {
-  const t = [item?.descripcion, item?.product, item?.label, item?.producto].filter(Boolean).join(" | ")
+
+// 🔴 KILL-SWITCH (2026-08-27, decisión del dueño). El auto-cotizado de ANDES está APAGADO: toda
+// Andes ESCALA a revisión manual, como antes de abrirla.
+// POR QUÉ: un barrido adversarial de 98 entradas de cliente chilenas midió que 96 se colaban al
+// envelope de 2 hojas siendo de 3-4 hojas o llevando paño fijo. Ejemplos reales que evadían:
+// "3 hojitas" (el diminutivo rompe el regex), "3 luces", "4 postigos", "dividida en 4 partes",
+// "2 hojas y un vidrio pegado que queda quieto", "un lado muerto", "XOX". Subcobro medido en la
+// clase peor (4 hojas cotizadas como 2, vano 2200×2000): $139.000–$155.000 por ventana (12–14%).
+// CAUSA RAÍZ: el nº de hojas se ADIVINA con regex sobre el texto libre del cliente; no existe un
+// campo estructurado. Ampliar la lista de sinónimos es un pozo sin fondo (cada vuelta de compuerta
+// encontró uno nuevo).
+// CÓMO SE REABRE: cuando el LLM DECLARE hojas y paño fijo en un campo estructurado y el envelope
+// exija esa confirmación positiva (hojas === 2 && sin fijos) en vez de inferirla del texto. Recién
+// ahí poner true, con la compuerta cruzada completa. NO reabrir sólo agregando palabras al regex.
+export const ANDES_AUTO_COTIZA = false;
+export function esLineaAndesTexto(texto) {
+  const t = String(texto || "")
     .replace(/_/g, " ").normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   // Mismo criterio de contexto que la americana: "andes" pegado a un sustantivo de ventana/línea.
-  // Así "línea andes"/"corredera andes" matchean pero la COMUNA "Los Andes" no (los ≠ sustantivo).
+  // Así "línea andes"/"corredera andes" matchean pero la COMUNA "Los Andes" no.
   const CTX = '(?:linea|serie|sistema|modelo|estilo|ventanas?|ventanal(?:es)?|correderas?|corredizas?|deslizantes?)';
-  return new RegExp(`\\b${CTX}\\s+(?:de\\s+)?andes\\b`).test(t)
-      || new RegExp(`\\bandes\\s+${CTX}\\b`).test(t);
+  // [Codex 2026-08-27] El patrón INVERTIDO ("andes" + sustantivo) daba falso positivo con la comuna
+  // cuando el sustantivo venía después: "despacho a Los Andes línea americana" matcheaba "andes linea"
+  // y escalaba una AMERICANA perfectamente cotizable. El lookbehind descarta el "los" de la comuna.
+  // Solo "los": la comuna es "Los Andes", nunca "Las Andes" — excluir "las" abría un hueco sin motivo.
+  // [Codex 4a] "línea de Los Andes" es el PRODUCTO, no la comuna: cuando hay un sustantivo de
+  // producto delante, el "los" ya no delata a la comuna. Se acepta el "los" opcional ahí.
+  return new RegExp(`\\b${CTX}\\s+(?:de\\s+)?(?:los\\s+)?andes\\b`).test(t)
+      || new RegExp(`(?<!\\blos\\s)\\bandes\\s+${CTX}\\b`).test(t);
+}
+
+export function esLineaAndes(item) {
+  return esLineaAndesTexto([item?.descripcion, item?.product, item?.label, item?.producto].filter(Boolean).join(" | "));
+}
+
+/**
+ * [Codex 2026-08-27] Mientras el auto-cotizado de ANDES está APAGADO, alcanza con que la palabra
+ * "andes" aparezca para mandar el pedido a revisión: un `descripcion_producto: "Andes"` a secas no
+ * matcheaba el patrón con contexto y se cotizaba como SLIDING — otra línea, producto equivocado.
+ * Única excepción: la COMUNA "Los Andes" (precedida de "los"), que es un despacho, no un producto.
+ * Sobre-escalar acá no cuesta plata; cotizar la línea equivocada sí.
+ */
+export function mencionaAndes(texto) {
+  const t = String(texto || "")
+    .replace(/_/g, " ").normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  return /(?<!\blos\s)\bandes\b/.test(t);
 }
 
 /**
@@ -762,7 +800,13 @@ export async function priceAllEngine(d, customer_id = "") {
     // [2026-08-27] LINEA ANDES: sólo el envelope CALIBRADO contra Winart (doble riel · 2 hojas ·
     // hoja 66, ≥3,5 m², ≤2,5 m/lado). Fuera de eso (hoja 54 chica, monorriel, 3-4 hojas, grande)
     // ESCALA: esos configs no están contrastados y podrían cobrar mal (decisión del dueño).
-    if (esLineaAndes(item)) {
+    // [Codex 2026-08-27] Se mira el texto del ITEM y el del CLIENTE. Mientras ANDES está apagado la
+    // detección es AMPLIA (mencionaAndes: basta la palabra, salvo la comuna "Los Andes"): un
+    // `descripcion_producto:"Andes"` a secas se colaba al motor como SLIDING — otra línea, producto
+    // equivocado. Cuando se reabra con el campo estructurado, volver al criterio con contexto.
+    const _txtAndes = `${item.descripcion || ""} | ${item.product || ""} | ${item.label || ""} | ${item.producto || ""} | ${d.texto_cliente || ""}`;
+    if (esLineaAndes(item) || esLineaAndesTexto(d.texto_cliente || "")
+        || (!ANDES_AUTO_COTIZA && mencionaAndes(_txtAndes))) {
       // [Codex 3a vuelta] Se leen los MISMOS campos que esLineaAndes (incluido item.producto en
       // español): si la ruta se activó por "línea Andes 3 hojas" en item.producto, ese "3 hojas"
       // tiene que contarse aquí también, o cotiza 3 como 2 (subcobro real que cazó Codex).
@@ -801,12 +845,14 @@ export async function priceAllEngine(d, customer_id = "") {
         || /\bsin\s+apertura\b|\bno\s+abren?\b/i.test(_txtN)
         || /\b(?:tres|cuatro|cinco|seis|siete|ocho|nueve|[3-9])\s+rieles?\b/i.test(_txtN)
         || /\b(?:triple|cuadruple)\s+riel/i.test(_txtN);
-      const _enEnvelope = tipo === "CORREDERA" && _dosHojasOk && !_esMono && !_pideHoja54 && !_configCompuesto
+      const _enEnvelope = ANDES_AUTO_COTIZA
+        && tipo === "CORREDERA" && _dosHojasOk && !_esMono && !_pideHoja54 && !_configCompuesto
         && _areaM2 >= ANDES_MIN_AREA_M2 && m.ancho_mm <= ANDES_MAX_MM && m.alto_mm <= ANDES_MAX_MM;
       if (_enEnvelope) {
         serie = "ANDES";
       } else {
-        const razon = tipo !== "CORREDERA" ? `La línea Andes solo tiene corredera.`
+        const razon = !ANDES_AUTO_COTIZA ? `La línea Andes la cotiza Marcelo directamente.`
+          : tipo !== "CORREDERA" ? `La línea Andes solo tiene corredera.`
           : _esMono ? `El Andes monorriel todavía no está en el cotizador automático.`
           : _configCompuesto ? `Esa Andes no es una corredera simple de 2 hojas (lleva paño fijo, más secciones o riel distinto); la reviso con Marcelo para el precio exacto.`
           : !_dosHojasOk ? (_conteo && _conteo !== 2
