@@ -46,7 +46,7 @@ export const APERTURAS = Object.freeze([
 export const FAMILIAS_VIDRIO = Object.freeze(['TERMOPANEL', 'MONOLITICO']);
 
 // [2026-06-14] ALLOWLIST DE VIDRIOS — Oliver SOLO cotiza estos 3 termopaneles DVH
-// (separador Thermoflex), que son los que Activa tiene configurados y vende:
+// (separador warm-edge), que son los que Activa tiene configurados y vende:
 //   34 = TP-M-4+12+4   (DVH 4+12+4)        $42.679/m2
 //   38 = TP-M-4+12+4S  (DVH 4+12+4 saten)  $50.000/m2
 //   61 = TP-M-5+12+5   (DVH 5+12+5)        $54.306/m2

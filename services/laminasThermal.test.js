@@ -205,7 +205,7 @@ test('esPng reconoce la firma real y rechaza cualquier otra cosa', () => {
 test('laminaTermopanel: la trae cuando THERMAL publica el perfil', async () => {
   const lista = { n: 2, perfiles: [
     LISTA_OK.perfiles[0],
-    { perfil: 'termopanel_4-12-4', nombre_comercial: 'Termopanel 4-12-4 · borde ALUMINIO vs THERMOFLEX',
+    { perfil: 'termopanel_4-12-4', nombre_comercial: 'Termopanel 4-12-4 · borde ALUMINIO vs WARM-EDGE',
       n_laminas: 1, aprobado_por: 'Marcelo Cifuentes', fecha_aprobacion: '2026-08-24' },
   ] };
   const r = await laminaTermopanel({ fetchFn: espia({ lista }), log: callado });

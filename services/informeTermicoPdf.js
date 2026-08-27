@@ -79,7 +79,7 @@ const PIES_LAMINA = Object.freeze({
   //     MOTOR DE ACTIVA. La lamina del termopanel que genera THERMAL
   //     (tools/lamina_termopanel_separadores.py) reporta, para Temuco a 65 % de HR interior:
   //           borde ALUMINIO   θsi =  9,2 °C  -> CONDENSA
-  //           borde THERMOFLEX θsi = 11,8 °C  -> CONDENSA
+  //           borde WARM-EDGE θsi = 11,8 °C  -> CONDENSA
   //           centro de vidrio θsi = 13,3 °C  -> no condensa
   //     y el umbral que devuelve la API para Temuco es 12,28 °C a 65 % (14,47 °C a 75 %).
   //     O sea: EN TEMUCO EL BORDE CONDENSA CON LOS DOS SEPARADORES. El warm-edge cierra casi
@@ -737,7 +737,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       // folleto defectuoso, exactamente lo contrario de lo que el informe vino a lograr.
       //
       // Lo que va en su lugar: LA FIGURA DEL MOTOR (borde del termopanel, aluminio vs
-      // Thermoflex, con isotermas, f_Rsi y Psi calculados) + UNA linea con el vidrio del
+      // warm-edge, con isotermas, f_Rsi y Psi calculados) + UNA linea con el vidrio del
       // cliente y su respaldo. El resto del catalogo murio: comparar 10 vidrios es trabajo
       // del vendedor, no del documento firmado.
       // Numeracion por contador: si una seccion no aplica, la siguiente no salta numero.

@@ -143,7 +143,7 @@ test('🔒 [P2 · Codex] un nombre absurdamente largo no descuadra la pagina', a
 
 test('🔴 el pie de la lamina 10 NO puede prometer que no condensa', async () => {
   // La lamina del termopanel del propio ACTIVA reporta, para Temuco a 65 % de HR:
-  //   borde aluminio 9,2 C -> CONDENSA · borde thermoflex 11,8 C -> CONDENSA
+  //   borde aluminio 9,2 C -> CONDENSA · borde warm-edge 11,8 C -> CONDENSA
   //   (umbral que devuelve la API para Temuco: 12,28 C)
   // O sea el borde condensa con LOS DOS separadores. Un texto que insinue lo contrario
   // contradice al motor de la empresa en un documento que ella misma firma.

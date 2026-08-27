@@ -169,7 +169,7 @@ export async function descargarLaminas(perfil, {
 }
 
 /**
- * LA LAMINA DEL TERMOPANEL (aluminio vs Thermoflex) — pedida aparte de las del sistema.
+ * LA LAMINA DEL TERMOPANEL (aluminio vs warm-edge) — pedida aparte de las del sistema.
  *
  * [2026-08-24] Pedido del dueno, textual: *"esta lamina debe ir"* y *"lo de los vidrios
  * igual esta mal, genera desconfianza; yo pasaria el termopanel por una isoterma y

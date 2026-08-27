@@ -1378,7 +1378,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // informe sale sin figuras. Dos niveles de degradacion y ninguno rompe la venta.
           let laminas = null;
           try { laminas = await (deps.laminasParaInforme || laminasParaInforme)(); } catch { /* opcional */ }
-          // [2026-08-24] La figura del TERMOPANEL (aluminio vs Thermoflex): reemplaza al
+          // [2026-08-24] La figura del TERMOPANEL (aluminio vs warm-edge): reemplaza al
           // catalogo de vidrios, que el dueno bajo ("genera desconfianza"). Hasta que
           // THERMAL deployee el perfil nuevo devuelve null y el informe sale sin ella.
           let termopanel = null;
