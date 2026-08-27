@@ -392,3 +392,14 @@ test('🔴 [Codex final] el informe NO hace upsert: se cuelga del Deal de la pro
   assert.match(bloque, /leerEstado\)\(`deal:\$\{String\(from\)/, 'lo lee del que dejo la propuesta');
   assert.match(bloque, /if \(!dealId\) return;/, 'y sin Deal no archiva: mejor sin copia que a medias');
 });
+
+test('🔴 [#393] el registro ISO manda el FOLIO REAL: state.last_quote, no campos fantasma', async () => {
+  // 30 informes seguidos salieron con quote_number NULL porque el payload leia
+  // state.quoteNum / state.quote_number — campos que NINGUN camino escribe. El folio vive en
+  // state.last_quote (lo escribe generarPdf al entregar la propuesta, un instante antes de
+  // despachar el informe: medido en vivo, informe 0030 y quote 0365 en el mismo segundo).
+  const src = await leer('../src/oliver-gpt/webhook.js');
+  assert.match(src, /quote_number:\s*state\?\.last_quote\?\.quote_number\s*\?\?\s*null/,
+    'el payload del registro lee state.last_quote.quote_number');
+  assert.ok(!/state\?\.quoteNum/.test(src), 'los campos fantasma quoteNum ya no se leen');
+});

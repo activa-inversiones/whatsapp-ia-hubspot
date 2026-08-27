@@ -1654,7 +1654,13 @@ Comuna: ${datos.comuna}`
                     laminas_ids: Array.isArray(laminas?.laminas) ? laminas.laminas.map((l) => l.id).join(',') : null,
                     pdf_bytes: pdfBuf.length,
                     pdf_sha256: createHash('sha256').update(pdfBuf).digest('hex'),
-                    quote_number: state?.quoteNum ?? state?.quote_number ?? null,
+                    // 🔴 [2026-08-26 · #393 del tablero] 30 informes seguidos salieron con
+                    // quote_number NULL: este campo leia state.quoteNum / state.quote_number,
+                    // que NO EXISTEN en ningun camino. El folio vive en state.last_quote
+                    // (el rastro que escribe generarPdf al entregar la propuesta, un instante
+                    // antes de despachar este informe). Medido en vivo: el informe 0030 se
+                    // emitio en el MISMO segundo en que la quote 0365 ya estaba en la tabla.
+                    quote_number: state?.last_quote?.quote_number ?? null,
                   }),
                   signal: AbortSignal.timeout(8000),
                 });
