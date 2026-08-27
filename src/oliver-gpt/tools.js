@@ -237,9 +237,10 @@ export const TOOL_DEFS = [
         'valor que debes pasar como unit_price a generar_pdf_cotizacion. NO uses total_con_iva ' +
         'ni precio_por_m2. EL VIDRIO Y LA SERIE SE ELIGEN SOLOS (por tamaño y ambiente) — NO ' +
         'pases glass_id ni serie; NO uses listar_vidrios. Solo manda tipo + medidas_texto + (si es baño) ambiente. ' +
-        'Cotiza ventanas estándar S60/SLIDING y PUERTAS ABATIBLES (PUERTA 1 hoja / PUERTA_DOBLE 2 hojas / ' +
-        'PUERTA_INTERIOR). Para mosquiteros, plegables (incluida puerta plegable), formas ' +
-        'irregulares o líneas Andes, Zenia, Americana y Venau, NO ejecutes esta tool: llama notificar_marcelo.',
+        'Cotiza ventanas estándar S60/SLIDING, PUERTAS ABATIBLES (PUERTA 1 hoja / PUERTA_DOBLE 2 hojas / ' +
+        'PUERTA_INTERIOR) y la línea AMERICANA corredera (hasta 2,5 m por lado; escribí "corredera ' +
+        'línea americana" en descripcion_producto). Para mosquiteros, plegables (incluida puerta plegable), formas ' +
+        'irregulares o líneas Andes, Zenia o Venau, NO ejecutes esta tool: llama notificar_marcelo.',
       parameters: {
         type: 'object',
         properties: {
@@ -311,9 +312,9 @@ export const TOOL_DEFS = [
           serie: {
             type: 'string',
             description:
-              'IGNORADO — no la pases. El automático solo cubre S60/SLIDING. Si el cliente pide ' +
-              'mosquitero, plegable, forma irregular o las líneas Andes, Zenia, Americana o Venau, ' +
-              'no cotices y usa notificar_marcelo.',
+              'IGNORADO — no la pases (la serie se elige sola). La línea Americana se detecta por la ' +
+              'palabra "americana" en descripcion_producto. Si el cliente pide mosquitero, plegable, ' +
+              'forma irregular o las líneas Andes, Zenia o Venau, no cotices y usa notificar_marcelo.',
           },
           color: { type: 'string', description: 'Color del perfil. Opcional.' },
           comuna: { type: 'string', description: 'Comuna de despacho/instalacion. Opcional.' },

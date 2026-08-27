@@ -88,7 +88,7 @@ export function detectarProductoFueraDeAlcance(textoCliente, normalizados = {}) 
   // abatibles con BOM real S60 (PUERTA / PUERTA_INTERIOR / PUERTA_DOBLE, verificado en
   // vivo + dato del dueño). Las puertas PLEGABLES siguen cayendo por la categoría
   // 'plegable' de abajo; mosquiteras de puerta por 'mosquitero'.
-  if (/(?:^|[ _])(?:andes|zenia|venau|sistema_american[ao]|american[ao])(?:[ _]|$)/.test(senalEstructurada)) {
+  if (/(?:^|[ _])(?:andes|zenia|venau)(?:[ _]|$)/.test(senalEstructurada)) {  // [2026-08-27] americana SALE: la maneja enginePricer (corredera, con tope)
     return resultado('linea_no_soportada');
   }
 
@@ -113,12 +113,11 @@ export function detectarProductoFueraDeAlcance(textoCliente, normalizados = {}) 
     return resultado('forma_irregular');
   }
 
+  // [2026-08-27] americana quitada de esta lista: la línea Americana (corredera) YA se cotiza
+  // con tope de tamaño en enginePricer. Andes/Zenia/Venau siguen fuera de alcance.
   const lineaNoSoportada =
-    /\b(?:linea|serie|sistema|modelo|estilo)\s+(?:de\s+)?(?:andes|zenia|venau|american[ao])\b/.test(textoDetectable) ||
-    /\b(?:andes|zenia|venau|american[ao])\s+(?:linea|serie|sistema|modelo|estilo)\b/.test(textoDetectable) ||
-    // "ventana americana" a secas también es la línea no soportada (falso negativo cazado
-    // en revisión cruzada). "americana" sola SIN sustantivo de ventana no gatilla (ambigua).
-    /\b(?:ventanas?|ventanal(?:es)?)\s+american[ao]s?\b/.test(textoDetectable);
+    /\b(?:linea|serie|sistema|modelo|estilo)\s+(?:de\s+)?(?:andes|zenia|venau)\b/.test(textoDetectable) ||
+    /\b(?:andes|zenia|venau)\s+(?:linea|serie|sistema|modelo|estilo)\b/.test(textoDetectable);
   if (lineaNoSoportada) return resultado('linea_no_soportada');
 
   return SIN_DETECCION;

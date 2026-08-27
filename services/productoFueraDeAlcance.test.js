@@ -35,7 +35,6 @@ test('detecta variantes chilenas precisas sin depender del LLM', () => {
     ['ventana redonda', 'forma_irregular'],
     ['ventana en arco', 'forma_irregular'],
     ['ventana hexagonal', 'forma_irregular'],
-    ['sistema americano', 'linea_no_soportada'],
     ['línea Zenia', 'linea_no_soportada'],
     ['serie Venau', 'linea_no_soportada'],
   ];
@@ -112,9 +111,16 @@ test('Ronda 3: el enum REAL de update_quote (V1) ya NO escala — las puertas se
   assert.equal(detectarProductoFueraDeAlcance('PUERTA_DOBLE').fueraDeAlcance, false);
 });
 
-test('Ronda 2: falsos negativos cazados — ventanal singular y ventana americana', () => {
+test('Ronda 2: falso negativo cazado — ventanal plegable singular', () => {
   assert.equal(detectarProductoFueraDeAlcance('un ventanal plegable para el quincho').categoria, 'plegable');
-  assert.equal(detectarProductoFueraDeAlcance('quiero una ventana americana').categoria, 'linea_no_soportada');
+});
+
+test('[2026-08-27] la línea Americana YA NO escala (se cotiza con tope en enginePricer)', () => {
+  assert.equal(detectarProductoFueraDeAlcance('quiero una ventana americana').fueraDeAlcance, false);
+  assert.equal(detectarProductoFueraDeAlcance('sistema americano').fueraDeAlcance, false);
+  assert.equal(detectarProductoFueraDeAlcance('línea americana').fueraDeAlcance, false);
+  assert.equal(detectarProductoFueraDeAlcance('línea Andes').categoria, 'linea_no_soportada');
+  assert.equal(detectarProductoFueraDeAlcance('serie Venau').categoria, 'linea_no_soportada');
 });
 
 test('Ronda 2: negación con verbo NO escala — "sin incluir malla mosquitera"', () => {

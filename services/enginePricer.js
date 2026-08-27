@@ -189,6 +189,26 @@ export function mapSerieToEngine(tipoEngine) {
   return tipoEngine === "CORREDERA" ? "SLIDING" : "S60";
 }
 
+// [2026-08-27] Linea AMERICANA (SILTEK): se detecta por el texto del item. Solo la corredera
+// existe en esta linea. El dueño la abrio CON TOPE DE TAMAÑO: hasta 2,5 m por lado el motor la
+// cotiza (calibrada contra el BOM real de Winart v67152); mas grande escala a Marcelo, porque
+// el escalado de barras a tamaños grandes no esta medido y podria cobrar de menos.
+export const AMERICANA_MAX_MM = 2500;
+export function esLineaAmericana(item) {
+  // Se unen con " | " (no con espacio): pegar el enum del producto ("CORREDERA") justo detras
+  // de la descripcion creaba adyacencias falsas — "...cocina americana | CORREDERA" ya NO matchea
+  // "americana corredera" (lo cazo el test de la cocina americana).
+  const t = [item?.descripcion, item?.product, item?.label, item?.producto].filter(Boolean).join(" | ")
+    .replace(/_/g, " ")   // [Codex 2a vuelta] el "_" rompe \b y \s+: "SISTEMA_AMERICANA" evadia el CTX; se normaliza como en productoFueraDeAlcance.
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  // [compuerta cruzada] americana ES una LINEA de ventanas: se detecta PEGADA a un sustantivo
+  // de ventana/apertura/linea, NO como adjetivo suelto. "cocina americana" (un ambiente, no el
+  // producto) NO debe enrutar a la linea y cobrar de menos — lo cazaron Codex y Gemini.
+  const CTX = '(?:linea|serie|sistema|modelo|estilo|ventanas?|ventanal(?:es)?|correderas?|corredizas?|deslizantes?|proyectantes?|batientes?|abatibles?|fijas?|oscilobatientes?)';
+  return new RegExp(`\\b${CTX}\\s+(?:de\\s+)?american[ao]s?\\b`).test(t)
+      || new RegExp(`\\bamerican[ao]s?\\s+${CTX}\\b`).test(t);
+}
+
 /**
  * Detecta nº de hojas si el cliente/foto lo indica ("3 hojas", "triple").
  * Si no se sabe → undefined (el motor usa su default = 2 hojas / doble riel).
@@ -673,7 +693,23 @@ export async function priceAllEngine(d, customer_id = "") {
     }
 
     // 3) Serie de perfiles + nº hojas (el tipo ya quedó resuelto en 2a)
-    const serie = mapSerieToEngine(tipo);     // CORREDERA→SLIDING, resto→S60
+    let serie = mapSerieToEngine(tipo);     // CORREDERA→SLIDING, resto→S60
+    // [2026-08-27] LINEA AMERICANA con tope de tamaño. Se decide sobre CUALQUIER apertura
+    // detectada como americana: si no es una corredera dentro del tope, se ESCALA — NO se
+    // cotiza como otra línea. (Antes una "proyectante americana" caía a S60: producto
+    // equivocado; lo cazó la compuerta cruzada.)
+    if (esLineaAmericana(item)) {
+      if (tipo === "CORREDERA" && m.ancho_mm <= AMERICANA_MAX_MM && m.alto_mm <= AMERICANA_MAX_MM) {
+        serie = "AMERICANA";
+      } else {
+        const razon = tipo !== "CORREDERA"
+          ? `La línea Americana solo tiene corredera; una "${tipo}" americana no existe en catálogo.`
+          : `Ventana Americana ${m.ancho_mm}×${m.alto_mm} mm supera el máximo cotizable automático (${AMERICANA_MAX_MM} mm por lado).`;
+        item.price_warning = `${razon} La revisa Marcelo para darte el precio exacto.`;
+        item.source = "activa_engine"; item.confidence = "manual"; item.fuera_de_alcance = true;
+        return { escalada: true };
+      }
+    }
     const hojas = detectHojas(item.product);  // 3 hojas → triple riel; undefined → motor decide
 
     // 4) Color / glass_id / comuna / cantidad
