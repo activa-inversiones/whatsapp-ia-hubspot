@@ -216,14 +216,21 @@ test('🔴 modo informe-primero: valor → informe → video → propuesta, en E
   assert.ok(!spy.textos.some((t) => /Deme un momento/.test(String(t))),
     'con mensaje de valor NO va el aviso clásico redundante');
 
-  // [Dueño, en caliente 27-ago] Sus tres exigencias del copy, amarradas:
+  // [Dueño, 27-ago — doctrina] *"Los clientes no saben leer siglas… nosotros debemos
+  // prepararlos para poder venderles"* + su afinación: *"coloca las siglas pero
+  // explícalas antes"*. ⇒ cada sigla aparece DESPUÉS de su explicación en palabras.
   const textoValor = String(spy.textos.find((t) => /Mientras le preparo/.test(String(t))) || '');
   assert.match(textoValor, /informe térmico/, 'dice TÉRMICO (así se llama el documento), no "técnico"');
   assert.doesNotMatch(textoValor, /informe técnico/, 'el "informe técnico" quedó prohibido');
-  assert.match(textoValor, /zona térmica F según la NCh 1079/,
-    'nombra la zona térmica de la comuna, el mismo dato que imprime el PDF');
-  assert.match(textoValor, /transmitancia térmica \(Uw\)/,
-    'primero el concepto con su nombre, después la sigla (dueño 27-ago)');
+  const antesQue = (concepto, sigla) => {
+    const i = textoValor.indexOf(concepto); const j = textoValor.indexOf(sigla);
+    assert.ok(i >= 0, `falta la explicación "${concepto}"`);
+    assert.ok(j >= 0, `falta la sigla "${sigla}" (el dueño las quiere, explicadas)`);
+    assert.ok(i < j, `la explicación "${concepto}" debe ir ANTES de la sigla "${sigla}"`);
+  };
+  antesQue('transmitancia térmica', 'Uw');
+  antesQue('zona térmica F según la clasificación oficial chilena', 'NCh 1079');
+  antesQue('Ministerio de Vivienda', 'MINVU');
   assert.equal(spy.pdfArgs.at(-1)?.nombre, 'Dady',
     'el informe sale "Preparado para" el cliente aunque state.name aún no exista');
 });

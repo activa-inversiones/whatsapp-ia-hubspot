@@ -2497,30 +2497,28 @@ Comuna: ${datos.comuna}`
               // 🔴 Es FUNCIÓN de esRef (Codex, compuerta): si la comuna cae a la referencia
               // regional, el punto 1 no puede prometer "el límite para {comuna}" — el
               // mensaje dice lo mismo que va a decir el PDF, siempre.
-              // [Dueño, en caliente 27-ago] "informe TÉRMICO, no técnico" (así se llama el
-              // documento que llega) + nombrar la zona térmica NCh 1079 de la comuna — el
-              // dato viene de THERMAL vía `datos`, el mismo que imprime el PDF.
+              // [Dueño, 27-ago — doctrina, textual] *"Los clientes no saben leer siglas.
+              // Tampoco se deben preparar para comprarnos ventanas: NOSOTROS debemos
+              // prepararlos para poder venderles."* Y su afinación: *"la idea es que
+              // coloques las siglas pero las expliques antes"*. ⇒ REGLA DEL COPY: cada
+              // sigla o norma aparece DESPUÉS de su explicación en palabras — el concepto
+              // primero, la sigla como su nombre corto. El informe se ENTREGA explicado,
+              // no se asigna como tarea.
               const mensajeValor = (esRef, datos) => {
                 const zonaNCh = String(datos?.zona_termica_NCh1079 || '').trim();
                 const zonaTxt = zonaNCh && !esRef
-                  ? ` — ${comunaValor} está en zona térmica ${zonaNCh} según la NCh 1079 —`
+                  ? `, que está en zona térmica ${zonaNCh} según la clasificación oficial chilena (la norma NCh 1079)`
                   : '';
                 return `Perfecto${nombreCorto ? `, ${nombreCorto}` : ''}. Mientras le preparo su Propuesta Técnica Económica, ` +
-                `le dejo primero el informe térmico de sus ventanas en ${esRef ? 'su zona' : comunaValor}, para que lo revise con calma. ` +
-                `Tres cosas que le van a servir:\n` +
-                // [Dueño, 27-ago] Primero el CONCEPTO con su nombre, después la sigla:
-                // "la transmitancia térmica, que se representa Uw" — didáctico, no jerga.
-                `1) La transmitancia térmica (Uw) de cada ventana — mientras más bajo el Uw, mejor aísla — y el límite que exige la norma` +
-                `${zonaTxt}` +
-                // [Copilot, pase en caliente] Sin repetir la comuna en la misma oración:
-                // si la zona ya la nombró, el cierre no la vuelve a decir.
-                ` ${esRef ? '(el informe lo indica como referencia regional de La Araucanía)' : (zonaTxt ? '(el informe lo detalla)' : `(el informe lo indica para ${comunaValor})`)}.\n` +
-                `2) Dónde mirar los puntos de condensación: ahí se ve cuándo aparece condensación y por qué una buena ` +
-                `ventana la reduce muchísimo — el resto depende de la humedad y ventilación de la casa, y el mismo ` +
-                `informe lo explica.\n` +
-                `3) Quién responde por el cálculo: Marcelo Cifuentes, Evaluador Energético acreditado por el MINVU ` +
-                `(Res. 266/2025) — es una Memoria de Cálculo según la norma chilena NCh 3137, y las ventanas salen de ` +
-                `nuestra propia fábrica en Temuco, no de un revendedor.`;
+                `le adelanto el informe térmico de sus ventanas ${esRef ? 'para su zona' : `en ${comunaValor}`}, ` +
+                `para que lo mire con calma — se lo dejamos explicado en simple:\n` +
+                `1) Cuánto aíslan del frío sus ventanas — la transmitancia térmica, que en el informe aparece como "Uw": ` +
+                `mientras más bajo, mejor aísla — y lo que exige la norma ` +
+                `${esRef ? 'como referencia regional de La Araucanía' : `en su comuna${zonaTxt}`}.\n` +
+                `2) Por qué con una buena ventana la condensación baja muchísimo — y de qué depende el resto, ` +
+                `que el informe también le explica.\n` +
+                `3) Y quién responde por el cálculo: Marcelo Cifuentes, evaluador energético acreditado por el ` +
+                `Ministerio de Vivienda (MINVU). Las ventanas salen de nuestra propia fábrica en Temuco, no de un revendedor.`;
               };
               // Las MISMAS ventanas que declara la propuesta (mismo mapeo que el camino
               // clasico de abajo): informe y propuesta tienen que decir lo mismo siempre.
