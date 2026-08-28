@@ -43,7 +43,13 @@ export async function generarInformeVientosPdf(datos, {
   nombre = '', comuna = '', numeroInforme = '', ilegibles = 0, firma = {},
 } = {}) {
   if (!datos || !Array.isArray(datos.ventanas) || !datos.ventanas.length) return null;
-  const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: `Informe de vientos y clima ${numeroInforme}` } });
+  // [Codex, compuerta] El titulo dice CLIMA solo si la pagina de clima VA de verdad:
+  // un documento que promete clima y no lo trae es la clase de mentira chica que
+  // este informe no se puede permitir.
+  const traeClima = Boolean(datos.clima && !datos.clima._hueco
+    && (datos.clima.lluvia || datos.clima.temperatura || datos.clima.racha_marco));
+  const tituloDoc = traeClima ? 'INFORME DE VIENTOS Y CLIMA' : 'INFORME DE VIENTOS';
+  const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: `${traeClima ? 'Informe de vientos y clima' : 'Informe de vientos'} ${numeroInforme}` } });
   const chunks = [];
   doc.on('data', (c) => chunks.push(c));
   const fin = new Promise((res) => doc.on('end', () => res(Buffer.concat(chunks))));
@@ -54,9 +60,8 @@ export async function generarInformeVientosPdf(datos, {
   doc.fillColor(GOLD).fontSize(10).font('Helvetica').text('Ventanas PVC · Termopanel · Fábrica en Temuco', 50, 56);
   doc.fillColor('#fff').fontSize(9).text('Evaluación energética acreditada MINVU', 50, 72);
 
-  // [Dueno 28-ago, "informe nivel corp"] El documento crecio a VIENTOS Y CLIMA: con la
-  // pagina del clima de la comuna adentro, el titulo dice lo que el documento ES.
-  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text('INFORME DE VIENTOS Y CLIMA', 50, 112);
+  // [Dueno 28-ago, "informe nivel corp"] El titulo dice lo que el documento ES.
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(tituloDoc, 50, 112);
   doc.fillColor(GOLD).fontSize(12).font('Helvetica-Bold')
     .text(comuna ? `Comuna de ${comuna}` : 'Resistencia del vidriado', 50, 138);
   doc.fillColor('#444').fontSize(9).font('Helvetica')
@@ -140,12 +145,15 @@ export async function generarInformeVientosPdf(datos, {
       + 'publicada en el portal de normas técnicas del MINVU, que es la que cita la Ordenanza General de Urbanismo y '
       + 'Construcciones (OGUC).', 50, y, { width: W - 100 });
     y += 44;
-    doc.fillColor('#666').fontSize(8)
-      .text('Supuesto declarado: elemento a 3 m de altura en entorno de ciudad (primer o segundo piso urbano, el caso '
-        + 'típico). Si su proyecto es más alto, está frente al mar o en campo abierto, la exigencia sube y se recalcula. '
-        + 'La versión técnica más reciente de la norma es la NCh 432 del año 2025 (basada en el estándar americano '
-        + 'ASCE 7-22); este informe usa el carril de la norma publicada por el MINVU y lo dice expresamente.', 50, y, { width: W - 100 });
-    y += 48;
+    // [Dueño, 28-ago, textual: *"el supuesto deberíamos realizar una imagen que considere
+    // esto y que todos puedan entender... diseña algo que se vea espectacular"*] El
+    // supuesto declarado ya no es un párrafo: es la INFOGRAFÍA de los tres escenarios,
+    // y abajo queda solo la línea normativa que no puede faltar.
+    y = dibujarSupuestoViento(doc, y);
+    doc.fillColor('#666').fontSize(7.5)
+      .text('La versión técnica más reciente de la norma es la NCh 432 del año 2025 (basada en el estándar '
+        + 'americano ASCE 7-22); este informe usa el carril de la norma publicada por el MINVU y lo dice expresamente.', 50, y, { width: W - 100 });
+    y += 26;
   } else {
     doc.text('La demanda de su zona no se pudo calcular en esta pasada: las resistencias de la tabla valen igual y el '
       + 'especialista la compara con la exigencia de su proyecto.', 50, y, { width: W - 100 });
@@ -204,6 +212,99 @@ export async function generarInformeVientosPdf(datos, {
 }
 
 /**
+ * LA INFOGRAFIA DEL SUPUESTO (dueno 28-ago: *"una imagen que todos puedan entender...
+ * algo que se vea espectacular"*): tres escenas vectoriales — SU caso (ciudad, ventana
+ * a 3 m, el de este informe), un edificio en altura y la costa o campo abierto — con el
+ * viento dibujado mas fuerte donde la exigencia sube. Todo pdfkit puro, cero imagenes
+ * externas. Devuelve la Y siguiente.
+ */
+function dibujarSupuestoViento(doc, y0) {
+  const x0 = 50, wTot = W - 100, hPan = 108;
+  const wPan = Math.floor((wTot - 20) / 3);
+  const GRIS = '#C9D2DE', GRISOSC = '#8FA0B5', CIELO = '#F2F6FB';
+
+  const viento = (x, yy, n, largo) => {   // n rafagas, con punta de flecha
+    doc.save();
+    for (let i = 0; i < n; i++) {
+      const vy = yy + i * 9;
+      doc.moveTo(x, vy).lineTo(x + largo, vy).strokeColor(GRISOSC).lineWidth(1.1).stroke();
+      doc.moveTo(x + largo, vy).lineTo(x + largo - 4, vy - 2.6).moveTo(x + largo, vy).lineTo(x + largo - 4, vy + 2.6)
+        .strokeColor(GRISOSC).lineWidth(1.1).stroke();
+    }
+    doc.restore();
+  };
+  const casa = (x, piso, ancho, alto, conVentana) => {   // piso = Y del suelo
+    doc.rect(x, piso - alto, ancho, alto).fillAndStroke('#FFFFFF', GRIS);
+    doc.moveTo(x - 3, piso - alto).lineTo(x + ancho / 2, piso - alto - 12).lineTo(x + ancho + 3, piso - alto)
+      .fillAndStroke('#E8EDF4', GRIS);
+    if (conVentana) {
+      doc.rect(x + ancho / 2 - 7, piso - alto + 8, 14, 16).fillAndStroke('#FFF6E3', GOLD);
+      doc.moveTo(x + ancho / 2, piso - alto + 8).lineTo(x + ancho / 2, piso - alto + 24).strokeColor(GOLD).lineWidth(0.7).stroke();
+    }
+  };
+  const edificio = (x, piso, ancho, alto) => {
+    doc.rect(x, piso - alto, ancho, alto).fillAndStroke('#FFFFFF', GRIS);
+    for (let f = 1; f <= Math.floor(alto / 14) - 1; f++) {
+      doc.rect(x + 4, piso - f * 14 - 8, 6, 7).fill('#E3EAF2');
+      doc.rect(x + ancho - 10, piso - f * 14 - 8, 6, 7).fill('#E3EAF2');
+    }
+  };
+  const panel = (i, esSuCaso) => {
+    const px = x0 + i * (wPan + 10);
+    doc.rect(px, y0, wPan, hPan).fillAndStroke(CIELO, esSuCaso ? GOLD : '#DDE4EC');
+    return px;
+  };
+  const cinta = (px, texto, color) => {
+    doc.rect(px, y0 + hPan - 15, wPan, 15).fill(color);
+    doc.fillColor('#FFFFFF').fontSize(6.2).font('Helvetica-Bold')
+      .text(texto, px + 3, y0 + hPan - 10.5, { width: wPan - 6, align: 'center', height: 10, ellipsis: false });
+  };
+  const suelo = y0 + hPan - 20;
+
+  // ── Escena 1: SU CASO — ciudad, ventana a 3 m ─────────────────────────
+  let px = panel(0, true);
+  doc.moveTo(px + 6, suelo).lineTo(px + wPan - 6, suelo).strokeColor(GRISOSC).lineWidth(1).stroke();
+  edificio(px + 10, suelo, 22, 46);                       // vecinos: la rugosidad urbana
+  casa(px + 62, suelo, 34, 34, true);                     // la casa del cliente, ventana GOLD
+  edificio(px + wPan - 34, suelo, 20, 38);
+  viento(px + 8, y0 + 18, 2, 16);                          // viento SUAVE: la ciudad frena
+  const xC = px + 52;                                      // la cota de los 3 m
+  doc.moveTo(xC, suelo).lineTo(xC, suelo - 26).strokeColor(NAVY).lineWidth(0.8).stroke();
+  doc.moveTo(xC - 2.5, suelo - 2).lineTo(xC, suelo).lineTo(xC + 2.5, suelo - 2).strokeColor(NAVY).stroke();
+  doc.moveTo(xC - 2.5, suelo - 24).lineTo(xC, suelo - 26).lineTo(xC + 2.5, suelo - 24).strokeColor(NAVY).stroke();
+  doc.fillColor(NAVY).fontSize(7).font('Helvetica-Bold').text('3 m', xC - 14, suelo - 17, { lineBreak: false });
+  cinta(px, 'SU CASO: CIUDAD, 3 M (ESTE INFORME)', GOLD);
+
+  // ── Escena 2: EN ALTURA — el viento crece con los pisos ───────────────
+  px = panel(1, false);
+  doc.moveTo(px + 6, suelo).lineTo(px + wPan - 6, suelo).strokeColor(GRISOSC).lineWidth(1).stroke();
+  edificio(px + wPan / 2 - 14, suelo, 28, 74);
+  doc.rect(px + wPan / 2 - 7, suelo - 70, 14, 10).fillAndStroke('#FFF6E3', GOLD);   // la ventana arriba
+  viento(px + 8, y0 + 12, 3, 22);                          // viento MAS fuerte arriba
+  cinta(px, 'EN ALTURA: LA EXIGENCIA SUBE', NAVY);
+
+  // ── Escena 3: COSTA O CAMPO ABIERTO — nada frena al viento ────────────
+  px = panel(2, false);
+  doc.moveTo(px + 6, suelo).lineTo(px + wPan - 6, suelo).strokeColor(GRISOSC).lineWidth(1).stroke();
+  for (let o = 0; o < 3; o++) {                            // el mar: tres ondas
+    const ox = px + 10 + o * 13;
+    doc.moveTo(ox, suelo + 8).bezierCurveTo(ox + 3, suelo + 4, ox + 7, suelo + 4, ox + 10, suelo + 8)
+      .strokeColor('#7FB0D6').lineWidth(1).stroke();
+  }
+  casa(px + wPan - 52, suelo, 34, 34, true);
+  viento(px + 8, y0 + 16, 4, 30);                          // viento FUERTE: sin obstaculos
+  cinta(px, 'COSTA O CAMPO: LA EXIGENCIA SUBE', NAVY);
+
+  let y = y0 + hPan + 8;
+  const pie = 'El supuesto de este informe es la escena de la izquierda: ventana a 3 metros de altura en entorno de '
+    + 'ciudad, el caso típico de una vivienda. Si su proyecto es como las otras dos escenas (más alto, frente al mar '
+    + 'o en campo abierto), la exigencia del viento sube y el cálculo se rehace a su medida: solo avísenos.';
+  doc.fillColor('#444').fontSize(7.5).font('Helvetica').text(pie, 50, y, { width: W - 100 });
+  y += doc.heightOfString(pie, { width: W - 100 }) + 10;
+  return y;
+}
+
+/**
  * Pagina de CLIMA (dueno 28-ago: "maxima informacion a cliente para un informe nivel
  * corp... todos los parametros que encontramos"): zona termica oficial, la estacion
  * meteorologica de SU comuna con la distancia declarada, extremos historicos FECHADOS,
@@ -249,66 +350,157 @@ function dibujarPaginaClima(doc, clima, nSec) {
   const MESES1 = ['E', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
   const cx = 92, cw = 442;
 
-  // ── Climograma parte 1: la lluvia de cada mes (barras, eje propio en mm) ─
-  if (ll && Array.isArray(ll.mensual) && ll.mensual.some((m) => esNum(m.normal_mm))) {
-    doc.fillColor(NAVY).fontSize(9).font('Helvetica-Bold')
-      .text(`Lluvia típica de cada mes (normal histórica${esNum(ll.anos) ? `, ${ll.anos} años` : ''})`, 50, y);
+  // [Dueño, 28-ago, con imagen de referencia: *"así — barras con volumen"*] Barra con
+  // PROFUNDIDAD: cara frontal + tapa clara + costado oscuro. El volumen es cosmético;
+  // la ALTURA (el dato) sigue siendo exacta.
+  const barra3d = (x, yTop, w, h, frente, tapa, costado) => {
+    if (h <= 0) return;
+    const d = 4;
+    doc.moveTo(x + w, yTop).lineTo(x + w + d, yTop - d).lineTo(x + w + d, yTop - d + h).lineTo(x + w, yTop + h)
+      .closePath().fill(costado);
+    doc.moveTo(x, yTop).lineTo(x + d, yTop - d).lineTo(x + w + d, yTop - d).lineTo(x + w, yTop)
+      .closePath().fill(tapa);
+    doc.rect(x, yTop, w, h).fill(frente);
+  };
+  // Un grafico de barras mensuales completo (12 meses, eje propio, numeros arriba).
+  const graficoBarras = (titulo, unidad, vals, colores, notaAbajo) => {
+    doc.fillColor(NAVY).fontSize(9).font('Helvetica-Bold').text(titulo, 50, y);
     y += 14;
-    const ch = 110, ctop = y;
-    const vals = ll.mensual.map((m) => (esNum(m.normal_mm) ? Number(m.normal_mm) : 0));
-    const vMax = Math.max(10, ...vals);
-    const bw = Math.floor(cw / 12) - 6;
+    const ch = 100, ctop = y;
+    const finit = vals.filter((v) => esNum(v) && v > 0);
+    const vMax = Math.max(1e-6, ...finit);
+    const bw = Math.floor(cw / 12) - 8;
     doc.moveTo(cx, ctop).lineTo(cx, ctop + ch).lineTo(cx + cw, ctop + ch).strokeColor('#B9C2CF').lineWidth(0.8).stroke();
     for (let i = 0; i < 12; i++) {
-      const h = (vals[i] / vMax) * (ch - 10);
       const x = cx + 8 + i * Math.floor(cw / 12);
-      if (vals[i] > 0) doc.rect(x, ctop + ch - h, bw, h).fill('#2E6DA4');
+      if (esNum(vals[i]) && vals[i] > 0) {
+        const h = (vals[i] / vMax) * (ch - 14);
+        barra3d(x, ctop + ch - h, bw, h, colores[0], colores[1], colores[2]);
+        doc.fillColor('#555').fontSize(6).font('Helvetica-Bold')
+          .text(vals[i] >= 10 ? String(Math.round(vals[i])) : dec(vals[i], 1), x - 2, ctop + ch - h - 12, { width: bw + 8, align: 'center', lineBreak: false });
+      }
       doc.fillColor('#666').fontSize(6.5).font('Helvetica').text(MESES1[i], x + bw / 2 - 2, ctop + ch + 4);
-      if (vals[i] > 0) doc.fillColor('#555').fontSize(6).text(String(Math.round(vals[i])), x - 2, ctop + ch - h - 8, { width: bw + 6, align: 'center', lineBreak: false });
     }
-    doc.fillColor('#666').fontSize(6.5).text('mm', cx - 24, ctop - 2);
-    if (esNum(ll.anual_normal_mm)) {
-      doc.fillColor('#444').fontSize(7.5)
-        .text(`Total típico del año: ${dec(ll.anual_normal_mm, 0)} mm${ll.mes_mas_lluvioso ? ` · el mes más lluvioso es ${ll.mes_mas_lluvioso.mes}` : ''}.`, cx, ctop + ch + 16);
-    }
-    y = ctop + ch + 30;
+    doc.fillColor('#666').fontSize(6.5).text(unidad, cx - 26, ctop - 2);
+    if (notaAbajo) {
+      doc.fillColor('#444').fontSize(7.5).font('Helvetica').text(notaAbajo, cx, ctop + ch + 15, { width: cw });
+      y = ctop + ch + 30;
+    } else y = ctop + ch + 22;
+  };
+
+  // ── Climograma parte 1: la lluvia de cada mes (barras 3D, eje propio en mm) ─
+  if (ll && Array.isArray(ll.mensual) && ll.mensual.some((m) => esNum(m.normal_mm))) {
+    graficoBarras(
+      `Lluvia típica de cada mes (normal histórica${esNum(ll.anos) ? `, ${ll.anos} años` : ''})`,
+      'mm',
+      ll.mensual.slice(0, 12).map((m) => (esNum(m?.normal_mm) ? Number(m.normal_mm) : null)),
+      ['#2E6DA4', '#5B8FBF', '#1F4E7E'],
+      esNum(ll.anual_normal_mm)
+        ? `Total típico del año: ${dec(ll.anual_normal_mm, 0)} mm${ll.mes_mas_lluvioso ? ` · el mes más lluvioso es ${ll.mes_mas_lluvioso.mes}` : ''}.`
+        : null,
+    );
   }
 
   // ── Climograma parte 2: temperaturas tipicas (lineas, eje propio en °C) ──
-  if (tt && Array.isArray(tt.mensual) && tt.mensual.some((m) => esNum(m.max_media))) {
+  // [Copilot, compuerta] Number(null) es 0 en JS: un mes sin dato se dibujaba como
+  // 0 °C REAL — dato inventado, lo que la regla madre prohibe. Ahora un mes no finito
+  // simplemente CORTA la linea (hueco visible), y los ejes se escalan solo con lo real.
+  const serieT = (tt && Array.isArray(tt.mensual)) ? tt.mensual.slice(0, 12) : [];
+  const maxs = serieT.map((m) => (esNum(m?.max_media) ? Number(m.max_media) : null));
+  const mins = serieT.map((m) => (esNum(m?.min_media) ? Number(m.min_media) : null));
+  const finitos = maxs.filter((v) => esNum(v));
+  if (finitos.length >= 2) {
     doc.fillColor(NAVY).fontSize(9).font('Helvetica-Bold')
       .text('Temperaturas típicas: máxima y mínima media de cada mes', 50, y);
     y += 14;
     const ch = 100, ctop = y;
-    const maxs = tt.mensual.map((m) => Number(m.max_media));
-    const mins = tt.mensual.map((m) => Number(m.min_media));
-    const vMax = Math.ceil(Math.max(...maxs) + 2);
-    const vMin = Math.floor(Math.min(0, ...mins) - 1);
+    const vMax = Math.ceil(Math.max(...finitos) + 2);
+    const vMin = Math.floor(Math.min(0, ...mins.filter((v) => esNum(v))) - 1);
     const fy2 = (v) => ctop + ch - ((v - vMin) / (vMax - vMin)) * ch;
     const fx2 = (i) => cx + 15 + i * ((cw - 30) / 11);
     doc.moveTo(cx, ctop).lineTo(cx, ctop + ch).lineTo(cx + cw, ctop + ch).strokeColor('#B9C2CF').lineWidth(0.8).stroke();
     if (vMin < 0) { doc.save().dash(2, { space: 2 }).moveTo(cx, fy2(0)).lineTo(cx + cw, fy2(0)).strokeColor('#C9D2DE').lineWidth(0.6).stroke().restore(); }
-    doc.save().moveTo(fx2(0), fy2(maxs[0]));
-    for (let i = 1; i < 12; i++) doc.lineTo(fx2(i), fy2(maxs[i]));
-    doc.strokeColor(GOLD).lineWidth(1.6).stroke().restore();
-    doc.save().moveTo(fx2(0), fy2(mins[0]));
-    for (let i = 1; i < 12; i++) doc.lineTo(fx2(i), fy2(mins[i]));
-    doc.strokeColor('#6FA0CC').lineWidth(1.6).stroke().restore();
+    // [Dueño, 28-ago: *"no se ven las temperaturas, me gustaría que se vieran con cuerpo
+    // igual que las gráficas de lluvia"*] La BANDA rellena entre máxima y mínima le da
+    // volumen al gráfico, cada mes lleva su punto y su NÚMERO (como las barras de
+    // lluvia), y la banda solo se pinta en tramos donde AMBAS series tienen dato.
+    doc.save();
+    let bandaAbierta = false, tramo = [];
+    const pintaTramo = () => {
+      if (tramo.length < 2) { tramo = []; return; }
+      doc.moveTo(tramo[0][0], tramo[0][1]);
+      for (let k = 1; k < tramo.length; k++) doc.lineTo(tramo[k][0], tramo[k][1]);
+      for (let k = tramo.length - 1; k >= 0; k--) doc.lineTo(tramo[k][0], tramo[k][2]);
+      doc.closePath().fillOpacity(0.35).fill('#CFE0EF').fillOpacity(1);
+      tramo = [];
+    };
+    for (let i = 0; i < 12; i++) {
+      if (esNum(maxs[i]) && esNum(mins[i])) { tramo.push([fx2(i), fy2(maxs[i]), fy2(mins[i])]); bandaAbierta = true; }
+      else if (bandaAbierta) { pintaTramo(); bandaAbierta = false; }
+    }
+    pintaTramo();
+    doc.restore();
+    const traza = (vals, color) => {
+      doc.save();
+      let abierta = false;
+      for (let i = 0; i < 12; i++) {
+        if (!esNum(vals[i])) { abierta = false; continue; }   // hueco (null O undefined) corta la linea
+        if (!abierta) { doc.moveTo(fx2(i), fy2(vals[i])); abierta = true; }
+        else doc.lineTo(fx2(i), fy2(vals[i]));
+      }
+      doc.strokeColor(color).lineWidth(2).stroke().restore();
+      for (let i = 0; i < 12; i++) if (esNum(vals[i])) doc.circle(fx2(i), fy2(vals[i]), 1.8).fill(color);
+    };
+    traza(maxs, GOLD);
+    traza(mins, '#6FA0CC');
+    // El numero de cada mes, como en la lluvia: la maxima arriba, la minima abajo.
+    for (let i = 0; i < 12; i++) {
+      if (esNum(maxs[i])) doc.fillColor('#8A6D1C').fontSize(6).font('Helvetica-Bold')
+        .text(String(Math.round(maxs[i])), fx2(i) - 6, fy2(maxs[i]) - 11, { width: 14, align: 'center', lineBreak: false });
+      if (esNum(mins[i])) doc.fillColor('#3E6E9E').fontSize(6).font('Helvetica-Bold')
+        .text(String(Math.round(mins[i])), fx2(i) - 6, fy2(mins[i]) + 5, { width: 14, align: 'center', lineBreak: false });
+    }
     for (let i = 0; i < 12; i++) doc.fillColor('#666').fontSize(6.5).font('Helvetica').text(MESES1[i], fx2(i) - 2, ctop + ch + 4);
     doc.fillColor('#666').fontSize(6.5).text('°C', cx - 24, ctop - 2);
-    doc.fillColor('#8A6D1C').fontSize(7).font('Helvetica-Bold').text('máxima media', fx2(0), fy2(maxs[0]) - 12, { lineBreak: false });
-    doc.fillColor('#3E6E9E').fontSize(7).text('mínima media', fx2(0), fy2(mins[0]) + 5, { lineBreak: false });
+    // Etiquetas al extremo DERECHO (sobre el eje libre): a la izquierda pisaban los numeros.
+    let iU = -1, jU = -1;
+    for (let i = 11; i >= 0; i--) { if (iU < 0 && esNum(maxs[i])) iU = i; if (jU < 0 && esNum(mins[i])) jU = i; }
+    if (iU >= 0) doc.fillColor('#8A6D1C').fontSize(7).font('Helvetica-Bold').text('máxima media', fx2(iU) - 50, fy2(maxs[iU]) - 20, { lineBreak: false });
+    if (jU >= 0) doc.fillColor('#3E6E9E').fontSize(7).text('mínima media', fx2(jU) - 50, fy2(mins[jU]) + 14, { lineBreak: false });
     y = ctop + ch + 22;
+  }
+
+  // ── Radiación solar (dueño 28-ago: "agrégale otra de radiación solar") ──
+  // Fuente DISTINTA y declarada aparte (NASA POWER por coordenada de la comuna).
+  const rad = (clima.radiacion && Array.isArray(clima.radiacion.mensual_kwh_m2_dia)
+    && clima.radiacion.mensual_kwh_m2_dia.some((v) => esNum(v))) ? clima.radiacion : null;
+  if (rad) {
+    if (y > 600) { doc.addPage(); y = 60; }
+    graficoBarras(
+      'Radiación solar típica de cada mes (energía del sol por metro cuadrado al día)',
+      'kWh/m²',
+      rad.mensual_kwh_m2_dia.slice(0, 12).map((v) => (esNum(v) ? Number(v) : null)),
+      [GOLD, '#DCC27E', '#8A6D1C'],
+      esNum(rad.anual_kwh_m2_dia)
+        ? `Promedio del año: ${dec(rad.anual_kwh_m2_dia, 1)} kWh/m² al día. En verano el sol pega fuerte: un buen vidrio también controla ese calor.`
+        : null,
+    );
   }
 
   // ── La rafaga marco, en una linea (el detalle vive en las paginas de viento) ─
   if (rm && esNum(rm.mediana_anual_kmh)) {
-    const txtR = `Viento: en la estación marco regional (${rm.estacion?.nombre || 'Maquehue, Temuco'}, período ${rm.periodo}), la ráfaga máxima de un año típico ronda los ${dec(rm.mediana_anual_kmh, 0)} km/h, y la récord fue de ${dec(rm.record_kmh, 0)} km/h. Sus ventanas se verifican contra estas exigencias en las páginas anteriores.`;
+    // [Codex, compuerta] La exclusión QC se DECLARA al cliente, no solo en los datos:
+    // esconder que un registro mayor quedó en revisión sería la mentira chica de nuevo.
+    const txtR = `Viento: en la estación marco regional (${rm.estacion?.nombre || 'Maquehue, Temuco'}, período ${rm.periodo}), la ráfaga máxima de un año típico ronda los ${dec(rm.mediana_anual_kmh, 0)} km/h, y la récord verificada fue de ${dec(rm.record_kmh, 0)} km/h.`
+      + `${rm.qc ? ' Un registro puntual mayor de la serie quedó en revisión de calidad y se excluyó por prudencia.' : ''}`
+      + ' Sus ventanas se verifican contra estas exigencias en las páginas anteriores.';
     doc.fillColor('#333').fontSize(8).font('Helvetica').text(txtR, 50, y, { width: W - 100 });
     y += doc.heightOfString(txtR, { width: W - 100 }) + 10;
   }
   const fuente = String(clima.fuente || 'Fuente: Dirección Meteorológica de Chile.');
-  doc.fillColor('#888').fontSize(6.5).font('Helvetica').text(`Fuente de los datos de clima: ${fuente}.`, 50, y, { width: W - 100 });
+  const fuenteRad = rad ? ' Radiación solar: NASA POWER, promedio multianual por coordenada de la comuna.' : '';
+  doc.fillColor('#888').fontSize(6.5).font('Helvetica')
+    .text(`Fuente de los datos de clima: ${fuente}.${fuenteRad}`, 50, y, { width: W - 100 });
   y += 18;
   return y;
 }

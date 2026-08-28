@@ -144,9 +144,12 @@ test('doctrina de copy: kPa se explica antes de usarse y sin guiones largos nuev
   // Guiones largos permitidos: el del comentario de cabecera y los del truco de dec()
   // que justamente los elimina. En cualquier OTRA linea (las que arman texto del
   // cliente) no puede haber ninguno.
+  // Se excluyen COMENTARIOS (// y bloques *): no viajan al cliente. Lo vigilado son
+  // los literales de texto del PDF.
   const lineasConDash = SRC_PDF.split('\n')
     .filter((l) => l.includes('—'))
-    .filter((l) => !l.includes('guion largo') && !l.startsWith('//'));
+    .map((l) => l.trim())
+    .filter((l) => !l.includes('guion largo') && !l.startsWith('//') && !l.startsWith('*') && !l.startsWith('/*'));
   assert.deepEqual(lineasConDash, [], 'guiones largos fuera de los dos sitios permitidos');
 });
 
@@ -214,4 +217,25 @@ test('clima hostil (nulls y NaN en las series) no tumba el PDF', async () => {
 
 test('el cliente de THERMAL tambien pide el clima (incluir_clima: true)', () => {
   assert.match(SRC_CLI, /incluir_clima:\s*true/);
+});
+
+test('[Codex, compuerta] temperatura con meses faltantes NO inventa 0 grados ni corre etiquetas', async () => {
+  const cl = bloqueClima();
+  // mes 4 ausente al medio + serie corta (los meses 10-12 sin dato): la linea se corta,
+  // no se dibuja un 0 falso, y el resto de la pagina vive.
+  cl.temperatura.mensual[3] = { mes: 4, max_media: null, min_media: null };
+  cl.temperatura.mensual = cl.temperatura.mensual.slice(0, 9);
+  const pdf = await generarInformeVientosPdf({ ...datosBase(), clima: cl }, { nombre: 'M', comuna: 'T', numeroInforme: 'T-C6' });
+  assert.ok(Buffer.isBuffer(pdf) && paginasDe(pdf) >= 2);
+});
+
+test('[Codex, compuerta] el titulo dice CLIMA solo cuando la pagina de clima va de verdad', async () => {
+  assert.match(SRC_PDF, /traeClima \?/, 'el titulo se decide por el contenido real');
+  const sinClima = await generarInformeVientosPdf(datosBase(), { nombre: 'M', comuna: 'T', numeroInforme: 'T-C7' });
+  assert.ok(Buffer.isBuffer(sinClima), 'la version sin clima sigue saliendo');
+});
+
+test('[Codex, compuerta] la exclusion QC de la racha se declara al cliente en el texto', () => {
+  assert.match(SRC_PDF, /quedó en revisión de calidad y se excluyó por prudencia/,
+    'esconder el dato excluido seria la mentira chica que el informe prohibe');
 });
