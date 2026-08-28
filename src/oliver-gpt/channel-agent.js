@@ -540,6 +540,11 @@ export async function handleChannelTurn(
           // Paso 2: PDF premium (mismo generador → folio ISO impreso en el documento).
           const clientName = input.name || state.name || senderName || 'Cliente';
           const clientPhone = input.phone || '';
+          // [2026-08-28] Identidad CRM por canal (caso Alfredo): en WhatsApp senderId ES el
+          // teléfono del hilo real → manda senderId (el celular dictado para el documento creaba
+          // conversaciones/leads fantasma). En IG/FB senderId es un PSID (no teléfono) → ahí el
+          // celular dictado es el único teléfono real y se conserva el comportamiento anterior.
+          const crmPhone = channel === 'whatsapp' ? (senderId || clientPhone) : (clientPhone || senderId);
           const clientComuna = input.comuna || state.comuna || '';
           const pdfData = {
             name: clientName, phone: clientPhone, comuna: clientComuna,
@@ -569,7 +574,7 @@ export async function handleChannelTurn(
             (input.items || []).reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0);
           safe('generarPdf.zoho', async () => {
             const dealId = await upsertZohoDeal({
-              phone: senderId || clientPhone, name: clientName, comuna: clientComuna, // [2026-08-28] Zoho dedupe por el hilo real
+              phone: crmPhone, name: clientName, comuna: clientComuna, // [2026-08-28] Zoho dedupe por identidad CRM por canal
               items: input.items || [], grand_total: grandTotal, stageKey: 'propuesta', quote_number: quoteNumber,
             });
             if (dealId) {
@@ -584,11 +589,10 @@ export async function handleChannelTurn(
           // DICTA para el documento (input.phone, ej. "974266456") NO es la identidad del chat.
           // Con clientPhone primero, sales-os creaba conversaciones/leads FANTASMA con ese número
           // (974266456 y 56974266456, cero mensajes) y las cotizaciones quedaban colgadas ahí →
-          // el inbox mostraba al cliente "Sin mensajes aún". La identidad CRM es SIEMPRE senderId
-          // (el hilo real); el teléfono dictado vive solo en el PDF.
+          // el inbox mostraba al cliente "Sin mensajes aún". crmPhone (arriba) es el hilo real.
           safe('generarPdf.conversion', () =>
             bridge.pushQuoteEvent({
-              phone: senderId || clientPhone, channel, customer_name: clientName,
+              phone: crmPhone, channel, customer_name: clientName,
               amount_total: grandTotal, currency: 'CLP', status: 'sent', quote_number: quoteNumber,
               fbclid: state.fbclid || null, gclid: state.gclid || null,
               ttclid: state.ttclid || null, ctwa_clid: state.ctwa_clid || null,
@@ -602,7 +606,7 @@ export async function handleChannelTurn(
                 channel: channel || null,
                 lead_name: clientName || null,
                 name: clientName || null,
-                phone: senderId || clientPhone || null, // [2026-08-28] identidad = hilo real, no el celular dictado
+                phone: crmPhone || null, // [2026-08-28] identidad CRM por canal, no el celular dictado
                 comuna: clientComuna || null,
                 city: clientComuna || null,
                 project_type: null,
