@@ -1363,7 +1363,23 @@ export async function handleWebhook(req, res, deps = {}) {
           }
           // [2026-08-27 · Codex/Gemini, compuerta #524] Si el mensaje de valor YA salio y el
           // informe despues se cae, hay que decirselo al cliente (no prometer y desaparecer).
+          // [Copilot, re-pase] CON ESPEJO AL COCKPIT, como todo texto que sale a Meta: una
+          // promesa rota que el operador no puede ver es el mismo defecto que motivo el
+          // espejo del informe original.
           let valorEnviado = false;
+          const avisarRecuperacion = () => safe('informeTermico.recuperacion', async () => {
+            if (!valorEnviado) return;
+            const rec = 'El informe me está tomando más de lo esperado — se lo hago llegar apenas esté listo. Mientras tanto, le dejo su propuesta.';
+            const recEnviado = await enviarSinPausa(from, rec);
+            if (recEnviado?.ok === true) {
+              safe('informeTermico.espejo.recuperacion', () => bridge.pushConversationEvent({
+                channel: 'whatsapp', external_id: from, direction: 'outbound',
+                actor_type: 'ai', actor_name: 'Oliver', message_type: 'text',
+                body: rec,
+                metadata: { source: 'oliver_gpt_secuencia_informe' },
+              }));
+            }
+          });
           // Si algo corta entre aca y el envio, la reserva se suelta: un candado que no se
           // puede soltar deja al cliente sin informe hasta que venza el TTL.
           //
@@ -1537,10 +1553,7 @@ export async function handleWebhook(req, res, deps = {}) {
           if (!pdfBuf) {
             liberar();
             // [Codex/Gemini, compuerta #524] Se prometió y no salió: se dice, no se desaparece.
-            if (valorEnviado) {
-              await safe('informeTermico.recuperacion', () => enviarSinPausa(from,
-                'El informe me está tomando más de lo esperado — se lo hago llegar apenas esté listo. Mientras tanto, le dejo su propuesta.'));
-            }
+            await avisarRecuperacion();
             return 'fallo';
           }
 
@@ -1563,12 +1576,9 @@ export async function handleWebhook(req, res, deps = {}) {
             // Se suelta la reserva corta: si no, el reintento que este log promete no
             // podria ocurrir hasta dentro de 5 minutos.
             liberar();
-            // [Codex/Gemini, compuerta #524] Idem: el cliente ya leyó "le dejo primero el
-            // informe" — si Meta lo rechazó, se le avisa antes de que llegue el precio.
-            if (valorEnviado) {
-              await safe('informeTermico.recuperacion', () => enviarSinPausa(from,
-                'El informe me está tomando más de lo esperado — se lo hago llegar apenas esté listo. Mientras tanto, le dejo su propuesta.'));
-            }
+            // [Codex/Gemini, compuerta #524] Idem: el cliente ya leyó la promesa del
+            // informe — si Meta lo rechazó, se le avisa antes de que llegue el precio.
+            await avisarRecuperacion();
             return 'fallo';
           }
           // Se marca DESPUÉS de que salió DE VERDAD: si el envío falla, el próximo turno reintenta.
