@@ -524,7 +524,8 @@ function dibujarPaginaCurvas(doc, curvas) {
     + 'resiste aún más de lo que el techo muestra.';
   doc.fillColor('#333').fontSize(8.5).font('Helvetica').text(intro, 50, y, { width: W - 100 });
   // El alto del parrafo se MIDE (crecio una linea y piso el eje del grafico una vez).
-  y += doc.heightOfString(intro, { width: W - 100 }) + 14;
+  // +34: el panel plataforma arranca 26 pt ARRIBA de ctop (cabecera) y necesita su aire.
+  y += doc.heightOfString(intro, { width: W - 100 }) + 34;
 
   // ── Geometria del grafico ────────────────────────────────────────────────
   const cx = 92, cw = 442, ctop = y, ch = 210;
@@ -549,6 +550,27 @@ function dibujarPaginaCurvas(doc, curvas) {
   const fx = (area) => cx + (Math.max(0, Math.min(area, xMax)) / xMax) * cw;
   const fy = (kpa) => ctop + ch - (Math.max(0, Math.min(kpa, yMax)) / yMax) * ch;
 
+  // ── [Dueño, 28-ago: *"se ve pobre... más espectacular, como dentro de una plataforma
+  // de ACTIVA, tridimensional"*] EL PANEL PLATAFORMA: marco con sombra, cabecera de
+  // marca, zona de exigencia legal sombreada, y las curvas RELLENAS en capas (efecto de
+  // profundidad, del vidrio más grueso al más delgado). Los DATOS no cambian ni un pelo.
+  const pTop = ctop - 26, pIzq = cx - 34, pAncho = cw + 46, pAlto = ch + 26 + 34;
+  doc.rect(pIzq + 3, pTop + 3, pAncho, pAlto).fill('#D3DAE4');           // sombra
+  doc.rect(pIzq, pTop, pAncho, pAlto).fillAndStroke('#FFFFFF', '#C4CDD9');
+  doc.rect(pIzq, pTop, pAncho, 18).fill(NAVY);                            // cabecera
+  doc.fillColor(GOLD).fontSize(7.5).font('Helvetica-Bold')
+    .text('MOTOR DE VIENTOS · PLATAFORMA ACTIVA', pIzq + 8, pTop + 5.5, { lineBreak: false });
+  doc.fillColor('#AEBDD1').fontSize(6.5).font('Helvetica')
+    .text('ASTM E1300-16 · NCh 432', pIzq + pAncho - 110, pTop + 6, { width: 102, align: 'right' });
+  doc.rect(cx, ctop, cw, ch).fill('#F7FAFD');                             // cielo del plot
+  // La ZONA DE EXIGENCIA LEGAL, sombreada en ámbar hasta la máxima línea de la ley:
+  // lo que el ojo debe leer al tiro es "el vidrio vive ARRIBA de esta franja".
+  if (maxLey > 0 && maxLey < yMax) {
+    doc.save().rect(cx, fy(maxLey), cw, ctop + ch - fy(maxLey)).fillOpacity(0.5).fill('#FBF1DC').fillOpacity(1).restore();
+    doc.fillColor('#8A6D1C').fontSize(6).font('Helvetica-Bold')
+      .text('ZONA DE EXIGENCIA LEGAL', cx + 6, ctop + ch - 10, { lineBreak: false });
+  }
+
   // Grilla recesiva + ejes
   doc.lineWidth(0.5);
   const pasoY = yMax > 3.5 ? 1.0 : 0.5;
@@ -566,31 +588,39 @@ function dibujarPaginaCurvas(doc, curvas) {
   doc.fillColor('#666').fontSize(7).font('Helvetica-Bold').text('kPa', cx - 26, ctop - 10);
   doc.text('tamaño del vidrio (m²)', cx + cw / 2 - 40, ctop + ch + 14);
 
-  // ── Lineas de la ley (doradas, punteadas) ───────────────────────────────
+  // ── Curvas RELLENAS en capas: del espesor mas grueso (fondo) al mas delgado ──
+  const ordenadas = [...curvasEsp].sort((a, b) => Number(b.espesor_mm) - Number(a.espesor_mm));
+  const puntosDe = (c) => (Array.isArray(c.puntos) ? c.puntos : [])
+    .filter((p) => esObj(p) && Number(p.lr_corta_kPa) > 0 && Number(p.area_m2) > 0);
+  for (const c of ordenadas) {
+    const pts = puntosDe(c);
+    if (pts.length < 2) continue;
+    const color = COLOR_ESPESOR[Math.round(c.espesor_mm)] || COLOR_ESPESOR_NUEVO;
+    // la capa: area bajo la curva, translucida — apiladas dan la profundidad
+    doc.save().moveTo(fx(pts[0].area_m2), fy(pts[0].lr_corta_kPa));
+    for (const p of pts.slice(1)) doc.lineTo(fx(p.area_m2), fy(p.lr_corta_kPa));
+    doc.lineTo(fx(pts[pts.length - 1].area_m2), ctop + ch).lineTo(fx(pts[0].area_m2), ctop + ch)
+      .closePath().fillOpacity(0.16).fill(color).fillOpacity(1).restore();
+  }
+  // ── Lineas de la ley (doradas, punteadas) SOBRE las capas ───────────────
   for (const l of lineas) {
     const p = Number(l.presion_kPa);
     if (!p || p > yMax) continue;
     const esCiudad = l.entorno === 'ciudad';
-    // Sin numerito al borde: con dos lineas separadas 0,02 kPa los textos se pisaban;
-    // los valores van completos en la leyenda de abajo.
     doc.save().dash(esCiudad ? 4 : 1.8, { space: 2.4 })
       .moveTo(cx, fy(p)).lineTo(cx + cw, fy(p))
       .strokeColor(esCiudad ? GOLD : '#8A6D1C').lineWidth(1).stroke().restore();
   }
-
-  // ── Curvas de capacidad por espesor ─────────────────────────────────────
-  for (const c of curvasEsp) {
-    // [Gemini+Codex, compuerta] se filtran AMBOS ejes y los puntos no-objeto: un area
-    // corrupta o un [null] metia NaN/TypeError al lineTo y pdfkit corrompe el stream.
-    const pts = (Array.isArray(c.puntos) ? c.puntos : [])
-      .filter((p) => esObj(p) && Number(p.lr_corta_kPa) > 0 && Number(p.area_m2) > 0);
+  // ── Los trazos de las curvas, nitidos encima de todo ────────────────────
+  for (const c of ordenadas) {
+    const pts = puntosDe(c);
     if (pts.length < 2) continue;
     const color = COLOR_ESPESOR[Math.round(c.espesor_mm)] || COLOR_ESPESOR_NUEVO;
     doc.save().moveTo(fx(pts[0].area_m2), fy(pts[0].lr_corta_kPa));
     for (const p of pts.slice(1)) doc.lineTo(fx(p.area_m2), fy(p.lr_corta_kPa));
-    doc.strokeColor(color).lineWidth(1.6).stroke().restore();
-    // Etiqueta ADENTRO del grafico (al 85 % de la curva, donde ya se separaron), en una
-    // sola linea: al borde derecho chocaba con las lineas de la ley.
+    doc.strokeColor(color).lineWidth(2.2).stroke().restore();
+    const fin2 = pts[pts.length - 1];
+    doc.circle(fx(fin2.area_m2), fy(fin2.lr_corta_kPa), 1.8).fill(color);   // remate
     const pEt = pts[Math.max(0, pts.length - 7)];
     doc.fillColor(color).fontSize(7).font('Helvetica-Bold')
       .text(`${Math.round(c.espesor_mm)} mm`, fx(pEt.area_m2) + 2, fy(pEt.lr_corta_kPa) - 10,
@@ -606,10 +636,13 @@ function dibujarPaginaCurvas(doc, curvas) {
     const lr = pe && Number(pe.lr_corta_kPa);
     if (!lr || !Number.isFinite(lr) || !(Number(f.area_m2) > 0)) return;
     const px = fx(f.area_m2), py = fy(lr);
-    doc.circle(px, py, 3.4).fillAndStroke(GOLD, NAVY);
-    doc.fillColor(NAVY).fontSize(6.5).font('Helvetica-Bold').text(`V${i + 1}`, px - 4, py - 12);
+    // Medalla con sombra: la ventana del cliente es LA protagonista del grafico.
+    doc.circle(px + 1.2, py + 1.2, 5).fillOpacity(0.3).fill('#5A6B80');
+    doc.fillOpacity(1).circle(px, py, 5).fillAndStroke(GOLD, NAVY);
+    doc.circle(px, py, 2).fill('#FFF6E3');
+    doc.fillColor(NAVY).fontSize(6.5).font('Helvetica-Bold').text(`V${i + 1}`, px - 4, py - 14);
   });
-  y = ctop + ch + 26;
+  y = ctop + ch + 42;
 
   // Leyenda de las lineas legales
   // [Copilot, compuerta] la proporcion de trazado se DECLARA: una ventana de proporcion
