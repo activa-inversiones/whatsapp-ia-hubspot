@@ -233,11 +233,17 @@ test('🔴 modo informe-primero: valor → informe → video → propuesta, en E
   antesQue('Ministerio de Vivienda', 'MINVU');
   antesQue('separador de borde cálido', 'warm-edge');
   // [Dueño] El diferenciador con su raya de claims: baja probabilidad EN EL BORDE,
-  // jamás promesa absoluta de cero condensación.
-  assert.match(textoValor, /muy baja la probabilidad de condensación en el borde/,
+  // jamás promesa absoluta de cero condensación. Y su upgrade del 27-ago: la
+  // certificación alemana Passive House + el MECANISMO (retiene temperatura donde
+  // el aluminio la pierde), respaldado por la lámina comparativa del informe.
+  assert.match(textoValor, /probabilidad de condensación en el borde queda muy baja/,
     'el warm-edge se vende sin prometer condensación cero');
-  assert.match(textoValor, /me comenta no más/,
-    'la invitación a preguntar por el informe, en el tono del dueño');
+  assert.match(textoValor, /certificación del instituto alemán Passive House/,
+    'la credencial del separador, como la dictó el dueño');
+  assert.match(textoValor, /mayor temperatura interior/, 'el mecanismo: retiene, no pierde');
+  assert.match(textoValor, /separador de aluminio/, 'el contraste con el aluminio, que el informe dibuja');
+  assert.match(textoValor, /me comenta por favor, estaré muy atento/,
+    'la invitación a preguntar, con la redacción textual del dueño');
   // [Dueño, 27-ago] "Con esto (los guiones largos) se ve falso" + negritas de WhatsApp
   // en los tres titulares + el especialista con su credencial formal verificada.
   assert.doesNotMatch(textoValor, /—/, 'cero guiones largos: se leen a máquina');

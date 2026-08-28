@@ -2520,18 +2520,22 @@ Comuna: ${datos.comuna}`
                 `1) *Cuánto aíslan del frío sus ventanas:* la transmitancia térmica, que en el informe aparece ` +
                 `como "Uw" (mientras más bajo, mejor aísla), y lo que exige la norma ` +
                 `${esRef ? 'como referencia regional de La Araucanía' : `en su comuna${zonaTxt}`}.\n` +
-                // Guardián de claims: "muy baja probabilidad EN EL BORDE", jamás "cero
-                // condensación" — el propio informe advierte que con humedad alta puede
-                // condensar igual, y el resto depende de la casa.
-                `2) *Por qué con una buena ventana la condensación baja muchísimo:* nuestro termopanel usa separador ` +
-                `de borde cálido (el llamado warm-edge), que deja muy baja la probabilidad de condensación en el ` +
-                `borde del vidrio. El resto depende de la humedad y ventilación de la casa, y el informe también ` +
-                `lo explica.\n` +
+                // [Dueño, 27-ago] El separador con su credencial (certificación alemana
+                // Passive House — dato del dueño, dueño = fuente de los datos de producto)
+                // y el MECANISMO explicado: el borde cálido RETIENE la temperatura interior
+                // donde el aluminio la pierde. La comparación aluminio vs warm-edge viene
+                // dibujada en el propio informe (lámina de THERMAL). Guardián de claims:
+                // "probabilidad muy baja EN EL BORDE", jamás "cero condensación".
+                `2) *Por qué con una buena ventana la condensación baja muchísimo:* nuestro termopanel usa un ` +
+                `separador de borde cálido llamado warm-edge, con certificación del instituto alemán Passive House, ` +
+                `que mantiene el borde del vidrio a mayor temperatura interior en vez de perderla, como pasa con el ` +
+                `separador de aluminio. Por eso la probabilidad de condensación en el borde queda muy baja, y la ` +
+                `comparación entre ambos viene explicada en el mismo informe.\n` +
                 `3) *Nuestro especialista:* el ingeniero Marcelo Cifuentes, evaluador energético acreditado por el ` +
                 `Ministerio de Vivienda (MINVU) mediante la Resolución 266/2025, responde por cada cálculo. ` +
                 `Y las ventanas salen de nuestra propia fábrica en Temuco, no de un revendedor.\n\n` +
-                // [Dueño, 27-ago] La puerta abierta, en su tono: que preguntar no cueste.
-                `Y si quiere que le explique cualquier parte del informe, me comenta no más.`;
+                // [Dueño, 27-ago] La puerta abierta, con su redacción textual.
+                `Y si quiere que le explique cualquier parte del informe, me comenta por favor, estaré muy atento.`;
               };
               // Las MISMAS ventanas que declara la propuesta (mismo mapeo que el camino
               // clasico de abajo): informe y propuesta tienen que decir lo mismo siempre.
