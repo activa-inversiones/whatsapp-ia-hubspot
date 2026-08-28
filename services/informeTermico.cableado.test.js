@@ -95,8 +95,14 @@ test('🔒 sin dato verificado NO se manda nada — son citas normativas', async
   const bloque = cuerpoDelHook(src);
   // [2026-08-24] Ambas salidas sueltan la reserva corta antes del `return`: si no, un
   // THERMAL caido dejaria el candado puesto 5 min sin que nadie haya mandado nada.
-  assert.match(bloque, /if \(!datos\) \{ liberar\(\); return; \}/, 'sin datos de THERMAL no se emite documento');
-  assert.match(bloque, /if \(!pdfBuf\) \{ liberar\(\); return; \}/, 'si el PDF no se pudo armar, no se manda nada');
+  // [2026-08-27 · #524] Los `return` pelados ahora devuelven 'fallo': la secuencia
+  // informe-primero necesita saber que NO salio para soltar la propuesta igual. La
+  // proteccion (cortar sin dato / sin PDF) es la misma de siempre.
+  assert.match(bloque, /if \(!datos\) \{ liberar\(\); return 'fallo'; \}/, 'sin datos de THERMAL no se emite documento');
+  // (el bloque de !pdfBuf crecio en la compuerta #524: suelta la reserva, avisa al
+  // cliente si ya se le habia prometido el informe, y recien ahi devuelve 'fallo')
+  assert.match(bloque, /if \(!pdfBuf\) \{[\s\S]{0,700}?return 'fallo';\s*\}/, 'si el PDF no se pudo armar, no se manda nada');
+  assert.match(bloque, /if \(!pdfBuf\) \{\s*\n\s*liberar\(\);/, 'y suelta la reserva antes de salir');
 });
 
 test('la tool de re-envio existe y SALTA el candado', async () => {
@@ -109,8 +115,11 @@ test('la tool de re-envio existe y SALTA el candado', async () => {
   // [2026-08-24 · rediseño] El hook de `toolCtx` quedo SOLO para el re-envio explicito: el
   // envio automatico ya no pasa por aca, sale con la propuesta (el unico punto donde el
   // proyecto esta completo). Un pedido del cliente despacha en el momento.
-  assert.match(hookDeToolCtx(wh), /=> despacharInforme\(comuna, opciones\)/,
-    'un pedido explicito despacha en el momento');
+  // [#524 · Codex, compuerta] SIN return: execTool hace await de lo que la tool devuelva,
+  // y devolver la promesa convertia el pedido manual en un turno colgado ~40s. El despacho
+  // sigue siendo inmediato (se invoca), pero fire-and-forget.
+  assert.match(hookDeToolCtx(wh), /=> \{ despacharInforme\(comuna, opciones\); \}/,
+    'un pedido explicito despacha en el momento, fire-and-forget (sin return)');
   assert.match(wh, /const despacharInforme = \(comuna, \{ forzar = false/, 'despacharInforme acepta forzar');
   assert.match(cuerpoDelHook(wh), /if \(!forzar\) \{/, 'el candado solo aplica al envio automatico');
 });
@@ -360,8 +369,11 @@ test('🔴 calcular_cotizacion YA NO dispara el informe', async () => {
 test('🔴 el informe se despacha con la PROPUESTA y con el proyecto completo', async () => {
   const wh = await leer('../src/oliver-gpt/webhook.js');
   const bloque = trozo(wh, 'Paso 3a·bis', 'Paso 3b');
-  assert.match(bloque, /if \(docSent\) \{/,
-    'solo si la propuesta se entrego: no se le promete un informe a quien no cotizo');
+  // [2026-08-27 · #524] La condicion crecio: en modo informe-primero el despacho ya
+  // ocurrio ANTES de la propuesta, asi que este camino clasico ademas exige NO estar
+  // en esa secuencia. El requisito original (docSent) sigue adentro, intacto.
+  assert.match(bloque, /if \(docSent && !modoInformePrimero\) \{/,
+    'solo si la propuesta se entrego (y no se despacho ya en la secuencia informe-primero)');
   assert.match(bloque, /const ventanasProyecto = \(input\.items \|\| \[\]\)\.map/,
     'las ventanas salen de los items de la propuesta, que es donde esta el proyecto entero');
   assert.match(bloque, /uw: it\.termico\?\.uw \?\? null/,
@@ -399,7 +411,10 @@ test('🔴 [#393] el registro ISO manda el FOLIO REAL: state.last_quote, no camp
   // state.last_quote (lo escribe generarPdf al entregar la propuesta, un instante antes de
   // despachar el informe: medido en vivo, informe 0030 y quote 0365 en el mismo segundo).
   const src = await leer('../src/oliver-gpt/webhook.js');
-  assert.match(src, /quote_number:\s*state\?\.last_quote\?\.quote_number\s*\?\?\s*null/,
-    'el payload del registro lee state.last_quote.quote_number');
-  assert.ok(!/state\?\.quoteNum/.test(src), 'los campos fantasma quoteNum ya no se leen');
+  // [#524 · Codex, compuerta] En la secuencia informe-primero el informe corre ANTES de
+  // que exista state.last_quote: el folio de la propuesta llega por opcion (quoteNumber)
+  // y last_quote queda de fallback para el camino clasico.
+  assert.match(src, /quote_number:\s*quoteNumber\s*\?\?\s*state\?\.last_quote\?\.quote_number\s*\?\?\s*null/,
+    'el payload del registro lee el folio de la opcion o de state.last_quote');
+  assert.ok(!/state\?\.quoteNum\b/.test(src), 'los campos fantasma quoteNum ya no se leen');
 });

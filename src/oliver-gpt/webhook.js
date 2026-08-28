@@ -55,6 +55,32 @@ import { elegirVideo, mensajeDelVideo, mediaIdsDisponibles } from '../../service
 // Cuanto se espera antes de mandar el video. Cae DESPUES del informe termico (4 s + 35 s)
 // para no encimarle tres mensajes seguidos al cliente: propuesta → informe → video.
 const DEMORA_VIDEO_MS = Number(process.env.INFORME_VIDEO_MS || 50_000);
+
+// ── [2026-08-27] SECUENCIA INFORME-PRIMERO (Variante B · tablero #524) ──────────────
+// Pedido del dueño, textual: *"¿por qué aún estamos entregando cotización a cliente y no
+// lo que se aprobó desde el principio? … primero optimicemos todo lo ya ganado de los
+// informes"*. El orden aprobado INVIERTE el envío (mensaje de valor → informe → video →
+// recién ahí la propuesta con el precio) sin mover el instante de decisión: el proyecto
+// se decide completo en el mismo punto de siempre.
+// Piloto: flag default OFF + lista blanca de teléfonos. '*' en la lista habilita a todos
+// (rollout final, decisión del dueño). Sin lista, el flag prendido no habilita a nadie.
+const SEQ_INFORME_PRIMERO_ON = /^(1|true|on)$/i.test(String(process.env.SEQUENCE_INFORME_PRIMERO || '').trim());
+const SEQ_INFORME_LISTA = String(process.env.SEQUENCE_INFORME_PRIMERO_LISTA || '')
+  .split(',').map((t) => (t.trim() === '*' ? '*' : t.replace(/\D/g, ''))).filter(Boolean);
+// Techo duro de espera del informe ANTES de la propuesta: si el informe tarda más que
+// esto (o falla), la propuesta sale igual. El cliente JAMÁS se queda sin su PDF por
+// esta secuencia — es la condición no negociable de la propuesta aprobada.
+const SEQ_INFORME_TIMEOUT_MS = Number(process.env.SEQUENCE_INFORME_TIMEOUT_MS || 120_000);
+// Pausa humana entre el informe y el video cuando el video cae ENTRE documentos.
+const SEQ_VIDEO_MS = Number(process.env.SEQUENCE_VIDEO_MS || 8_000);
+
+export function secuenciaInformePrimero(waId, { flag = SEQ_INFORME_PRIMERO_ON, lista = SEQ_INFORME_LISTA } = {}) {
+  if (!flag) return false;
+  if (!Array.isArray(lista) || !lista.length) return false;
+  if (lista.includes('*')) return true;
+  const tel = String(waId || '').replace(/\D/g, '');
+  return Boolean(tel) && lista.includes(tel);
+}
 import {
   parseInbound as realParseInbound,
   parseStatuses as realParseStatuses,
@@ -1233,14 +1259,21 @@ export async function handleWebhook(req, res, deps = {}) {
     // que "deje de crecer", y una tool lenta no puede quedarse afuera porque el turno
     // espera a sus propias tools.
 
-      const despacharInforme = (comuna, { forzar = false, glassLabel = '', uw = null, producto = '', ventanas = null } = {}) => {
+      // [2026-08-27 · #524] Devuelve una promesa con el RESULTADO ('enviado' | 'ya_enviado' |
+      // 'en_curso' | 'fallo' | null si algo lanzó): la secuencia informe-primero necesita
+      // saber qué pasó para decidir si manda el video y cuándo suelta la propuesta. Los
+      // llamadores fire-and-forget existentes no leen el retorno y no cambian en nada.
+      // `mensajePrevio`: el mensaje de valor de la Variante B — solo se envía si el informe
+      // VA a salir (pasó candados y comuna verificada); anunciar un informe que no viene
+      // sería mentirle al cliente.
+      const despacharInforme = (comuna, { forzar = false, glassLabel = '', uw = null, producto = '', ventanas = null, mensajePrevio = '', quoteNumber = null } = {}) => {
         // 🔴 La clave del candado incluye la HUELLA del proyecto: mismo cliente + mismo
         // proyecto = un solo informe en 30 dias; cambia la comuna, el producto o el vidrio =
         // proyecto distinto y le corresponde el suyo.
         const _tel = String(from).replace(/\D/g, '');
         const _huella = huellaDelInforme({ comuna, producto, glassLabel });
         const clave = _huella ? `informe_termico:${_tel}:${_huella}` : `informe_termico:${_tel}`;
-        safe('informeTermico', async () => {
+        return safe('informeTermico', async () => {
           // 🔴 [2026-08-24 · Codex, compuerta cruzada] LA MEMORIA VA ANTES QUE TODO CANDADO.
           // Primer intento la puse despues, y Codex cazo el agujero: si el cliente YA recibio
           // su informe (candado de 30 dias puesto) y despues RECOTIZA con otro vidrio, el
@@ -1278,7 +1311,7 @@ export async function handleWebhook(req, res, deps = {}) {
               yaSeMando = candadoVigente(_candado, _resetAt);
             } catch { /* si el estado no se puede leer, se sigue */ }
           }
-          if (yaSeMando) return;
+          if (yaSeMando) return 'ya_enviado';
 
           // 🔴 [2026-08-24] CANDADO CORTO CONTRA EL DUPLICADO. Medido en produccion: el
           // cliente 56990704777 recibio DOS informes identicos en el mismo minuto, y quedaron
@@ -1321,13 +1354,16 @@ export async function handleWebhook(req, res, deps = {}) {
             // SIEMPRE. Ocho tests en rojo y ningun informe saliendo. `reservar` ya persiste
             // su token en el KV compartido, asi que la marca compartida existe sin ayuda.
             try {
-              if (await (deps.leerEstado || leerEstado)(claveEnCurso)) return;
+              if (await (deps.leerEstado || leerEstado)(claveEnCurso)) return 'en_curso';
             } catch { /* si el estado compartido no responde, manda la reserva local */ }
             try {
               tokenReserva = (deps.reservarEstado || reservarEstado)(claveEnCurso, 5 * 60) || null;
-              if (!tokenReserva) return;
+              if (!tokenReserva) return 'en_curso';
             } catch { /* si el estado no se puede reservar, se sigue: mejor duplicar que no mandar */ }
           }
+          // [2026-08-27 · Codex/Gemini, compuerta #524] Si el mensaje de valor YA salio y el
+          // informe despues se cae, hay que decirselo al cliente (no prometer y desaparecer).
+          let valorEnviado = false;
           // Si algo corta entre aca y el envio, la reserva se suelta: un candado que no se
           // puede soltar deja al cliente sin informe hasta que venza el TTL.
           //
@@ -1360,7 +1396,30 @@ export async function handleWebhook(req, res, deps = {}) {
           let datos = norm ? await pedirComunaFn(norm) : null;
           let esRef = false;
           if (!datos) { datos = await pedirComunaFn(COMUNA_REFERENCIA); esRef = true; }
-          if (!datos) { liberar(); return; }   // sin dato verificado no hay informe
+          if (!datos) { liberar(); return 'fallo'; }   // sin dato verificado no hay informe
+
+          // [2026-08-27 · #524] EL MENSAJE DE VALOR (paso 3 de la Variante B). Va acá y no
+          // antes: recién en este punto los candados pasaron y la comuna está verificada,
+          // así que el informe VA a intentarse de verdad. El copy llega del llamador tal
+          // cual fue aprobado (pasó el guardián de claims en la propuesta) — acá no se
+          // redacta nada. El cliente lo lee mientras corren las consultas a THERMAL.
+          // 🔴 [Codex, compuerta] Llega como FUNCIÓN de `esRef`: si la comuna cayó a la
+          // referencia regional (Labranza, Cajón…), el copy NO puede prometer "el límite
+          // para {comuna}" — el PDF va a declarar una referencia regional, y el mensaje
+          // tiene que decir lo mismo que el documento.
+          if (mensajePrevio) {
+            const textoValor = typeof mensajePrevio === 'function' ? mensajePrevio(esRef) : mensajePrevio;
+            const mvEnviado = textoValor ? await enviarSinPausa(from, textoValor) : null;
+            if (mvEnviado?.ok === true) {
+              valorEnviado = true;
+              safe('informeTermico.espejo.valor', () => bridge.pushConversationEvent({
+                channel: 'whatsapp', external_id: from, direction: 'outbound',
+                actor_type: 'ai', actor_name: 'Oliver', message_type: 'text',
+                body: textoValor,
+                metadata: { source: 'oliver_gpt_secuencia_informe' },
+              }));
+            }
+          }
 
           // El catálogo de vidrios enriquece el informe, pero NO es obligatorio: si falla,
           // el informe sale igual sin esa sección.
@@ -1424,10 +1483,14 @@ export async function handleWebhook(req, res, deps = {}) {
 
           // TIEMPO 1 — el aviso. Explica la espera, que es lo que la vuelve tolerable: un
           // silencio largo sin explicación se lee como que el bot se colgó.
+          // 🔴 [Gemini, compuerta #524] SI EL MENSAJE DE VALOR YA SALIÓ, EL AVISO SOBRA:
+          // dos anuncios seguidos del mismo informe (el mensaje de valor y el aviso
+          // clásico de abajo) delatan al bot. Se conserva el RITMO (las esperas y los
+          // puntitos siguen igual); se calla solo el texto redundante.
           await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: DEMORA_AVISO_MS });
           const avisoTxt = `Deme un momento${nom ? `, ${nom}` : ''} — reviso qué exige la norma en `
             + `${esRef ? 'su zona' : datos.comuna} y le armo el informe.`;
-          const avisoEnviado = await enviarSinPausa(from, avisoTxt);
+          const avisoEnviado = valorEnviado ? null : await enviarSinPausa(from, avisoTxt);
           // 🔴 [2026-08-24] ESPEJO AL COCKPIT. `enviarSinPausa` habla con Meta pero NO
           // registra nada: este texto salia hacia el cliente y no existia para el operador.
           // Sin el, el documento de mas abajo aparece solo, sin la frase que lo anuncia.
@@ -1471,7 +1534,15 @@ export async function handleWebhook(req, res, deps = {}) {
             // ventanas y las tiraba: el PDF volvia a dibujar UNA sola, en singular.
             ventanas,
           });
-          if (!pdfBuf) { liberar(); return; }
+          if (!pdfBuf) {
+            liberar();
+            // [Codex/Gemini, compuerta #524] Se prometió y no salió: se dice, no se desaparece.
+            if (valorEnviado) {
+              await safe('informeTermico.recuperacion', () => enviarSinPausa(from,
+                'El informe me está tomando más de lo esperado — se lo hago llegar apenas esté listo. Mientras tanto, le dejo su propuesta.'));
+            }
+            return 'fallo';
+          }
 
 
           // Reusa el mismo par upload+send que ya usa el PDF de la propuesta: subir el
@@ -1492,7 +1563,13 @@ export async function handleWebhook(req, res, deps = {}) {
             // Se suelta la reserva corta: si no, el reintento que este log promete no
             // podria ocurrir hasta dentro de 5 minutos.
             liberar();
-            return;
+            // [Codex/Gemini, compuerta #524] Idem: el cliente ya leyó "le dejo primero el
+            // informe" — si Meta lo rechazó, se le avisa antes de que llegue el precio.
+            if (valorEnviado) {
+              await safe('informeTermico.recuperacion', () => enviarSinPausa(from,
+                'El informe me está tomando más de lo esperado — se lo hago llegar apenas esté listo. Mientras tanto, le dejo su propuesta.'));
+            }
+            return 'fallo';
           }
           // Se marca DESPUÉS de que salió DE VERDAD: si el envío falla, el próximo turno reintenta.
           // Con fecha: el candado solo vale si es posterior al ultimo RESET (candadoVigente).
@@ -1660,7 +1737,11 @@ Comuna: ${datos.comuna}`
                     // (el rastro que escribe generarPdf al entregar la propuesta, un instante
                     // antes de despachar este informe). Medido en vivo: el informe 0030 se
                     // emitio en el MISMO segundo en que la quote 0365 ya estaba en la tabla.
-                    quote_number: state?.last_quote?.quote_number ?? null,
+                    // [Codex, compuerta #524] En la secuencia informe-primero el informe corre
+                    // ANTES de que la propuesta escriba state.last_quote: el folio llega por
+                    // opción desde el llamador (que ya lo tiene emitido). El fallback cubre
+                    // el camino clásico, donde el rastro ya existe.
+                    quote_number: quoteNumber ?? state?.last_quote?.quote_number ?? null,
                   }),
                   signal: AbortSignal.timeout(8000),
                 });
@@ -1672,6 +1753,10 @@ Comuna: ${datos.comuna}`
               log('warn', 'informeTermico.registro', `fallo el registro de ${numeroInforme}: ${e.message} — el cliente YA tiene su informe`);
             }
           }
+          // [Codex, compuerta #524] 'enviado' = Meta ACEPTÓ el envío — el MISMO estándar
+          // que usa docSent para la propuesta. La entrega real llega después por el acuse
+          // (webhook de statuses) y su manejo ya existe (rastro wamsg + suelta de candado).
+          return 'enviado';
           } finally {
             // Idempotente: si el informe se entrego, `tokenReserva` ya es null y esto no
             // hace nada. Solo actua cuando se salio sin haber mandado.
@@ -1718,7 +1803,12 @@ Comuna: ${datos.comuna}`
       // La tool `enviar_informe_termico` (el cliente lo PIDE) sigue teniendo su hook.
       // `calcular_cotizacion` ya NO dispara nada: el informe sale con la propuesta, que es
       // el unico punto donde el proyecto esta completo.
-      enviarInformeTermico: (comuna, opciones = {}) => despacharInforme(comuna, opciones),
+      // 🔴 [Codex · compuerta #524] SIN return: `execTool` hace await de lo que la tool
+      // devuelva, y devolver la promesa convertia este camino manual en BLOQUEANTE (el
+      // turno entero esperando los ~40s de ritmo humano del informe). Fire-and-forget,
+      // como fue siempre. La secuencia informe-primero llama a despacharInforme directo
+      // y ELLA si lee el resultado.
+      enviarInformeTermico: (comuna, opciones = {}) => { despacharInforme(comuna, opciones); },
 
       // saveLead → pushLeadEvent (persistencia real del lead).
       saveLead: (leadState = {}) =>
@@ -2296,6 +2386,163 @@ Comuna: ${datos.comuna}`
           };
           const pdfBuffer = await generatePdf(pdfData, quoteNumber);
 
+          // ── 🎥 El video de cortesía, como FUNCIÓN: lo usan las DOS secuencias ─────
+          // [2026-08-27 · #524] Antes vivía inline dentro de `if (docSent)` (el tablero lo
+          // tenía anotado: "recablear candado, hoy vive dentro de docSent"). Es el MISMO
+          // cuerpo, sin cambios de comportamiento: tanda, vistos-antes-de-enviar y
+          // descarte de media_id vencido quedan idénticos. Solo cambia quién lo llama y
+          // con qué espera.
+          let videoCortesiaEnviado = false;
+          const enviarVideoCortesia = async (demoraMs) => {
+              videoCortesiaEnviado = true;
+              const claveVistos = `videos_fabrica:vistos:${String(from).replace(/\D/g, '')}`;
+              // Inyectable como todo lo demas: sin esto el caso "no hay ningun video
+              // cargado" NO se puede probar. `mediaIdsDisponibles` cae al archivo del repo
+              // si el KV viene vacio, asi que desde que `data/videos-media-ids.json` entro
+              // (commit c4e3052) SIEMPRE devolvia los 6 ids y el test que cubria ese caso
+              // quedo en rojo permanente, midiendo "sin ids en el KV" y no "sin ids".
+              const ids = await (deps.mediaIdsDisponibles || mediaIdsDisponibles)(deps.leerEstado || leerEstado);
+              const disponibles = Object.keys(ids);
+              if (!disponibles.length) return;            // todavia no se subio ninguno
+
+              // 🔴 [2026-08-26] UN VIDEO DE CORTESIA POR TANDA, NO UNO POR PDF. Medido dos
+              // veces en la conversacion de Paula: pidio DOS cotizaciones (negra y blanca),
+              // salieron dos PDF —los dos correctos— y detras salieron DOS VIDEOS. El bloque
+              // vive dentro del envio del PDF, asi que se dispara una vez por documento.
+              // Dos propuestas son dos documentos; dos videos de la fabrica son spam.
+              const claveTanda = `video_tanda:${String(from).replace(/\D/g, '')}`;
+              try {
+                if (await (deps.leerEstado || leerEstado)(claveTanda)) return;
+                await (deps.escribirEstado || escribirEstado)(claveTanda, true, 10 * 60);
+              } catch { /* sin respaldo, el peor caso vuelve a ser el de hoy */ }
+
+              const vistos = (await (deps.leerEstado || leerEstado)(claveVistos)) || [];
+              const video = elegirVideo({ vistos, disponibles });
+              if (!video) return;                          // ya los vio todos
+
+              // 🔴 SE MARCA ANTES DE MANDAR, NO DESPUES. El orden viejo era leer → elegir →
+              // ENVIAR → marcar, y entre el envio y la marca pasan segundos: dos pasadas leian
+              // la MISMA lista y elegian EL MISMO video. Es exactamente lo que se midio — no
+              // dos videos distintos, el mismo dos veces. Marcar primero invierte el riesgo
+              // hacia el lado correcto: en el peor caso el cliente se pierde UN video de
+              // cortesia; en el otro recibe dos iguales, que es lo que el dueño reporto.
+              try {
+                await (deps.escribirEstado || escribirEstado)(
+                  claveVistos, [...vistos, video.id], 180 * 24 * 3600);
+              } catch { /* sin respaldo queda el riesgo de hoy, no uno peor */ }
+
+              // La espera humana la decide el llamador: 50 s tras la propuesta (secuencia
+              // clasica, para no encimar tres mensajes) u 8 s entre informe y propuesta
+              // (secuencia informe-primero).
+              await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: demoraMs });
+              const env = await (deps.sendWaVideo || realSendWaVideo)(from, ids[video.id], mensajeDelVideo(video));
+              if (!env?.ok) {
+                // Lo mas probable es un media_id vencido: se descarta para que la proxima
+                // carga lo reponga, en vez de reintentar contra un id muerto.
+                delete ids[video.id];
+                try { await (deps.escribirEstado || escribirEstado)('videos_fabrica:media_ids', ids, 25 * 24 * 3600); } catch { /* se repone al re-subir */ }
+                log('warn', 'generarPdf.video', `video ${video.id} no se entrego (${env?.error || 's/detalle'}) — id descartado`);
+                return;
+              }
+              // (la marca ya quedo puesta ANTES del envio — ver arriba)
+              safe('generarPdf.video.espejo', () => bridge.pushConversationEvent({
+                channel: 'whatsapp', external_id: from, direction: 'outbound',
+                actor_type: 'ai', actor_name: 'Oliver', message_type: 'video',
+                body: `🎥 Video ${video.id} (${video.titulo}) enviado al cliente`,
+                metadata: { source: 'oliver_gpt_video', video: video.id, media_id: ids[video.id] },
+              }));
+          };
+
+          // ── 🧪 SECUENCIA INFORME-PRIMERO (Variante B · #524) — flag + lista blanca ──
+          // Orden aprobado por el dueño (27-ago): mensaje de valor → informe → video →
+          // recién ahí la propuesta con el precio. *"Si le entregamos el precio, el
+          // cliente ve precio y no ve nada más."* El instante de decisión NO cambia (el
+          // proyecto ya está completo acá, folio y PDF ya emitidos); cambia el ORDEN de
+          // envío. Techo duro SEQ_INFORME_TIMEOUT_MS: informe lento o caído ⇒ la
+          // propuesta sale igual — el cliente jamás se queda sin su PDF.
+          // 🔴 [Codex, compuerta] El gate va DENTRO de un try propio: si el hook inyectable
+          // lanzara, el safe('generarPdf') exterior devolvería null y el cliente se
+          // quedaría SIN propuesta — exactamente lo que esta secuencia jura no hacer.
+          let modoInformePrimero = false;
+          try { modoInformePrimero = Boolean((deps.secuenciaInformePrimero || secuenciaInformePrimero)(from)); }
+          catch (e) { log('error', 'generarPdf.secuencia.gate', e?.message || e); }
+          if (modoInformePrimero) {
+            try {
+              const nombreCorto = String(clientName || '').trim().split(/\s+/)[0] || '';
+              const comunaValor = clientComuna || 'su comuna';
+              // El copy es el APROBADO en PROPUESTA-FLUJO-VENTA-OLIVER-2026-08-27 §2 paso 3
+              // (pasó el guardián de claims, incluido el ajuste Codex de condensación).
+              // No se redacta acá: se interpola nombre y comuna, nada más.
+              // 🔴 Es FUNCIÓN de esRef (Codex, compuerta): si la comuna cae a la referencia
+              // regional, el punto 1 no puede prometer "el límite para {comuna}" — el
+              // mensaje dice lo mismo que va a decir el PDF, siempre.
+              const mensajeValor = (esRef) =>
+                `Perfecto${nombreCorto ? `, ${nombreCorto}` : ''}. Mientras le preparo su Propuesta Técnica Económica, ` +
+                `le dejo primero el informe técnico de sus ventanas en ${esRef ? 'su zona' : comunaValor}, para que lo revise con calma. ` +
+                `Tres cosas que le van a servir:\n` +
+                `1) El Uw de cada ventana — mientras más bajo, mejor aísla — y el límite que exige la norma ` +
+                `${esRef ? '(el informe lo indica como referencia regional de La Araucanía)' : `en su zona (el informe lo indica para ${comunaValor})`}.\n` +
+                `2) Dónde mirar los puntos de condensación: ahí se ve cuándo aparece condensación y por qué una buena ` +
+                `ventana la reduce muchísimo — el resto depende de la humedad y ventilación de la casa, y el mismo ` +
+                `informe lo explica.\n` +
+                `3) Quién responde por el cálculo: Marcelo Cifuentes, Evaluador Energético acreditado por el MINVU ` +
+                `(Res. 266/2025) — es una Memoria de Cálculo según la norma chilena NCh 3137, y las ventanas salen de ` +
+                `nuestra propia fábrica en Temuco, no de un revendedor.`;
+              // Las MISMAS ventanas que declara la propuesta (mismo mapeo que el camino
+              // clasico de abajo): informe y propuesta tienen que decir lo mismo siempre.
+              const ventanasProyecto = (input.items || []).map((it) => ({
+                producto: it.producto_label || it.product || '',
+                medidas: it.measures_original || it.measures || '',
+                vidrio: it.glass_label || '',
+                ambiente: it.ambiente || '',
+                cantidad: it.qty,
+                uw: it.termico?.uw ?? null,
+              }));
+              const ultima = (input.items || []).at(-1) || {};
+              // Inyectable en test (120 s reales harian imposible probar el camino del techo).
+              const techoInformeMs = Number(deps.seqInformeTimeoutMs ?? SEQ_INFORME_TIMEOUT_MS);
+              let venceTimeout = null;
+              const resultadoInforme = await Promise.race([
+                despacharInforme(clientComuna || state.comuna || '', {
+                  ventanas: ventanasProyecto,
+                  glassLabel: ultima.glass_label || '',
+                  uw: ultima.termico?.uw ?? null,
+                  producto: ultima.producto_label || ultima.product || '',
+                  mensajePrevio: mensajeValor,
+                  // [Codex, compuerta] El folio YA está emitido acá: viaja al registro ISO
+                  // del informe, que en esta secuencia corre antes de que exista last_quote.
+                  quoteNumber,
+                }),
+                new Promise((res) => { venceTimeout = setTimeout(() => res('timeout'), techoInformeMs); }),
+              ]).finally(() => { if (venceTimeout) clearTimeout(venceTimeout); });
+              log('info', 'generarPdf.secuencia', `${from}: informe-primero → ${resultadoInforme || 'sin_resultado'}`);
+              if (resultadoInforme === 'enviado') {
+                // Paso 6 de la secuencia: el video cae ENTRE el informe y la propuesta.
+                // 🔴 [Codex P1, compuerta] CON SU PROPIO TECHO. El techo del informe no
+                // cubre este await: un sendWaVideo colgado dejaba al cliente SIN PROPUESTA.
+                // Si el video se cuelga, se sigue de largo — el candado de tanda ya quedó
+                // puesto y en el peor caso el cliente pierde un video de cortesía, no el precio.
+                const techoVideoMs = Number(deps.seqVideoTimeoutMs ?? (SEQ_VIDEO_MS + 45_000));
+                let venceVideo = null;
+                await Promise.race([
+                  safe('generarPdf.video.secuencia', () => enviarVideoCortesia(SEQ_VIDEO_MS)),
+                  new Promise((res) => { venceVideo = setTimeout(res, techoVideoMs); }),
+                ]).finally(() => { if (venceVideo) clearTimeout(venceVideo); });
+                // 🔴 [Gemini, compuerta] PAUSA ANTES DEL PRECIO. Sin esto el video y la
+                // propuesta llegaban encimados (0 ms entre ambos) — tres alertas seguidas,
+                // que es exactamente lo que el diseño del ritmo humano prohíbe.
+                await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: SEQ_VIDEO_MS });
+              }
+              // 'ya_enviado' / 'en_curso' / 'timeout' / 'fallo': se sigue derecho a la
+              // propuesta. En timeout el informe puede llegar después por su cuenta —
+              // ese es el comportamiento clasico de hoy, no un estado nuevo.
+            } catch (e) {
+              // JAMÁS bloquea la propuesta: el peor resultado posible de esta secuencia
+              // sería un cliente sin precio, y ese resultado no existe por diseño.
+              log('error', 'generarPdf.secuencia', e?.message || e);
+            }
+          }
+
           // ── Paso 3: Enviar al cliente vía WhatsApp ───────────────────────────
           const filename = `${quoteNumber}.pdf`;
           const caption  = `Propuesta Técnica Económica N° ${quoteNumber} · Activa Inversiones`;
@@ -2356,7 +2603,9 @@ Comuna: ${datos.comuna}`
           // seria tarde"), con el OK del dueño: un informe con una ventana de diez es peor
           // que uno que llega medio minuto despues. Va DESPUES de la entrega confirmada de
           // la propuesta y fire-and-forget: no puede demorar ni tumbar el PDF.
-          if (docSent) {
+          // [2026-08-27 · #524] En modo informe-primero el despacho ya ocurrió ANTES de la
+          // propuesta (y sus candados cubrirían igual un doble disparo): no se repite.
+          if (docSent && !modoInformePrimero) {
             try {
               const ventanasProyecto = (input.items || []).map((it) => ({
                 producto: it.producto_label || it.product || '',
@@ -2399,63 +2648,11 @@ Comuna: ${datos.comuna}`
           // Va fire-and-forget y con espera humana: el video es un regalo, la propuesta es
           // la venta. Nunca puede demorarla ni tumbarla. Si el media_id caduco (~30 dias),
           // el envio falla, se descarta ese id y el proximo `subir-videos-wa` lo repone.
-          if (docSent) {
-            safe('generarPdf.video', async () => {
-              const claveVistos = `videos_fabrica:vistos:${String(from).replace(/\D/g, '')}`;
-              // Inyectable como todo lo demas: sin esto el caso "no hay ningun video
-              // cargado" NO se puede probar. `mediaIdsDisponibles` cae al archivo del repo
-              // si el KV viene vacio, asi que desde que `data/videos-media-ids.json` entro
-              // (commit c4e3052) SIEMPRE devolvia los 6 ids y el test que cubria ese caso
-              // quedo en rojo permanente, midiendo "sin ids en el KV" y no "sin ids".
-              const ids = await (deps.mediaIdsDisponibles || mediaIdsDisponibles)(deps.leerEstado || leerEstado);
-              const disponibles = Object.keys(ids);
-              if (!disponibles.length) return;            // todavia no se subio ninguno
-
-              // 🔴 [2026-08-26] UN VIDEO DE CORTESIA POR TANDA, NO UNO POR PDF. Medido dos
-              // veces en la conversacion de Paula: pidio DOS cotizaciones (negra y blanca),
-              // salieron dos PDF —los dos correctos— y detras salieron DOS VIDEOS. El bloque
-              // vive dentro del envio del PDF, asi que se dispara una vez por documento.
-              // Dos propuestas son dos documentos; dos videos de la fabrica son spam.
-              const claveTanda = `video_tanda:${String(from).replace(/\D/g, '')}`;
-              try {
-                if (await (deps.leerEstado || leerEstado)(claveTanda)) return;
-                await (deps.escribirEstado || escribirEstado)(claveTanda, true, 10 * 60);
-              } catch { /* sin respaldo, el peor caso vuelve a ser el de hoy */ }
-
-              const vistos = (await (deps.leerEstado || leerEstado)(claveVistos)) || [];
-              const video = elegirVideo({ vistos, disponibles });
-              if (!video) return;                          // ya los vio todos
-
-              // 🔴 SE MARCA ANTES DE MANDAR, NO DESPUES. El orden viejo era leer → elegir →
-              // ENVIAR → marcar, y entre el envio y la marca pasan segundos: dos pasadas leian
-              // la MISMA lista y elegian EL MISMO video. Es exactamente lo que se midio — no
-              // dos videos distintos, el mismo dos veces. Marcar primero invierte el riesgo
-              // hacia el lado correcto: en el peor caso el cliente se pierde UN video de
-              // cortesia; en el otro recibe dos iguales, que es lo que el dueño reporto.
-              try {
-                await (deps.escribirEstado || escribirEstado)(
-                  claveVistos, [...vistos, video.id], 180 * 24 * 3600);
-              } catch { /* sin respaldo queda el riesgo de hoy, no uno peor */ }
-
-              // Despues del informe termico, para no encimarle tres mensajes seguidos.
-              await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: DEMORA_VIDEO_MS });
-              const env = await (deps.sendWaVideo || realSendWaVideo)(from, ids[video.id], mensajeDelVideo(video));
-              if (!env?.ok) {
-                // Lo mas probable es un media_id vencido: se descarta para que la proxima
-                // carga lo reponga, en vez de reintentar contra un id muerto.
-                delete ids[video.id];
-                try { await (deps.escribirEstado || escribirEstado)('videos_fabrica:media_ids', ids, 25 * 24 * 3600); } catch { /* se repone al re-subir */ }
-                log('warn', 'generarPdf.video', `video ${video.id} no se entrego (${env?.error || 's/detalle'}) — id descartado`);
-                return;
-              }
-              // (la marca ya quedo puesta ANTES del envio — ver arriba)
-              safe('generarPdf.video.espejo', () => bridge.pushConversationEvent({
-                channel: 'whatsapp', external_id: from, direction: 'outbound',
-                actor_type: 'ai', actor_name: 'Oliver', message_type: 'video',
-                body: `🎥 Video ${video.id} (${video.titulo}) enviado al cliente`,
-                metadata: { source: 'oliver_gpt_video', video: video.id, media_id: ids[video.id] },
-              }));
-            });
+          // [2026-08-27 · #524] El cuerpo vive arriba en `enviarVideoCortesia` (lo comparte
+          // la secuencia informe-primero). Si esa secuencia YA lo despachó en este turno,
+          // acá no se repite — además del candado de tanda, que cubriría igual.
+          if (docSent && !videoCortesiaEnviado) {
+            safe('generarPdf.video', () => enviarVideoCortesia(DEMORA_VIDEO_MS));
           }
 
           // ── Paso 3b: ESPEJO al dashboard (visibilidad del PDF) ───────────────
