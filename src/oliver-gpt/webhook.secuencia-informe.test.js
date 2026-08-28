@@ -207,6 +207,11 @@ test('🔴 modo informe-primero: valor → informe → video → propuesta, en E
   const { deps, spy } = makeDeps({ modoOn: true });
   await handleWebhook({ body: {} }, makeRes(), deps);
   assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta tiene que salir');
+  // [Dueño 28-ago] El ANTICIPO (qué contiene la propuesta, con ancho y alto nombrados)
+  // viaja ANTES del documento del precio.
+  const iAnticipo = spy.linea.findIndex((e) => e.tipo === 'texto' && /considera/.test(e.detalle));
+  assert.ok(iAnticipo >= 0, 'el anticipo de la propuesta tiene que salir');
+  assert.ok(iAnticipo < pos(spy, 'propuesta'), 'y ANTES del PDF del precio');
 
   // El detalle de la línea se recorta a 60 chars, así que se busca por el ARRANQUE del
   // copy aprobado ("Perfecto, {nombre}. Mientras le preparo su Propuesta…").
@@ -402,14 +407,19 @@ test('🔴 [dueño 28-ago] un cambio de proyecto minutos después NO repite el d
 
   assert.equal(spy.textos.filter((t) => /warm-edge/.test(String(t))).length, 1,
     'el discurso completo NO se repite en la segunda ronda');
-  assert.ok(spy.textos.some((t) => /informes al día/.test(String(t))),
+  assert.ok(spy.textos.some((t) => /informes del proyecto al día/.test(String(t))),
     'en su lugar sale la variante corta');
+  assert.ok(!spy.textos.some((t) => /enseguida/.test(String(t))),
+    '[Copilot] la variante corta no promete "enseguida": la secuencia toma minutos a propósito');
   assert.equal(tipos(spy).filter((t) => t === 'informe').length, 2,
     'los DOCUMENTOS sí se reenvían: el proyecto cambió y el contenido es nuevo');
 });
 
 test('🔴 [dueño 28-ago] piso de ritmo: entre el mensaje de valor y el térmico se espera lo que falte', async () => {
   const { deps, spy } = makeDeps({ modoOn: true });
+  // Techo realista: con el techo corto del arnés (400 ms) el TOPE del piso (Codex,
+  // re-pase) lo suprime a propósito — eso se prueba aparte, abajo.
+  deps.seqInformeTimeoutMs = 200_000;
   const esperas = [];
   deps.dormir = async (ms) => { esperas.push({ ms, antesDe: spy.linea.length }); };
   await handleWebhook({ body: {} }, makeRes(), deps);
@@ -422,4 +432,37 @@ test('🔴 [dueño 28-ago] piso de ritmo: entre el mensaje de valor y el térmic
   // Y la respiración antes del informe de vientos subió de 6 a 25 s.
   assert.ok(esperas.some((e) => e.ms === 25_000),
     `falta la pausa de 25 s del informe de vientos; vistas: ${esperas.map((e) => e.ms).join(',')}`);
+});
+
+
+test('🔴 [Codex, re-pase] el piso espera SOLO lo que falta: generación lenta no suma espera', async () => {
+  const { deps, spy } = makeDeps({ modoOn: true });
+  deps.seqTermicoMs = 200;                       // piso chico para poder superarlo de verdad
+  const esperas = [];
+  deps.dormir = async (ms) => { esperas.push(ms); };
+  const pdfOriginal = deps.generarInformeTermicoPdf;
+  deps.generarInformeTermicoPdf = async (...a) => {   // generación REAL de 300 ms > piso
+    await new Promise((r) => setTimeout(r, 300));
+    return pdfOriginal(...a);
+  };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  assert.ok(!esperas.some((ms) => ms > 0 && ms <= 200),
+    `el piso ya estaba cumplido y no debía dormir nada; esperas: ${esperas.join(',')}`);
+});
+
+
+test('🔴 [Codex, re-pase] el piso queda ACOTADO por el techo: jamás empuja el térmico después del precio', async () => {
+  // Con el techo del arnés en 400 ms, el tope (techo - 15 s de margen) es 0: el piso de
+  // 45 s tiene que suprimirse solo. Sin el tope, este test dormiría 45 s y el térmico
+  // caería después de la propuesta.
+  const { deps, spy } = makeDeps({ modoOn: true });
+  const esperas = [];
+  deps.dormir = async (ms) => { esperas.push(ms); };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  assert.ok(!esperas.some((ms) => ms >= 40_000 && ms <= 45_000),
+    `el piso debía suprimirse por el tope; esperas: ${esperas.join(',')}`);
+  assert.ok(pos(spy, 'informe') < pos(spy, 'propuesta'),
+    'y el orden térmico antes que propuesta se conserva');
 });

@@ -1,4 +1,4 @@
-// resumen-cotizado.test.js — [2026-08-25]
+// resumen-cotizado.test.js — [2026-08-25, movido al ANTICIPO el 2026-08-28]
 //
 // 🔴 EL CLIENTE NO SABE QUE LE COTIZARON.
 //
@@ -6,6 +6,9 @@
 // como V1 1200x1000 CORREDERA por ejemplo"*. Oliver emitia la propuesta y decia "Listo ✅ te
 // envié tu Propuesta N° …", sin una palabra sobre QUE contiene. El cliente tiene que abrir
 // el PDF para saber si le entendieron bien — y si no le entendieron, se entera tarde.
+// 🔴 [2026-08-28] El dueño lo MOVIO al principio (*"para que nos corrija el cliente si las
+// medidas están al revés"*): ahora es el ANTICIPO, viaja ANTES del documento, y las
+// medidas van con ancho y alto NOMBRADOS.
 //
 // ⚠️ POR QUE VA EN CODIGO Y NO EN EL PROMPT. El proyecto ya aprendio esto a los golpes: la
 // REGLA #12 del prompt prohibia repetir mensajes y Oliver mando el mismo texto 73 veces a 26
@@ -19,35 +22,35 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resumenDeLoCotizado } from './normalizers.js';
+import { anticipoDeLoCotizado } from './normalizers.js';
 
 const it = (extra = {}) => ({
   producto_label: 'Corredera S60', measures: '1500x1200', qty: 1, color: 'Blanco', ...extra,
 });
 
 test('🔴 lista lo cotizado con numero, cantidad, tipo y medidas', () => {
-  const t = resumenDeLoCotizado([
+  const t = anticipoDeLoCotizado([
     it({ measures: '360x900', qty: 2, ambiente: 'Baño' }),
     it({ measures: '1560x900', qty: 1, producto_label: 'Corredera S60' }),
   ]);
   assert.match(t, /V1/, 'numerado, para poder referirse a una ventana puntual');
   assert.match(t, /V2/);
   assert.match(t, /2 ×|2 x/, 'la cantidad');
-  assert.match(t, /360×900|360x900/, 'las medidas');
+  assert.match(t, /360 de ancho × 900 de alto/, 'las medidas, con ancho y alto NOMBRADOS');
   assert.match(t, /Corredera S60/, 'el tipo');
 });
 
 test('🔴 el color aparece, que es justo lo que se estaba perdiendo', () => {
-  assert.match(resumenDeLoCotizado([it({ color: 'Nogal' })]), /Nogal/);
+  assert.match(anticipoDeLoCotizado([it({ color: 'Nogal' })]), /Nogal/);
 });
 
 test('el ambiente aparece cuando lo hay: ubica la ventana en la casa', () => {
-  const t = resumenDeLoCotizado([it({ ambiente: 'Baño' })]);
+  const t = anticipoDeLoCotizado([it({ ambiente: 'Baño' })]);
   assert.match(t, /Baño/);
 });
 
 test('⛔ NUNCA lleva precios: el monto va solo en el PDF (regla #13)', () => {
-  const t = resumenDeLoCotizado([
+  const t = anticipoDeLoCotizado([
     it({ unit_price: 250000, total_price: 500000, qty: 2 }),
   ]);
   assert.doesNotMatch(t, /\$/, 'ni el signo peso');
@@ -55,14 +58,14 @@ test('⛔ NUNCA lleva precios: el monto va solo en el PDF (regla #13)', () => {
 });
 
 test('una sola ventana no se numera: "V1" de una sola cosa es ruido', () => {
-  const t = resumenDeLoCotizado([it({ measures: '1500x1200' })]);
+  const t = anticipoDeLoCotizado([it({ measures: '1500x1200' })]);
   assert.doesNotMatch(t, /V1/);
-  assert.match(t, /1500×1200|1500x1200/, 'pero si dice que es');
+  assert.match(t, /1500 de ancho × 1200 de alto/, 'pero si dice que es');
 });
 
 test('🔒 un proyecto largo no inunda el chat: se corta y se dice', () => {
   const muchas = Array.from({ length: 14 }, (_, i) => it({ measures: `${1000 + i}x900` }));
-  const t = resumenDeLoCotizado(muchas);
+  const t = anticipoDeLoCotizado(muchas);
   const lineas = t.split('\n').filter((l) => /^V\d+/.test(l.trim()));
   assert.ok(lineas.length <= 8, `se corta en 8, no en ${lineas.length}`);
   assert.match(t, /6 m[áa]s|y 6/, 'y avisa cuantas quedaron fuera');
@@ -70,26 +73,38 @@ test('🔒 un proyecto largo no inunda el chat: se corta y se dice', () => {
 
 test('🔒 sin items devuelve vacio, no una lista huerfana', () => {
   for (const nada of [[], null, undefined, 'texto']) {
-    assert.equal(resumenDeLoCotizado(nada), '', `con ${JSON.stringify(nada)}`);
+    assert.equal(anticipoDeLoCotizado(nada), '', `con ${JSON.stringify(nada)}`);
   }
 });
 
 test('🔒 un item incompleto no imprime "undefined"', () => {
-  const t = resumenDeLoCotizado([{ measures: '900x900' }, {}]);
+  const t = anticipoDeLoCotizado([{ measures: '900x900' }, {}]);
   assert.doesNotMatch(t, /undefined|null|NaN/);
 });
 
-test('🔴 el resumen LLEGA al mensaje de la propuesta, no se queda en una variable', async () => {
-  // Ya paso hoy con el aviso del color: se construia y nadie lo usaba, asi que el cliente
-  // no se enteraba de nada. Un texto que no se manda no existe.
+test('🔴 [dueño 28-ago] el anticipo va ANTES del documento, no pegado al cierre', async () => {
+  // Ya paso con el aviso del color: se construia y nadie lo usaba. Un texto que no se
+  // manda no existe — y uno que llega DESPUES del PDF no deja corregir a tiempo.
   const { readFile } = await import('node:fs/promises');
   const wh = await readFile(new URL('./webhook.js', import.meta.url), 'utf8');
-  assert.match(wh, /resumenDeLoCotizado/, 'el webhook tiene que usarlo');
-  const i = wh.indexOf(') + _avisoColor');
-  assert.ok(i > 0, 'no se encontro el mensaje de la propuesta');
-  const bloque = wh.slice(Math.max(0, i - 300), i + 200);
-  assert.match(bloque, /_resumenCotizado|resumenDeLoCotizado/,
-    'el resumen se concatena al mensaje que recibe el cliente');
+  const iAnticipo = wh.indexOf('anticipoDeLoCotizado(input.items)');
+  const iUpload = wh.indexOf('uploadWaDocument(pdfBuffer, filename)');
+  assert.ok(iAnticipo > 0, 'el webhook tiene que usar el anticipo');
+  assert.ok(iUpload > 0, 'no se encontro el envio del PDF de la propuesta');
+  assert.ok(iAnticipo < iUpload, 'el anticipo se envia ANTES de subir el documento');
+  const iCierre = wh.indexOf(') + _avisoColor');
+  assert.ok(iCierre > 0, 'no se encontro el mensaje de cierre');
+  const bloque = wh.slice(Math.max(0, iCierre - 300), iCierre + 200);
+  assert.doesNotMatch(bloque, /anticipoDeLoCotizado|resumenDeLoCotizado/,
+    'el cierre ya no repite el resumen: se movio, no se duplico');
+});
+
+test('el anticipo cierra pidiendo la correccion (apertura, color, medidas)', () => {
+  const t = anticipoDeLoCotizado([it({})]);
+  assert.match(t, /tipo de apertura/);
+  assert.match(t, /color/);
+  assert.match(t, /ancho y después de alto/, 'declara la convencion para cazar medidas al reves');
+  assert.doesNotMatch(t, /—/, 'sin guiones largos (doctrina del dueño)');
 });
 
 test('🔴 el cierre pregunta por MODIFICACIONES y CUANDO contactarlo', async () => {

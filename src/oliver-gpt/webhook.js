@@ -49,7 +49,7 @@ import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
 import { laminasParaInforme, laminaTermopanel } from '../../services/laminasThermal.js';   // [2026-08-24] isotermas del FEM
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
-import { recordarColor, resumenDeLoCotizado } from './normalizers.js';   // [2026-08-25] color recordado + "que le cotice"
+import { recordarColor, anticipoDeLoCotizado } from './normalizers.js';   // [2026-08-25/28] color recordado + anticipo de la propuesta
 import { elegirVideo, mensajeDelVideo, mediaIdsDisponibles } from '../../services/videosFabrica.js';   // [2026-08-25] video de fabrica tras la propuesta
 // [2026-08-28] INFORME DE VIENTOS en la secuencia (pedido del dueno: "dale, agrega el
 // informe de vientos a la secuencia de Oliver"). THERMAL calcula (se pide por HTTP, regla
@@ -75,17 +75,26 @@ const SEQ_INFORME_LISTA = String(process.env.SEQUENCE_INFORME_PRIMERO_LISTA || '
 // Techo duro de espera del informe ANTES de la propuesta: si el informe tarda más que
 // esto (o falla), la propuesta sale igual. El cliente JAMÁS se queda sin su PDF por
 // esta secuencia — es la condición no negociable de la propuesta aprobada.
-const SEQ_INFORME_TIMEOUT_MS = Number(process.env.SEQUENCE_INFORME_TIMEOUT_MS || 120_000);
+// [Codex, compuerta 28-ago] Env numérica BLINDADA: un typo ("45s") daba NaN y apagaba
+// el piso o volvía un techo inmediato, en silencio. Inválido o negativo ⇒ default.
+const msEnv = (v, def) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : def;
+};
+const SEQ_INFORME_TIMEOUT_MS = msEnv(process.env.SEQUENCE_INFORME_TIMEOUT_MS, 120_000);
 // [Dueño, 28-ago, textual: *"la idea es que se vea más natural secuencial la información"*
 // — medido en su prueba: térmico→vientos 8 s, imposible de hojear.] PISO de ritmo entre
 // el mensaje de valor y el informe térmico: si el motor contesta rápido, se espera igual
 // hasta cumplir el piso; si tarda más, no se agrega nada. Regulable sin deploy.
-const SEQ_TERMICO_MS = Number(process.env.SEQUENCE_TERMICO_MS || 45_000);
+const SEQ_TERMICO_MS = msEnv(process.env.SEQUENCE_TERMICO_MS, 45_000);
 // Pausa humana entre el informe y el video cuando el video cae ENTRE documentos.
-const SEQ_VIDEO_MS = Number(process.env.SEQUENCE_VIDEO_MS || 20_000);
+const SEQ_VIDEO_MS = msEnv(process.env.SEQUENCE_VIDEO_MS, 20_000);
 // [2026-08-28] Pausa humana antes del informe de VIENTOS (2o documento de la secuencia).
 // 6 s originales → 25 s por la misma orden de ritmo del dueño.
-const SEQ_VIENTOS_MS = Number(process.env.SEQUENCE_VIENTOS_MS || 25_000);
+const SEQ_VIENTOS_MS = msEnv(process.env.SEQUENCE_VIENTOS_MS, 25_000);
+// [Dueño, 28-ago] Pausa entre el ANTICIPO de la propuesta (qué contiene, con ancho y
+// alto nombrados) y el PDF: tiempo para leerlo antes de que caiga el documento.
+const ANTICIPO_MS = msEnv(process.env.PROPUESTA_ANTICIPO_MS, 8_000);
 // [Dueño, 27-ago: "dale pausa"] Aire entre el informe (y su video) y el PRECIO. Medido en
 // la prueba real: sin esto, del informe al precio pasaban 9 segundos — el cliente recién
 // abría el informe y ya le caía la propuesta. 35 s deja mirar; regulable sin deploy.
@@ -1283,7 +1292,7 @@ export async function handleWebhook(req, res, deps = {}) {
       // `mensajePrevio`: el mensaje de valor de la Variante B — solo se envía si el informe
       // VA a salir (pasó candados y comuna verificada); anunciar un informe que no viene
       // sería mentirle al cliente.
-      const despacharInforme = (comuna, { forzar = false, glassLabel = '', uw = null, producto = '', ventanas = null, mensajePrevio = '', mensajePrevioCorto = '', quoteNumber = null, nombre = '' } = {}) => {
+      const despacharInforme = (comuna, { forzar = false, glassLabel = '', uw = null, producto = '', ventanas = null, mensajePrevio = '', mensajePrevioCorto = '', quoteNumber = null, nombre = '', noDespuesDe = 0 } = {}) => {
         // 🔴 La clave del candado incluye la HUELLA del proyecto: mismo cliente + mismo
         // proyecto = un solo informe en 30 dias; cambia la comuna, el producto o el vidrio =
         // proyecto distinto y le corresponde el suyo.
@@ -1449,6 +1458,11 @@ export async function handleWebhook(req, res, deps = {}) {
             // (acá no se redacta copy). El registro vive en el KV compartido con TTL: un
             // cambio de proyecto a los 4 minutos no puede repetir el speech entero.
             const claveValor = `informe_valor:${_tel}`;
+            // [Copilot+Codex, deuda ACEPTADA y declarada] leer-y-escribir no es atómico
+            // entre DOS instancias (deploy conviviendo): en esa ventana el discurso
+            // completo puede repetirse UNA vez. Dentro del proceso lo serializa el mutex
+            // por teléfono del webhook. El costo del caso raro es texto repetido (el bug
+            // de hoy), no candados ni documentos: no amerita un lock distribuido.
             let valorReciente = false;
             try { valorReciente = Boolean(await (deps.leerEstado || leerEstado)(claveValor)); }
             catch { /* sin memoria compartida: va el completo, que nunca es incorrecto */ }
@@ -1604,9 +1618,13 @@ export async function handleWebhook(req, res, deps = {}) {
           // valor y el documento pasan al menos SEQ_TERMICO_MS. Solo agrega la espera que
           // FALTE (si generar ya tomó más que el piso, no suma nada), y solo en la
           // secuencia (valorEnviado): el camino clásico conserva su ritmo propio.
+          // [Codex, re-pase] Y ACOTADO por el deadline del llamador (`noDespuesDe`): sin
+          // el tope, un arranque lento + piso completo podía cruzar el techo de 120 s y
+          // el térmico caía DESPUÉS del precio — el orden que la secuencia jura.
           if (valorEnviado && valorEnviadoEn) {
             const pisoMs = Number(deps.seqTermicoMs ?? SEQ_TERMICO_MS);
-            const falta = pisoMs - (Date.now() - valorEnviadoEn);
+            const tope = Number(noDespuesDe) > 0 ? Number(noDespuesDe) - Date.now() : Infinity;
+            const falta = Math.min(pisoMs - (Date.now() - valorEnviadoEn), tope);
             if (falta > 0) await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: falta });
           }
 
@@ -2666,10 +2684,12 @@ Comuna: ${datos.comuna}`
               // hace poco (cliente que agrega o cambia una ventana minutos después — su
               // prueba de Toltén recibió el speech entero DOS veces en 4 minutos). Misma
               // doctrina: sin siglas nuevas, sin guiones largos, formal pero cercano.
+              // [Copilot, compuerta] Sin afirmar continuidad de proyecto (la marca es por
+              // TELÉFONO a 12 h: puede ser otro proyecto del mismo número) y sin
+              // "enseguida" (la secuencia completa toma ~2 minutos a propósito).
               const mensajeValorCorto = () =>
-                `Perfecto${nombreCorto ? `, ${nombreCorto}` : ''}. Le incorporo el cambio a su proyecto y ` +
-                `le dejo sus informes al día, para que compare con calma. Su Propuesta Técnica Económica ` +
-                `actualizada viene enseguida.`;
+                `Perfecto${nombreCorto ? `, ${nombreCorto}` : ''}. Le dejo los informes del proyecto al día, ` +
+                `para que los compare con calma, y en unos minutos le llega su Propuesta Técnica Económica.`;
               // Las MISMAS ventanas que declara la propuesta (mismo mapeo que el camino
               // clasico de abajo): informe y propuesta tienen que decir lo mismo siempre.
               const ventanasProyecto = (input.items || []).map((it) => ({
@@ -2698,6 +2718,10 @@ Comuna: ${datos.comuna}`
                   // [Dueño, 27-ago] El nombre del cliente al PDF del informe ("Preparado
                   // para:") — en esta secuencia state.name aún no existe.
                   nombre: clientName,
+                  // [Codex, re-pase] El deadline del race viaja al despacho: el piso de
+                  // ritmo se recorta para no cruzar el techo (15 s de margen para el
+                  // upload). Sin esto, el térmico podía caer después del precio.
+                  noDespuesDe: Date.now() + Math.max(0, techoInformeMs - 15_000),
                 }),
                 new Promise((res) => { venceTimeout = setTimeout(() => res('timeout'), techoInformeMs); }),
               ]).finally(() => { if (venceTimeout) clearTimeout(venceTimeout); });
@@ -2742,6 +2766,31 @@ Comuna: ${datos.comuna}`
               log('error', 'generarPdf.secuencia', e?.message || e);
             }
           }
+
+          // ── Paso 2-bis: EL ANTICIPO, antes del documento ─────────────────────
+          // [Dueño, 28-ago, textual] *"antes de enviar el archivo al cliente... deberíamos
+          // decirle al principio, por ejemplo: esta propuesta considera V1 1200x1000
+          // CORREDERA... para que nos corrija el cliente si las medidas están al revés"* +
+          // *"que sepa si es corredera, proyectante, oscilobatiente... y el color igual"*.
+          // El resumen que vivía pegado al cierre ("Le coticé:") SE MOVIÓ acá, con el
+          // ancho y el alto nombrados. Si el envío del texto falla, el PDF sale igual:
+          // el anticipo es una cortesía, no una compuerta.
+          try {
+            const anticipo = anticipoDeLoCotizado(input.items);
+            if (anticipo) {
+              const antEnv = await enviarSinPausa(from, anticipo);
+              if (antEnv?.ok === true) {
+                safe('generarPdf.espejo.anticipo', () => bridge.pushConversationEvent({
+                  channel: 'whatsapp', external_id: from, direction: 'outbound',
+                  actor_type: 'ai', actor_name: 'Oliver', message_type: 'text',
+                  body: anticipo,
+                  metadata: { source: 'oliver_gpt_anticipo_propuesta', quote_number: quoteNumber },
+                }));
+                // Aire para LEERLO antes de que el documento tape el mensaje.
+                await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: ANTICIPO_MS });
+              }
+            }
+          } catch (e) { log('error', 'generarPdf.anticipo', e?.message || e); }
 
           // ── Paso 3: Enviar al cliente vía WhatsApp ───────────────────────────
           const filename = `${quoteNumber}.pdf`;
@@ -3081,7 +3130,10 @@ Comuna: ${datos.comuna}`
               : `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF).\n\n` +
                 '¿Necesita alguna modificación? Medidas, color o tipo de apertura se los cambio '
                 + 'sin problema. Y dígame cuándo lo puedo contactar de nuevo para ver qué decidió.'
-            ) + resumenDeLoCotizado(input.items) + _avisoColor + _avisoTipo + _avisoHojas,
+            // [Dueño, 28-ago] El resumen ("Le coticé:") ya NO va acá: se convirtió en el
+            // ANTICIPO y viaja ANTES del documento (Paso 2-bis), que es donde el cliente
+            // puede corregir una medida al revés A TIEMPO. Los avisos de ajuste se quedan.
+            ) + _avisoColor + _avisoTipo + _avisoHojas,
           };
         }),
     };

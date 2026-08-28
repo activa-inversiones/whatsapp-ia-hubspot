@@ -368,12 +368,17 @@ export function recordarColor(state, items) {
 const TOPE_RESUMEN = 8;
 
 /**
- * QUE SE LE COTIZO, en una linea por ventana, para pegar al mensaje de la propuesta.
+ * EL ANTICIPO DE LA PROPUESTA: que se le cotizo, en una linea por ventana, enviado ANTES
+ * del PDF para que el cliente corrija a tiempo.
  *
- * 🔴 [2026-08-25] Reclamo del dueño tras la prueba en vivo: *"no le informamos qué cosa le
- * cotizaríamos, como V1 1200x1000 CORREDERA por ejemplo"*. Oliver mandaba la propuesta con
- * un "Listo ✅ te envié tu Propuesta N° …" y ni una palabra de que contenia: el cliente
- * tenia que abrir el PDF para saber si le habian entendido bien, y si no, se enteraba tarde.
+ * 🔴 [2026-08-25] Nacio como resumen pegado al cierre ("Le coticé: ..."), por el reclamo
+ * del dueño: *"no le informamos qué cosa le cotizaríamos, como V1 1200x1000 CORREDERA"*.
+ * 🔴 [2026-08-28] El dueño lo MOVIO al principio, textual: *"antes de enviar el archivo...
+ * deberíamos decirle al principio... para que nos corrija el cliente si las medidas están
+ * al revés"* + *"que sepa qué le estamos cotizando: si es corredera, proyectante,
+ * oscilobatiente... además de informar el color igual"*. Por eso las medidas van con el
+ * ancho y el alto NOMBRADOS (no "1000x1200" pelado), el tipo de apertura abre la linea y
+ * el color va siempre que exista.
  *
  * ⚠️ VA EN CODIGO Y NO EN EL PROMPT a proposito. El proyecto ya aprendio esto caro: la
  * REGLA #12 del prompt prohibia repetir mensajes y Oliver mando el texto identico 73 veces
@@ -383,20 +388,24 @@ const TOPE_RESUMEN = 8;
  * ⛔ SIN PRECIOS. Regla #13: el monto va SOLO en el PDF formal. Esto dice QUE, no CUANTO.
  *
  * @param {Array} items  items de la cotizacion ya resueltos por el motor
- * @returns {string} texto listo para concatenar, o '' si no hay nada que decir
+ * @returns {string} texto listo para enviar, o '' si no hay nada que decir
  */
-export function resumenDeLoCotizado(items) {
+export function anticipoDeLoCotizado(items) {
   const lista = Array.isArray(items) ? items : [];
   if (!lista.length) return '';
 
   const linea = (it, i, numerar) => {
     const tipo = String(it?.producto_label || it?.product || '').trim();
-    const med = String(it?.measures_original || it?.measures || '').trim().replace(/x/i, '×');
+    const med = String(it?.measures_original || it?.measures || '').trim();
+    // "1000x1200" -> "1000 de ancho × 1200 de alto": la convencion de la casa es
+    // ancho×alto, y NOMBRARLA es lo que permite que el cliente cace una medida al reves.
+    const m = med.match(/^(\d{2,4})\s*[x×]\s*(\d{2,4})\s*(?:mm)?$/i);
+    const medTxt = m ? `${m[1]} de ancho × ${m[2]} de alto` : med.replace(/x/i, '×');
     const cant = Number(it?.qty) > 1 ? `${Number(it.qty)} × ` : '';
     const color = String(it?.color || '').trim();
     const amb = String(it?.ambiente || '').trim();
     // Solo lo que existe: un item incompleto no puede imprimir "undefined" en el chat.
-    const partes = [cant + (tipo || 'Ventana'), med, color, amb].filter(Boolean);
+    const partes = [cant + (tipo || 'Ventana'), medTxt, color, amb].filter(Boolean);
     return `${numerar ? `V${i + 1} · ` : ''}${partes.join(' · ')}`;
   };
 
@@ -404,8 +413,10 @@ export function resumenDeLoCotizado(items) {
   const visibles = lista.slice(0, TOPE_RESUMEN).map((x, i) => linea(x, i, numerar));
   const sobran = lista.length - visibles.length;
 
-  return `\n\nLe coticé:\n${visibles.join('\n')}`
-    + (sobran > 0 ? `\n…y ${sobran} más, todas detalladas en el PDF.` : '');
+  return `Su Propuesta Técnica Económica considera:\n${visibles.join('\n')}`
+    + (sobran > 0 ? `\n…y ${sobran} más, todas detalladas en el documento.` : '')
+    + `\n\nRevise por favor el tipo de apertura, el color y las medidas (las damos primero `
+    + `de ancho y después de alto): si algo quedó al revés o no calza, me dice y lo corrijo al instante.`;
 }
 
 export function isComplete(d) {
