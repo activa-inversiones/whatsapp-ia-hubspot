@@ -37,7 +37,8 @@ test('🔴 lista lo cotizado con numero, cantidad, tipo y medidas', () => {
   assert.match(t, /V2/);
   assert.match(t, /2 ×|2 x/, 'la cantidad');
   assert.match(t, /360 de ancho × 900 de alto/, 'las medidas, con ancho y alto NOMBRADOS');
-  assert.match(t, /Corredera S60/, 'el tipo');
+  assert.match(t, /Corredera/, 'el tipo de apertura');
+  assert.doesNotMatch(t, /S60/, '[Gemini] la serie de fabrica NO va al chat: siglas sin explicar');
 });
 
 test('🔴 el color aparece, que es justo lo que se estaba perdiendo', () => {
@@ -117,7 +118,7 @@ test('🔴 el cierre pregunta por MODIFICACIONES y CUANDO contactarlo', async ()
   // visita tecnica se salta el paso que importa.
   const { readFile } = await import('node:fs/promises');
   const wh = await readFile(new URL('./webhook.js', import.meta.url), 'utf8');
-  const i = wh.indexOf('Te envié tu Propuesta Técnica Económica');
+  const i = wh.indexOf('Le envié su Propuesta Técnica Económica');
   assert.ok(i > 0, 'no se encontro el mensaje de cierre');
   const bloque = wh.slice(i, i + 600);
 

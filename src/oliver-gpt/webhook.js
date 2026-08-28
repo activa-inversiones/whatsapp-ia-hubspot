@@ -3083,7 +3083,9 @@ Comuna: ${datos.comuna}`
             return {
               ok: true, quote_number: quoteNumber, pdf_sent: false, media_id: waDocMediaId,
               // [2026-07-01 Bug#2 paridad] explícito y honesto: Marcelo la envía (no "si no la ves" vago).
-              message: `Tu Propuesta Técnica Económica N° ${quoteNumber} está lista ✅ Tuve un problema para adjuntarte el archivo — el Ing. Marcelo Cifuentes te la enviará directamente en un momento. 📲 +56 9 5729 6035`,
+              // [Gemini, compuerta 28-ago] En USTED (el resto del flujo habla de usted) y
+              // sin guion largo: este texto SÍ le llega al cliente cuando Meta rechaza.
+              message: `Su Propuesta Técnica Económica N° ${quoteNumber} está lista ✅ Tuve un problema para adjuntarle el archivo: el Ing. Marcelo Cifuentes se la enviará directamente en un momento. 📲 +56 9 5729 6035`,
             };
           }
           // [PDF-RACE 2026-07-01] entrega OK → registrar folio para reuso (revisiones = mismo folio).
@@ -3127,9 +3129,14 @@ Comuna: ${datos.comuna}`
               // El cierre anterior solo ofrecia ir a medir, que es un paso MAS ADELANTE en
               // la venta: si el cliente todavia no sabe si la propuesta refleja lo que
               // pidio, ofrecerle una visita tecnica se salta el paso que de verdad importa.
-              : `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF).\n\n` +
-                '¿Necesita alguna modificación? Medidas, color o tipo de apertura se los cambio '
-                + 'sin problema. Y dígame cuándo lo puedo contactar de nuevo para ver qué decidió.'
+              // [Gemini, compuerta 28-ago] TODO EN USTED: "Te envié tu..." + "¿Necesita...?
+              // dígame" mezclaba tú y usted en el mismo párrafo, la falta que la regla de
+              // oro del system-prompt prohíbe con nombre y apellido. Y sin re-enumerar
+              // "medidas, color o apertura": el ANTICIPO acaba de pedir exactamente esa
+              // corrección 40 segundos antes — el eco delataba al bot.
+              : `Listo ✅ Le envié su Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF).\n\n` +
+                '¿Necesita alguna modificación? Me la dice y se la cambio sin problema. '
+                + 'Y cuénteme cuándo lo puedo contactar de nuevo para ver qué decidió.'
             // [Dueño, 28-ago] El resumen ("Le coticé:") ya NO va acá: se convirtió en el
             // ANTICIPO y viaja ANTES del documento (Paso 2-bis), que es donde el cliente
             // puede corregir una medida al revés A TIEMPO. Los avisos de ajuste se quedan.

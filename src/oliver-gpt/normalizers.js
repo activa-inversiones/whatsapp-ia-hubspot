@@ -395,7 +395,12 @@ export function anticipoDeLoCotizado(items) {
   if (!lista.length) return '';
 
   const linea = (it, i, numerar) => {
-    const tipo = String(it?.producto_label || it?.product || '').trim();
+    // [Gemini, compuerta 28-ago] La serie de fabrica (S60/M70/H98...) NO va al chat: la
+    // regla vieja del bot ya decia 'NUNCA "S60"' y la doctrina del dueno pide siglas
+    // explicadas o ninguna. Al cliente le importa "Proyectante" o "Corredera", que es
+    // justo lo que el dueno pidio informar; la serie completa vive en el PDF.
+    const tipo = String(it?.producto_label || it?.product || '').trim()
+      .replace(/\b[SMH]\d{2,3}\b/g, '').replace(/\s{2,}/g, ' ').trim();
     const med = String(it?.measures_original || it?.measures || '').trim();
     // "1000x1200" -> "1000 de ancho × 1200 de alto": la convencion de la casa es
     // ancho×alto, y NOMBRARLA es lo que permite que el cliente cace una medida al reves.
@@ -414,7 +419,7 @@ export function anticipoDeLoCotizado(items) {
   const sobran = lista.length - visibles.length;
 
   return `Su Propuesta Técnica Económica considera:\n${visibles.join('\n')}`
-    + (sobran > 0 ? `\n…y ${sobran} más, todas detalladas en el documento.` : '')
+    + (sobran > 0 ? `\n…y ${sobran} más, todo detallado en el documento.` : '')
     + `\n\nRevise por favor el tipo de apertura, el color y las medidas (las damos primero `
     + `de ancho y después de alto): si algo quedó al revés o no calza, me dice y lo corrijo al instante.`;
 }
