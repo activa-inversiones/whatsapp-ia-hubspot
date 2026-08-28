@@ -109,8 +109,11 @@ export function resolverMedidasMm({ ancho_mm, alto_mm, medidas_texto, unidad_con
 }
 
 // URL base del simulador (frontend hardcodeado a proposito, sin llamada al Engine).
+// [2026-08-28] FIX fallback muerto (caso real Mónica 56985054317: "no puedo entrar al link, dice
+// que no existe"): activaspa.cl/simulador da 404 desde siempre; el simulador REAL vive en
+// sales-os → /simulator (público, sin auth, verificado 200). ACTIVA_SIMULADOR_URL sigue mandando.
 const SIMULADOR_BASE =
-  process.env.ACTIVA_SIMULADOR_URL || 'https://activaspa.cl/simulador';
+  process.env.ACTIVA_SIMULADOR_URL || 'https://ops.activalabs.ai/simulator';
 
 /**
  * Llama a sales-os POST /internal/ttl/freeze (contrato F1) para congelar el TTL
