@@ -72,6 +72,10 @@ export async function pedirVientos({ comuna = '', cliente = '', ventanas }) {
       body: JSON.stringify({
         comuna, cliente, ventanas,
         demanda_auto: { altura_m: 3, entorno: 'ciudad' },   // supuesto DECLARADO en el PDF
+        // Dueno 28-ago: "muchas curvas... las maximas que indica la ley". El motor devuelve
+        // el bloque "curvas" y el PDF lo dibuja; si el motor viejo no lo trae, el informe
+        // sale igual en su version de 1 pagina.
+        incluir_curvas: true,
       }),
       signal: AbortSignal.timeout(8000),
     });

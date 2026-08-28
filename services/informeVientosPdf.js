@@ -19,6 +19,12 @@ const NAVY = '#0B3D6F';
 const GOLD = '#C4993B';
 const W = 595;   // A4 vertical, mismos margenes que el termico
 
+// Del mas delgado (curva mas baja, tono mas claro) al mas grueso: el ojo lee la
+// jerarquia sin leyenda. GOLD queda reservado para las lineas de exigencia legal.
+const COLOR_ESPESOR = { 4: '#9DB8D6', 5: '#6FA0CC', 6: '#2E6DA4', 8: '#0B3D6F' };
+const VERDE = '#1F7A43';
+const ROJO = '#B4232A';
+
 function dec(x, n = 2) {
   return (x === null || x === undefined || Number.isNaN(Number(x)))
     ? '—'.replace('—', '-')                       // ni aca entra un guion largo
@@ -141,8 +147,23 @@ export async function generarInformeVientosPdf(datos, {
     y += 30;
   }
 
+  // ── Las curvas (pedido del dueno 28-ago: "muchas curvas... las maximas de la ley") ──
+  // El bloque viene del motor de THERMAL; si no vino (motor viejo o hueco declarado), el
+  // informe sale igual en su version corta y la numeracion no salta.
+  const curvas = (datos.curvas && !datos.curvas._hueco
+    && Array.isArray(datos.curvas.capacidad_por_espesor)
+    && datos.curvas.capacidad_por_espesor.length) ? datos.curvas : null;
+  if (curvas) {
+    doc.addPage();
+    y = dibujarPaginaCurvas(doc, curvas);
+  }
+  const nCalc = curvas ? '5' : '2';
+
   // ── Metodo y descargo ───────────────────────────────────────────────────
-  doc.fillColor(NAVY).fontSize(11).font('Helvetica-Bold').text('2 · CÓMO SE CALCULÓ', 50, y);
+  // El cierre (texto + descargo + firma) mide ~190 pt; con margen inferior de 50 el
+  // ultimo y utilizable es ~600.
+  if (y > 600) { doc.addPage(); y = 60; }
+  doc.fillColor(NAVY).fontSize(11).font('Helvetica-Bold').text(`${nCalc} · CÓMO SE CALCULÓ`, 50, y);
   y += 18;
   doc.fillColor('#333').fontSize(9).font('Helvetica')
     .text('La resistencia de cada vidrio termopanel se determinó con la práctica internacional para vidrio en '
@@ -164,4 +185,157 @@ export async function generarInformeVientosPdf(datos, {
 
   doc.end();
   return fin;
+}
+
+/**
+ * Pagina 2: el grafico de curvas por espesor con las lineas de exigencia legal, la tabla
+ * de interseccion (cada ventana con cada vidrio) y lo que dice la ley por comuna.
+ * Devuelve la Y donde quedo el cursor para que siga "COMO SE CALCULO".
+ */
+function dibujarPaginaCurvas(doc, curvas) {
+  let y = 56;
+  doc.fillColor(NAVY).fontSize(11).font('Helvetica-Bold')
+    .text('2 · CUÁNTO RESISTE CADA VIDRIO, EN CURVAS', 50, y);
+  y += 16;
+  doc.fillColor('#333').fontSize(8.5).font('Helvetica')
+    .text('La resistencia se mide en kilopascales (kPa): 1 kPa equivale a unos 100 kilos de viento '
+      + 'empujando cada metro cuadrado de vidrio. Cada curva es un espesor de termopanel: mientras más '
+      + 'grande el paño (eje horizontal, en metros cuadrados), menos presión resiste. Las líneas doradas '
+      + 'punteadas son las máximas que indica la ley chilena para distintas ubicaciones: su ventana debe '
+      + 'quedar por sobre la línea de su caso. Una curva pegada al techo del gráfico resiste aún más de lo '
+      + 'que el techo muestra.', 50, y, { width: W - 100 });
+  y += 52;
+
+  // ── Geometria del grafico ────────────────────────────────────────────────
+  const cx = 92, cw = 442, ctop = y, ch = 210;
+  const lineas = Array.isArray(curvas.demanda_legal) ? curvas.demanda_legal : [];
+  const inter = Array.isArray(curvas.interseccion_por_ventana) ? curvas.interseccion_por_ventana : [];
+  const maxLey = Math.max(0.6, ...lineas.map((l) => Number(l.presion_kPa) || 0));
+  const lrPropios = inter
+    .map((f) => (f.por_espesor || []).find((pe) => pe.espesor_mm === f.espesor_propio_mm))
+    .map((pe) => (pe && Number(pe.lr_corta_kPa)) || 0);
+  let yMax = Math.max(2.5, maxLey * 1.8, ...lrPropios.map((v) => v + 0.7));
+  yMax = Math.min(6, Math.ceil(yMax * 2) / 2);
+  const xMax = 4.7;
+  const fx = (area) => cx + (Math.min(area, xMax) / xMax) * cw;
+  const fy = (kpa) => ctop + ch - (Math.min(kpa, yMax) / yMax) * ch;
+
+  // Grilla recesiva + ejes
+  doc.lineWidth(0.5);
+  const pasoY = yMax > 3.5 ? 1.0 : 0.5;
+  for (let v = 0; v <= yMax + 0.001; v += pasoY) {
+    doc.moveTo(cx, fy(v)).lineTo(cx + cw, fy(v)).strokeColor('#E4E9F1').stroke();
+    doc.fillColor('#888').fontSize(6.5).font('Helvetica')
+      .text(v.toFixed(1).replace('.', ','), cx - 26, fy(v) - 3, { width: 22, align: 'right' });
+  }
+  for (let a = 0; a <= xMax; a += 1) {
+    doc.moveTo(fx(a), ctop).lineTo(fx(a), ctop + ch).strokeColor('#EDF1F6').stroke();
+    doc.fillColor('#888').fontSize(6.5).text(String(a), fx(a) - 3, ctop + ch + 4);
+  }
+  doc.moveTo(cx, ctop).lineTo(cx, ctop + ch).lineTo(cx + cw, ctop + ch)
+    .strokeColor('#B9C2CF').lineWidth(0.8).stroke();
+  doc.fillColor('#666').fontSize(7).font('Helvetica-Bold').text('kPa', cx - 26, ctop - 10);
+  doc.text('tamaño del vidrio (m²)', cx + cw / 2 - 40, ctop + ch + 14);
+
+  // ── Lineas de la ley (doradas, punteadas) ───────────────────────────────
+  for (const l of lineas) {
+    const p = Number(l.presion_kPa);
+    if (!p || p > yMax) continue;
+    const esCiudad = l.entorno === 'ciudad';
+    // Sin numerito al borde: con dos lineas separadas 0,02 kPa los textos se pisaban;
+    // los valores van completos en la leyenda de abajo.
+    doc.save().dash(esCiudad ? 4 : 1.8, { space: 2.4 })
+      .moveTo(cx, fy(p)).lineTo(cx + cw, fy(p))
+      .strokeColor(esCiudad ? GOLD : '#8A6D1C').lineWidth(1).stroke().restore();
+  }
+
+  // ── Curvas de capacidad por espesor ─────────────────────────────────────
+  for (const c of curvas.capacidad_por_espesor) {
+    const pts = (c.puntos || []).filter((p) => Number(p.lr_corta_kPa) > 0);
+    if (pts.length < 2) continue;
+    const color = COLOR_ESPESOR[Math.round(c.espesor_mm)] || NAVY;
+    doc.save().moveTo(fx(pts[0].area_m2), fy(pts[0].lr_corta_kPa));
+    for (const p of pts.slice(1)) doc.lineTo(fx(p.area_m2), fy(p.lr_corta_kPa));
+    doc.strokeColor(color).lineWidth(1.6).stroke().restore();
+    // Etiqueta ADENTRO del grafico (al 85 % de la curva, donde ya se separaron), en una
+    // sola linea: al borde derecho chocaba con las lineas de la ley.
+    const pEt = pts[Math.max(0, pts.length - 7)];
+    doc.fillColor(color).fontSize(7).font('Helvetica-Bold')
+      .text(`${Math.round(c.espesor_mm)} mm`, fx(pEt.area_m2) + 2, fy(pEt.lr_corta_kPa) - 10,
+        { lineBreak: false });
+  }
+
+  // ── Sus ventanas, marcadas sobre su curva ───────────────────────────────
+  inter.forEach((f, i) => {
+    const pe = (f.por_espesor || []).find((x) => x.espesor_mm === f.espesor_propio_mm);
+    const lr = pe && Number(pe.lr_corta_kPa);
+    if (!lr) return;
+    const px = fx(f.area_m2), py = fy(lr);
+    doc.circle(px, py, 3.4).fillAndStroke(GOLD, NAVY);
+    doc.fillColor(NAVY).fontSize(6.5).font('Helvetica-Bold').text(`V${i + 1}`, px - 4, py - 12);
+  });
+  y = ctop + ch + 26;
+
+  // Leyenda de las lineas legales
+  doc.fillColor('#666').fontSize(7.5).font('Helvetica')
+    .text('Líneas de la ley (norma chilena de viento NCh 432, Tabla 1, con factor de forma 1,2). '
+      + 'Trazo largo: ciudad; trazo corto: campo abierto o costa. '
+      + lineas.map((l) => `${l.etiqueta}: ${dec(l.presion_kPa, 2)} kPa`).join('  ·  '),
+    50, y, { width: W - 100 });
+  y += 32;
+
+  // ── 3 · La interseccion: cada ventana con cada vidrio ───────────────────
+  doc.fillColor(NAVY).fontSize(11).font('Helvetica-Bold')
+    .text('3 · SU VENTANA CON CADA VIDRIO', 50, y);
+  y += 16;
+  const esps = (curvas.capacidad_por_espesor || []).map((c) => Math.round(c.espesor_mm));
+  const col0 = 52, colW = 66, colX = (j) => 240 + j * colW;
+  doc.fillColor('#666').fontSize(7.5).font('Helvetica-Bold').text('VENTANA', col0, y);
+  esps.forEach((e, j) => doc.text(`${e} mm`, colX(j), y, { width: colW - 6, align: 'right' }));
+  y += 11;
+  doc.moveTo(50, y).lineTo(W - 50, y).strokeColor('#D8DEE8').lineWidth(0.7).stroke();
+  y += 5;
+  inter.forEach((f, i) => {
+    doc.fillColor('#222').fontSize(8).font('Helvetica')
+      .text(`V${i + 1} · ${String(f.nombre || '').slice(0, 24)} (${f.ancho_mm}×${f.alto_mm})`, col0, y, { width: 182 });
+    (f.por_espesor || []).forEach((pe) => {
+      const j = esps.indexOf(Math.round(pe.espesor_mm));
+      if (j < 0) return;
+      const propio = pe.espesor_mm === f.espesor_propio_mm;
+      doc.font(propio ? 'Helvetica-Bold' : 'Helvetica');
+      if (pe.lr_corta_kPa == null) {
+        doc.fillColor('#999').text('-', colX(j), y, { width: colW - 6, align: 'right' });
+      } else {
+        const cumple = pe.cumple !== false;
+        doc.fillColor(cumple ? VERDE : ROJO)
+          .text(`${dec(pe.lr_corta_kPa, 2)}${cumple ? '' : ' *'}`, colX(j), y, { width: colW - 6, align: 'right' });
+      }
+    });
+    doc.font('Helvetica');
+    y += 14;
+    if (y > 700) { doc.addPage(); y = 60; }
+  });
+  y += 2;
+  doc.fillColor('#666').fontSize(7)
+    .text('Resistencias en kPa para termopanel simétrico de cada espesor, en el tamaño exacto de su ventana. '
+      + 'En negrita: el vidrio cotizado en su propuesta. En verde cumple la exigencia de su zona; '
+      + 'con * queda bajo ella. Un guion: ese caso requiere cálculo del especialista.', 50, y, { width: W - 100 });
+  y += 28;
+
+  // ── 4 · Lo que dice la ley por comuna ───────────────────────────────────
+  if (y > 640) { doc.addPage(); y = 60; }
+  doc.fillColor(NAVY).fontSize(11).font('Helvetica-Bold')
+    .text('4 · LO QUE DICE LA LEY PARA SU COMUNA', 50, y);
+  y += 16;
+  const base = String(curvas.base_legal || '').trim();
+  if (base) {
+    doc.fillColor('#333').fontSize(8.5).font('Helvetica').text(base, 50, y, { width: W - 100 });
+    y += doc.heightOfString(base, { width: W - 100 }) + 8;
+  }
+  if (curvas.supuesto) {
+    doc.fillColor('#666').fontSize(7.5)
+      .text(`Supuesto declarado: ${curvas.supuesto}.`, 50, y, { width: W - 100 });
+    y += doc.heightOfString(`Supuesto declarado: ${curvas.supuesto}.`, { width: W - 100 }) + 12;
+  }
+  return y;
 }
