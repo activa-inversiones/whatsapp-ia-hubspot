@@ -261,7 +261,28 @@ export function stripMontos(text) {
   // conversation_messages, reportado por el dueño). Mismo diseño conservador: la coma
   // exige grupo de EXACTAMENTE 3 dígitos, así "1,5 metros" / "120x150" no se tocan.
   const RX = /\$\s?\d{1,3}(?:[.,]\d{3})+(?:\s?(?:CLP|clp|pesos?))?|\d{1,3}(?:[.,]\d{3})+\s?(?:CLP|clp|pesos?)|\d{1,3}(?:[.,]\d{3}){2,}/g;
-  const out = text.replace(RX, '(valor en la propuesta formal)');
+  // [2026-08-28] EXCEPCIÓN RUT (caso real Alfredo, conv 56952077379, 4 reclamos "falta el rut"):
+  // el LLM escribió el RUT formateado "10.047.794-7" y la alternativa (c) lo comió como si fuera
+  // un monto → al cliente le llegó "RUT (valor en la propuesta formal)-7" y se fue enojado.
+  // Un número con separadores NO es un monto si: (a) lo sigue un dígito verificador "-7"/"-K",
+  // o (b) viene precedido por la palabra RUT. Los montos reales nunca cumplen ninguna de las dos.
+  const out = text.replace(RX, (m, off) => {
+    // [Codex, misma fecha] Un match con "$" o unidad (CLP/pesos) es MONTO siempre, aunque lo siga
+    // un "-2 cuotas" o lo preceda "RUT:" — las excepciones solo valen para números pelados.
+    if (/[$]|clp|pesos?/i.test(m)) return '(valor en la propuesta formal)';
+    const despues = text.slice(off + m.length, off + m.length + 4);
+    // [Gemini, misma fecha] "-N" solo cuenta como dígito verificador si lo que sigue NO continúa
+    // como cifra de plata: "1.200.000 - 3 cuotas" / "- 10%" / "- 2 cheques" son montos, no RUT.
+    const mDV = despues.match(/^\s?-\s?[0-9kK]/);
+    if (mDV) {
+      const resto = text.slice(off + m.length + mDV[0].length);
+      const sigueComoMonto = /^[0-9%]|^\s*(?:%|cuotas?|pagos?|cheques?|meses|mensual(?:es)?|inter[eé]s|descuentos?|d[ií]as?|abonos?)\b/i.test(resto);
+      if (!sigueComoMonto) return m;                               // dígito verificador → es RUT
+    }
+    const antes = text.slice(Math.max(0, off - 20), off);
+    if (/rut\b[^0-9a-z]{0,12}$/i.test(antes)) return m;            // "RUT: 10.047.794" → es RUT
+    return '(valor en la propuesta formal)';
+  });
   return out === text ? text : out.replace(/\s{2,}/g, ' ').trim();
 }
 

@@ -53,6 +53,37 @@ test('stripMontos: borra montos CLP del texto (positivos)', () => {
   }
 });
 
+test('stripMontos: NO toca RUT chilenos (caso real Alfredo 28-08: "falta el rut" ×4)', () => {
+  for (const t of [
+    'quedó a nombre de Alfredo, RUT 10.047.794-7, celular 974266456',
+    'RUT: 10.047.794',
+    'su rut 9.123.456-K quedó en la propuesta',
+    'con el RUT 100.477.947 anotado',
+  ]) {
+    const out = stripMontos(t);
+    assert.equal(out, t, `no debió tocar el RUT: ${t} → ${out}`);
+  }
+  // pero un monto de verdad en la MISMA frase que un RUT sí se redirige
+  const mix = stripMontos('RUT 10.047.794-7 y el total es $1.234.567');
+  assert.ok(/10\.047\.794-7/.test(mix), `el RUT debió sobrevivir: ${mix}`);
+  assert.ok(/valor en la propuesta formal/.test(mix), `el monto debió redirigirse: ${mix}`);
+  // [Codex 28-08] montos con $/unidad NUNCA se exceptúan, aunque parezcan RUT por contexto
+  for (const t of [
+    'Total: $289.000 CLP - 2 cuotas',
+    'Precio final: $1.234.567 - 10% de descuento',
+    'Abono asociado al RUT: $450.000 CLP',
+    'Monto para RUT: 1.200.000 pesos',
+    // [Gemini 28-08] guion de cuotas/descuento NO es dígito verificador
+    'El total de la cotización es 1.200.000 - 3 cuotas sin interés.',
+    'Quedaría en un precio final de 1.500.000 - 10% de descuento.',
+    'Abono inicial de 1.100.000 - 2 cheques.',
+  ]) {
+    const out = stripMontos(t);
+    assert.ok(/valor en la propuesta formal/.test(out), `el monto debió redirigirse: ${t} → ${out}`);
+    assert.ok(!/\d{3}[.,]\d{3}/.test(out), `no debió quedar monto: ${t} → ${out}`);
+  }
+});
+
 test('stripMontos: NO toca medidas/cantidades/folios/teléfonos (sin falsos positivos)', () => {
   for (const t of [
     'una corredera de 1.20 m por 1.50 m',
