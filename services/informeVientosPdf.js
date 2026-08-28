@@ -85,7 +85,10 @@ export async function generarInformeVientosPdf(datos, {
     const fle = v.flechas || {};
     const hueco = Boolean(cap._hueco);
     doc.fillColor('#222').text(String(v.nombre || '').slice(0, 34) + (v.cantidad > 1 ? `  (×${v.cantidad})` : ''), X.n, y, { width: 142 });
-    doc.fillColor('#444').text(`${v.ancho_mm}×${v.alto_mm} mm · ${String(v.vidrio || '').replace('DVH ', '')}`, X.med, y, { width: 96 });
+    // [Copilot, compuerta] Dims con guard: un campo ausente del motor jamas imprime
+    // "undefined" en un documento que ve el cliente.
+    const dims = (v.ancho_mm && v.alto_mm) ? `${v.ancho_mm}×${v.alto_mm} mm · ` : '';
+    doc.fillColor('#444').text(`${dims}${String(v.vidrio || '').replace('DVH ', '')}`, X.med, y, { width: 96 });
     if (hueco) {
       doc.fillColor('#8A6D1C').text('requiere cálculo del especialista', X.lr, y, { width: 180 });
     } else {
@@ -111,6 +114,10 @@ export async function generarInformeVientosPdf(datos, {
   }
 
   // ── Que exige el viento (demanda + supuesto declarado) ─────────────────
+  // [Copilot, compuerta] Salto de pagina si las secciones que vienen (~270 px con
+  // supuesto + metodo + descargo + firma) no caben: sin esto, un proyecto de muchas
+  // ventanas empujaba la firma fuera de la hoja.
+  if (y > 480) { doc.addPage(); y = 60; }
   y += 8;
   doc.fillColor(NAVY).fontSize(11).font('Helvetica-Bold').text('1 · QUÉ EXIGE EL VIENTO EN SU ZONA', 50, y);
   y += 18;

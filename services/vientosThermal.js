@@ -21,7 +21,9 @@ const THERMAL_URL = (process.env.THERMAL_API_URL || 'https://activa-thermal-prod
  * informe de vientos; no se adivina un espesor).
  */
 export function vidrioDesdeEtiqueta(etiqueta) {
-  const m = String(etiqueta || '').match(/(\d+(?:\.\d+)?)\s*[+/]\s*(\d+(?:\.\d+)?)\s*[+/]\s*(\d+(?:\.\d+)?)/);
+  // [Copilot, compuerta] Tambien con guion ("4-12-4"): el campo es SOLO glass_label, asi
+  // que no hay folios ni medidas que puedan confundirse aca.
+  const m = String(etiqueta || '').match(/(\d+(?:\.\d+)?)\s*[+/-]\s*(\d+(?:\.\d+)?)\s*[+/-]\s*(\d+(?:\.\d+)?)/);
   if (!m) return null;
   return { ext_mm: Number(m[1]), camara_mm: Number(m[2]), int_mm: Number(m[3]) };
 }

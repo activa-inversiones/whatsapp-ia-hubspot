@@ -2503,6 +2503,12 @@ Comuna: ${datos.comuna}`
             } catch { /* sin estado se sigue: mejor un posible repetido que ninguno */ }
             let tokenV = null;
             try {
+              // [Copilot, compuerta] DOS NIVELES, como el térmico (lección de los folios
+              // duplicados 0001/0002): primero el estado COMPARTIDO (cubre dos instancias
+              // conviviendo en un deploy), después la reserva local atómica.
+              if (await (deps.leerEstado || leerEstado)(`${claveV}:en_curso`)) return 'en_curso';
+            } catch { /* si el compartido no responde, manda la reserva local */ }
+            try {
               tokenV = (deps.reservarEstado || reservarEstado)(`${claveV}:en_curso`, 5 * 60) || null;
               if (!tokenV) return 'en_curso';
             } catch { /* se sigue */ }
