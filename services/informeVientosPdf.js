@@ -273,7 +273,7 @@ function dibujarSupuestoViento(doc, y0) {
   doc.moveTo(xC - 2.5, suelo - 2).lineTo(xC, suelo).lineTo(xC + 2.5, suelo - 2).strokeColor(NAVY).stroke();
   doc.moveTo(xC - 2.5, suelo - 24).lineTo(xC, suelo - 26).lineTo(xC + 2.5, suelo - 24).strokeColor(NAVY).stroke();
   doc.fillColor(NAVY).fontSize(7).font('Helvetica-Bold').text('3 m', xC - 14, suelo - 17, { lineBreak: false });
-  cinta(px, 'SU CASO: CIUDAD, 3 M (ESTE INFORME)', GOLD);
+  cinta(px, 'SU CASO: CIUDAD, 3 m (ESTE INFORME)', GOLD);
 
   // ── Escena 2: EN ALTURA — el viento crece con los pisos ───────────────
   px = panel(1, false);
@@ -482,7 +482,7 @@ function dibujarPaginaClima(doc, clima, nSec) {
       rad.mensual_kwh_m2_dia.slice(0, 12).map((v) => (esNum(v) ? Number(v) : null)),
       [GOLD, '#DCC27E', '#8A6D1C'],
       esNum(rad.anual_kwh_m2_dia)
-        ? `Promedio del año: ${dec(rad.anual_kwh_m2_dia, 1)} kWh/m² al día. En verano el sol pega fuerte: un buen vidrio también controla ese calor.`
+        ? `Promedio del año: ${dec(rad.anual_kwh_m2_dia, 1)} kWh/m² al día. En verano el sol pega fuerte: un vidrio adecuado (con control solar o Low-E) también ayuda a controlar ese calor.`
         : null,
     );
   }
