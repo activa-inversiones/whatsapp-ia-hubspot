@@ -2509,22 +2509,27 @@ Comuna: ${datos.comuna}`
                 const zonaTxt = zonaNCh && !esRef
                   ? `, que está en zona térmica ${zonaNCh} según la clasificación oficial chilena (la norma NCh 1079)`
                   : '';
+                // [Dueño, 27-ago] SIN guiones largos ("con esto se ve falso") + los tres
+                // titulares en NEGRITA de WhatsApp (*texto*) + el especialista presentado
+                // con su credencial formal: ingeniero + Resolución 266/2025 (respaldada en
+                // docs; el "EXENTA N°63" NO está verificado y queda fuera, regla del
+                // guardián de claims).
                 return `Perfecto${nombreCorto ? `, ${nombreCorto}` : ''}. Mientras le preparo su Propuesta Técnica Económica, ` +
                 `le adelanto el informe térmico de sus ventanas ${esRef ? 'para su zona' : `en ${comunaValor}`}, ` +
-                `para que lo mire con calma — se lo dejamos explicado en simple:\n` +
-                `1) Cuánto aíslan del frío sus ventanas — la transmitancia térmica, que en el informe aparece como "Uw": ` +
-                `mientras más bajo, mejor aísla — y lo que exige la norma ` +
+                `para que lo mire con calma. Se lo dejamos explicado en simple:\n` +
+                `1) *Cuánto aíslan del frío sus ventanas:* la transmitancia térmica, que en el informe aparece ` +
+                `como "Uw" (mientras más bajo, mejor aísla), y lo que exige la norma ` +
                 `${esRef ? 'como referencia regional de La Araucanía' : `en su comuna${zonaTxt}`}.\n` +
-                // [Dueño, 27-ago] Destacar el DIFERENCIADOR: separador de borde cálido
-                // (warm-edge). Guardián de claims: "muy baja probabilidad EN EL BORDE",
-                // jamás "cero condensación" — el propio informe advierte que con humedad
-                // alta puede condensar igual, y el resto depende de la casa.
-                `2) Por qué con una buena ventana la condensación baja muchísimo: nuestro termopanel usa separador ` +
+                // Guardián de claims: "muy baja probabilidad EN EL BORDE", jamás "cero
+                // condensación" — el propio informe advierte que con humedad alta puede
+                // condensar igual, y el resto depende de la casa.
+                `2) *Por qué con una buena ventana la condensación baja muchísimo:* nuestro termopanel usa separador ` +
                 `de borde cálido (el llamado warm-edge), que deja muy baja la probabilidad de condensación en el ` +
-                `borde del vidrio — el resto depende de la humedad y ventilación de la casa, y el informe también ` +
+                `borde del vidrio. El resto depende de la humedad y ventilación de la casa, y el informe también ` +
                 `lo explica.\n` +
-                `3) Y quién responde por el cálculo: Marcelo Cifuentes, evaluador energético acreditado por el ` +
-                `Ministerio de Vivienda (MINVU). Las ventanas salen de nuestra propia fábrica en Temuco, no de un revendedor.\n\n` +
+                `3) *Nuestro especialista:* el ingeniero Marcelo Cifuentes, evaluador energético acreditado por el ` +
+                `Ministerio de Vivienda (MINVU) mediante la Resolución 266/2025, responde por cada cálculo. ` +
+                `Y las ventanas salen de nuestra propia fábrica en Temuco, no de un revendedor.\n\n` +
                 // [Dueño, 27-ago] La puerta abierta, en su tono: que preguntar no cueste.
                 `Y si quiere que le explique cualquier parte del informe, me comenta no más.`;
               };

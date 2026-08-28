@@ -238,6 +238,15 @@ test('🔴 modo informe-primero: valor → informe → video → propuesta, en E
     'el warm-edge se vende sin prometer condensación cero');
   assert.match(textoValor, /me comenta no más/,
     'la invitación a preguntar por el informe, en el tono del dueño');
+  // [Dueño, 27-ago] "Con esto (los guiones largos) se ve falso" + negritas de WhatsApp
+  // en los tres titulares + el especialista con su credencial formal verificada.
+  assert.doesNotMatch(textoValor, /—/, 'cero guiones largos: se leen a máquina');
+  assert.match(textoValor, /\*Cuánto aíslan del frío sus ventanas:\*/, 'titular 1 en negrita');
+  assert.match(textoValor, /\*Por qué con una buena ventana la condensación baja muchísimo:\*/, 'titular 2 en negrita');
+  assert.match(textoValor, /\*Nuestro especialista:\*/, 'titular 3 en negrita');
+  assert.match(textoValor, /ingeniero Marcelo Cifuentes/, 'el especialista con su título');
+  assert.match(textoValor, /Resolución 266\/2025/, 'la credencial formal respaldada');
+  assert.doesNotMatch(textoValor, /EXENTA/, 'el EXENTA N°63 NO está verificado: fuera (guardián)');
   assert.equal(spy.pdfArgs.at(-1)?.nombre, 'Dady',
     'el informe sale "Preparado para" el cliente aunque state.name aún no exista');
 });
