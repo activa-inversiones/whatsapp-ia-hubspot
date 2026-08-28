@@ -2508,7 +2508,9 @@ Comuna: ${datos.comuna}`
                 return `Perfecto${nombreCorto ? `, ${nombreCorto}` : ''}. Mientras le preparo su Propuesta Técnica Económica, ` +
                 `le dejo primero el informe térmico de sus ventanas en ${esRef ? 'su zona' : comunaValor}, para que lo revise con calma. ` +
                 `Tres cosas que le van a servir:\n` +
-                `1) El Uw de cada ventana — mientras más bajo, mejor aísla — y el límite que exige la norma` +
+                // [Dueño, 27-ago] Primero el CONCEPTO con su nombre, después la sigla:
+                // "la transmitancia térmica, que se representa Uw" — didáctico, no jerga.
+                `1) La transmitancia térmica (Uw) de cada ventana — mientras más bajo el Uw, mejor aísla — y el límite que exige la norma` +
                 `${zonaTxt}` +
                 // [Copilot, pase en caliente] Sin repetir la comuna en la misma oración:
                 // si la zona ya la nombró, el cierre no la vuelve a decir.

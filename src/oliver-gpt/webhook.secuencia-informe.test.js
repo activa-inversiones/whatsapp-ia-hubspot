@@ -222,6 +222,8 @@ test('🔴 modo informe-primero: valor → informe → video → propuesta, en E
   assert.doesNotMatch(textoValor, /informe técnico/, 'el "informe técnico" quedó prohibido');
   assert.match(textoValor, /zona térmica F según la NCh 1079/,
     'nombra la zona térmica de la comuna, el mismo dato que imprime el PDF');
+  assert.match(textoValor, /transmitancia térmica \(Uw\)/,
+    'primero el concepto con su nombre, después la sigla (dueño 27-ago)');
   assert.equal(spy.pdfArgs.at(-1)?.nombre, 'Dady',
     'el informe sale "Preparado para" el cliente aunque state.name aún no exista');
 });
