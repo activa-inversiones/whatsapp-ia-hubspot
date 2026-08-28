@@ -231,6 +231,13 @@ test('🔴 modo informe-primero: valor → informe → video → propuesta, en E
   antesQue('transmitancia térmica', 'Uw');
   antesQue('zona térmica F según la clasificación oficial chilena', 'NCh 1079');
   antesQue('Ministerio de Vivienda', 'MINVU');
+  antesQue('separador de borde cálido', 'warm-edge');
+  // [Dueño] El diferenciador con su raya de claims: baja probabilidad EN EL BORDE,
+  // jamás promesa absoluta de cero condensación.
+  assert.match(textoValor, /muy baja la probabilidad de condensación en el borde/,
+    'el warm-edge se vende sin prometer condensación cero');
+  assert.match(textoValor, /me comenta no más/,
+    'la invitación a preguntar por el informe, en el tono del dueño');
   assert.equal(spy.pdfArgs.at(-1)?.nombre, 'Dady',
     'el informe sale "Preparado para" el cliente aunque state.name aún no exista');
 });

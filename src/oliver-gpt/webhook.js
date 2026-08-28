@@ -2515,10 +2515,18 @@ Comuna: ${datos.comuna}`
                 `1) Cuánto aíslan del frío sus ventanas — la transmitancia térmica, que en el informe aparece como "Uw": ` +
                 `mientras más bajo, mejor aísla — y lo que exige la norma ` +
                 `${esRef ? 'como referencia regional de La Araucanía' : `en su comuna${zonaTxt}`}.\n` +
-                `2) Por qué con una buena ventana la condensación baja muchísimo — y de qué depende el resto, ` +
-                `que el informe también le explica.\n` +
+                // [Dueño, 27-ago] Destacar el DIFERENCIADOR: separador de borde cálido
+                // (warm-edge). Guardián de claims: "muy baja probabilidad EN EL BORDE",
+                // jamás "cero condensación" — el propio informe advierte que con humedad
+                // alta puede condensar igual, y el resto depende de la casa.
+                `2) Por qué con una buena ventana la condensación baja muchísimo: nuestro termopanel usa separador ` +
+                `de borde cálido (el llamado warm-edge), que deja muy baja la probabilidad de condensación en el ` +
+                `borde del vidrio — el resto depende de la humedad y ventilación de la casa, y el informe también ` +
+                `lo explica.\n` +
                 `3) Y quién responde por el cálculo: Marcelo Cifuentes, evaluador energético acreditado por el ` +
-                `Ministerio de Vivienda (MINVU). Las ventanas salen de nuestra propia fábrica en Temuco, no de un revendedor.`;
+                `Ministerio de Vivienda (MINVU). Las ventanas salen de nuestra propia fábrica en Temuco, no de un revendedor.\n\n` +
+                // [Dueño, 27-ago] La puerta abierta, en su tono: que preguntar no cueste.
+                `Y si quiere que le explique cualquier parte del informe, me comenta no más.`;
               };
               // Las MISMAS ventanas que declara la propuesta (mismo mapeo que el camino
               // clasico de abajo): informe y propuesta tienen que decir lo mismo siempre.
