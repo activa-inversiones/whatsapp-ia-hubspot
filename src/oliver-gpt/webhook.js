@@ -73,6 +73,10 @@ const SEQ_INFORME_LISTA = String(process.env.SEQUENCE_INFORME_PRIMERO_LISTA || '
 const SEQ_INFORME_TIMEOUT_MS = Number(process.env.SEQUENCE_INFORME_TIMEOUT_MS || 120_000);
 // Pausa humana entre el informe y el video cuando el video cae ENTRE documentos.
 const SEQ_VIDEO_MS = Number(process.env.SEQUENCE_VIDEO_MS || 8_000);
+// [Dueño, 27-ago: "dale pausa"] Aire entre el informe (y su video) y el PRECIO. Medido en
+// la prueba real: sin esto, del informe al precio pasaban 9 segundos — el cliente recién
+// abría el informe y ya le caía la propuesta. 35 s deja mirar; regulable sin deploy.
+const SEQ_PRECIO_MS = Number(process.env.SEQUENCE_PRECIO_MS || 35_000);
 
 export function secuenciaInformePrimero(waId, { flag = SEQ_INFORME_PRIMERO_ON, lista = SEQ_INFORME_LISTA } = {}) {
   if (!flag) return false;
@@ -2559,10 +2563,12 @@ Comuna: ${datos.comuna}`
                   safe('generarPdf.video.secuencia', () => enviarVideoCortesia(SEQ_VIDEO_MS)),
                   new Promise((res) => { venceVideo = setTimeout(res, techoVideoMs); }),
                 ]).finally(() => { if (venceVideo) clearTimeout(venceVideo); });
-                // 🔴 [Gemini, compuerta] PAUSA ANTES DEL PRECIO. Sin esto el video y la
-                // propuesta llegaban encimados (0 ms entre ambos) — tres alertas seguidas,
-                // que es exactamente lo que el diseño del ritmo humano prohíbe.
-                await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: SEQ_VIDEO_MS });
+                // 🔴 [Gemini, compuerta + dueño "dale pausa"] AIRE ANTES DEL PRECIO — con
+                // video o sin él. Sin esto, el precio caía 9 s después del informe (medido
+                // en la prueba real del 27-ago): el cliente recién abría el documento y ya
+                // tenía la propuesta encima. Solo en el camino 'enviado': un informe
+                // repetido o caído no gana demora.
+                await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: SEQ_PRECIO_MS });
               }
               // 'ya_enviado' / 'en_curso' / 'timeout' / 'fallo': se sigue derecho a la
               // propuesta. En timeout el informe puede llegar después por su cuenta —
