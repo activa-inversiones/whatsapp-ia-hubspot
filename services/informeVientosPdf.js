@@ -328,6 +328,9 @@ function dibujarPaginaCurvas(doc, curvas) {
   };
   cabeceraInterseccion();
   inter.forEach((f, i) => {
+    // [Codex, re-pase] el salto se decide ANTES de imprimir la fila: decidirlo despues
+    // dejaba una cabecera huerfana en pagina nueva cuando la ULTIMA fila lo gatillaba.
+    if (y > 756) { doc.addPage(); y = 60; cabeceraInterseccion(); }
     doc.fillColor('#222').fontSize(8).font('Helvetica')
       .text(`V${i + 1} · ${String(f.nombre || '').slice(0, 24)} (${f.ancho_mm}×${f.alto_mm})`, col0, y, { width: 182 });
     (Array.isArray(f.por_espesor) ? f.por_espesor : []).filter(esObj).forEach((pe) => {
@@ -349,9 +352,6 @@ function dibujarPaginaCurvas(doc, curvas) {
     });
     doc.font('Helvetica');
     y += 14;
-    // [Gemini, compuerta] al saltar de pagina la tabla REPITE su cabecera: sin eso, un
-    // proyecto de 17+ ventanas dejaba filas huerfanas sin titulos de columna.
-    if (y > 700) { doc.addPage(); y = 60; cabeceraInterseccion(); doc.fontSize(8).font('Helvetica'); }
   });
   y += 2;
   doc.fillColor('#666').fontSize(7)

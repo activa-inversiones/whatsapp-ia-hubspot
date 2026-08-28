@@ -114,6 +114,26 @@ test('[Gemini+Codex, compuerta] datos hostiles del motor (NaN/null/[null]) no tu
   assert.ok(Buffer.isBuffer(pdf) && pdf.length > 3000);
 });
 
+test('[Codex, re-pase] el salto de pagina de la tabla se decide ANTES de la fila', async () => {
+  // La regresion cazada: con el salto DESPUES de la fila, la ultima fila que gatillaba
+  // el umbral dejaba una cabecera huerfana en una pagina extra vacia. Guardia doble:
+  // el patron viejo no puede volver, y el numero de paginas crece de a 1, sin saltos.
+  assert.doesNotMatch(SRC_PDF, /y \+= 14;\s*\n\s*if \(y > \d+\) \{ doc\.addPage/,
+    'el salto de pagina volvio a decidirse despues de imprimir la fila');
+  let previas = 0;
+  for (const n of [1, 8, 14, 15, 16, 17, 18, 19, 20, 26]) {
+    const cv = bloqueCurvas();
+    cv.interseccion_por_ventana = Array.from({ length: n }, (_, i) => ({
+      ...cv.interseccion_por_ventana[0], nombre: `Ventana ${i + 1}`,
+    }));
+    const pdf = await generarInformeVientosPdf({ ...datosBase(), curvas: cv }, { nombre: 'M', comuna: 'L', numeroInforme: `T-${n}` });
+    const p = paginasDe(pdf);
+    assert.ok(p >= previas && p <= previas + 1 || previas === 0,
+      `con ${n} filas el PDF salto de ${previas} a ${p} paginas`);
+    previas = p;
+  }
+});
+
 test('el cliente de THERMAL pide las curvas al motor (incluir_curvas: true)', () => {
   assert.match(SRC_CLI, /incluir_curvas:\s*true/);
 });
