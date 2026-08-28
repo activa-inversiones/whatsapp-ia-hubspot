@@ -569,7 +569,7 @@ export async function handleChannelTurn(
             (input.items || []).reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0);
           safe('generarPdf.zoho', async () => {
             const dealId = await upsertZohoDeal({
-              phone: clientPhone || senderId, name: clientName, comuna: clientComuna,
+              phone: senderId || clientPhone, name: clientName, comuna: clientComuna, // [2026-08-28] Zoho dedupe por el hilo real
               items: input.items || [], grand_total: grandTotal, stageKey: 'propuesta', quote_number: quoteNumber,
             });
             if (dealId) {
@@ -580,9 +580,15 @@ export async function handleChannelTurn(
           });
 
           // Paso 5: conversión multicanal (anti-cross-inject: canal del lead = el real IG/FB).
+          // [2026-08-28] FIX identidad (caso real Alfredo 56952077379): el celular que el cliente
+          // DICTA para el documento (input.phone, ej. "974266456") NO es la identidad del chat.
+          // Con clientPhone primero, sales-os creaba conversaciones/leads FANTASMA con ese número
+          // (974266456 y 56974266456, cero mensajes) y las cotizaciones quedaban colgadas ahí →
+          // el inbox mostraba al cliente "Sin mensajes aún". La identidad CRM es SIEMPRE senderId
+          // (el hilo real); el teléfono dictado vive solo en el PDF.
           safe('generarPdf.conversion', () =>
             bridge.pushQuoteEvent({
-              phone: clientPhone || senderId, channel, customer_name: clientName,
+              phone: senderId || clientPhone, channel, customer_name: clientName,
               amount_total: grandTotal, currency: 'CLP', status: 'sent', quote_number: quoteNumber,
               fbclid: state.fbclid || null, gclid: state.gclid || null,
               ttclid: state.ttclid || null, ctwa_clid: state.ctwa_clid || null,
@@ -596,7 +602,7 @@ export async function handleChannelTurn(
                 channel: channel || null,
                 lead_name: clientName || null,
                 name: clientName || null,
-                phone: clientPhone || senderId || null,
+                phone: senderId || clientPhone || null, // [2026-08-28] identidad = hilo real, no el celular dictado
                 comuna: clientComuna || null,
                 city: clientComuna || null,
                 project_type: null,
