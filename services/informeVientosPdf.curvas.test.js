@@ -90,6 +90,30 @@ test('un bloque de curvas HUECO (motor declaro que no pudo) tampoco rompe', asyn
   assert.equal(paginasDe(pdf), 1);
 });
 
+test('[Gemini, compuerta] un proyecto de 20 ventanas salta de pagina sin romper', async () => {
+  const cv = bloqueCurvas();
+  cv.interseccion_por_ventana = Array.from({ length: 20 }, (_, i) => ({
+    ...cv.interseccion_por_ventana[0], nombre: `Ventana ${i + 1}`,
+  }));
+  const datos = { ...datosBase(), curvas: cv };
+  const pdf = await generarInformeVientosPdf(datos, { nombre: 'M', comuna: 'L', numeroInforme: 'T-4' });
+  assert.ok(paginasDe(pdf) >= 3, `20 filas deben empujar a 3+ paginas, hubo ${paginasDe(pdf)}`);
+});
+
+test('[Gemini+Codex, compuerta] datos hostiles del motor (NaN/null/[null]) no tumban el PDF', async () => {
+  const cv = bloqueCurvas();
+  cv.capacidad_por_espesor[0].puntos.push({ area_m2: null, lr_corta_kPa: 3 }, { area_m2: -1, lr_corta_kPa: NaN }, null);
+  cv.capacidad_por_espesor.push(null, { espesor_mm: 'x', puntos: [null] });
+  cv.demanda_legal.push({ etiqueta: 'rota', presion_kPa: NaN, entorno: 'ciudad', altura_m: 3 }, null);
+  cv.interseccion_por_ventana.push(
+    { nombre: 'rota', ancho_mm: 1, alto_mm: 1, area_m2: undefined, espesor_propio_mm: '4', por_espesor: [{ espesor_mm: 4, lr_corta_kPa: 2, cumple: true }, null] },
+    null,
+    { nombre: 'sin-por-espesor', ancho_mm: 1, alto_mm: 1, area_m2: 1, espesor_propio_mm: null, por_espesor: {} },
+  );
+  const pdf = await generarInformeVientosPdf({ ...datosBase(), curvas: cv }, { nombre: 'M', comuna: 'L', numeroInforme: 'T-5' });
+  assert.ok(Buffer.isBuffer(pdf) && pdf.length > 3000);
+});
+
 test('el cliente de THERMAL pide las curvas al motor (incluir_curvas: true)', () => {
   assert.match(SRC_CLI, /incluir_curvas:\s*true/);
 });

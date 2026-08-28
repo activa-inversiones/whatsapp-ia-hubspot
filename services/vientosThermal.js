@@ -77,7 +77,10 @@ export async function pedirVientos({ comuna = '', cliente = '', ventanas }) {
         // sale igual en su version de 1 pagina.
         incluir_curvas: true,
       }),
-      signal: AbortSignal.timeout(8000),
+      // [Copilot, compuerta] 10 s en vez de 8: las curvas agregan ~180 interpolaciones
+      // del lado del motor y un timeout corto aca tumba el informe COMPLETO, no solo el
+      // grafico. El candado de la secuencia es 30 s: sobra espacio.
+      signal: AbortSignal.timeout(10000),
     });
     if (!r.ok) return null;
     return await r.json();
