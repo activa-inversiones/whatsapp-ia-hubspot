@@ -76,6 +76,10 @@ export async function pedirVientos({ comuna = '', cliente = '', ventanas }) {
         // el bloque "curvas" y el PDF lo dibuja; si el motor viejo no lo trae, el informe
         // sale igual en su version de 1 pagina.
         incluir_curvas: true,
+        // Dueno 28-ago (2a orden): "maxima informacion a cliente para un informe nivel
+        // corp... todos los parametros que encontramos". El bloque "clima" trae zona
+        // termica + lluvia/temperatura de la estacion DMC de SU comuna + racha marco.
+        incluir_clima: true,
       }),
       // [Copilot, compuerta] 10 s en vez de 8: las curvas agregan ~180 interpolaciones
       // del lado del motor y un timeout corto aca tumba el informe COMPLETO, no solo el

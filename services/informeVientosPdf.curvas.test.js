@@ -149,3 +149,69 @@ test('doctrina de copy: kPa se explica antes de usarse y sin guiones largos nuev
     .filter((l) => !l.includes('guion largo') && !l.startsWith('//'));
   assert.deepEqual(lineasConDash, [], 'guiones largos fuera de los dos sitios permitidos');
 });
+
+/* =========================================================================
+ * LA PAGINA DE CLIMA (dueno 28-ago: "maxima informacion... informe nivel corp")
+ * ========================================================================= */
+
+function bloqueClima() {
+  return {
+    comuna: 'Temuco', zona_termica: 'F',
+    fuente: 'Direccion Meteorologica de Chile, portal Servicios Climaticos',
+    estacion_local: { cod: 380012, nombre: 'Padre las Casas', km: 2.5 },
+    estacion_datos: { codigo: 380013, nombre: 'Maquehue, Temuco Ad.', km: 5 },
+    lluvia: {
+      anual_normal_mm: 1131, anos: 58,
+      mes_mas_lluvioso: { mes: 'junio', normal_mm: 186.2 },
+      max_24h_historico_mm: 126, fecha_max_24h: '23-Jun-1954',
+      mensual: Array.from({ length: 12 }, (_, i) => ({ mes: i + 1, normal_mm: 30 + i * 10 })),
+    },
+    temperatura: {
+      media_anual: 11.8, min_abs: -8.1, fecha_min_abs: '2007-07-09 07:32:00', max_abs: 42, anos: 74,
+      mensual: Array.from({ length: 12 }, (_, i) => ({ mes: i + 1, max_media: 20 - i, min_media: 5 - i * 0.5 })),
+    },
+    racha_marco: {
+      estacion: { codigo: 380013, nombre: 'Maquehue, Temuco Ad.' }, periodo: '1969-2014',
+      anos: 45, record_kt: 80, record_kmh: 148, record_fecha: '15-06-1973 14:00',
+      mediana_anual_kt: 48, mediana_anual_kmh: 89,
+    },
+  };
+}
+
+test('con clima el informe suma su pagina y el titulo dice VIENTOS Y CLIMA', async () => {
+  const datos = { ...datosBase(), curvas: bloqueCurvas(), clima: bloqueClima() };
+  const pdf = await generarInformeVientosPdf(datos, { nombre: 'M', comuna: 'Temuco', numeroInforme: 'T-C1' });
+  assert.ok(paginasDe(pdf) >= 3, `curvas + clima = 3+ paginas, hubo ${paginasDe(pdf)}`);
+  assert.match(SRC_PDF, /INFORME DE VIENTOS Y CLIMA/, 'el titulo del documento crecio con el contenido');
+});
+
+test('sin clima (motor viejo o hueco) nada cambia: la degradacion es total', async () => {
+  const sinClima = { ...datosBase(), curvas: bloqueCurvas() };
+  const conHueco = { ...datosBase(), curvas: bloqueCurvas(), clima: { _hueco: true, por_que: 'x' } };
+  const p1 = paginasDe(await generarInformeVientosPdf(sinClima, { nombre: 'M', comuna: 'T', numeroInforme: 'T-C2' }));
+  const p2 = paginasDe(await generarInformeVientosPdf(conHueco, { nombre: 'M', comuna: 'T', numeroInforme: 'T-C3' }));
+  assert.equal(p1, 2);
+  assert.equal(p2, 2, 'un clima hueco no imprime pagina');
+});
+
+test('clima parcial (solo lluvia, sin temperatura ni racha) imprime lo que HAY', async () => {
+  const cl = bloqueClima();
+  delete cl.temperatura; delete cl.racha_marco;
+  const pdf = await generarInformeVientosPdf({ ...datosBase(), clima: cl }, { nombre: 'M', comuna: 'T', numeroInforme: 'T-C4' });
+  assert.ok(Buffer.isBuffer(pdf) && paginasDe(pdf) >= 2);
+});
+
+test('clima hostil (nulls y NaN en las series) no tumba el PDF', async () => {
+  const cl = bloqueClima();
+  cl.lluvia.mensual[3] = { mes: 4, normal_mm: null };
+  cl.lluvia.mensual[4] = null && {};
+  cl.lluvia.mensual[4] = { mes: 5, normal_mm: NaN };
+  cl.temperatura.min_abs = null;
+  cl.racha_marco.mediana_anual_kmh = NaN;
+  const pdf = await generarInformeVientosPdf({ ...datosBase(), curvas: bloqueCurvas(), clima: cl }, { nombre: 'M', comuna: 'T', numeroInforme: 'T-C5' });
+  assert.ok(Buffer.isBuffer(pdf) && pdf.length > 3000);
+});
+
+test('el cliente de THERMAL tambien pide el clima (incluir_clima: true)', () => {
+  assert.match(SRC_CLI, /incluir_clima:\s*true/);
+});

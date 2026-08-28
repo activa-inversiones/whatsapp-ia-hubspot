@@ -2588,7 +2588,7 @@ Comuna: ${datos.comuna}`
               const archivoV = `Informe-Vientos-${String(clientComuna || 'proyecto').replace(/\s+/g, '-')}.pdf`;
               const mediaV = await uploadWaDocument(pdfV, archivoV);
               let envioV = null;
-              if (mediaV) envioV = await sendWaDocument(from, mediaV, archivoV, 'Informe de vientos de sus ventanas');
+              if (mediaV) envioV = await sendWaDocument(from, mediaV, archivoV, 'Informe de vientos y clima de sus ventanas');
               if (!(mediaV && envioV && envioV.ok === true)) {
                 log('warn', 'generarPdf.vientos', `informe de vientos ${folioV} NO se entrego: el proximo proyecto reintenta`);
                 soltarV(); return 'fallo';

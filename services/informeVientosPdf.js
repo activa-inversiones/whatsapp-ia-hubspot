@@ -43,7 +43,7 @@ export async function generarInformeVientosPdf(datos, {
   nombre = '', comuna = '', numeroInforme = '', ilegibles = 0, firma = {},
 } = {}) {
   if (!datos || !Array.isArray(datos.ventanas) || !datos.ventanas.length) return null;
-  const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: `Informe de vientos ${numeroInforme}` } });
+  const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: `Informe de vientos y clima ${numeroInforme}` } });
   const chunks = [];
   doc.on('data', (c) => chunks.push(c));
   const fin = new Promise((res) => doc.on('end', () => res(Buffer.concat(chunks))));
@@ -54,7 +54,9 @@ export async function generarInformeVientosPdf(datos, {
   doc.fillColor(GOLD).fontSize(10).font('Helvetica').text('Ventanas PVC · Termopanel · Fábrica en Temuco', 50, 56);
   doc.fillColor('#fff').fontSize(9).text('Evaluación energética acreditada MINVU', 50, 72);
 
-  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text('INFORME DE VIENTOS', 50, 112);
+  // [Dueno 28-ago, "informe nivel corp"] El documento crecio a VIENTOS Y CLIMA: con la
+  // pagina del clima de la comuna adentro, el titulo dice lo que el documento ES.
+  doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text('INFORME DE VIENTOS Y CLIMA', 50, 112);
   doc.fillColor(GOLD).fontSize(12).font('Helvetica-Bold')
     .text(comuna ? `Comuna de ${comuna}` : 'Resistencia del vidriado', 50, 138);
   doc.fillColor('#444').fontSize(9).font('Helvetica')
@@ -160,7 +162,18 @@ export async function generarInformeVientosPdf(datos, {
     doc.addPage();
     y = dibujarPaginaCurvas(doc, curvas);
   }
-  const nCalc = curvas ? '5' : '2';
+  // ── El clima de su comuna (dueno 28-ago: "maxima informacion... nivel corp") ────────
+  // Mismo contrato de degradacion: sin bloque o con hueco, la pagina no existe y nada
+  // se rompe. El numero de seccion se corre segun lo que realmente se imprimio.
+  const clima = (datos.clima && !datos.clima._hueco
+    && (datos.clima.lluvia || datos.clima.temperatura || datos.clima.racha_marco)) ? datos.clima : null;
+  let nSec = curvas ? 5 : 2;
+  if (clima) {
+    doc.addPage();
+    y = dibujarPaginaClima(doc, clima, nSec);
+    nSec += 1;
+  }
+  const nCalc = String(nSec);
 
   // ── Metodo y descargo ───────────────────────────────────────────────────
   // El cierre (texto + descargo + firma) mide ~190 pt; con margen inferior de 50 el
@@ -188,6 +201,116 @@ export async function generarInformeVientosPdf(datos, {
 
   doc.end();
   return fin;
+}
+
+/**
+ * Pagina de CLIMA (dueno 28-ago: "maxima informacion a cliente para un informe nivel
+ * corp... todos los parametros que encontramos"): zona termica oficial, la estacion
+ * meteorologica de SU comuna con la distancia declarada, extremos historicos FECHADOS,
+ * y el climograma (lluvia y temperatura por mes, cada uno con su propio eje: jamas un
+ * grafico de dos escalas). Todo viene curado del motor; aca solo se dibuja.
+ */
+function dibujarPaginaClima(doc, clima, nSec) {
+  const esNum = (v) => Number.isFinite(Number(v)) && v !== null;
+  let y = 56;
+  doc.fillColor(NAVY).fontSize(11).font('Helvetica-Bold')
+    .text(`${nSec} · EL CLIMA DE SU COMUNA${clima.comuna ? ` (${String(clima.comuna).toUpperCase()})` : ''}`, 50, y);
+  y += 16;
+  const estD = clima.estacion_datos || {};
+  const zona = clima.zona_termica ? `Su comuna está en la zona térmica ${clima.zona_termica} de la reglamentación oficial chilena. ` : '';
+  const estTxt = estD.nombre
+    ? `Los datos que siguen son mediciones reales de la estación meteorológica ${String(estD.nombre).trim()}${esNum(estD.km) ? `, a ${dec(estD.km, 0)} km de su comuna` : ''}, de la Dirección Meteorológica de Chile. `
+    : '';
+  const intro = `${zona}${estTxt}Cada valor lleva su período de medición: nada es estimado.`;
+  doc.fillColor('#333').fontSize(8.5).font('Helvetica').text(intro, 50, y, { width: W - 100 });
+  y += doc.heightOfString(intro, { width: W - 100 }) + 12;
+
+  // ── Los extremos historicos, en fichas ──────────────────────────────────
+  const ll = (clima.lluvia && !clima.lluvia._hueco) ? clima.lluvia : null;
+  const tt = (clima.temperatura && !clima.temperatura._hueco) ? clima.temperatura : null;
+  const rm = clima.racha_marco || null;
+  const fichas = [];
+  if (ll && esNum(ll.max_24h_historico_mm)) fichas.push({ t: 'LLUVIA RÉCORD EN 24 H', v: `${dec(ll.max_24h_historico_mm, 0)} mm`, f: String(ll.fecha_max_24h || '') });
+  if (tt && esNum(tt.min_abs)) fichas.push({ t: 'RÉCORD DE FRÍO', v: `${dec(tt.min_abs, 1)} °C`, f: String(tt.fecha_min_abs || '').slice(0, 10) });
+  if (tt && esNum(tt.max_abs)) fichas.push({ t: 'RÉCORD DE CALOR', v: `${dec(tt.max_abs, 0)} °C`, f: `${tt.anos || ''} años de registro` });
+  if (rm && esNum(rm.record_kmh)) fichas.push({ t: 'RÁFAGA RÉCORD REGIONAL', v: `${dec(rm.record_kmh, 0)} km/h`, f: String(rm.record_fecha || '').slice(0, 10) });
+  if (fichas.length) {
+    const anchoF = Math.floor((W - 100 - (fichas.length - 1) * 8) / fichas.length);
+    fichas.forEach((fi, i) => {
+      const x = 50 + i * (anchoF + 8);
+      doc.rect(x, y, anchoF, 52).fill('#F7F9FC');
+      doc.fillColor('#666').fontSize(6.5).font('Helvetica-Bold').text(fi.t, x + 6, y + 7, { width: anchoF - 12 });
+      doc.fillColor(NAVY).fontSize(14).font('Helvetica-Bold').text(fi.v, x + 6, y + 20, { width: anchoF - 12 });
+      doc.fillColor('#888').fontSize(6.5).font('Helvetica').text(fi.f, x + 6, y + 38, { width: anchoF - 12 });
+    });
+    y += 64;
+  }
+
+  const MESES1 = ['E', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
+  const cx = 92, cw = 442;
+
+  // ── Climograma parte 1: la lluvia de cada mes (barras, eje propio en mm) ─
+  if (ll && Array.isArray(ll.mensual) && ll.mensual.some((m) => esNum(m.normal_mm))) {
+    doc.fillColor(NAVY).fontSize(9).font('Helvetica-Bold')
+      .text(`Lluvia típica de cada mes (normal histórica${esNum(ll.anos) ? `, ${ll.anos} años` : ''})`, 50, y);
+    y += 14;
+    const ch = 110, ctop = y;
+    const vals = ll.mensual.map((m) => (esNum(m.normal_mm) ? Number(m.normal_mm) : 0));
+    const vMax = Math.max(10, ...vals);
+    const bw = Math.floor(cw / 12) - 6;
+    doc.moveTo(cx, ctop).lineTo(cx, ctop + ch).lineTo(cx + cw, ctop + ch).strokeColor('#B9C2CF').lineWidth(0.8).stroke();
+    for (let i = 0; i < 12; i++) {
+      const h = (vals[i] / vMax) * (ch - 10);
+      const x = cx + 8 + i * Math.floor(cw / 12);
+      if (vals[i] > 0) doc.rect(x, ctop + ch - h, bw, h).fill('#2E6DA4');
+      doc.fillColor('#666').fontSize(6.5).font('Helvetica').text(MESES1[i], x + bw / 2 - 2, ctop + ch + 4);
+      if (vals[i] > 0) doc.fillColor('#555').fontSize(6).text(String(Math.round(vals[i])), x - 2, ctop + ch - h - 8, { width: bw + 6, align: 'center', lineBreak: false });
+    }
+    doc.fillColor('#666').fontSize(6.5).text('mm', cx - 24, ctop - 2);
+    if (esNum(ll.anual_normal_mm)) {
+      doc.fillColor('#444').fontSize(7.5)
+        .text(`Total típico del año: ${dec(ll.anual_normal_mm, 0)} mm${ll.mes_mas_lluvioso ? ` · el mes más lluvioso es ${ll.mes_mas_lluvioso.mes}` : ''}.`, cx, ctop + ch + 16);
+    }
+    y = ctop + ch + 30;
+  }
+
+  // ── Climograma parte 2: temperaturas tipicas (lineas, eje propio en °C) ──
+  if (tt && Array.isArray(tt.mensual) && tt.mensual.some((m) => esNum(m.max_media))) {
+    doc.fillColor(NAVY).fontSize(9).font('Helvetica-Bold')
+      .text('Temperaturas típicas: máxima y mínima media de cada mes', 50, y);
+    y += 14;
+    const ch = 100, ctop = y;
+    const maxs = tt.mensual.map((m) => Number(m.max_media));
+    const mins = tt.mensual.map((m) => Number(m.min_media));
+    const vMax = Math.ceil(Math.max(...maxs) + 2);
+    const vMin = Math.floor(Math.min(0, ...mins) - 1);
+    const fy2 = (v) => ctop + ch - ((v - vMin) / (vMax - vMin)) * ch;
+    const fx2 = (i) => cx + 15 + i * ((cw - 30) / 11);
+    doc.moveTo(cx, ctop).lineTo(cx, ctop + ch).lineTo(cx + cw, ctop + ch).strokeColor('#B9C2CF').lineWidth(0.8).stroke();
+    if (vMin < 0) { doc.save().dash(2, { space: 2 }).moveTo(cx, fy2(0)).lineTo(cx + cw, fy2(0)).strokeColor('#C9D2DE').lineWidth(0.6).stroke().restore(); }
+    doc.save().moveTo(fx2(0), fy2(maxs[0]));
+    for (let i = 1; i < 12; i++) doc.lineTo(fx2(i), fy2(maxs[i]));
+    doc.strokeColor(GOLD).lineWidth(1.6).stroke().restore();
+    doc.save().moveTo(fx2(0), fy2(mins[0]));
+    for (let i = 1; i < 12; i++) doc.lineTo(fx2(i), fy2(mins[i]));
+    doc.strokeColor('#6FA0CC').lineWidth(1.6).stroke().restore();
+    for (let i = 0; i < 12; i++) doc.fillColor('#666').fontSize(6.5).font('Helvetica').text(MESES1[i], fx2(i) - 2, ctop + ch + 4);
+    doc.fillColor('#666').fontSize(6.5).text('°C', cx - 24, ctop - 2);
+    doc.fillColor('#8A6D1C').fontSize(7).font('Helvetica-Bold').text('máxima media', fx2(0), fy2(maxs[0]) - 12, { lineBreak: false });
+    doc.fillColor('#3E6E9E').fontSize(7).text('mínima media', fx2(0), fy2(mins[0]) + 5, { lineBreak: false });
+    y = ctop + ch + 22;
+  }
+
+  // ── La rafaga marco, en una linea (el detalle vive en las paginas de viento) ─
+  if (rm && esNum(rm.mediana_anual_kmh)) {
+    const txtR = `Viento: en la estación marco regional (${rm.estacion?.nombre || 'Maquehue, Temuco'}, período ${rm.periodo}), la ráfaga máxima de un año típico ronda los ${dec(rm.mediana_anual_kmh, 0)} km/h, y la récord fue de ${dec(rm.record_kmh, 0)} km/h. Sus ventanas se verifican contra estas exigencias en las páginas anteriores.`;
+    doc.fillColor('#333').fontSize(8).font('Helvetica').text(txtR, 50, y, { width: W - 100 });
+    y += doc.heightOfString(txtR, { width: W - 100 }) + 10;
+  }
+  const fuente = String(clima.fuente || 'Fuente: Dirección Meteorológica de Chile.');
+  doc.fillColor('#888').fontSize(6.5).font('Helvetica').text(`Fuente de los datos de clima: ${fuente}.`, 50, y, { width: W - 100 });
+  y += 18;
+  return y;
 }
 
 /**
