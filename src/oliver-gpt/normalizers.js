@@ -420,8 +420,10 @@ export function anticipoDeLoCotizado(items) {
 
   return `Su Propuesta Técnica Económica considera:\n${visibles.join('\n')}`
     + (sobran > 0 ? `\n…y ${sobran} más, todo detallado en el documento.` : '')
+    // [Codex, re-pase] sin "al instante": la misma clase de promesa temporal que ya se
+    // saco del mensaje corto ("enseguida"). Se corrige rapido, pero no se jura un reloj.
     + `\n\nRevise por favor el tipo de apertura, el color y las medidas (las damos primero `
-    + `de ancho y después de alto): si algo quedó al revés o no calza, me dice y lo corrijo al instante.`;
+    + `de ancho y después de alto): si algo quedó al revés o no calza, me dice y se lo corrijo.`;
 }
 
 export function isComplete(d) {
