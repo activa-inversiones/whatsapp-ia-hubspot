@@ -51,6 +51,11 @@ import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import { recordarColor, resumenDeLoCotizado } from './normalizers.js';   // [2026-08-25] color recordado + "que le cotice"
 import { elegirVideo, mensajeDelVideo, mediaIdsDisponibles } from '../../services/videosFabrica.js';   // [2026-08-25] video de fabrica tras la propuesta
+// [2026-08-28] INFORME DE VIENTOS en la secuencia (pedido del dueno: "dale, agrega el
+// informe de vientos a la secuencia de Oliver"). THERMAL calcula (se pide por HTTP, regla
+// de la casa), Oliver arma el PDF y lo entrega como 2o documento.
+import { pedirVientos, ventanasParaVientos } from '../../services/vientosThermal.js';
+import { generarInformeVientosPdf } from '../../services/informeVientosPdf.js';
 
 // Cuanto se espera antes de mandar el video. Cae DESPUES del informe termico (4 s + 35 s)
 // para no encimarle tres mensajes seguidos al cliente: propuesta → informe → video.
@@ -73,6 +78,8 @@ const SEQ_INFORME_LISTA = String(process.env.SEQUENCE_INFORME_PRIMERO_LISTA || '
 const SEQ_INFORME_TIMEOUT_MS = Number(process.env.SEQUENCE_INFORME_TIMEOUT_MS || 120_000);
 // Pausa humana entre el informe y el video cuando el video cae ENTRE documentos.
 const SEQ_VIDEO_MS = Number(process.env.SEQUENCE_VIDEO_MS || 8_000);
+// [2026-08-28] Pausa humana antes del informe de VIENTOS (2o documento de la secuencia).
+const SEQ_VIENTOS_MS = Number(process.env.SEQUENCE_VIENTOS_MS || 6_000);
 // [Dueño, 27-ago: "dale pausa"] Aire entre el informe (y su video) y el PRECIO. Medido en
 // la prueba real: sin esto, del informe al precio pasaban 9 segundos — el cliente recién
 // abría el informe y ya le caía la propuesta. 35 s deja mirar; regulable sin deploy.
@@ -2474,6 +2481,84 @@ Comuna: ${datos.comuna}`
               }));
           };
 
+          // ── 🌬️ El informe de VIENTOS (2o documento de la secuencia) ──────────────
+          // [2026-08-28 · dueño: "dale, agrega el informe de vientos a la secuencia"].
+          // Es un REGALO NO ANUNCIADO: el mensaje de valor no lo promete, así que si
+          // THERMAL no tiene la ruta, falla o tarda, la secuencia sigue derecho y el
+          // cliente no nota ningún hueco. Candado de 30 días por huella del proyecto
+          // (mismo criterio anti-spam que el térmico). Folio serie LOCAL propia INF-V
+          // mientras sales-os no tenga la serie CM-FR de vientos (tablero #541).
+          const enviarInformeVientos = async () => {
+            const _tel = String(from).replace(/\D/g, '');
+            const ultimaV = (input.items || []).at(-1) || {};
+            const _huellaV = huellaDelInforme({
+              comuna: clientComuna, producto: ultimaV.producto_label || ultimaV.product || '',
+              glassLabel: ultimaV.glass_label || '',
+            });
+            const claveV = _huellaV ? `informe_vientos:${_tel}:${_huellaV}` : `informe_vientos:${_tel}`;
+            try {
+              const _cand = await (deps.leerEstado || leerEstado)(claveV);
+              const _resetAt = Number(await (deps.leerEstado || leerEstado)(`informe_reset:${_tel}`)) || 0;
+              if (candadoVigente(_cand, _resetAt)) return 'ya_enviado';
+            } catch { /* sin estado se sigue: mejor un posible repetido que ninguno */ }
+            let tokenV = null;
+            try {
+              tokenV = (deps.reservarEstado || reservarEstado)(`${claveV}:en_curso`, 5 * 60) || null;
+              if (!tokenV) return 'en_curso';
+            } catch { /* se sigue */ }
+            const soltarV = () => {
+              if (!tokenV) return;
+              const mio = tokenV; tokenV = null;
+              try { (deps.liberarReserva || liberarReserva)(`${claveV}:en_curso`, mio); } catch { /* nada */ }
+            };
+            try {
+              const { legibles, ilegibles } = (deps.ventanasParaVientos || ventanasParaVientos)(input.items || []);
+              if (!legibles.length) { soltarV(); return 'sin_datos'; }
+              const datosV = await (deps.pedirVientos || pedirVientos)({
+                comuna: clientComuna, cliente: clientName, ventanas: legibles,
+              });
+              if (!datosV) { soltarV(); return 'fallo'; }
+              // Folio local visible y fuera de banda (declarado, no disfrazado de CM-FR).
+              const folioV = `INF-V-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-`
+                + `${Date.now().toString(36).toUpperCase().slice(-4)}`;
+              const pdfV = await (deps.generarInformeVientosPdf || generarInformeVientosPdf)(datosV, {
+                nombre: clientName, comuna: clientComuna, numeroInforme: folioV,
+                ilegibles, firma: FIRMA,
+              });
+              if (!pdfV) { soltarV(); return 'fallo'; }
+              await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: SEQ_VIENTOS_MS });
+              const archivoV = `Informe-Vientos-${String(clientComuna || 'proyecto').replace(/\s+/g, '-')}.pdf`;
+              const mediaV = await uploadWaDocument(pdfV, archivoV);
+              let envioV = null;
+              if (mediaV) envioV = await sendWaDocument(from, mediaV, archivoV, 'Informe de vientos de sus ventanas');
+              if (!(mediaV && envioV && envioV.ok === true)) {
+                log('warn', 'generarPdf.vientos', `informe de vientos ${folioV} NO se entrego: el proximo proyecto reintenta`);
+                soltarV(); return 'fallo';
+              }
+              try { await (deps.escribirEstado || escribirEstado)(claveV, { at: Date.now() }, 30 * 24 * 3600); }
+              catch { /* el candado largo es anti-spam, no entrega */ }
+              tokenV = null;   // entregado: la reserva corta muere sola, sin reabrir ventana
+              safe('generarPdf.vientos.espejo', () => bridge.pushConversationEvent({
+                channel: 'whatsapp', external_id: from, direction: 'outbound',
+                actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
+                body: `📄 Informe de vientos ${folioV} (${clientComuna || 'proyecto'}) enviado al cliente`,
+                metadata: { source: 'oliver_gpt_informe_vientos', informe_number: folioV,
+                            filename: archivoV, media_id: mediaV },
+              }));
+              safe('generarPdf.vientos.registro', () => (deps.saveMedia || saveMedia)({
+                phone: from, direction: 'outbound', mediaType: 'document',
+                mimeType: 'application/pdf',
+                filename: archivoV.replace(/\.pdf$/i, `-${folioV}.pdf`),
+                buffer: pdfV, waMediaId: mediaV,
+                aiDescription: `Informe de vientos ${folioV} (${clientComuna || 'proyecto'})`,
+              }));
+              return 'enviado';
+            } catch (e) {                                     // noqa
+              log('error', 'generarPdf.vientos', e?.message || e);
+              soltarV(); return 'fallo';
+            }
+          };
+
           // ── 🧪 SECUENCIA INFORME-PRIMERO (Variante B · #524) — flag + lista blanca ──
           // Orden aprobado por el dueño (27-ago): mensaje de valor → informe → video →
           // recién ahí la propuesta con el precio. *"Si le entregamos el precio, el
@@ -2569,6 +2654,16 @@ Comuna: ${datos.comuna}`
               ]).finally(() => { if (venceTimeout) clearTimeout(venceTimeout); });
               log('info', 'generarPdf.secuencia', `${from}: informe-primero → ${resultadoInforme || 'sin_resultado'}`);
               if (resultadoInforme === 'enviado') {
+                // 🌬️ Paso 5-bis: el INFORME DE VIENTOS, después del térmico y antes del
+                // video. Con su propio techo: regalo que jamás retiene el precio.
+                const techoVientosMs = Number(deps.seqVientosTimeoutMs ?? 30_000);
+                let venceVientos = null;
+                const resVientos = await Promise.race([
+                  safe('generarPdf.vientos.secuencia', () => enviarInformeVientos()),
+                  new Promise((res) => { venceVientos = setTimeout(() => res('timeout'), techoVientosMs); }),
+                ]).finally(() => { if (venceVientos) clearTimeout(venceVientos); });
+                log('info', 'generarPdf.secuencia', `${from}: vientos → ${resVientos || 'sin_resultado'}`);
+
                 // Paso 6 de la secuencia: el video cae ENTRE el informe y la propuesta.
                 // 🔴 [Codex P1, compuerta] CON SU PROPIO TECHO. El techo del informe no
                 // cubre este await: un sendWaVideo colgado dejaba al cliente SIN PROPUESTA.

@@ -18,7 +18,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { handleWebhook, secuenciaInformePrimero } from './webhook.js';
+import { handleWebhook, secuenciaInformePrimero, huellaDelInforme } from './webhook.js';
 
 global.fetch = async (url) => {
   if (String(url).includes('/internal/quotes/next-number')) {
@@ -111,7 +111,9 @@ function makeDeps({ modoOn = true, informeEnvioOk = true, informeCuelga = false,
     uploadWaDocument: async () => 'media.1',
     sendWaDocument: async (to, mediaId, filename) => {
       const esInforme = /^Informe-Termico/.test(filename || '');
-      spy.linea.push({ tipo: esInforme ? 'informe' : 'propuesta', detalle: filename });
+      const esVientos = /^Informe-Vientos/.test(filename || '');
+      spy.linea.push({ tipo: esVientos ? 'vientos' : (esInforme ? 'informe' : 'propuesta'), detalle: filename });
+      if (esVientos) return { ok: true, msgId: 'vien.1' };
       if (!esInforme) return { ok: true, msgId: 'prop.1' };
       return informeEnvioOk ? { ok: true, msgId: 'doc.1' } : { ok: false, error: 'Meta rechazo' };
     },
@@ -121,6 +123,20 @@ function makeDeps({ modoOn = true, informeEnvioOk = true, informeCuelga = false,
       spy.linea.push({ tipo: 'video', detalle: String(caption).slice(0, 40) });
       return { ok: true, msgId: 'vid.1' };
     },
+    // [2026-08-28] El informe de VIENTOS: THERMAL se inyecta (regla: se pide, no se
+    // incorpora — y en test no hay red). El PDF también.
+    pedirVientos: async ({ ventanas }) => ({
+      ventanas: ventanas.map((v) => ({
+        nombre: v.nombre, ancho_mm: v.ancho_mm, alto_mm: v.alto_mm,
+        vidrio: `DVH ${v.vidrio.ext_mm}/${v.vidrio.camara_mm}/${v.vidrio.int_mm} recocido`,
+        cantidad: v.cantidad,
+        capacidad: { lr_corta_kPa: 1.89, lr_larga_kPa: 0.82 },
+        veredicto: { evaluable: true, cumple_corta: true },
+        flechas: { referencia: { flecha_maxima_mm: 14.5 } },
+      })),
+      demanda: { presion_kPa: 0.675, q_basica_kg_m2: 57.3, factor_forma_C: 1.2 },
+    }),
+    generarInformeVientosPdf: async () => Buffer.alloc(512, 9),
 
     handleTurn: async ({ state, toolCtx }) => {
       await toolCtx.generarPdf({
@@ -145,7 +161,7 @@ function makeDeps({ modoOn = true, informeEnvioOk = true, informeCuelga = false,
     notifyHighValue: async () => ({ sent: true }),
   };
   Object.assign(deps, overrides);
-  return { deps, spy };
+  return { deps, spy, telefono };
 }
 
 async function esperar(cond, ms = 8000) {
@@ -199,7 +215,10 @@ test('🔴 modo informe-primero: valor → informe → video → propuesta, en E
   assert.ok(pos(spy, 'informe') >= 0, 'el informe tiene que salir');
   assert.ok(pos(spy, 'video') >= 0, 'el video tiene que salir');
   assert.ok(iValor < pos(spy, 'informe'), 'el mensaje de valor va ANTES del informe');
-  assert.ok(pos(spy, 'informe') < pos(spy, 'video'), 'el informe va ANTES del video');
+  // [28-ago, dueño] El informe de VIENTOS es el 2º documento: térmico → vientos → video.
+  assert.ok(pos(spy, 'vientos') >= 0, `el informe de vientos tiene que salir — línea: ${JSON.stringify(tipos(spy))}`);
+  assert.ok(pos(spy, 'informe') < pos(spy, 'vientos'), 'el térmico va ANTES del de vientos');
+  assert.ok(pos(spy, 'vientos') < pos(spy, 'video'), 'el de vientos va ANTES del video');
   assert.ok(pos(spy, 'video') < pos(spy, 'propuesta'),
     `el video va ANTES de la propuesta — línea real: ${JSON.stringify(tipos(spy))}`);
 
@@ -268,6 +287,38 @@ test('🔴 el video se CUELGA ⇒ su techo lo corta y la propuesta sale igual (P
   await handleWebhook({ body: {} }, makeRes(), deps);
   assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0),
     `un video colgado JAMÁS puede dejar al cliente sin precio — línea: ${JSON.stringify(tipos(spy))}`);
+});
+
+test('🌬️ THERMAL caído ⇒ la secuencia sigue SIN vientos y nadie nota el hueco', async () => {
+  // El regalo no anunciado: el mensaje de valor no lo promete, así que su ausencia no
+  // rompe ninguna promesa. La línea sale completa, solo sin el documento de vientos.
+  const { deps, spy } = makeDeps({ modoOn: true, overrides: { pedirVientos: async () => null } });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  assert.equal(pos(spy, 'vientos'), -1, 'sin THERMAL no hay informe de vientos, y no pasa nada');
+  assert.ok(pos(spy, 'informe') < pos(spy, 'video'), 'el resto de la secuencia intacta');
+});
+
+test('🌬️ el motor de vientos se CUELGA ⇒ su techo lo corta y el precio sale igual', async () => {
+  const { deps, spy } = makeDeps({ modoOn: true, overrides: {
+    seqVientosTimeoutMs: 300,
+    pedirVientos: () => new Promise(() => {}),   // nunca resuelve: el techo decide
+  } });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0),
+    `vientos colgado JAMÁS retiene el precio — línea: ${JSON.stringify(tipos(spy))}`);
+});
+
+test('🌬️ el candado de 30 días evita el informe de vientos repetido', async () => {
+  const { deps, spy, telefono } = makeDeps({ modoOn: true });
+  // El candado ya puesto para la huella REAL del proyecto del test (última ventana):
+  const huella = huellaDelInforme({
+    comuna: 'Temuco', producto: 'Ventana PVC H98 corredera 3 hojas', glassLabel: 'DVH 5/12/5',
+  });
+  await deps.escribirEstado(`informe_vientos:${telefono}:${huella}`, { at: Date.now() }, 300);
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  assert.equal(pos(spy, 'vientos'), -1, 'proyecto ya informado: sin repetido');
 });
 
 test('🔴 el gate LANZA ⇒ se degrada al modo clásico y la propuesta sale (P2 de Codex)', async () => {
