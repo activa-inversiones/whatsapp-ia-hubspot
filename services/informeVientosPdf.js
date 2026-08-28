@@ -491,7 +491,7 @@ function dibujarPaginaClima(doc, clima, nSec) {
   if (rm && esNum(rm.mediana_anual_kmh)) {
     // [Codex, compuerta] La exclusión QC se DECLARA al cliente, no solo en los datos:
     // esconder que un registro mayor quedó en revisión sería la mentira chica de nuevo.
-    const txtR = `Viento: en la estación marco regional (${rm.estacion?.nombre || 'Maquehue, Temuco'}, período ${rm.periodo}), la ráfaga máxima de un año típico ronda los ${dec(rm.mediana_anual_kmh, 0)} km/h, y la récord verificada fue de ${dec(rm.record_kmh, 0)} km/h.`
+    const txtR = `Viento: en la estación con serie larga más cercana a su comuna (${rm.estacion?.nombre || 'Maquehue, Temuco'}${esNum(rm.estacion?.km) ? `, a ${dec(rm.estacion.km, 0)} km` : ''}, período ${rm.periodo}), la ráfaga máxima de un año típico ronda los ${dec(rm.mediana_anual_kmh, 0)} km/h, y la récord verificada fue de ${dec(rm.record_kmh, 0)} km/h.`
       + `${rm.qc ? ' Un registro puntual mayor de la serie quedó en revisión de calidad y se excluyó por prudencia.' : ''}`
       + ' Sus ventanas se verifican contra estas exigencias en las páginas anteriores.';
     doc.fillColor('#333').fontSize(8).font('Helvetica').text(txtR, 50, y, { width: W - 100 });
