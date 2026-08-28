@@ -215,6 +215,15 @@ test('🔴 modo informe-primero: valor → informe → video → propuesta, en E
   // de valor ya anunció el informe: dos anuncios seguidos delatan al bot.
   assert.ok(!spy.textos.some((t) => /Deme un momento/.test(String(t))),
     'con mensaje de valor NO va el aviso clásico redundante');
+
+  // [Dueño, en caliente 27-ago] Sus tres exigencias del copy, amarradas:
+  const textoValor = String(spy.textos.find((t) => /Mientras le preparo/.test(String(t))) || '');
+  assert.match(textoValor, /informe térmico/, 'dice TÉRMICO (así se llama el documento), no "técnico"');
+  assert.doesNotMatch(textoValor, /informe técnico/, 'el "informe técnico" quedó prohibido');
+  assert.match(textoValor, /zona térmica F según la NCh 1079/,
+    'nombra la zona térmica de la comuna, el mismo dato que imprime el PDF');
+  assert.equal(spy.pdfArgs.at(-1)?.nombre, 'Dady',
+    'el informe sale "Preparado para" el cliente aunque state.name aún no exista');
 });
 
 test('🔴 el video se CUELGA ⇒ su techo lo corta y la propuesta sale igual (P1 de Codex)', async () => {

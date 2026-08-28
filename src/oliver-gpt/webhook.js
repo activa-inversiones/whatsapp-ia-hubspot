@@ -1266,7 +1266,7 @@ export async function handleWebhook(req, res, deps = {}) {
       // `mensajePrevio`: el mensaje de valor de la Variante B — solo se envía si el informe
       // VA a salir (pasó candados y comuna verificada); anunciar un informe que no viene
       // sería mentirle al cliente.
-      const despacharInforme = (comuna, { forzar = false, glassLabel = '', uw = null, producto = '', ventanas = null, mensajePrevio = '', quoteNumber = null } = {}) => {
+      const despacharInforme = (comuna, { forzar = false, glassLabel = '', uw = null, producto = '', ventanas = null, mensajePrevio = '', quoteNumber = null, nombre = '' } = {}) => {
         // 🔴 La clave del candado incluye la HUELLA del proyecto: mismo cliente + mismo
         // proyecto = un solo informe en 30 dias; cambia la comuna, el producto o el vidrio =
         // proyecto distinto y le corresponde el suyo.
@@ -1424,7 +1424,10 @@ export async function handleWebhook(req, res, deps = {}) {
           // para {comuna}" — el PDF va a declarar una referencia regional, y el mensaje
           // tiene que decir lo mismo que el documento.
           if (mensajePrevio) {
-            const textoValor = typeof mensajePrevio === 'function' ? mensajePrevio(esRef) : mensajePrevio;
+            // [Dueño, en caliente 27-ago] La función recibe TAMBIÉN los datos verificados de
+            // la comuna: así el mensaje puede nombrar la zona térmica NCh 1079 — el mismo
+            // dato que el PDF imprime, de la misma fuente.
+            const textoValor = typeof mensajePrevio === 'function' ? mensajePrevio(esRef, datos) : mensajePrevio;
             const mvEnviado = textoValor ? await enviarSinPausa(from, textoValor) : null;
             if (mvEnviado?.ok === true) {
               valorEnviado = true;
@@ -1541,8 +1544,12 @@ export async function handleWebhook(req, res, deps = {}) {
           // turno. Lo que habia antes —una barrera que esperaba a que el total "dejara de
           // crecer"— era una forma de adivinar cuando estaban todas, y no habia numero
           // correcto: 3 s de quietud contra una cotizacion que puede tardar 15 s.
+          // [Dueño, en caliente 27-ago] "En el informe tampoco está el nombre del cliente":
+          // en la secuencia informe-primero este bloque corre ANTES de que el turno persista
+          // state.name — el nombre viaja por opción desde el llamador (el mismo clientName de
+          // la propuesta). state.name queda de fallback para el camino clásico.
           const pdfBuf = await (deps.generarInformeTermicoPdf || generarInformeTermicoPdf)(datos, {
-            nombre: state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios, laminas, termopanel,
+            nombre: nombre || state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios, laminas, termopanel,
             numeroInforme,
             // Lo que hace que el informe sea de SU proyecto y no un catalogo.
             suVidrio: glassLabel, suUw: uw, suProducto: producto,
@@ -2486,18 +2493,29 @@ Comuna: ${datos.comuna}`
               // 🔴 Es FUNCIÓN de esRef (Codex, compuerta): si la comuna cae a la referencia
               // regional, el punto 1 no puede prometer "el límite para {comuna}" — el
               // mensaje dice lo mismo que va a decir el PDF, siempre.
-              const mensajeValor = (esRef) =>
-                `Perfecto${nombreCorto ? `, ${nombreCorto}` : ''}. Mientras le preparo su Propuesta Técnica Económica, ` +
-                `le dejo primero el informe técnico de sus ventanas en ${esRef ? 'su zona' : comunaValor}, para que lo revise con calma. ` +
+              // [Dueño, en caliente 27-ago] "informe TÉRMICO, no técnico" (así se llama el
+              // documento que llega) + nombrar la zona térmica NCh 1079 de la comuna — el
+              // dato viene de THERMAL vía `datos`, el mismo que imprime el PDF.
+              const mensajeValor = (esRef, datos) => {
+                const zonaNCh = String(datos?.zona_termica_NCh1079 || '').trim();
+                const zonaTxt = zonaNCh && !esRef
+                  ? ` — ${comunaValor} está en zona térmica ${zonaNCh} según la NCh 1079 —`
+                  : '';
+                return `Perfecto${nombreCorto ? `, ${nombreCorto}` : ''}. Mientras le preparo su Propuesta Técnica Económica, ` +
+                `le dejo primero el informe térmico de sus ventanas en ${esRef ? 'su zona' : comunaValor}, para que lo revise con calma. ` +
                 `Tres cosas que le van a servir:\n` +
-                `1) El Uw de cada ventana — mientras más bajo, mejor aísla — y el límite que exige la norma ` +
-                `${esRef ? '(el informe lo indica como referencia regional de La Araucanía)' : `en su zona (el informe lo indica para ${comunaValor})`}.\n` +
+                `1) El Uw de cada ventana — mientras más bajo, mejor aísla — y el límite que exige la norma` +
+                `${zonaTxt}` +
+                // [Copilot, pase en caliente] Sin repetir la comuna en la misma oración:
+                // si la zona ya la nombró, el cierre no la vuelve a decir.
+                ` ${esRef ? '(el informe lo indica como referencia regional de La Araucanía)' : (zonaTxt ? '(el informe lo detalla)' : `(el informe lo indica para ${comunaValor})`)}.\n` +
                 `2) Dónde mirar los puntos de condensación: ahí se ve cuándo aparece condensación y por qué una buena ` +
                 `ventana la reduce muchísimo — el resto depende de la humedad y ventilación de la casa, y el mismo ` +
                 `informe lo explica.\n` +
                 `3) Quién responde por el cálculo: Marcelo Cifuentes, Evaluador Energético acreditado por el MINVU ` +
                 `(Res. 266/2025) — es una Memoria de Cálculo según la norma chilena NCh 3137, y las ventanas salen de ` +
                 `nuestra propia fábrica en Temuco, no de un revendedor.`;
+              };
               // Las MISMAS ventanas que declara la propuesta (mismo mapeo que el camino
               // clasico de abajo): informe y propuesta tienen que decir lo mismo siempre.
               const ventanasProyecto = (input.items || []).map((it) => ({
@@ -2522,6 +2540,9 @@ Comuna: ${datos.comuna}`
                   // [Codex, compuerta] El folio YA está emitido acá: viaja al registro ISO
                   // del informe, que en esta secuencia corre antes de que exista last_quote.
                   quoteNumber,
+                  // [Dueño, 27-ago] El nombre del cliente al PDF del informe ("Preparado
+                  // para:") — en esta secuencia state.name aún no existe.
+                  nombre: clientName,
                 }),
                 new Promise((res) => { venceTimeout = setTimeout(() => res('timeout'), techoInformeMs); }),
               ]).finally(() => { if (venceTimeout) clearTimeout(venceTimeout); });
@@ -2633,6 +2654,9 @@ Comuna: ${datos.comuna}`
                 glassLabel: ultima.glass_label || '',
                 uw: ultima.termico?.uw ?? null,
                 producto: ultima.producto_label || ultima.product || '',
+                // [Dueño, 27-ago] El nombre también en el camino clásico: state.name puede
+                // venir vacío en el mismo turno en que el cliente recién lo dio.
+                nombre: clientName,
               });
             } catch (e) { log('error', 'generarPdf.informeTermico', e?.message || e); }
           }
