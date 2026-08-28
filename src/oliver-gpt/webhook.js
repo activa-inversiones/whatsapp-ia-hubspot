@@ -1188,10 +1188,10 @@ export async function handleWebhook(req, res, deps = {}) {
           notifyHighValue(enviarSinPausa, from, { data: { ...state }, history },
             'oliver_gpt:imagenes_ilegibles — el cliente mandó varias fotos que la IA no pudo leer; las fotos SÍ están guardadas en el panel (media), cotizar desde ahí'));
         imgLoopMsg = (esc && esc.sent)
-          ? 'Sus fotos SÍ quedaron guardadas de mi lado 👍 — se las paso a Marcelo para que le prepare la propuesta desde ahí. Si prefiere avanzar al tiro, también puede escribirme las medidas por texto (ancho × alto y tipo).'
+          ? 'Sus fotos SÍ quedaron guardadas de mi lado 👍. Se las paso a Marcelo para que le prepare la propuesta desde ahí. Si prefiere avanzar al tiro, también puede escribirme las medidas por texto (ancho × alto y tipo).'
           : 'Sus fotos quedaron guardadas 👍. Para avanzar de inmediato, ¿me escribe las medidas por texto? (ancho × alto, tipo de ventana y cantidad).';
       } else if (state.unreadable_streak % 5 === 0) {
-        imgLoopMsg = 'Recibida 👍 — también quedó guardada para Marcelo.';
+        imgLoopMsg = 'Recibida 👍, también quedó guardada para Marcelo.';
       }
       if (imgLoopMsg) {
         await safe('imgloop.send', () => sendWhatsAppText(from, imgLoopMsg));
@@ -1373,7 +1373,7 @@ export async function handleWebhook(req, res, deps = {}) {
           let valorEnviado = false;
           const avisarRecuperacion = () => safe('informeTermico.recuperacion', async () => {
             if (!valorEnviado) return;
-            const rec = 'El informe me está tomando más de lo esperado — se lo hago llegar apenas esté listo. Mientras tanto, le dejo su propuesta.';
+            const rec = 'El informe me está tomando más de lo esperado; se lo hago llegar apenas esté listo. Mientras tanto, le dejo su propuesta.';
             const recEnviado = await enviarSinPausa(from, rec);
             if (recEnviado?.ok === true) {
               safe('informeTermico.espejo.recuperacion', () => bridge.pushConversationEvent({
@@ -1511,7 +1511,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // clásico de abajo) delatan al bot. Se conserva el RITMO (las esperas y los
           // puntitos siguen igual); se calla solo el texto redundante.
           await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: DEMORA_AVISO_MS });
-          const avisoTxt = `Deme un momento${nom ? `, ${nom}` : ''} — reviso qué exige la norma en `
+          const avisoTxt = `Deme un momento${nom ? `, ${nom}` : ''}: reviso qué exige la norma en `
             + `${esRef ? 'su zona' : datos.comuna} y le armo el informe.`;
           const avisoEnviado = valorEnviado ? null : await enviarSinPausa(from, avisoTxt);
           // 🔴 [2026-08-24] ESPEJO AL COCKPIT. `enviarSinPausa` habla con Meta pero NO
@@ -1579,7 +1579,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // puesto (sin reintento en 30 dias) y la "evidencia" ISO de algo que nunca salio.
           // Ahora TODO lo posterior exige envio.ok === true.
           let envio = null;
-          if (mediaId) envio = await sendWaDocument(from, mediaId, nombreArchivo, `Informe térmico — ${datos.comuna}`);
+          if (mediaId) envio = await sendWaDocument(from, mediaId, nombreArchivo, `Informe térmico de ${datos.comuna}`);
           const entregado = Boolean(mediaId && envio && envio.ok === true);
           if (!entregado) {
             log('warn', 'informeTermico.envio',
@@ -1684,7 +1684,7 @@ export async function handleWebhook(req, res, deps = {}) {
               // cockpit da "not found" y el operador no puede abrir el PDF. Es el mismo
               // motivo por el que se le agrego a la propuesta en jun-2026.
               waMediaId:     mediaId,
-              aiDescription: `Informe térmico ${numeroInforme} — ${datos.comuna}`,
+              aiDescription: `Informe térmico ${numeroInforme} de ${datos.comuna}`,
             });
           });
 
@@ -2052,7 +2052,7 @@ Comuna: ${datos.comuna}`
                   // que "proyectante" es la que se abre hacia afuera, y no puede elegir lo que
                   // no entiende.
                   ? '¿Qué tipo de apertura necesita? Corredera (se abre deslizando), proyectante'
-                    + ' (se abre hacia afuera), fija (no se abre), abatible — o mitad fija y mitad'
+                    + ' (se abre hacia afuera), fija (no se abre), abatible, o mitad fija y mitad'
                     + ' proyectante, que es la más pedida y suele salir más conveniente.'
                     + ' Se lo pregunto porque la apertura cambia el precio y prefiero cotizarle la que de verdad quiere.'
                   : _falta === 'hojas'
@@ -2077,7 +2077,7 @@ Comuna: ${datos.comuna}`
             state.default_color = state.default_color || 'Blanco';
             _avisoColor = '\n\n🎨 Se la preparé en *Blanco* mientras me confirma el color. '
               + 'Si prefiere Nogal, Roble Dorado, Grafito Antracita o Negro, me avisa y se la '
-              + 'recotizo sin costo — el color cambia el precio, por eso se lo digo.';
+              + 'recotizo sin costo; el color cambia el precio, por eso se lo digo.';
             log('info', 'generarPdf.color', `color asumido Blanco para ${from}: el cliente no contesto`);
           }
 
@@ -2089,7 +2089,7 @@ Comuna: ${datos.comuna}`
           let _avisoTipo = '';
           if (_gate.tipoAsumido) {
             _avisoTipo = '\n\n🪟 Se la preparé como *corredera* mientras me confirma la apertura. '
-              + 'Si la quiere proyectante, fija o abatible me avisa y se la recotizo sin costo — '
+              + 'Si la quiere proyectante, fija o abatible me avisa y se la recotizo sin costo; '
               + 'la apertura cambia el precio.';
             log('info', 'generarPdf.tipo', `apertura asumida CORREDERA para ${from}: el cliente no la nombro`);
           }
@@ -2119,7 +2119,7 @@ Comuna: ${datos.comuna}`
           let _avisoHojas = '';
           if (_gate.hojasAsumido) {
             _avisoHojas = '\n\n🪟 Por el ancho, se la coticé de *2 hojas* (quedan grandes y pesadas). '
-              + 'Si la prefiere de 3 o de 4 me avisa y se la recotizo sin costo — '
+              + 'Si la prefiere de 3 o de 4 me avisa y se la recotizo sin costo; '
               + 'el número de hojas cambia el precio.';
             log('info', 'generarPdf.hojas', `hojas asumidas (2) para ${from}: corredera sobre el estandar sin eleccion del cliente`);
           }

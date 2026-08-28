@@ -48,8 +48,8 @@ const PIES_LAMINA = Object.freeze({
   // aluminio. Se desambigua nombrando la pieza, y se deja el paralelo con el perfil de
   // aluminio: es el MISMO metal y por eso arrastra el mismo problema — un argumento
   // legítimo y verificable, sin inventarle un Uf a un producto que no cotizamos.
-  '07': 'Nudo inferior de la ventana —la zona más exigida del conjunto, por la acumulación de aire frío '
-      + 'en la parte baja del vidrio— resuelto con SEPARADOR DE ALUMINIO: el marco metálico que va dentro '
+  '07': 'Nudo inferior de la ventana (la zona más exigida del conjunto, por la acumulación de aire frío '
+      + 'en la parte baja del vidrio), resuelto con SEPARADOR DE ALUMINIO: el marco metálico que va dentro '
       + 'del termopanel, entre los dos vidrios, separándolos. Ese aluminio conduce 160 W/m·K frente a los '
       + '0,135 W/m·K del separador warm-edge, y se observa cómo las isotermas frías ascienden junto al '
       + 'canto del vidrio. Es el mismo metal del que están hechos los perfiles de ventana de aluminio, y '
@@ -95,7 +95,7 @@ const PIES_LAMINA = Object.freeze({
       + 'por el borde del vidrio: por eso se ve la franja fría pegada al canto, mucho más marcada que con '
       + 'el warm-edge. El warm-edge sube bastante la temperatura de ese borde, y esa diferencia es real y '
       + 'medible. Ahora, siendo francos: en las mañanas más frías el BORDE del termopanel puede alcanzar '
-      + 'igual la temperatura de condensación, con uno u otro separador — el centro del vidrio es el que '
+      + 'igual la temperatura de condensación, con uno u otro separador: el centro del vidrio es el que '
       + 'se mantiene seco. La temperatura exacta a la que eso ocurre en su comuna está calculada en la '
       + 'sección de condensación de este informe.',
 });
@@ -424,7 +424,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       doc.fillColor(DARK).fontSize(17).font('Helvetica-Bold')
         .text('INFORME TÉRMICO', 50, 118);
       doc.fillColor(GOLD).fontSize(12)
-        .text(esReferenciaRegional ? 'Referencia regional — La Araucanía' : `Comuna de ${datos.comuna}`, 50, 142);
+        .text(esReferenciaRegional ? 'Referencia regional de La Araucanía' : `Comuna de ${datos.comuna}`, 50, 142);
       // [2026-08-24] El correlativo ISO va IMPRESO — igual que la cotizacion imprime el
       // suyo. Un registro cuyo numero no aparece en el documento no amarra nada.
       doc.fillColor(GRAY).fontSize(9).font('Helvetica')
@@ -467,13 +467,13 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       const razonSocial = String(process.env.EMISOR_RAZON_SOCIAL || 'Activa Inversiones EIRL').trim();
       const rutEmisor = String(process.env.EMISOR_RUT || '76.486.825-0').trim();
       const destinatario = String(nombre || '').trim();
-      const legal = 'DOCUMENTO CONFIDENCIAL — USO EXCLUSIVO DEL DESTINATARIO. '
+      const legal = 'DOCUMENTO CONFIDENCIAL: USO EXCLUSIVO DEL DESTINATARIO. '
         + `Este informe fue preparado${destinatario ? ` para ${destinatario}` : ''} y para el proyecto que lo motivó. `
         + `Su contenido, cálculos y figuras son de ${razonSocial}${rutEmisor ? `, RUT ${rutEmisor}` : ''}, `
         + 'y están protegidos por la legislación de '
         + 'Queda prohibida su reproducción total o parcial, su alteración, y su uso por terceros o para un '
-        + 'proyecto distinto —incluido presentarlo, o los valores que contiene, ante terceros o autoridades '
-        + 'por quien no es el destinatario— sin autorización escrita previa. El uso no autorizado podrá dar '
+        + 'proyecto distinto (incluido presentarlo, o los valores que contiene, ante terceros o autoridades '
+        + 'por quien no es el destinatario) sin autorización escrita previa. El uso no autorizado podrá dar '
         + 'lugar a las acciones legales que correspondan.';
       doc.fontSize(8).font('Helvetica');
       const altoLegal = doc.heightOfString(legal, { width: W - 116 });
@@ -574,8 +574,8 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
                 .text(f.ambiente.slice(0, 30), X.prod, y + 9, { width: 210, lineBreak: false });
             }
             doc.fillColor(GRAY).fontSize(8).font('Helvetica')
-              .text(f.medidas.slice(0, 13) || '—', X.med, y, { width: 66, lineBreak: false });
-            doc.text(f.vidrio.slice(0, 13) || '—', X.vid, y, { width: 66, lineBreak: false });
+              .text(f.medidas.slice(0, 13) || '-', X.med, y, { width: 66, lineBreak: false });
+            doc.text(f.vidrio.slice(0, 13) || '-', X.vid, y, { width: 66, lineBreak: false });
 
             if (f.uw !== null) {
               doc.fillColor(f.cumple === false ? '#b91c1c' : DARK).fontSize(9).font('Helvetica-Bold')
@@ -685,7 +685,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       if (tienePDA) {
         dato('Régimen aplicable', 'Plan de Descontaminación (PDA)');
         dato('Transmitancia máxima admisible (Uw)', `${dec(uw)} W/m²K`);
-        dato('Zona térmica (NCh 1079)', String(datos.zona_termica_NCh1079 || '—'));
+        dato('Zona térmica (NCh 1079)', String(datos.zona_termica_NCh1079 || '-'));
         y += 2;
         parrafo(esReferenciaRegional
           ? `En ${datos.comuna} este tope es obligatorio por decreto. En otras comunas de la región no `
@@ -695,7 +695,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         if (datos.criterio_ref) parrafo(`Referencia: ${datos.criterio_ref}`, { color: GRAY, size: 8 });
       } else {
         dato('Régimen aplicable', 'Reglamentación Térmica (OGUC 4.1.10)');
-        dato('Zona térmica (NCh 1079)', String(datos.zona_termica_NCh1079 || '—'));
+        dato('Zona térmica (NCh 1079)', String(datos.zona_termica_NCh1079 || '-'));
         y += 4;
         parrafo('En su comuna no rige un tope de transmitancia por ventana; la exigencia opera sobre el '
           + 'porcentaje máximo de superficie vidriada. Las condiciones de frío y humedad, sin embargo, '
@@ -706,11 +706,11 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       if (tieneCond) {
         y += 6;
         seccion('2 · RIESGO DE CONDENSACIÓN');
-        parrafo('La condensación —el agua que aparece en el vidrio— ocurre cuando la superficie interior '
+        parrafo('La condensación (el agua que aparece en el vidrio) ocurre cuando la superficie interior '
           + 'baja de cierta temperatura. Ese umbral depende del clima de su comuna y de la humedad '
           + 'dentro de la vivienda.');
         y += 2;
-        dato(`Clima exterior de referencia — ${datos.comuna}`, `${dec(tE)} °C  ·  ${Math.round(hE * 100)} % HR`);
+        dato(`Clima exterior de referencia (${datos.comuna})`, `${dec(tE)} °C  ·  ${Math.round(hE * 100)} % HR`);
         dato('Temperatura interior considerada', '19 °C');
         dato('Umbral con 65 % de humedad interior', `${dec(t65)} °C`);
         if (t75 !== null) dato('Umbral con 75 % de humedad interior', `${dec(t75)} °C`);
@@ -718,7 +718,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         parrafo(`Con 19 °C interiores y 65 % de humedad, si la cara interior del vidrio baja de `
           + `${dec(t65)} °C se produce condensación.`
           + (t75 !== null
-            ? ` En recintos con más humedad —cocina, baño, ropa secándose— el umbral sube a ${dec(t75)} °C, `
+            ? ` En recintos con más humedad (cocina, baño, ropa secándose) el umbral sube a ${dec(t75)} °C, `
               + 'es decir, condensa más fácil.'
             : ''), { bold: true });
         y += 4;
@@ -815,7 +815,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
             y += 4;
           }
 
-          parrafo('La figura completa del cálculo —isotermas del corte y tabla de resultados— va en la '
+          parrafo('La figura completa del cálculo (isotermas del corte y tabla de resultados) va en la '
             + 'página siguiente, en formato apaisado.', { size: 9, color: GRAY });
 
           // La figura, en una página APAISADA DE VERDAD.
@@ -824,7 +824,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           doc.page.margins.bottom = 0;
           const AW = doc.page.width, AH = doc.page.height;
           const pieT = 'Cálculo por elementos finitos sobre el borde de su termopanel: el mismo corte '
-            + 'resuelto con separador de aluminio (izquierda) y con separador warm-edge (derecha) — el '
+            + 'resuelto con separador de aluminio (izquierda) y con separador warm-edge (derecha): el '
             + 'separador es el marco que va dentro del termopanel manteniendo los dos vidrios a distancia. '
             + 'Los valores de la comparación se informan en la página anterior.';
           try {
@@ -903,7 +903,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
             + `${corto(laminas.fecha, 20) ? ` (${corto(laminas.fecha, 20)})` : ''}. `
             + 'Tienen carácter referencial: representan el comportamiento térmico del sistema indicado y '
             + 'no constituyen una simulación de su ventana en particular. Si su cotización considera otro '
-            + 'tipo de apertura —por ejemplo, corredera— el perfil de su ventana difiere del ilustrado. '
+            + 'tipo de apertura (por ejemplo, corredera) el perfil de su ventana difiere del ilustrado. '
             + 'Los valores declarables de su proyecto (Uw) provienen del cálculo normativo conforme a '
             + 'NCh 3137.';
           doc.fillColor(GRAY).fontSize(8).font('Helvetica');
@@ -969,10 +969,10 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         + 'completa de casos de referencia de la norma: 28 pruebas, 28 aprobadas.', { bold: true, size: 10 });
       {
         const filas = [
-          ['Anexo F / I — transmisión bidimensional', '10 de 10', 'tolerancia ±3 % en L2D (cláusula 5.3)'],
-          ['Anexo E / H — cavidades con radiosidad', '11 de 11', 'tolerancia ±3 % · desbalance ≤ 0,5 %'],
-          ['Anexo G1 — flujos de referencia', '4 de 4', 'tolerancia ±1 % nivel fabricante'],
-          ['Anexo G2·G3·G4 — casos combinados', '3 de 3', 'flujo ±1 % · temperatura ±0,03 K'],
+          ['Anexo F / I: transmisión bidimensional', '10 de 10', 'tolerancia ±3 % en L2D (cláusula 5.3)'],
+          ['Anexo E / H: cavidades con radiosidad', '11 de 11', 'tolerancia ±3 % · desbalance ≤ 0,5 %'],
+          ['Anexo G1: flujos de referencia', '4 de 4', 'tolerancia ±1 % nivel fabricante'],
+          ['Anexo G2·G3·G4: casos combinados', '3 de 3', 'flujo ±1 % · temperatura ±0,03 K'],
         ];
         for (const [caso, res, tol] of filas) {
           saltoSiNoCabe(20);
@@ -982,7 +982,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
           y += 18;
         }
         y += 6;
-        parrafo('Esos casos son los que la norma ISO 10077-2 —homologada en Chile como NCh 3137/2— '
+        parrafo('Esos casos son los que la norma ISO 10077-2 (homologada en Chile como NCh 3137/2) '
           + 'define para comprobar que un programa de cálculo entrega resultados correctos. Nuestro motor '
           + 'los reproduce dentro de la tolerancia exigida, y además supera el caso analítico de NCh 3136 '
           + '(±0,1 K). La validación es auditable por un tercero: se publica y puede consultarse.',

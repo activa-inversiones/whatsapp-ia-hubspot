@@ -52,7 +52,7 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       if (data.is_partial) {
         doc.rect(50, y, doc.page.width - 100, 22).fill("#FDECEA");
         doc.fillColor("#B3261E").fontSize(9).font("Helvetica-Bold")
-          .text(`PROPUESTA PARCIAL${data.partial_note ? " — " + data.partial_note : " — no incluye todos los ítems solicitados; el resto lo cotiza Marcelo directamente"}`,
+          .text(`PROPUESTA PARCIAL${data.partial_note ? ": " + data.partial_note : ": no incluye todos los ítems solicitados; el resto lo cotiza Marcelo directamente"}`,
             58, y + 6, { width: doc.page.width - 116 });
         y += 30;
       }

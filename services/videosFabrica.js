@@ -33,7 +33,7 @@ export const CATALOGO_VIDEOS = [
   {
     id: 'presentacion',
     archivo: 'PRESENTACION MARCELO ACTIVA MEJORADO.mp4',
-    titulo: 'la presentación de nuestra empresa — con Marcelo, el dueño',
+    titulo: 'la presentación de nuestra empresa, con Marcelo, el dueño',
   },
   {
     id: 'fabrica',
