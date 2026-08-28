@@ -371,3 +371,55 @@ test('el informe declara las MISMAS ventanas que la propuesta (paridad de docume
   const medidas = (vs) => (vs || []).map((v) => String(v.medidas || '').replace(/mm$/, ''));
   assert.deepEqual(medidas(spy.pdfArgs.at(-1).ventanas), medidas(VENTANAS));
 });
+
+/* =========================================================================
+ * RITMO Y REPETICIÓN (dueño, 28-ago, tras SU prueba de Toltén):
+ * "le dijo 2 veces lo mismo al cliente cuando le agregué una ventana" +
+ * "me entregó el informe térmico en segundos... que se vea más natural secuencial"
+ * ========================================================================= */
+
+test('🔴 [dueño 28-ago] un cambio de proyecto minutos después NO repite el discurso completo', async () => {
+  const { deps, spy } = makeDeps({ modoOn: true });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'primera propuesta debe salir');
+  assert.equal(spy.textos.filter((t) => /warm-edge/.test(String(t))).length, 1,
+    'primera vez: el discurso completo, una vez');
+
+  // El cliente agrega una ventana: MISMO teléfono, proyecto distinto (huella nueva) —
+  // exactamente el caso real de Toltén (0375 → marco fijo → 0375-B).
+  deps.handleTurn = async ({ state, toolCtx }) => {
+    await toolCtx.generarPdf({
+      items: [{ product: 'Fijo S60', producto_label: 'Fijo S60', measures: '2500x2000mm',
+        measures_original: '2500x2000mm', glass_label: 'DVH 4/16/4', ambiente: 'Living',
+        qty: 1, unit_price: 100000, total_price: 100000, color: 'Blanco', termico: { uw: 2.6 } }],
+      comuna: 'Temuco', name: 'Dady',
+    });
+    return { reply: 'Listo', history: [], toolCalls: [], state: { ...state, name: 'Dady' } };
+  };
+  const antes = spy.linea.length;
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => tipos(spy).slice(antes).includes('propuesta')), 'segunda propuesta debe salir');
+
+  assert.equal(spy.textos.filter((t) => /warm-edge/.test(String(t))).length, 1,
+    'el discurso completo NO se repite en la segunda ronda');
+  assert.ok(spy.textos.some((t) => /informes al día/.test(String(t))),
+    'en su lugar sale la variante corta');
+  assert.equal(tipos(spy).filter((t) => t === 'informe').length, 2,
+    'los DOCUMENTOS sí se reenvían: el proyecto cambió y el contenido es nuevo');
+});
+
+test('🔴 [dueño 28-ago] piso de ritmo: entre el mensaje de valor y el térmico se espera lo que falte', async () => {
+  const { deps, spy } = makeDeps({ modoOn: true });
+  const esperas = [];
+  deps.dormir = async (ms) => { esperas.push({ ms, antesDe: spy.linea.length }); };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  // En test la generación es instantánea, así que el piso pide casi completo (~45 s).
+  const piso = esperas.find((e) => e.ms >= 40_000 && e.ms <= 45_000);
+  assert.ok(piso, `falta la espera del piso; esperas vistas: ${esperas.map((e) => e.ms).join(',')}`);
+  assert.ok(piso.antesDe <= pos(spy, 'informe'),
+    'el piso corre ANTES de que el documento térmico salga');
+  // Y la respiración antes del informe de vientos subió de 6 a 25 s.
+  assert.ok(esperas.some((e) => e.ms === 25_000),
+    `falta la pausa de 25 s del informe de vientos; vistas: ${esperas.map((e) => e.ms).join(',')}`);
+});

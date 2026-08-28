@@ -76,10 +76,16 @@ const SEQ_INFORME_LISTA = String(process.env.SEQUENCE_INFORME_PRIMERO_LISTA || '
 // esto (o falla), la propuesta sale igual. El cliente JAMÁS se queda sin su PDF por
 // esta secuencia — es la condición no negociable de la propuesta aprobada.
 const SEQ_INFORME_TIMEOUT_MS = Number(process.env.SEQUENCE_INFORME_TIMEOUT_MS || 120_000);
+// [Dueño, 28-ago, textual: *"la idea es que se vea más natural secuencial la información"*
+// — medido en su prueba: térmico→vientos 8 s, imposible de hojear.] PISO de ritmo entre
+// el mensaje de valor y el informe térmico: si el motor contesta rápido, se espera igual
+// hasta cumplir el piso; si tarda más, no se agrega nada. Regulable sin deploy.
+const SEQ_TERMICO_MS = Number(process.env.SEQUENCE_TERMICO_MS || 45_000);
 // Pausa humana entre el informe y el video cuando el video cae ENTRE documentos.
-const SEQ_VIDEO_MS = Number(process.env.SEQUENCE_VIDEO_MS || 8_000);
+const SEQ_VIDEO_MS = Number(process.env.SEQUENCE_VIDEO_MS || 20_000);
 // [2026-08-28] Pausa humana antes del informe de VIENTOS (2o documento de la secuencia).
-const SEQ_VIENTOS_MS = Number(process.env.SEQUENCE_VIENTOS_MS || 6_000);
+// 6 s originales → 25 s por la misma orden de ritmo del dueño.
+const SEQ_VIENTOS_MS = Number(process.env.SEQUENCE_VIENTOS_MS || 25_000);
 // [Dueño, 27-ago: "dale pausa"] Aire entre el informe (y su video) y el PRECIO. Medido en
 // la prueba real: sin esto, del informe al precio pasaban 9 segundos — el cliente recién
 // abría el informe y ya le caía la propuesta. 35 s deja mirar; regulable sin deploy.
@@ -1277,7 +1283,7 @@ export async function handleWebhook(req, res, deps = {}) {
       // `mensajePrevio`: el mensaje de valor de la Variante B — solo se envía si el informe
       // VA a salir (pasó candados y comuna verificada); anunciar un informe que no viene
       // sería mentirle al cliente.
-      const despacharInforme = (comuna, { forzar = false, glassLabel = '', uw = null, producto = '', ventanas = null, mensajePrevio = '', quoteNumber = null, nombre = '' } = {}) => {
+      const despacharInforme = (comuna, { forzar = false, glassLabel = '', uw = null, producto = '', ventanas = null, mensajePrevio = '', mensajePrevioCorto = '', quoteNumber = null, nombre = '' } = {}) => {
         // 🔴 La clave del candado incluye la HUELLA del proyecto: mismo cliente + mismo
         // proyecto = un solo informe en 30 dias; cambia la comuna, el producto o el vidrio =
         // proyecto distinto y le corresponde el suyo.
@@ -1378,6 +1384,8 @@ export async function handleWebhook(req, res, deps = {}) {
           // promesa rota que el operador no puede ver es el mismo defecto que motivo el
           // espejo del informe original.
           let valorEnviado = false;
+          // Cuándo salió el mensaje de valor: ancla del PISO de ritmo (SEQ_TERMICO_MS).
+          let valorEnviadoEn = 0;
           const avisarRecuperacion = () => safe('informeTermico.recuperacion', async () => {
             if (!valorEnviado) return;
             const rec = 'El informe me está tomando más de lo esperado; se lo hago llegar apenas esté listo. Mientras tanto, le dejo su propuesta.';
@@ -1435,13 +1443,28 @@ export async function handleWebhook(req, res, deps = {}) {
           // para {comuna}" — el PDF va a declarar una referencia regional, y el mensaje
           // tiene que decir lo mismo que el documento.
           if (mensajePrevio) {
+            // [Dueño, 28-ago — cazado en SU prueba de Toltén, textual: *"le dijo 2 veces lo
+            // mismo al cliente cuando le agregué una ventana"*] Si el discurso completo ya
+            // salió hace poco para este teléfono, va la VARIANTE CORTA que manda el llamador
+            // (acá no se redacta copy). El registro vive en el KV compartido con TTL: un
+            // cambio de proyecto a los 4 minutos no puede repetir el speech entero.
+            const claveValor = `informe_valor:${_tel}`;
+            let valorReciente = false;
+            try { valorReciente = Boolean(await (deps.leerEstado || leerEstado)(claveValor)); }
+            catch { /* sin memoria compartida: va el completo, que nunca es incorrecto */ }
+            const fuenteValor = (valorReciente && mensajePrevioCorto) ? mensajePrevioCorto : mensajePrevio;
             // [Dueño, en caliente 27-ago] La función recibe TAMBIÉN los datos verificados de
             // la comuna: así el mensaje puede nombrar la zona térmica NCh 1079 — el mismo
             // dato que el PDF imprime, de la misma fuente.
-            const textoValor = typeof mensajePrevio === 'function' ? mensajePrevio(esRef, datos) : mensajePrevio;
+            const textoValor = typeof fuenteValor === 'function' ? fuenteValor(esRef, datos) : fuenteValor;
             const mvEnviado = textoValor ? await enviarSinPausa(from, textoValor) : null;
             if (mvEnviado?.ok === true) {
               valorEnviado = true;
+              valorEnviadoEn = Date.now();
+              // La marca se pone tras CUALQUIER variante enviada: también la corta renueva
+              // la ventana (dos cambios seguidos tampoco repiten el discurso largo).
+              try { await (deps.escribirEstado || escribirEstado)(claveValor, { at: Date.now() }, 12 * 3600); }
+              catch { /* sin marca, el peor caso es repetir el speech: el bug de hoy, no uno nuevo */ }
               safe('informeTermico.espejo.valor', () => bridge.pushConversationEvent({
                 channel: 'whatsapp', external_id: from, direction: 'outbound',
                 actor_type: 'ai', actor_name: 'Oliver', message_type: 'text',
@@ -1575,6 +1598,17 @@ export async function handleWebhook(req, res, deps = {}) {
             return 'fallo';
           }
 
+
+          // [Dueño, 28-ago: *"me entregó el informe térmico en el mismo momento... la idea
+          // es que se vea más natural secuencial"*] PISO DE RITMO: entre el mensaje de
+          // valor y el documento pasan al menos SEQ_TERMICO_MS. Solo agrega la espera que
+          // FALTE (si generar ya tomó más que el piso, no suma nada), y solo en la
+          // secuencia (valorEnviado): el camino clásico conserva su ritmo propio.
+          if (valorEnviado && valorEnviadoEn) {
+            const pisoMs = Number(deps.seqTermicoMs ?? SEQ_TERMICO_MS);
+            const falta = pisoMs - (Date.now() - valorEnviadoEn);
+            if (falta > 0) await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: falta });
+          }
 
           // Reusa el mismo par upload+send que ya usa el PDF de la propuesta: subir el
           // documento a Meta y mandarlo por su media_id. Cero maquinaria nueva.
@@ -2628,6 +2662,14 @@ Comuna: ${datos.comuna}`
                 // [Dueño, 27-ago] La puerta abierta, con su redacción textual.
                 `Y si quiere que le explique cualquier parte del informe, me comenta por favor, estaré muy atento.`;
               };
+              // [Dueño, 28-ago] LA VARIANTE CORTA para cuando el discurso completo ya salió
+              // hace poco (cliente que agrega o cambia una ventana minutos después — su
+              // prueba de Toltén recibió el speech entero DOS veces en 4 minutos). Misma
+              // doctrina: sin siglas nuevas, sin guiones largos, formal pero cercano.
+              const mensajeValorCorto = () =>
+                `Perfecto${nombreCorto ? `, ${nombreCorto}` : ''}. Le incorporo el cambio a su proyecto y ` +
+                `le dejo sus informes al día, para que compare con calma. Su Propuesta Técnica Económica ` +
+                `actualizada viene enseguida.`;
               // Las MISMAS ventanas que declara la propuesta (mismo mapeo que el camino
               // clasico de abajo): informe y propuesta tienen que decir lo mismo siempre.
               const ventanasProyecto = (input.items || []).map((it) => ({
@@ -2649,6 +2691,7 @@ Comuna: ${datos.comuna}`
                   uw: ultima.termico?.uw ?? null,
                   producto: ultima.producto_label || ultima.product || '',
                   mensajePrevio: mensajeValor,
+                  mensajePrevioCorto: mensajeValorCorto,
                   // [Codex, compuerta] El folio YA está emitido acá: viaja al registro ISO
                   // del informe, que en esta secuencia corre antes de que exista last_quote.
                   quoteNumber,
@@ -2662,7 +2705,9 @@ Comuna: ${datos.comuna}`
               if (resultadoInforme === 'enviado') {
                 // 🌬️ Paso 5-bis: el INFORME DE VIENTOS, después del térmico y antes del
                 // video. Con su propio techo: regalo que jamás retiene el precio.
-                const techoVientosMs = Number(deps.seqVientosTimeoutMs ?? 30_000);
+                // El techo cubre pausa + motor + PDF + envío: con la pausa de ritmo en
+                // 25 s, un techo fijo de 30 s la habría convertido en timeout permanente.
+                const techoVientosMs = Number(deps.seqVientosTimeoutMs ?? (SEQ_VIENTOS_MS + 30_000));
                 let venceVientos = null;
                 const resVientos = await Promise.race([
                   safe('generarPdf.vientos.secuencia', () => enviarInformeVientos()),
