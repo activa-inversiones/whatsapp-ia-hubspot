@@ -4407,6 +4407,14 @@ app.get("/health", async (_req, res) => {
     zoho_books: ZOHO.ORG_ID ? "enabled" : "disabled",
     sales_os_bridge: salesOsConfigured() ? "enabled" : "disabled",
     internal_operator_bridge: INTERNAL_OPERATOR_TOKEN ? "enabled" : "missing",
+    // [2026-08-29] Hallazgo de la compuerta (Codex, refutando el plan Oliver-CEO): verifySig()
+    // hace FAIL-OPEN — sin META.SECRET acepta CUALQUIER POST al webhook como si viniera de Meta
+    // (index.js:2272 `if (!META.SECRET) return true`). Desde afuera no se podia saber si en
+    // produccion la firma se estaba verificando o no, porque el webhook responde 200 siempre.
+    // Esto NO cambia el comportamiento: solo hace VISIBLE la verdad para poder decidir el
+    // fail-closed sin apagar el bot a ciegas. Si dice DISABLED, cualquiera con la URL puede
+    // inyectarle mensajes falsos a Oliver.
+    webhook_signature: META.SECRET ? "enforced" : "DISABLED_fail_open",
     voice_tts: VOICE_ENABLED
       ? `enabled/${VOICE_SEND_MODE}`
       : "disabled",
