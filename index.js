@@ -1536,9 +1536,35 @@ async function handleCeoAssistant(inc, textSinWake) {
       }
     }
   } catch (e) { logErr("ceo_assistant.agenda_voz", e); /* fail-safe: sigue al flujo asistente normal */ }
-  // 2) Contexto real liviano: agenda del día (si sales-os responde).
+  // 2) Contexto real. [2026-08-29 #579] Antes SOLO viajaba la agenda del día, y por eso el dueño
+  // dijo textual: "me respondió con voz pero hay que darle más acceso a la información, no me ayuda
+  // casi nada". Ahora además viajan los NÚMEROS DEL NEGOCIO por consultas CERRADAS y read-only
+  // (sales-os src/services/ceoBriefing.js — sin SQL generado por el modelo: exigencia de los 3
+  // revisores de la compuerta del 29-ago). Si sales-os no responde, se degrada al comportamiento
+  // anterior en vez de fallar: el asistente sigue andando, solo con menos contexto.
+  const [agendaResp, ctxResp] = await Promise.all([
+    callAgendaApi('GET', '/internal/agenda/today', null).catch(() => null),
+    callAgendaApi('GET', '/internal/ceo/contexto', null).catch(() => null),
+  ]);
   let agendaTxt = "";
-  try { const a = await callAgendaApi('GET', '/internal/agenda/today', null); if (a && a.message) agendaTxt = String(a.message); } catch {}
+  try { if (agendaResp && agendaResp.message) agendaTxt = String(agendaResp.message); } catch {}
+  let datosTxt = "";
+  try {
+    if (ctxResp && ctxResp.ok && ctxResp.data) {
+      const d = ctxResp.data;
+      const m = (n) => (n == null ? "?" : "$" + Number(n).toLocaleString("es-CL"));
+      const top = (d.a_quien_llamar?.prioritarios || []).slice(0, 5)
+        .map(p => `${p.customer_name || p.phone} ${m(p.amount_total)} (${p.dias_sin_respuesta}d${p.es_vip ? ", VIP" : ""})`)
+        .join(" · ");
+      datosTxt =
+        `NÚMEROS REALES DE HOY (usalos, no inventes otros):\n` +
+        `- Hoy entraron ${d.pulso?.leads_hoy?.hoy ?? "?"} clientes nuevos y se hicieron ${d.pulso?.cotizaciones_hoy?.hoy ?? "?"} cotizaciones por ${m(d.pulso?.cotizaciones_hoy?.monto_hoy)}.\n` +
+        `- Conversaciones activas últimas 24h: ${d.pulso?.conversaciones_activas_24h ?? "?"}.\n` +
+        `- Este mes: ${d.mes?.cotizaciones_mes ?? "?"} cotizaciones por ${m(d.mes?.monto_cotizado_clp)} (ticket promedio ${m(d.mes?.ticket_promedio_clp)}); ganadas cargadas: ${d.mes?.ganadas_mes ?? 0}.\n` +
+        `- SEGUIMIENTO PENDIENTE: ${d.a_quien_llamar?.total_pendientes ?? "?"} cotizaciones sin respuesta por ${m(d.a_quien_llamar?.plata_en_juego_clp)} en total.\n` +
+        (top ? `- Los más grandes para llamar: ${top}.\n` : "");
+    }
+  } catch (e) { logErr("ceo_assistant.contexto", e); }
   // 3) Cerebro (OpenAI gpt-4o-mini = barato, ya configurado en el bot).
   let respuesta = "";
   try {
@@ -1551,7 +1577,9 @@ async function handleCeoAssistant(inc, textSinWake) {
           "Eres Oliver, el asistente personal de Marcelo Cifuentes, dueño de Activa Inversiones (fábrica de ventanas PVC en Temuco, Chile). " +
           "Marcelo te habla por WhatsApp para organizarse: su agenda del día, a qué clientes llamar y qué decirles, redactar BORRADORES de correo o mensaje (solo borradores: él los envía, vos NUNCA mandás nada a terceros; EXCEPCIÓN [ZL-F3]: los comandos de AGENDA por voz SÍ se ejecutan al tiro contra sales-os — es la agenda del propio Marcelo, no un tercero), y recordarle cosas. " +
           "Responde BREVE, en español chileno, directo y útil, sin humo. Si te falta un dato, pedíselo; NUNCA inventes precios, medidas ni datos del negocio. " +
-          (agendaTxt ? ("Su agenda de hoy:\n" + agendaTxt) : "Hoy no tiene nada cargado en su agenda.") },
+          "Cuando te pregunte por números del negocio, responde con los datos reales de abajo y decí de cuándo son. Si el dato que pide no está abajo, decí que no lo tenés a mano en vez de estimarlo. " +
+          (agendaTxt ? ("Su agenda de hoy:\n" + agendaTxt + "\n\n") : "Hoy no tiene nada cargado en su agenda.\n\n") +
+          datosTxt },
         { role: "user", content: pedido },
       ],
     });
