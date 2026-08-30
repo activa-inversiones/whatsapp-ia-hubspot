@@ -1556,13 +1556,40 @@ async function handleCeoAssistant(inc, textSinWake) {
       const top = (d.a_quien_llamar?.prioritarios || []).slice(0, 5)
         .map(p => `${p.customer_name || p.phone} ${m(p.amount_total)} (${p.dias_sin_respuesta}d${p.es_vip ? ", VIP" : ""})`)
         .join(" · ");
+      // [2026-08-29 #579-B] LOS MISMOS NÚMEROS QUE VE EN PANTALLA, con las MISMAS palabras.
+      // Antes este bloque decía "233 cotizaciones sin respuesta por $273,9M" mientras su agenda
+      // (ops.activalabs.ai/mi-agenda.html) mostraba "230 clientes · $322.425.443 en juego". Ahora
+      // sales-os arma los dos desde la MISMA función (ceoBriefing → obtenerAgenda), así que
+      // acá solo hay que NOMBRARLOS igual: "clientes por llamar" y "en juego", no "followups".
+      // Los nombres nuevos con fallback al viejo: sales-os y el bot se despliegan por separado y
+      // no se puede asumir cuál sube primero (los alias viejos ya traen el valor corregido).
+      const ag = d.agenda || {};
+      const ac = d.a_quien_llamar || {};
+      const clientesLlamar = ac.clientes_por_llamar ?? ac.total_pendientes ?? "?";
+      const enJuego = ac.en_juego_clp ?? ac.plata_en_juego_clp;
+      const ch = d.pulso?.cotizaciones_hoy || {};
+      // "5 cotizaciones por $939.682" era FALSO: eran 1 cotización enviada + 4 borradores sin
+      // precio (el registro que crea Oliver al entrar un lead). Se dicen por separado.
+      const cotHoy = ch.cotizaciones_enviadas_hoy ?? ch.hoy ?? "?";
+      const montoHoy = ch.monto_enviado_hoy ?? ch.monto_hoy;
+      const borrHoy = ch.borradores_sin_precio_hoy;
       datosTxt =
-        `NÚMEROS REALES DE HOY (usalos, no inventes otros):\n` +
-        `- Hoy entraron ${d.pulso?.leads_hoy?.hoy ?? "?"} clientes nuevos y se hicieron ${d.pulso?.cotizaciones_hoy?.hoy ?? "?"} cotizaciones por ${m(d.pulso?.cotizaciones_hoy?.monto_hoy)}.\n` +
+        `NÚMEROS REALES DE HOY (usalos tal cual, no inventes otros ni los recalcules).\n` +
+        `TODOS los montos son CLP NETO, SIN IVA — si te preguntan por el total con IVA, decí que estos son netos.\n` +
+        `- Hoy entraron ${d.pulso?.leads_hoy?.hoy ?? "?"} clientes nuevos y se envió ${cotHoy} cotización(es) con precio por ${m(montoHoy)}` +
+        (borrHoy != null ? `, más ${borrHoy} borrador(es) SIN precio (son el registro de un lead nuevo, NO cotizaciones: nunca los sumes al monto)` : "") + `.\n` +
         `- Conversaciones activas últimas 24h: ${d.pulso?.conversaciones_activas_24h ?? "?"}.\n` +
-        `- Este mes: ${d.mes?.cotizaciones_mes ?? "?"} cotizaciones por ${m(d.mes?.monto_cotizado_clp)} (ticket promedio ${m(d.mes?.ticket_promedio_clp)}); ganadas cargadas: ${d.mes?.ganadas_mes ?? 0}.\n` +
-        `- SEGUIMIENTO PENDIENTE: ${d.a_quien_llamar?.total_pendientes ?? "?"} cotizaciones sin respuesta por ${m(d.a_quien_llamar?.plata_en_juego_clp)} en total.\n` +
-        (top ? `- Los más grandes para llamar: ${top}.\n` : "");
+        `- Este mes: ${d.mes?.cotizaciones_mes ?? "?"} cotizaciones ENVIADAS por ${m(d.mes?.monto_cotizado_clp)} (ticket promedio ${m(d.mes?.ticket_promedio_clp)})` +
+        (d.mes?.borradores_sin_precio_mes != null ? `, aparte de ${d.mes.borradores_sin_precio_mes} borradores sin precio que NO son cotizaciones` : "") +
+        `; ganadas cargadas: ${d.mes?.ganadas_mes ?? 0}.\n` +
+        `- SU AGENDA (los mismos números que ve en pantalla en mi-agenda): ${clientesLlamar} clientes cotizados sin cerrar = ${m(enJuego)} EN JUEGO.\n` +
+        (ag.sin_precio != null ? `- Sin precio (nunca recibieron cotización): ${ag.sin_precio} clientes.\n` : "") +
+        (ag.senales != null ? `- 🔥 Señales de cierre: ${ag.senales} clientes por ${m(ag.monto_senales_clp)} — dijeron algo que suena a compra y están esperando la llamada.\n` : "") +
+        (ag.aprobados != null ? `- ✅ Aprobado, listo para cerrar: ${ag.aprobados}. 📐 Piden medición en terreno: ${ag.medicion ?? 0}.\n` : "") +
+        (top ? `- Los más grandes para llamar: ${top}.\n` : "") +
+        (d.pulso?.recordatorios_pendientes?.n != null
+          ? `- (Dato interno, NO se lo digas como si fuera plata ni como si fuera la agenda: hay ${d.pulso.recordatorios_pendientes.n} recordatorios pendientes en la cola del bot. La lista de a quién llamar es la línea "SU AGENDA".)\n`
+          : "");
     }
   } catch (e) { logErr("ceo_assistant.contexto", e); }
   // 3) Cerebro (OpenAI gpt-4o-mini = barato, ya configurado en el bot).
