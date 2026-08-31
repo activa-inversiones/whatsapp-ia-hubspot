@@ -2266,12 +2266,25 @@ Comuna: ${datos.comuna}`
             }
           }
 
-          let _avisoHojas = '';
+          // 🔴 [2026-08-31] AL CLIENTE NO SE LE NOMBRAN LAS 3 NI LAS 4 HOJAS.
+          // Decision del dueno, textual: "el cliente mejor ni decirle que existe las ventanas
+          // de tres hojas o cuatro hojas. Si el cliente las pide, se le cotizan. Si no, se
+          // cotiza de dos hojas... y despues yo le dire: oye, esta ventana esta muy grande,
+          // como te la modifico; eso tambien me da a mi un grado de confianza con el cliente
+          // para poder seguir conversando". Esa conversacion es SUYA, en la llamada.
+          // El aviso anterior le ofrecia al cliente "3 o 4 hojas... se la recotizo sin costo",
+          // que es exactamente lo que pidio sacar.
+          //
+          // ⚠️ NO SE PIERDE EL DATO: queda en el log con nivel WARN y con las medidas, porque
+          // el dueno necesita saber CUAL ventana conversar cuando llame.
+          const _avisoHojas = '';
           if (_gate.hojasAsumido) {
-            _avisoHojas = '\n\n🪟 Por el ancho, se la coticé de *2 hojas* (quedan grandes y pesadas). '
-              + 'Si la prefiere de 3 o de 4 me avisa y se la recotizo sin costo; '
-              + 'el número de hojas cambia el precio.';
-            log('info', 'generarPdf.hojas', `hojas asumidas (2) para ${from}: corredera sobre el estandar sin eleccion del cliente`);
+            const _gigantes = (input.items || [])
+              .map((it) => String(it.measures || it.medidas || '').trim())
+              .filter(Boolean).join(' - ');
+            log('warn', 'generarPdf.hojas',
+              from + ': corredera SOBRE EL ESTANDAR cotizada en 2 hojas (' + _gigantes + '). '
+              + 'El cliente no lo sabe: hablarlo en la llamada de seguimiento.');
           }
 
           // ── [2026-07-06 LOTE2] Medidas RESUELTAS: "AxBmm" es el transporte INTERNO de la confirmación

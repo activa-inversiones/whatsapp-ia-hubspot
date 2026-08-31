@@ -251,11 +251,24 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
   const faltaHojas = gateApertura && gigantes.length > 0 && !hojasElegidas;
   let hojasAsumido = false;
 
-  if (faltaHojas) {
-    const preguntadoAt = Number(state.hojas_preguntado_at) || 0;
-    if (preguntaVigente(preguntadoAt) && (Date.now() - preguntadoAt) >= ESPERA_HOJAS_MS) hojasAsumido = true;
-    else missing.push('hojas');
-  }
+  // 🔴 [2026-08-31 · EL DUENO CAMBIO DE DECISION — NO ES UNA REGRESION, NO LO "RESTAURES"]
+  // El 25-ago pidio PREGUNTAR: *"por el tamano debimos preguntarle al cliente si la quiere en
+  // 3 hojas o 4 hojas"*. El 31-ago lo dio vuelta, textual:
+  //   *"el cliente mejor ni decirle que existe las ventanas de tres hojas o cuatro hojas.
+  //     Si el cliente las pide, se le cotizan. Si no, se cotiza de dos hojas... y despues yo
+  //     le dire: esta ventana esta muy grande, como te la modifico. Eso tambien me da a mi un
+  //     grado de confianza con el cliente para poder seguir conversando"*
+  // Su razon no es tecnica y por eso el codigo no la puede "mejorar": la conversacion sobre el
+  // tamano es SUYA, en la llamada de seguimiento, y le sirve para cerrar. Preguntarselo Oliver
+  // le saca ese momento y ademas frena la propuesta por un dato que el cliente no sabe dar.
+  //
+  // ⚠️ LO QUE ESTO CUESTA, medido el mismo dia y dicho para que quede: una corredera de mas de
+  // 2.930 mm no se fabrica en 2 hojas, y cotizarla asi sale 13-21% bajo lo que costaria en 3 o
+  // 4 (Winart cobra +35% de 2 a 4 hojas en la MISMA ventana; datos en
+  // _activa-docs/winart-validacion/correderas-s75). El dueno lo sabe y decidio igual: lo ajusta
+  // el en la llamada. Si algun dia quiere el precio real desde el primer PDF, el cambio es
+  // deducir las hojas del ancho aca — NO volver a preguntar.
+  if (faltaHojas) hojasAsumido = true;
 
   // `coloresPropuestos`: null = el cliente eligio (o eligio a medias) ⇒ sale UNA propuesta,
   // como siempre. Array = nadie eligio ⇒ salen esas tres, rotuladas A/B/C.

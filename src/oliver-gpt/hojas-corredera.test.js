@@ -54,11 +54,17 @@ test('🔒 bajo el MINIMO se sigue acotando HACIA ARRIBA (fabricar chico cuesta 
  * LA PREGUNTA: 3 O 4 HOJAS — Y EL DEFAULT HONESTO DE 2
  * ========================================================================= */
 
-test('🔴 corredera mas ancha que el estandar sin eleccion de hojas: se PREGUNTA', () => {
+test('🔴 corredera mas ancha que el estandar: NO se pregunta, sale de 2 hojas marcada', () => {
+  // [2026-08-31] EL DUENO CAMBIO DE DECISION. El 25-ago pidio preguntar las hojas; el 31-ago
+  // lo dio vuelta: "el cliente mejor ni decirle que existe las ventanas de tres o cuatro
+  // hojas... y despues yo le dire: esta ventana esta muy grande, como te la modifico". La
+  // conversacion del tamano es SUYA, en la llamada de seguimiento, y le sirve para cerrar.
+  // Lo que este test sigue protegiendo es lo importante: que la ventana gigante se DETECTE
+  // y quede MARCADA. Lo que cambio es el desenlace: antes frenaba y preguntaba, ahora sale.
   const r = quoteDataComplete(base, {}, { textoCliente: 'quiero una corredera para el living' });
-  assert.equal(r.ok, false);
-  assert.ok(r.missing.includes('hojas'));
-  assert.ok(!r.hojasAsumido, 'recien se pregunta, no se asume');
+  assert.equal(r.ok, true, 'ya no se frena al cliente por un dato que no dio');
+  assert.ok(!r.missing.includes('hojas'), 'y no se le pregunta');
+  assert.equal(r.hojasAsumido, true, 'pero queda marcado que se asumieron 2');
 });
 
 test('🔒 si el cliente YA dijo las hojas (en el chat o en el item), no se pregunta', () => {
@@ -127,6 +133,9 @@ test('🔴 el gate pregunta 3 o 4 hojas, arranca su reloj, y el aviso se CONCATE
  * [Codex 2a pasada] LOS CUATRO AGUJEROS QUE LA PRIMERA VERSION DEJO
  * ========================================================================= */
 
+// [2026-08-31] Estos tres siguen probando LA DETECCION de la ventana gigante, que es lo que
+// importa; lo que cambio es que ya no se pregunta (decision del dueno). Si la deteccion se
+// rompe, la ventana se cotiza como una chica y ahi si se pierde plata de verdad.
 test('🔴 [Codex] con VARIOS items, un "2 hojas" ajeno NO habilita a la corredera gigante', () => {
   const r = quoteDataComplete(
     { name: 'M', items: [
@@ -134,22 +143,25 @@ test('🔴 [Codex] con VARIOS items, un "2 hojas" ajeno NO habilita a la correde
       itemGigante(),
     ] },
     {}, { textoCliente: 'quiero una puerta corredera... la puerta es de 2 hojas' });
-  assert.equal(r.ok, false, 'la corredera gigante sigue sin hojas elegidas');
-  assert.ok(r.missing.includes('hojas'));
+  // Lo que importa sigue igual: el "2 hojas" que el cliente dijo de LA PUERTA no puede
+  // contarse como eleccion para la corredera gigante. Si se contara, saldria sin la marca
+  // y el dueno no se enteraria de que hay una ventana grande que conversar.
+  assert.equal(r.hojasAsumido, true, 'la corredera gigante sigue sin hojas ELEGIDAS por el cliente');
+  assert.ok(!r.missing.includes('hojas'), 'y aun asi no se le pregunta: sale la propuesta');
 });
 
 test('🔴 [Codex] medidas invertidas ("2160x5560") igual disparan la pregunta', () => {
   const r = quoteDataComplete(
     { name: 'M', items: [itemGigante({ measures: '2160x5560mm' })] },
     {}, { textoCliente: 'una corredera grande' });
-  assert.ok(r.missing.includes('hojas'), 'el ancho real es el numero grande, venga donde venga');
+  assert.equal(r.hojasAsumido, true, 'el ancho real es el numero grande, venga donde venga: se detecta igual');
 });
 
 test('🔴 [Codex] puntos de miles ("5.560x2.160") no achican la ventana', () => {
   const r = quoteDataComplete(
     { name: 'M', items: [itemGigante({ measures: '5.560x2.160' })] },
     {}, { textoCliente: 'una corredera grande' });
-  assert.ok(r.missing.includes('hojas'), '5.560 es 5560, no 5');
+  assert.equal(r.hojasAsumido, true, '5.560 es 5560, no 5: la gigante se detecta igual');
 });
 
 test('🔴 [Codex] SIN textoCliente (IG/FB) el gate de hojas NO se activa — sin rama de pregunta seria un bloqueo eterno', () => {
