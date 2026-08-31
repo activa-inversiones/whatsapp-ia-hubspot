@@ -141,7 +141,12 @@ const VIDRIOS = {
   incoloro:  "#DEEBF7",  // DVH Incoloro (hexa real de Winart)
   bronce:    "#D9C4A0",
   gris:      "#C8CCD0",
-  satinado:  "#E8ECEF",
+  // 🔴 [2026-08-31, correccion del dueno] EL SATEN NO SE VE COMO VIDRIO NORMAL.
+  // Textual: "a saten colocale un vidrio color saten, que es un vidrio que no deja ver en
+  // ninguna de las 2 direcciones, porque en la cotizacion se ve como si fuera vidrio normal".
+  // El valor anterior (#E8ECEF) era casi el mismo celeste del incoloro (#DEEBF7): en el PDF
+  // no se distinguian. Ahora es el gris plata mate de la muestra que mando el dueno.
+  satinado:  "#C6CACE",
 };
 
 function claveColor(c) {
@@ -153,11 +158,26 @@ function claveColor(c) {
   return "blanco";
 }
 
-function claveVidrio(v) {
-  const t = String(v || "").toLowerCase();
+function claveVidrio(v, ambiente) {
+  // 🔴 [2026-08-31] SE QUITAN LAS TILDES ANTES DE COMPARAR. El vidrio del bano se rotula
+  // "saten" CON TILDE ("Termopanel DVH 4+12+4 saten (bano)") y aca se buscaba "satin" sin
+  // tilde, asi que NO calzaba: caia a incoloro y se dibujaba transparente. Un defecto de una
+  // sola letra que le mostraba al cliente un bano con vidrio que se ve.
+  const t = String(v || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
   if (t.includes("bronce")) return "bronce";
-  if (t.includes("satin") || t.includes("acid") || t.includes("esmeril")) return "satinado";
+  // "satinado" y "saten" son el mismo vidrio; "mate", "opaco" y "translucido" son como lo
+  // nombra el cliente. Todos van al mismo dibujo: el que NO se ve para ningun lado.
+  if (t.includes("satin") || t.includes("saten") || t.includes("acid") || t.includes("esmeril")
+      || t.includes("mate") || t.includes("opaco") || t.includes("transluc")) return "satinado";
   if (t.includes("gris") || t.includes("grey")) return "gris";
+  // 🔴 [2026-08-31, regla del dueno] SI ES BANO, VA SATEN. Textual: "con o sin tilde debe ser
+  // ingresado asi; si dice bano ponerle [saten], porque el cliente puede decir o escribir de
+  // cualquier manera". El motor ya cotiza el bano con saten, pero el DIBUJO dependia de que
+  // el rotulo del vidrio lo dijera. Esta es la red: el ambiente manda igual. Se compara sin
+  // tildes y sin la enie, asi "bano", "baNo", "BAÑO" y "wc" caen todos en el mismo lugar.
+  const amb = String(ambiente || "").toLowerCase().normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "").replace(/\u00f1/g, "n");
+  if (/\bbanos?\b|\bwc\b|\btoilet|\bbanera|\bducha/.test(amb)) return "satinado";
   return "incoloro";
 }
 
@@ -601,7 +621,7 @@ function planoDeVentana(it, caja) {
   const tipo = tipoDe(it);
   const n = hojasDe(it);
   const color = COLORES[claveColor(it?.color)] || COLORES.blanco;
-  const vidrio = VIDRIOS[claveVidrio(it?.glass_label)] || VIDRIOS.incoloro;
+  const vidrio = VIDRIOS[claveVidrio(it?.glass_label, it?.ambiente)] || VIDRIOS.incoloro;
 
   const { w, h, escala, dx, dy } = encajar(ancho, alto, caja.w, caja.h);
   const x = caja.x + dx, y = caja.y + dy;

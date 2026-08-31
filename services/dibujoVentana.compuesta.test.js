@@ -8,7 +8,7 @@
 // traian la misma descripcion el buscador de panos la encontraba dos veces.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { partesDesdeLabel } from './dibujoVentana.js';
+import { partesDesdeLabel, claveVidrio } from './dibujoVentana.js';
 
 const L = 'Ventana compuesta vertical: Proyectante 748.5mm (arriba) + Fijo 748.5mm (abajo)';
 
@@ -41,4 +41,41 @@ test('🛟 los panos tienen que SUMAR la ventana, o no se dibujan', () => {
 
 test('una mencion suelta de "compuesta" sigue sin generar panos', () => {
   assert.equal(partesDesdeLabel({ producto_label: 'Ventana Fija' }, 600, 1500), null);
+});
+
+// ── El vidrio del baño no puede verse transparente ───────────────────────────
+// [2026-08-31] Reclamo del dueno, textual: "a saten colocale un vidrio color saten, que es un
+// vidrio que no deja ver en ninguna de las 2 direcciones, porque en la cotizacion se ve como
+// si fuera vidrio normal". Dos defectos encadenados:
+//   1. `claveVidrio` buscaba "satin" SIN tilde y el vidrio se rotula "saten" CON tilde, asi
+//      que no calzaba y caia a incoloro. Un defecto de una sola letra.
+//   2. Aun detectandolo, el color guardado (#E8ECEF) era casi el mismo celeste del incoloro
+//      (#DEEBF7): en el PDF no se distinguian.
+// Y la regla que pidio despues: "si dice bano ponerle [saten], porque el cliente puede decir
+// o escribir de cualquier manera".
+
+test('🔴 el saten se reconoce CON tilde, que es como lo rotula el motor', () => {
+  assert.equal(claveVidrio('Termopanel DVH 4+12+4 satén (baño)'), 'satinado');
+  assert.equal(claveVidrio('Termopanel DVH 4+12+4 saten'), 'satinado');
+  assert.equal(claveVidrio('satinado'), 'satinado');
+  // Como lo puede nombrar el cliente.
+  for (const v of ['vidrio mate', 'opaco', 'translucido', 'esmerilado', 'acidado']) {
+    assert.equal(claveVidrio(v), 'satinado', `"${v}" tiene que ser saten`);
+  }
+});
+
+test('🔴 si el ambiente es baño va saten, escriba el cliente como escriba', () => {
+  // Red de seguridad: no depende de como venga rotulado el vidrio.
+  for (const a of ['Baño', 'bano', 'BAÑO', 'baño principal', 'WC', 'Ducha', 'banera']) {
+    assert.equal(claveVidrio('Termopanel DVH 4+12+4', a), 'satinado',
+      `ambiente "${a}" tiene que salir con vidrio que no se ve`);
+  }
+});
+
+test('y lo que NO es baño sigue con vidrio transparente', () => {
+  for (const a of ['Cocina', 'Living', 'Dormitorio', '', undefined]) {
+    assert.equal(claveVidrio('Termopanel DVH 5+12+5', a), 'incoloro');
+  }
+  assert.equal(claveVidrio('Termopanel DVH bronce'), 'bronce');
+  assert.equal(claveVidrio('Termopanel gris'), 'gris');
 });
