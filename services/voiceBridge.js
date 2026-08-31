@@ -2,6 +2,13 @@
 // Node 18+ (ESM). Usa fetch global.
 // ✅ LIMPIO: Solo TTS/voz. Sin pricing (el pricer es ACTIVA Engine vía priceAll).
 
+// [2026-08-31] El texto ya NO va crudo al TTS: pasa por textoParaVoz(), que
+// convierte los MONTOS a palabras ("$6.200.000" -> "seis millones doscientos
+// mil pesos") y limpia emojis/markdown. Antes ElevenLabs leia los montos
+// digito por digito y el dueno se perdia. Telefonos, RUT, medidas, folios,
+// horas y fechas quedan intactos a proposito (ver services/textoParaVoz.js).
+import { textoParaVoz } from './textoParaVoz.js';
+
 const VOICE_ENABLED = String(process.env.VOICE_ENABLED || "false") === "true";
 const VOICE_SEND_MODE = String(process.env.VOICE_SEND_MODE || "text_only"); // text_only | text_and_audio | audio_if_inbound_audio
 const VOICE_TTS_PROVIDER = String(process.env.VOICE_TTS_PROVIDER || "").toLowerCase(); // elevenlabs | bridge | ""
@@ -208,12 +215,20 @@ export async function synthesizeVoiceBuffer({ text, waId = "", context = {} }) {
   const p = resolveProvider();
   console.log(`[TTS] Proveedor seleccionado: ${p} | waId: ${waId}`);
 
+  // Normalizacion UNICA, aca arriba: vale para ElevenLabs y para el Bridge.
+  // Si queda vacio (p.ej. el texto era solo un emoji) no hay nada que decir.
+  const textoHablado = textoParaVoz(text);
+  if (!textoHablado) {
+    console.warn("[TTS] Texto vacío tras normalizar; se omite la nota de voz");
+    return null;
+  }
+
   try {
     if (p === "elevenlabs") {
-      return await synthesizeViaElevenLabs({ text, waId, context });
+      return await synthesizeViaElevenLabs({ text: textoHablado, waId, context });
     }
     if (p === "bridge") {
-      return await synthesizeViaBridge({ text, waId, context });
+      return await synthesizeViaBridge({ text: textoHablado, waId, context });
     }
 
     console.warn("[TTS] Ningún proveedor disponible (ni ElevenLabs ni Bridge)");
