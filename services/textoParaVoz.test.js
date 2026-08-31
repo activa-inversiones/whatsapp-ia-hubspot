@@ -298,3 +298,36 @@ test('TRIDENTE: la normalizacion previa no toca fechas, folios, telefonos ni med
   assert.equal(textoParaVoz('1.200 x 2.400 mm'), '1.200 x 2.400 mm');
   assert.equal(textoParaVoz('RUT 76.123.456-7'), 'RUT 76.123.456-7');
 });
+
+// ── TRIDENTE/Codex — LOS TRES BLOQUEANTES ────────────────────────────────────
+// Codex corrio el modulo de verdad (no leyendo) y saco tres casos donde el bot le
+// decia al dueno un numero FALSO con toda naturalidad. Veredicto: NO APTO.
+test('BLOQUEANTE 1: "$1,5 millones" no es un peso con cincuenta', () => {
+  // Salia "un peso con cincuenta millones": la regla general se comia "$1,5" como
+  // monto con decimales y dejaba "millones" afuera.
+  assert.equal(textoParaVoz('El proyecto es de $1,5 millones'),
+    'El proyecto es de un millón quinientos mil pesos');
+  assert.equal(textoParaVoz('Son $2 millones'), 'Son dos millones de pesos');   // era "dos pesos millones"
+  assert.equal(textoParaVoz('Vale $3 mil millones'), 'Vale tres mil millones de pesos');
+  assert.equal(textoParaVoz('-$1,5 millones'), 'menos un millón quinientos mil pesos');
+});
+
+test('BLOQUEANTE 2: un monto sin puntos de miles igual se dice', () => {
+  // El blindaje de 7+ digitos lo clasificaba como telefono/ID aunque tuviera $ delante.
+  assert.equal(textoParaVoz('El total es $6200000'), 'El total es seis millones doscientos mil pesos');
+  assert.equal(textoParaVoz('son 6200000 pesos'), 'son seis millones doscientos mil pesos');
+  // Y un telefono de verdad sigue blindado: es la razon por la que existe ese blindaje.
+  assert.equal(textoParaVoz('+56957296035'), '+56957296035');
+  assert.equal(textoParaVoz('llama al 56957423389'), 'llama al 56957423389');
+});
+
+test('BLOQUEANTE 3: un descuento en vineta NO se convierte en un cargo', () => {
+  // El mas grave: la limpieza de vinetas se comia el "- " ANTES de que se pudiera
+  // convertir en "menos", asi que "- $1.200 de descuento" se leia como un cobro.
+  assert.equal(textoParaVoz('- $1.200 de descuento'), 'menos mil doscientos pesos de descuento');
+  assert.equal(textoParaVoz('Detalle:\n- $1.200 de descuento'),
+    'Detalle: menos mil doscientos pesos de descuento');
+  // Pero una vineta de verdad sigue siendo vineta.
+  assert.equal(textoParaVoz('- 3 ventanas\n- 2 puertas'), '3 ventanas. 2 puertas');
+  assert.equal(textoParaVoz('• item con vineta'), 'item con vineta');
+});

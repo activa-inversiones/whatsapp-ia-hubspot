@@ -148,7 +148,17 @@ function limpiarFormato(s) {
   // Encabezados, citas y vinetas al inicio de linea.
   t = t.replace(/^[ \t]*#{1,6}[ \t]+/gm, '');
   t = t.replace(/^[ \t]*>[ \t]?/gm, '');
-  t = t.replace(/^[ \t]*[-*•·–—][ \t]+/gm, '');
+  // [2026-08-31 - tridente/Codex, BLOQUEANTE] La vineta NO se saca si lo que sigue es
+  // un signo peso. "- $1.200 de descuento" salia "mil doscientos pesos de descuento":
+  // el guion se iba como vineta y UN DESCUENTO SE LEIA COMO UN CARGO. Con un monto
+  // adelante, el guion es un signo menos, no una vinneta.
+  // Vinetas de verdad (nunca son un signo menos): siempre se sacan.
+  t = t.replace(/^[ \t]*[*\u2022\u00B7\u2013\u2014][ \t]+/gm, '');
+  // [2026-08-31 - tridente/Codex, BLOQUEANTE] Un guion al inicio de linea SI puede ser un
+  // signo menos. "- $1.200 de descuento" salia "mil doscientos pesos de descuento": el
+  // guion se iba como vineta y UN DESCUENTO SE LEIA COMO UN CARGO. Con un signo peso
+  // detras no se saca, y la regla (a) lo convierte en "menos".
+  t = t.replace(/^[ \t]*-[ \t]+(?!\$)/gm, '');
 
   // Saltos de linea -> pausa hablada.
   t = t.replace(/\r/g, '');
@@ -221,7 +231,7 @@ const BLINDADOS = [
 
   // Cualquier corrida larga de digitos SIN puntos de miles = codigo/telefono/ID,
   // nunca un monto escrito a la chilena.
-  /\b\d{7,}\b/g,
+  /(?<!\$)(?<!\$ )\b\d{7,}\b(?!\s*(?:pesos?|CLP))/gi,
 
   // [2026-08-31 - tridente/Gemini] Dominios SIN http:// ni www. Antes solo se blindaba
   // con protocolo, asi que "activalabs.ai/p/1.000.000" salia "...ai/p/un millon".
@@ -273,6 +283,23 @@ function convertirMontos(texto) {
   t = t.replace(/\bCLP\s*(?=\d)/gi, '$');                      // CLP 1.200 -> $1.200
   t = t.replace(/(\d)\.-(?!\d)/g, '$1');                        // 1.200.-   -> 1.200
 
+
+  // [2026-08-31 - tridente/Codex, BLOQUEANTE] MILLONES ABREVIADOS, ANTES QUE TODO.
+  // "$1,5 millones" salia "un peso con cincuenta millones" y "$2 millones" salia
+  // "dos pesos millones": la regla (a) se comia "$1,5" como un monto con decimales y
+  // dejaba "millones" tirado afuera. Numeros completamente falsos, dichos con soltura.
+  // Va PRIMERO justamente para ganarle a (a).
+  t = t.replace(
+    /(-\s*)?\$\s*(\d{1,3}(?:\.\d{3})*|\d+)(?:,(\d{1,2}))?\s*(mil\s+)?millones?\b/gi,
+    (m, menos, ent, dec, mil) => {
+      const base = aEntero(ent);
+      if (base === null) return m;
+      const frac = dec ? Number('0.' + dec) : 0;
+      const total = Math.round((base + frac) * (mil ? 1e9 : 1e6));
+      const w = montoAPalabras(total);
+      return w === null ? m : (menos ? 'menos ' + w : w);
+    }
+  );
 
   // (a) Con signo peso: "$6.200.000" · "$ 323.016" · "$2.500,50" · "$6.200.000 pesos"
   //     El "pesos" opcional del final se consume para no decirlo dos veces.
