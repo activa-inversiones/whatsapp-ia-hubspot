@@ -331,6 +331,7 @@ import { detectNoiseLoop, noiseLoopMessage } from "./services/oliverNoise.js"; /
 import { detectOutOfCatalog, outOfCatalogRetentionMessage } from "./services/oliverOutOfCatalog.js"; // [2026-06-10 GT-05] vidrio shower → ofrecer PVC, no competencia
 import { shouldSkipFollowup } from "./services/oliverFollowup.js"; // [2026-06-10] no enviar follow-up a Marcelo/internos
 import { parseAgendaVoz } from "./services/agendaVoz.js"; // [2026-07-07 ZL-F3] agenda por voz del CEO — parser determinista
+import { construirBloqueNumeros, REGLA_PERIODOS } from "./services/ceoContextoTexto.js"; // [2026-08-31 defecto-2] bloque de numeros del asistente CEO: 24h movil ≠ hoy
 import { addZohoNote as zohoAddNote } from "./services/zohoCommercial.js"; // [2026-07-07] "Salesforce reutilizando Zoho": nota en el Deal cuando sales-os marca un seguimiento hecho
 import { camposContactoReceptor, contactoEsElMismo, necesitaActualizarContacto } from "./services/zohoBooksReceptor.js"; // [2026-08-30] RUT + razón social del cliente hacia el contacto de Books
 import { persistHandoff, isHandoffActive } from "./services/oliverHandoff.js"; // [2026-06-10 #B/GT-07] handoff persistente (bot no revive)
@@ -1549,49 +1550,14 @@ async function handleCeoAssistant(inc, textSinWake) {
   ]);
   let agendaTxt = "";
   try { if (agendaResp && agendaResp.message) agendaTxt = String(agendaResp.message); } catch {}
+  // [2026-08-31 defecto-2] EL BLOQUE DE NUMEROS SE ARMA EN services/ceoContextoTexto.js.
+  // Se saco de aca porque el dueno reporto "LE PEDI LAS ULTIMAS 24 HORAS Y ME DIO OTRA
+  // INFORMACION": el bloque decia "NUMEROS REALES DE HOY" y solo traia el dia calendario.
+  // Ahora la ventana movil de 24 h y el dia de hoy viajan separados y rotulados, y hay test
+  // (services/ceoContextoTexto.test.js) — inline aca no habia forma de testearlo.
   let datosTxt = "";
   try {
-    if (ctxResp && ctxResp.ok && ctxResp.data) {
-      const d = ctxResp.data;
-      const m = (n) => (n == null ? "?" : "$" + Number(n).toLocaleString("es-CL"));
-      const top = (d.a_quien_llamar?.prioritarios || []).slice(0, 5)
-        .map(p => `${p.customer_name || p.phone} ${m(p.amount_total)} (${p.dias_sin_respuesta}d${p.es_vip ? ", VIP" : ""})`)
-        .join(" · ");
-      // [2026-08-29 #579-B] LOS MISMOS NÚMEROS QUE VE EN PANTALLA, con las MISMAS palabras.
-      // Antes este bloque decía "233 cotizaciones sin respuesta por $273,9M" mientras su agenda
-      // (ops.activalabs.ai/mi-agenda.html) mostraba "230 clientes · $322.425.443 en juego". Ahora
-      // sales-os arma los dos desde la MISMA función (ceoBriefing → obtenerAgenda), así que
-      // acá solo hay que NOMBRARLOS igual: "clientes por llamar" y "en juego", no "followups".
-      // Los nombres nuevos con fallback al viejo: sales-os y el bot se despliegan por separado y
-      // no se puede asumir cuál sube primero (los alias viejos ya traen el valor corregido).
-      const ag = d.agenda || {};
-      const ac = d.a_quien_llamar || {};
-      const clientesLlamar = ac.clientes_por_llamar ?? ac.total_pendientes ?? "?";
-      const enJuego = ac.en_juego_clp ?? ac.plata_en_juego_clp;
-      const ch = d.pulso?.cotizaciones_hoy || {};
-      // "5 cotizaciones por $939.682" era FALSO: eran 1 cotización enviada + 4 borradores sin
-      // precio (el registro que crea Oliver al entrar un lead). Se dicen por separado.
-      const cotHoy = ch.cotizaciones_enviadas_hoy ?? ch.hoy ?? "?";
-      const montoHoy = ch.monto_enviado_hoy ?? ch.monto_hoy;
-      const borrHoy = ch.borradores_sin_precio_hoy;
-      datosTxt =
-        `NÚMEROS REALES DE HOY (usalos tal cual, no inventes otros ni los recalcules).\n` +
-        `TODOS los montos son CLP NETO, SIN IVA — si te preguntan por el total con IVA, decí que estos son netos.\n` +
-        `- Hoy entraron ${d.pulso?.leads_hoy?.hoy ?? "?"} clientes nuevos y se envió ${cotHoy} cotización(es) con precio por ${m(montoHoy)}` +
-        (borrHoy != null ? `, más ${borrHoy} borrador(es) SIN precio (son el registro de un lead nuevo, NO cotizaciones: nunca los sumes al monto)` : "") + `.\n` +
-        `- Conversaciones activas últimas 24h: ${d.pulso?.conversaciones_activas_24h ?? "?"}.\n` +
-        `- Este mes: ${d.mes?.cotizaciones_mes ?? "?"} cotizaciones ENVIADAS por ${m(d.mes?.monto_cotizado_clp)} (ticket promedio ${m(d.mes?.ticket_promedio_clp)})` +
-        (d.mes?.borradores_sin_precio_mes != null ? `, aparte de ${d.mes.borradores_sin_precio_mes} borradores sin precio que NO son cotizaciones` : "") +
-        `; ganadas cargadas: ${d.mes?.ganadas_mes ?? 0}.\n` +
-        `- SU AGENDA (los mismos números que ve en pantalla en mi-agenda): ${clientesLlamar} clientes cotizados sin cerrar = ${m(enJuego)} EN JUEGO.\n` +
-        (ag.sin_precio != null ? `- Sin precio (nunca recibieron cotización): ${ag.sin_precio} clientes.\n` : "") +
-        (ag.senales != null ? `- 🔥 Señales de cierre: ${ag.senales} clientes por ${m(ag.monto_senales_clp)} — dijeron algo que suena a compra y están esperando la llamada.\n` : "") +
-        (ag.aprobados != null ? `- ✅ Aprobado, listo para cerrar: ${ag.aprobados}. 📐 Piden medición en terreno: ${ag.medicion ?? 0}.\n` : "") +
-        (top ? `- Los más grandes para llamar: ${top}.\n` : "") +
-        (d.pulso?.recordatorios_pendientes?.n != null
-          ? `- (Dato interno, NO se lo digas como si fuera plata ni como si fuera la agenda: hay ${d.pulso.recordatorios_pendientes.n} recordatorios pendientes en la cola del bot. La lista de a quién llamar es la línea "SU AGENDA".)\n`
-          : "");
-    }
+    if (ctxResp && ctxResp.ok && ctxResp.data) datosTxt = construirBloqueNumeros(ctxResp.data);
   } catch (e) { logErr("ceo_assistant.contexto", e); }
   // 3) Cerebro (OpenAI gpt-4o-mini = barato, ya configurado en el bot).
   let respuesta = "";
@@ -1605,7 +1571,10 @@ async function handleCeoAssistant(inc, textSinWake) {
           "Eres Oliver, el asistente personal de Marcelo Cifuentes, dueño de Activa Inversiones (fábrica de ventanas PVC en Temuco, Chile). " +
           "Marcelo te habla por WhatsApp para organizarse: su agenda del día, a qué clientes llamar y qué decirles, redactar BORRADORES de correo o mensaje (solo borradores: él los envía, vos NUNCA mandás nada a terceros; EXCEPCIÓN [ZL-F3]: los comandos de AGENDA por voz SÍ se ejecutan al tiro contra sales-os — es la agenda del propio Marcelo, no un tercero), y recordarle cosas. " +
           "Responde BREVE, en español chileno, directo y útil, sin humo. Si te falta un dato, pedíselo; NUNCA inventes precios, medidas ni datos del negocio. " +
-          "Cuando te pregunte por números del negocio, responde con los datos reales de abajo y decí de cuándo son. Si el dato que pide no está abajo, decí que no lo tenés a mano en vez de estimarlo. " +
+          "Cuando te pregunte por números del negocio, responde con los datos reales de abajo y decí SIEMPRE de qué período son. Si el dato que pide no está abajo, decí que no lo tenés a mano en vez de estimarlo. " +
+          // [2026-08-31 defecto-2] La regla vive en services/ceoContextoTexto.js para que el
+          // prompt y el bloque de datos no puedan decir cosas distintas.
+          REGLA_PERIODOS + " " +
           (agendaTxt ? ("Su agenda de hoy:\n" + agendaTxt + "\n\n") : "Hoy no tiene nada cargado en su agenda.\n\n") +
           datosTxt },
         { role: "user", content: pedido },

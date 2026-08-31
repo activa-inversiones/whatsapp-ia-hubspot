@@ -1,0 +1,124 @@
+// ceoContextoTexto.js — [2026-08-31 defecto-2] El bloque de NUMEROS que recibe Oliver-CEO.
+// ═══════════════════════════════════════════════════════════════════════════
+// POR QUE EXISTE ESTE ARCHIVO (y no sigue suelto adentro de index.js):
+// El dueno reporto hoy, textual: "LE PEDI LAS ULTIMAS 24 HORAS Y ME DIO OTRA INFORMACION".
+// Su mensaje de las 9:33 AM fue "HOLA ESTAS BIEN NECESITO INFORME DE LEAD 24 HORAS".
+//
+// La causa no fue el modelo: fue el CONTEXTO. El bloque que se le mandaba se titulaba
+// "NUMEROS REALES DE HOY" y adentro tenia UN solo numero de leads, el del DIA CALENDARIO.
+// A las 9:33 AM "hoy" son 9 horas, no 24. Sin un numero de 24 horas en la mano, el modelo
+// contesto con lo mas parecido que encontro y el dueno recibio otra cosa.
+// Medido contra la BD viva el 31-ago 09:55 CL: hoy = 1 lead, ultimas 24 h = 6. Son 6x.
+//
+// EL ARREGLO tiene tres partes y esta es la del medio:
+//   1) sales-os mide de verdad la ventana movil  -> ceoBriefing.js pulsoDelDia()
+//   2) ESTE archivo la nombra sin ambiguedad y prohibe mezclarla con "hoy"
+//   3) el system prompt le exige al modelo decir SIEMPRE de que periodo habla
+//
+// POR QUE ES UNA FUNCION PURA APARTE: el bloque vivia inline en handleCeoAssistant y por eso
+// no habia forma de testearlo sin levantar el bot entero. Ahora tiene test propio
+// (ceoContextoTexto.test.js) y el caso que reporto el dueno queda clavado ahi.
+//
+// REGLA DE DEPLOY DESFASADO (sales-os y el bot suben por separado, no se sabe cual primero):
+// todo campo nuevo se lee con `nuevo ?? viejo`, y si NO viene, la linea NO SE IMPRIME y ademas
+// se le avisa al modelo que ese periodo no lo tiene. Nunca se rellena con el numero de al lado:
+// eso es exactamente el defecto que estamos arreglando.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const VERSION = '1.0.0';
+
+const m = (n) => (n == null ? '?' : '$' + Number(n).toLocaleString('es-CL'));
+
+// Las dos ventanas, escritas una sola vez para que el prompt y el codigo no se separen.
+export const REGLA_PERIODOS =
+  'CADA LÍNEA DE ABAJO DICE SU PERÍODO Y NO SE MEZCLAN. ' +
+  '"ÚLTIMAS 24 HORAS" es una ventana móvil (desde ayer a esta misma hora). ' +
+  '"HOY" arranca a las 00:00 de hoy, hora de Chile. Son dos cosas distintas y casi nunca dan lo mismo. ' +
+  'Si te piden 24 horas, respondé con la línea de 24 horas; si te piden "hoy", con la de hoy. ' +
+  'SIEMPRE decí de qué período estás hablando. Si te piden un período que no está abajo (ayer, la semana, el mes pasado), ' +
+  'decí que no lo tenés a mano — nunca uses otro período en su lugar.';
+
+/**
+ * Arma el bloque de contexto con los numeros del negocio para el asistente CEO.
+ * @param {object|null} d payload de GET /internal/ceo/contexto (ctxResp.data)
+ * @returns {string} bloque de texto listo para el system prompt ("" si no hay datos)
+ */
+export function construirBloqueNumeros(d) {
+  if (!d || typeof d !== 'object') return '';
+
+  const top = (d.a_quien_llamar?.prioritarios || []).slice(0, 5)
+    .map(p => `${p.customer_name || p.phone} ${m(p.amount_total)} (${p.dias_sin_respuesta}d${p.es_vip ? ', VIP' : ''})`)
+    .join(' · ');
+
+  // [2026-08-29 #579-B] LOS MISMOS NUMEROS QUE VE EN PANTALLA, con las MISMAS palabras.
+  // Antes este bloque decia "233 cotizaciones sin respuesta por $273,9M" mientras su agenda
+  // (ops.activalabs.ai/mi-agenda.html) mostraba "230 clientes · $322.425.443 en juego". Ahora
+  // sales-os arma los dos desde la MISMA funcion (ceoBriefing -> obtenerAgenda), asi que aca
+  // solo hay que NOMBRARLOS igual: "clientes por llamar" y "en juego", no "followups".
+  const ag = d.agenda || {};
+  const ac = d.a_quien_llamar || {};
+  const clientesLlamar = ac.clientes_por_llamar ?? ac.total_pendientes ?? '?';
+  const enJuego = ac.en_juego_clp ?? ac.plata_en_juego_clp;
+
+  const ch = d.pulso?.cotizaciones_hoy || {};
+  // "5 cotizaciones por $939.682" era FALSO: eran 1 cotizacion enviada + 4 borradores sin
+  // precio (el registro que crea Oliver al entrar un lead). Se dicen por separado.
+  const cotHoy = ch.cotizaciones_enviadas_hoy ?? ch.hoy ?? '?';
+  const montoHoy = ch.monto_enviado_hoy ?? ch.monto_hoy;
+  const borrHoy = ch.borradores_sin_precio_hoy;
+
+  // [2026-08-31 defecto-2] LAS DOS VENTANAS DE LEADS.
+  // `leads_ultimas_24h` es el campo NUEVO: si el sales-os desplegado todavia es el viejo, no
+  // viene, y entonces la linea se omite y se le avisa al modelo. Jamas se sustituye por `hoy`.
+  const l24 = d.pulso?.leads_ultimas_24h || {};
+  const leads24 = l24.n;
+  const hay24 = leads24 != null;
+  const leadsHoy = d.pulso?.leads_hoy?.hoy;
+  const meta24 = l24.de_meta;
+
+  let t =
+    `NÚMEROS REALES DEL NEGOCIO (usalos tal cual, no inventes otros ni los recalcules).\n` +
+    REGLA_PERIODOS + `\n` +
+    `TODOS los montos son CLP NETO, SIN IVA — si te preguntan por el total con IVA, decí que estos son netos.\n`;
+
+  if (hay24) {
+    t += `- Leads ÚLTIMAS 24 HORAS (ventana móvil, desde ayer a esta misma hora): ${leads24}` +
+      (meta24 != null ? ` (${meta24} vinieron de anuncios de Meta)` : '') + `.\n`;
+  } else {
+    t += `- Leads ÚLTIMAS 24 HORAS: NO TENGO ESE DATO ahora. Si te lo piden, decí que no lo tenés a mano ` +
+      `y ofrecé el de hoy aclarando que es otro período. NO uses el número de hoy como si fueran 24 horas.\n`;
+  }
+  t += `- Leads de HOY (desde las 00:00 de hoy, hora de Chile): ${leadsHoy ?? '?'}.\n`;
+
+  t += `- Cotizaciones de HOY (mismo día calendario): se envió ${cotHoy} cotización(es) con precio por ${m(montoHoy)}` +
+    (borrHoy != null
+      ? `, más ${borrHoy} borrador(es) SIN precio (son el registro de un lead nuevo, NO cotizaciones: nunca los sumes al monto)`
+      : '') + `.\n`;
+
+  t += `- Conversaciones activas ÚLTIMAS 24 HORAS: ${d.pulso?.conversaciones_activas_24h ?? '?'}.\n`;
+
+  t += `- ESTE MES (desde el día 1): ${d.mes?.cotizaciones_mes ?? '?'} cotizaciones ENVIADAS por ${m(d.mes?.monto_cotizado_clp)} ` +
+    `(ticket promedio ${m(d.mes?.ticket_promedio_clp)})` +
+    (d.mes?.borradores_sin_precio_mes != null
+      ? `, aparte de ${d.mes.borradores_sin_precio_mes} borradores sin precio que NO son cotizaciones`
+      : '') +
+    `; ganadas cargadas: ${d.mes?.ganadas_mes ?? 0}.\n`;
+
+  t += `- SU AGENDA (acumulada, NO de un período: los mismos números que ve en pantalla en mi-agenda): ` +
+    `${clientesLlamar} clientes cotizados sin cerrar = ${m(enJuego)} EN JUEGO.\n`;
+
+  if (ag.sin_precio != null) t += `- Sin precio (nunca recibieron cotización): ${ag.sin_precio} clientes.\n`;
+  if (ag.senales != null) {
+    t += `- 🔥 Señales de cierre: ${ag.senales} clientes por ${m(ag.monto_senales_clp)} — dijeron algo que suena a compra y están esperando la llamada.\n`;
+  }
+  if (ag.aprobados != null) {
+    t += `- ✅ Aprobado, listo para cerrar: ${ag.aprobados}. 📐 Piden medición en terreno: ${ag.medicion ?? 0}.\n`;
+  }
+  if (top) t += `- Los más grandes para llamar: ${top}.\n`;
+  if (d.pulso?.recordatorios_pendientes?.n != null) {
+    t += `- (Dato interno, NO se lo digas como si fuera plata ni como si fuera la agenda: hay ` +
+      `${d.pulso.recordatorios_pendientes.n} recordatorios pendientes en la cola del bot. ` +
+      `La lista de a quién llamar es la línea "SU AGENDA".)\n`;
+  }
+  return t;
+}
