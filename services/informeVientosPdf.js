@@ -14,6 +14,10 @@
 // serie del termico no.
 
 import PDFDocument from 'pdfkit';
+// [2026-08-30] El bloque "a nombre de quien va" (razon social o persona + RUT validado por
+// modulo 11) es EL MISMO modulo que usa el informe termico, a proposito: los dos documentos
+// tienen que verse de la misma casa, y este es el bloque donde una divergencia se nota.
+import { identificarCliente, dibujarIdentidadCliente, textoInlineReceptor, destinatarioLegal } from './bloqueIdentidadPdf.js';
 
 const NAVY = '#0B3D6F';
 const GOLD = '#C4993B';
@@ -37,10 +41,17 @@ function dec(x, n = 2) {
 /**
  * @param {object} datos  respuesta del motor THERMAL /api/v1/vientos (ventanas+demanda)
  * @param {object} opts   { nombre, comuna, numeroInforme, ilegibles, firma }
+ * @param {string} opts.rut          [2026-08-30] RUT del RECEPTOR (empresa o persona), tal
+ *                                   como lo escribio el cliente. Se imprime SOLO si pasa
+ *                                   modulo 11; si no, no se imprime nada.
+ * @param {string} opts.razonSocial  razon social, cuando la factura va a nombre de una empresa
+ * @param {string} opts.clienteTipo  'empresa' | 'particular' (mismo vocabulario que
+ *                                   terreno_ot_contrato.cliente_tipo). Opcional.
  * @returns {Promise<Buffer>}
  */
 export async function generarInformeVientosPdf(datos, {
-  nombre = '', comuna = '', numeroInforme = '', ilegibles = 0, firma = {},
+  nombre = '', rut = '', razonSocial = '', clienteTipo = '',
+  comuna = '', numeroInforme = '', ilegibles = 0, firma = {},
 } = {}) {
   if (!datos || !Array.isArray(datos.ventanas) || !datos.ventanas.length) return null;
   // [Codex, compuerta] El titulo dice CLIMA solo si la pagina de clima VA de verdad:
@@ -64,24 +75,55 @@ export async function generarInformeVientosPdf(datos, {
   doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(tituloDoc, 50, 112);
   doc.fillColor(GOLD).fontSize(12).font('Helvetica-Bold')
     .text(comuna ? `Comuna de ${comuna}` : 'Resistencia del vidriado', 50, 138);
+  // ── A NOMBRE DE QUIEN VA (dueno, 30-ago) ────────────────────────────────
+  // Mismo bloque y mismo modulo que el termico: rotulo chico arriba, titular en negrita, y el
+  // RUT debajo. El receptor deja de ir colgado de la linea "Emitido" porque ahi no tenia tope
+  // de largo: medido con pdfkit, ese fragmento con un nombre normal mas el RUT ocupaba 494 px
+  // de los 495 disponibles, y con una razon social se pasaba a una segunda linea que caia
+  // ENCIMA de la caja de alcance.
+  // Va en la franja blanca a la derecha del titulo (y 114..175, desde x 370: el titulo mas
+  // ancho, "INFORME DE VIENTOS Y CLIMA", termina medido en 352), y por eso NO corre ni un
+  // pixel de lo que viene abajo. Eso no es un detalle de estilo: este PDF si tiene la
+  // paginacion automatica de pdfkit encendida, y MEDIDO, bajar el cuerpo 22 px convertia el
+  // informe corto de 1 pagina (el que el dueno quiere) en uno de 2.
+  // SIN DATOS el informe sale identico a como salia antes: no hay bloque y el nombre vuelve a
+  // la linea "Emitido".
+  const idCliente = identificarCliente({ nombre, rut, razonSocial, clienteTipo });
+  const inlineReceptor = textoInlineReceptor(idCliente);
   doc.fillColor('#444').fontSize(9).font('Helvetica')
     .text(`Emitido: ${new Date().toLocaleDateString('es-CL')}   ·   Informe N° ${numeroInforme}`
-      + `${nombre ? `   ·   Preparado para: ${String(nombre).trim()}` : ''}`, 50, 161);
+      + `${inlineReceptor ? `   ·   ${inlineReceptor}` : ''}`, 50, 161);
+
+  dibujarIdentidadCliente(doc, idCliente, {
+    xDerecha: W - 50, y: 114, ancho: 175,
+    colorEtiqueta: '#666', colorTitular: NAVY, colorSecundario: '#444',
+  });
 
   doc.rect(50, 178, W - 100, 26).fill('#F7F9FC');
   doc.fillColor('#333').fontSize(8).font('Helvetica')
     .text('Este documento informa la resistencia del vidriado de su proyecto frente a la presión del viento. '
       + 'No es una cotización ni contiene precios: su propuesta económica se envía por separado.', 58, 185, { width: W - 116 });
 
+  const destinatario = destinatarioLegal(idCliente);
   const legal = 'DOCUMENTO CONFIDENCIAL: USO EXCLUSIVO DEL DESTINATARIO. Este informe fue preparado '
-    + `${nombre ? `para ${String(nombre).trim()} y ` : ''}para el proyecto que lo motivó. Su contenido y cálculos son de `
+    + `${destinatario ? `para ${destinatario} y ` : ''}para el proyecto que lo motivó. Su contenido y cálculos son de `
     + 'Activa Inversiones EIRL, RUT 76.486.825-0. Queda prohibida su reproducción total o parcial y su uso por '
     + 'terceros o para un proyecto distinto sin autorización escrita previa.';
-  doc.rect(50, 212, W - 100, 44).fill('#FDF6E9');
+  // La caja del legal se MIDE, ya no lleva el alto fijo de 44 px. MEDIDO: el texto de antes
+  // ocupaba 27,7 px (holgura real 38) y sumarle el nombre y el RUT del receptor lo dejaba a
+  // 1 px del borde; una razon social un poco mas larga se derramaba fuera del recuadro beige.
+  // Es el mismo patron que el termico ya usaba (heightOfString -> rect de alto + 14). La caja
+  // ahora crece hacia abajo, nunca hacia arriba: el techo (212) es el de siempre.
+  doc.fontSize(8).font('Helvetica');
+  const altoLegal = doc.heightOfString(legal, { width: W - 116 });
+  doc.rect(50, 212, W - 100, altoLegal + 14).fill('#FDF6E9');
   doc.fillColor('#7A5B14').fontSize(8).font('Helvetica').text(legal, 58, 218, { width: W - 116 });
 
   // ── Tabla de ventanas ───────────────────────────────────────────────────
-  let y = 274;
+  // Arranca debajo de la caja legal, que ahora es elastica. El piso sigue siendo el 274 fijo
+  // de siempre: la tabla NO sube aunque la caja mida menos (asi el informe de siempre queda
+  // pixel por pixel igual), y solo baja si el legal de verdad crecio con el RUT del receptor.
+  let y = Math.max(274, 212 + altoLegal + 32);
   doc.rect(50, y, W - 100, 22).fill(NAVY);
   doc.fillColor(GOLD).fontSize(9).font('Helvetica-Bold').text('LA RESISTENCIA DE SUS VENTANAS', 58, y + 7);
   doc.fillColor('#cbd5e1').fontSize(8).font('Helvetica')

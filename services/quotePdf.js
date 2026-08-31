@@ -8,10 +8,49 @@
 
 import { dibujarVentana, medidas, claveColor, COLORES } from "./dibujoVentana.js";
 import { dibujarVentanaIso } from "./dibujoIsometrico.js";
+// 🔴 [2026-08-30] EL RUT DEL CLIENTE. Alfredo Arias (conv 56952077379) lo pidio CUATRO veces
+// y el documento no tenia donde ponerlo: este bloque imprimia solo nombre·telefono·comuna.
+// Se reusan los DOS modulos compartidos, no se escribe una tercera version de la regla:
+//   · receptorParaDocumento -> resuelve y RE-VALIDA el RUT por modulo 11 (services/rutChile.js)
+//   · identificarCliente    -> decide titular vs contacto y limpia el texto para las fuentes PDF
+// Asi la propuesta, el informe termico y el de vientos deciden lo mismo con el mismo codigo.
+import { receptorParaDocumento } from "./receptorCliente.js";
+import { identificarCliente } from "./bloqueIdentidadPdf.js";
 
 const NAVY = "#0B3D6F", GOLD = "#C4993B", GRAY = "#6B7B8D", DARK = "#1A2332", LINE = "#E2E8F0";
 
 function fmt(n) { return "$" + Math.round(Number(n) || 0).toLocaleString("es-CL"); }
+
+/**
+ * 🔴 [2026-08-30 · caso Alfredo Arias, 4 reclamos] LA LINEA DEL RECEPTOR de la propuesta,
+ * en las DOS formas que pidio el dueño: EMPRESA (razon social + RUT de la empresa, el caso
+ * normal cuando piden factura) o PERSONA NATURAL (nombre + RUT).
+ *
+ * Devuelve '' cuando no hay nada nuevo que decir: sin receptor valido, la propuesta se
+ * imprime exactamente como antes de este cambio (que es hoy el 99 % de los casos).
+ *
+ * ⚠️ El nombre del RUT NO es necesariamente el del chat: medido sobre los inbound reales de
+ * conversation_messages, en 4 de 6 casos el receptor es un tercero (perfil "Mjose" pidiendo
+ * a nombre de Bayron; "Don Lito" a nombre de Clovel S.A.). Por eso va en su propia linea y
+ * NO pisa `data.name`, que sigue siendo con quien se esta conversando.
+ *
+ * ⛔ El RUT pasa por modulo 11 dentro de `receptorParaDocumento`. Si no cierra, sale vacio:
+ * la propuesta se emite SIN RUT antes que con uno equivocado.
+ *
+ * Exportada para poder probar la decision sin generar un PDF.
+ */
+export function lineaReceptorPropuesta(data = {}) {
+  const rcp = receptorParaDocumento(data && data.receptor, { nombreFallback: (data && data.name) || "" });
+  if (!rcp) return "";
+  const id = identificarCliente(rcp);
+  const partes = [];
+  const nombreChat = String((data && data.name) || "").trim().toLowerCase();
+  if (id.titularVisible && id.titularVisible.toLowerCase() !== nombreChat) {
+    partes.push(`${id.esEmpresa ? "Facturar a" : "A nombre de"}: ${id.titularVisible}`);
+  }
+  if (id.rut) partes.push(`RUT: ${id.rut}`);
+  return partes.join("  ·  ");
+}
 
 function header(doc, quoteNumber) {
   doc.rect(0, 0, doc.page.width, 90).fill(NAVY);
@@ -57,11 +96,42 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         y += 30;
       }
 
+      // 🎨 [2026-08-31 · decision del dueño] QUE OPCION ES ESTA, VISIBLE AL ABRIR EL PDF.
+      // Textual: *"identificando claramente cada una... pero le decimos a cliente cuel es
+      // cada una"*. Cuando el cliente no dice el color se le mandan TRES propuestas (Blanco,
+      // Nogal, New Black) una detras de otra. El folio ya las distingue en el nombre del
+      // archivo (…-B.pdf) y el color ya aparece en la descripcion de cada ventana, pero eso
+      // obliga a mirar la tabla: abierto el archivo, la primera pregunta del cliente es "¿y
+      // esta cual era?". Esta franja la contesta sin volver al chat.
+      // Se calca la mecanica de la franja PROPUESTA PARCIAL de arriba (misma altura, mismo
+      // avance de `y`), que ya esta probada. Azul y no rojo: es informacion, no una alerta.
+      // ⚠️ Sin `data.opcion` no se dibuja nada y el documento mide EXACTAMENTE lo mismo que
+      // antes de este cambio — que es el 100 % de las propuestas de un solo color.
+      if (data.opcion && data.opcion.color) {
+        doc.rect(50, y, doc.page.width - 100, 22).fill("#EAF2FB");
+        doc.fillColor(NAVY).fontSize(9).font("Helvetica-Bold")
+          .text(`OPCIÓN ${data.opcion.letra || "A"}  ·  COLOR ${String(data.opcion.color).toUpperCase()}`
+            + "  —  misma ventana, cambia solo el color del perfil",
+            58, y + 6, { width: doc.page.width - 116, lineBreak: false });
+        y += 30;
+      }
+
       // Cliente
       doc.fillColor(DARK).fontSize(10).font("Helvetica-Bold").text("CLIENTE", 50, y);
       doc.font("Helvetica").fontSize(9).fillColor(DARK);
       doc.text(`${data.name || "Cliente"}  ·  ${data.phone || ""}  ·  ${data.comuna || "Temuco"}${data.address ? "  ·  " + data.address : ""}`, 110, y);
-      y += 22;
+      y += 14;
+      // 🔴 [2026-08-30 · caso Alfredo Arias, 4 reclamos] EL RUT DEL RECEPTOR, en sus dos formas.
+      // Va en su propia linea porque el titular del documento no es siempre quien escribe.
+      // Sin receptor valido la linea no existe y el bloque mide lo mismo que siempre
+      // (14 + 8 = 22): cero cambio de layout para las cotizaciones sin RUT, que son el 99 %.
+      const _lineaRut = lineaReceptorPropuesta(data);
+      if (_lineaRut) {
+        doc.font("Helvetica-Bold").fontSize(9).fillColor(DARK).text(_lineaRut, 110, y, { width: doc.page.width - 160, lineBreak: false });
+        doc.font("Helvetica");
+        y += 14;
+      }
+      y += 8;
 
       y = tableHead(doc, y);
 

@@ -552,6 +552,15 @@ export const TOOL_DEFS = [
               required: ['producto_label', 'measures', 'qty', 'unit_price'],
             },
           },
+          // 🔴 [2026-08-30 · caso Alfredo Arias, 4 reclamos] EL RUT DEL RECEPTOR.
+          // La captura principal es DETERMINISTA (webhook.js paso 5a1, lee lo que el cliente
+          // escribio). Estos tres parametros son el complemento para cuando el dato quedo
+          // repartido en varios mensajes y solo el historial lo une — tipicamente la razon
+          // social. Lo que llegue por aca se RE-VALIDA por modulo 11 antes de imprimirse, y
+          // ademas tiene que APARECER en lo que el cliente escribio (compuerta de procedencia).
+          rut: { type: 'string', description: 'RUT del receptor del documento, COPIADO LITERAL de lo que escribió el cliente (ej. "77.448.504-K"). NUNCA inventarlo, NUNCA completar el dígito verificador, NUNCA deducirlo. Si el cliente no lo dio, OMITIR este parámetro.' },
+          razon_social: { type: 'string', description: 'Razón social de la empresa a la que se factura, COPIADA LITERAL de lo que escribió el cliente (ej. "Maya Mapu Spa"). NUNCA inventarla ni derivarla del nombre de la persona. Si el cliente no la dio, OMITIR.' },
+          cliente_tipo: { type: 'string', enum: ['empresa', 'particular'], description: 'Solo si el cliente lo dejó claro: "empresa" cuando pide factura a nombre de una sociedad, "particular" cuando el RUT es de la persona. Si no está claro, OMITIR: el sistema lo deduce.' },
           grand_total: { type: 'number', description: 'Total calculado en CLP (suma de unit_price * qty). Debe venir de calcular_cotizacion.' },
           descuento_pct: { type: 'number', description: 'Descuento al cliente en % (ej. 10 = 10% off). Opcional (default 0). SOLO si el dueño autoriza un descuento. Se muestra como línea "Descuento" en el PDF y se recalcula el total con IVA.' },
           is_partial: { type: 'boolean', description: 'true SOLO si parte del pedido del cliente escaló a Marcelo y este PDF cubre ÚNICAMENTE los ítems cotizables (ver REGLA #6.1). Muestra un aviso visible "PROPUESTA PARCIAL" en el PDF. NUNCA true si el PDF ya cubre todo lo que el cliente pidió.' },

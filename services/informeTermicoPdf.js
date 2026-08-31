@@ -19,6 +19,12 @@
 // principio y los saltos son explícitos. No repetir ese bug.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// [2026-08-30] A NOMBRE DE QUIEN VA EL DOCUMENTO (razon social o persona + RUT validado).
+// Modulo compartido con el informe de vientos a proposito: los dos informes tienen que verse
+// de la misma casa, y este es el bloque donde una divergencia se nota. Import puro: sin I/O
+// y sin pdfkit, no cambia el arranque del bot.
+import { identificarCliente, dibujarIdentidadCliente, textoInlineReceptor, destinatarioLegal } from './bloqueIdentidadPdf.js';
+
 export const VERSION = '1.1.0';
 
 /**
@@ -330,9 +336,19 @@ export function sintesisProyecto(proyecto) {
  * Arma el PDF del informe térmico de una comuna.
  * @param {object} datos       respuesta de /api/v1/exigencia
  * @param {object} opts        { nombre, firma, esReferenciaRegional }
+ * @param {string} opts.rut          [2026-08-30] RUT del RECEPTOR (empresa o persona), como
+ *                                   lo escribio el cliente. Se imprime SOLO si pasa modulo 11.
+ * @param {string} opts.razonSocial  razon social, cuando la factura va a nombre de una empresa
+ * @param {string} opts.clienteTipo  'empresa' | 'particular' (mismo vocabulario que
+ *                                   terreno_ot_contrato.cliente_tipo). Opcional: si no viene,
+ *                                   manda la presencia de razon social.
  * @returns {Promise<Buffer|null>}  null si no hay un solo dato duro que reportar
  */
-export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {}, esReferenciaRegional = false, vidrios = null, suVidrio = '', suUw = null, suProducto = '', ventanas = null, laminas = null, termopanel = null, numeroInforme = '' } = {}) {
+// OJO al alias: `razonSocial` a secas ya es, mas abajo, la razon social del EMISOR (Activa
+// Inversiones EIRL) dentro del aviso legal. Reusar el nombre rompia el informe entero con un
+// "Cannot access 'razonSocial' before initialization". La opcion publica se llama igual que
+// en el informe de vientos; el local, no.
+export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', razonSocial: razonSocialCliente = '', clienteTipo = '', firma = {}, esReferenciaRegional = false, vidrios = null, suVidrio = '', suUw = null, suProducto = '', ventanas = null, laminas = null, termopanel = null, numeroInforme = '' } = {}) {
   if (!datos || !datos.comuna) return null;
 
   const cond = datos.condensacion;
@@ -425,12 +441,33 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
         .text('INFORME TÉRMICO', 50, 118);
       doc.fillColor(GOLD).fontSize(12)
         .text(esReferenciaRegional ? 'Referencia regional de La Araucanía' : `Comuna de ${datos.comuna}`, 50, 142);
+      const idCliente = identificarCliente({ nombre, rut, razonSocial: razonSocialCliente, clienteTipo });
+      const inlineReceptor = textoInlineReceptor(idCliente);
       // [2026-08-24] El correlativo ISO va IMPRESO — igual que la cotizacion imprime el
       // suyo. Un registro cuyo numero no aparece en el documento no amarra nada.
       doc.fillColor(GRAY).fontSize(9).font('Helvetica')
         .text(`Emitido: ${new Date().toLocaleDateString('es-CL')}`
           + `${String(numeroInforme || '').trim() ? `  ·  Informe N° ${String(numeroInforme).trim().slice(0, 40)}` : ''}`
-          + `${nombre ? `  ·  Preparado para: ${String(nombre).trim()}` : ''}`, 50, 161);
+          + `${inlineReceptor ? `  ·  ${inlineReceptor}` : ''}`, 50, 161);
+
+      // ── A NOMBRE DE QUIEN VA (dueño, 30-ago) ────────────────────────────
+      // El receptor DEJA DE IR COLGADO de la linea "Emitido" y pasa a su propio bloque, a la
+      // derecha del titulo. No es cosmetica: ese fragmento no tenia tope de largo y, medido
+      // con pdfkit, un nombre normal mas el RUT ocupaba 494 px de los 495 disponibles —
+      // cualquier razon social se pasaba a una segunda linea que caia ENCIMA de la caja de
+      // alcance. Aca una razon social larga baja a una segunda linea dentro de su columna, y
+      // el RUT nunca queda partido.
+      //
+      // Va en la franja blanca a la derecha del titulo (y 114..175, desde x 370) y por eso NO
+      // corre ni un pixel de lo que viene abajo — el mismo bloque y las mismas coordenadas que
+      // el informe de vientos, que es lo que los mantiene de la misma casa.
+      // SIN DATOS `hayBloque` es false, no se dibuja nada, el nombre vuelve a colgarse de la
+      // linea "Emitido" tal cual antes y el informe sale identico a como salia. Ese es hoy el
+      // caso mas comun y no puede verse peor que ahora.
+      dibujarIdentidadCliente(doc, idCliente, {
+        xDerecha: W - 50, y: 114, ancho: 175,
+        colorEtiqueta: GRAY, colorTitular: DARK, colorSecundario: GRAY,
+      });
 
       // Aclaración de alcance ARRIBA, no en la letra chica: este documento NO es la propuesta.
       doc.rect(50, 178, W - 100, 26).fill('#F7F9FC');
@@ -466,7 +503,11 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', firma = {},
       // las env vars quedan por si la sociedad cambia, sin necesidad de deploy.
       const razonSocial = String(process.env.EMISOR_RAZON_SOCIAL || 'Activa Inversiones EIRL').trim();
       const rutEmisor = String(process.env.EMISOR_RUT || '76.486.825-0').trim();
-      const destinatario = String(nombre || '').trim();
+      // [2026-08-30] El destinatario del parrafo legal es el MISMO titular del bloque de
+      // arriba, con su RUT si valido: es el parrafo que pretende tener valor juridico, asi
+      // que tiene que decir a quien obliga. Si no hay RUT valido no se nombra ninguno —
+      // nunca uno "casi bueno".
+      const destinatario = destinatarioLegal(idCliente);
       const legal = 'DOCUMENTO CONFIDENCIAL: USO EXCLUSIVO DEL DESTINATARIO. '
         + `Este informe fue preparado${destinatario ? ` para ${destinatario}` : ''} y para el proyecto que lo motivó. `
         + `Su contenido, cálculos y figuras son de ${razonSocial}${rutEmisor ? `, RUT ${rutEmisor}` : ''}, `

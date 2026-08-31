@@ -185,19 +185,37 @@ async function zhDefaultAcct() {
  * Crea o actualiza un Deal en Zoho CRM para el lead del PDF.
  * Espeja zhUpsert de index.js ~L3921 adaptado al contexto del cerebro GPT.
  *
- * @param {{ phone, name, comuna, items, grand_total, stageKey, quote_number }} params
+ * @param {{ phone, name, comuna, items, grand_total, stageKey, quote_number, receptor }} params
+ * @param {object} [params.receptor]  [2026-08-30] { clienteTipo, nombre, razonSocial, rut } YA
+ *        validado por modulo 11 (services/receptorCliente.js). Si el RUT no cerro llega vacio
+ *        y no se escribe: en el CRM tampoco entra un RUT inventado.
  * @returns {Promise<string|null>} dealId (Zoho) o null si Zoho está deshabilitado/falla.
  */
-export async function upsertZohoDeal({ phone, name, comuna, items = [], grand_total, stageKey = 'propuesta', quote_number }) {
+export async function upsertZohoDeal({ phone, name, comuna, items = [], grand_total, stageKey = 'propuesta', quote_number, receptor = null }) {
   if (!REQUIRE_ZOHO) return null;
   const normalizedPhone = normPhone(phone);
   const mp = items[0]?.producto_label || items[0]?.product || 'Ventanas';
+  // 🔴 [2026-08-30] A NOMBRE DE QUIEN SE FACTURA, en el Deal. Va en `Description`, que es
+  // texto libre y un campo ESTANDAR de Zoho CRM: no hace falta ningun campo personalizado ni
+  // configuracion del dueño, asi que funciona desde el primer deploy. Cuando Marcelo abre el
+  // Deal para facturar, tiene el RUT ahi sin ir a buscar el PDF.
+  // ⛔ Nada se inventa: si `receptor` no trae RUT valido ni razon social, la linea no existe.
+  const _r = (receptor && typeof receptor === 'object') ? receptor : {};
+  const _lineaReceptor = [
+    _r.razonSocial ? `Facturar a: ${_r.razonSocial}` : (_r.nombre && _r.nombre !== name ? `A nombre de: ${_r.nombre}` : ''),
+    _r.rut ? `RUT: ${_r.rut}` : '',
+    _r.clienteTipo ? `(${_r.clienteTipo})` : '',
+  ].filter(Boolean).join(' · ');
   const deal = {
     Deal_Name:    `${mp} [WA…${String(phone).slice(-4)}]`.trim(),
     Stage:        STAGES[stageKey] || STAGES.propuesta,
     Closing_Date: new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0],
     Description:  [
       `Cliente: ${name || '—'} · ${normalizedPhone} · ${comuna || 'Temuco'}`,
+      // Se AGREGA la linea, no se deja vacia: sin receptor la descripcion del Deal queda
+      // caracter por caracter como antes de este cambio (una linea en blanco de mas se ve
+      // como un bug en el CRM que mira Marcelo todos los dias).
+      ...(_lineaReceptor ? [_lineaReceptor] : []),
       quote_number ? `Cotización ISO: ${quote_number}` : '',
       grand_total  ? `Total: $${Number(grand_total).toLocaleString('es-CL')} CLP` : '',
       '',
