@@ -38,6 +38,7 @@ const PRECIO = { Blanco: 300000, Nogal: 430000, 'New Black': 465000 };
  * @param {object} opts
  * @param {(numero:string)=>boolean} [opts.entrega]  false para simular un envio fallido
  * @param {boolean} [opts.motorCaido]  el motor no cotiza los colores alternativos
+ * @param {string}  [opts.colorSinPrecio]  el motor se cae SOLO para ese color
  */
 // Un telefono distinto por corrida: `RECENT_QUOTES` es un Map de MODULO (guard anti-doble
 // folio de 2 min) y se comparte entre los tests del archivo — con el mismo numero, el segundo
@@ -78,6 +79,11 @@ function armar(opts = {}) {
     priceAllEngine: async (d) => {
       for (const it of d.items || []) {
         if (opts.motorCaido) { it.confidence = 'manual'; it.price_warning = 'motor caido'; continue; }
+        // [2026-08-31] El motor puede caerse SOLO para un color. Es el caso adversarial que
+        // encontro Copilot en el tridente y que la opcion A no manejaba.
+        if (opts.colorSinPrecio && it.color === opts.colorSinPrecio) {
+          throw new Error(`motor sin precio para ${it.color}`);
+        }
         const p = PRECIO[it.color];
         if (!p) { it.confidence = 'manual'; continue; }
         it.unit_price = p; it.total_price = p * (Number(it.qty) || 1);
@@ -301,4 +307,27 @@ test('🔒 si el cliente SI dijo el color, sale UNA sola — como siempre', asyn
   assert.equal(spy.documentos.length, 1, `una propuesta con el color correcto es mejor que tres: ${spy.documentos.join(', ')}`);
   assert.equal(spy.quoteEvents.filter((e) => e.status === 'alternativa').length, 0);
   assert.ok(!spy.pdfs[0].opcion, 'y el documento sale sin rotulo de opcion, como siempre');
+});
+
+test('🔴💰 TRIDENTE/Copilot: si el motor no cotiza el color de la A, la A NO sale con el precio de otro', async () => {
+  // Lo encontro Copilot atacando el arreglo anterior: cuando el motor fallaba SOLO para el
+  // color de la opcion A, el `try/catch` dejaba pasar el precio que ya venia y el PDF salia
+  // rotulado "New Black" con el precio del Blanco ($300.000 en vez de $465.000). O sea el
+  // mismo defecto que se acababa de arreglar, volviendo por la puerta del error.
+  // Las opciones B y C ya se descartaban solas en ese caso; la A era la unica excepcion.
+  // Ahora la A rota al primer color que el motor SI sepa cotizar.
+  const spy = await correr({ colorSinPrecio: 'New Black' });
+  const porNumero = Object.fromEntries(spy.pdfs.map((p) => [p.numero, p]));
+  const a = porNumero['CM-FR-004-2026-0392'];
+  assert.ok(a, 'la propuesta principal tiene que salir igual: nunca se frena al cliente');
+  assert.notEqual(a.color, 'New Black', 'el color que el motor no supo cotizar NO puede salir');
+  assert.equal(a.unit_price, PRECIO[a.color],
+    `la A salio rotulada ${a.color} con el precio de otro color`);
+  // Y ningun documento puede llevar una etiqueta que no cuadre con su precio.
+  for (const p of spy.pdfs) {
+    assert.equal(p.unit_price, PRECIO[p.color], `${p.numero}: etiqueta ${p.color} con precio de otro`);
+  }
+  // El color que no se pudo cotizar tampoco se le promete al cliente.
+  const todo = spy.textos.join(String.fromCharCode(10));
+  assert.doesNotMatch(todo, /New Black/, 'no se nombra un color que no se pudo cotizar');
 });

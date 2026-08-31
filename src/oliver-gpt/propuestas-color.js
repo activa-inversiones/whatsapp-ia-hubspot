@@ -189,7 +189,7 @@ export function avisoPrevioOpciones(colores = []) {
  *
  * @param {Array<{letra:string, color:string, numero:string}>} entregadas
  */
-export function textoDeOpciones(entregadas = []) {
+export function textoDeOpciones(entregadas = [], anunciadas = COLORES_PROPUESTA) {
   const ops = (Array.isArray(entregadas) ? entregadas : []).filter((o) => o && o.color && o.numero);
   if (ops.length < 2) return '';   // con una sola no hay nada que comparar: no es una terna
 
@@ -207,7 +207,12 @@ export function textoDeOpciones(entregadas = []) {
   // el aviso previo ya le anuncio no llego a salir, el cliente la esta esperando. Callarsela
   // seria una promesa rota. No se ofrece nada del catalogo que no se le haya prometido.
   const salieron = new Set(ops.map((o) => String(o.color)));
-  const prometidos = COLORES_PROPUESTA.filter((c) => !salieron.has(c));
+  // [2026-08-31 - tridente] Se ofrecen los que se le ANUNCIARON y no llegaron, no los tres
+  // de la constante. Si un color se descarto ANTES del aviso previo porque el motor no lo
+  // sabe cotizar, el cliente nunca supo de el: ofrecerselo seria prometer una recotizacion
+  // que va a fallar igual.
+  const _anunciados = Array.isArray(anunciadas) && anunciadas.length ? anunciadas : COLORES_PROPUESTA;
+  const prometidos = _anunciados.filter((c) => !salieron.has(c));
   const cierre = prometidos.length
     ? ` Si prefiere ${prometidos.join(' o ')}, me dice y se la cotizo sin costo.`
     : '';

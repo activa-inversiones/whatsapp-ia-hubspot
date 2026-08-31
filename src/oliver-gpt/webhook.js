@@ -2346,34 +2346,68 @@ Comuna: ${datos.comuna}`
           // Va DESPUES de ella a proposito: el precio del color es el que tiene que quedar.
           // Si el motor no responde, se sigue con lo que habia: nunca se frena al cliente.
           if (_coloresTerna && _coloresTerna.length > 1) {
-            try {
-              const _colorA = _coloresTerna[0];
-              const _sondaA = {
-                items: (input.items || []).map((it) => ({
-                  product:     it.producto_label || it.product || 'Ventana',
-                  measures:    _measuresForEngine(it),
-                  color:       _colorA,
-                  qty:         Number(it.qty) || 1,
-                  ambiente:    it.ambiente || '',
-                  descripcion: it.descripcion || it.ambiente || '',
-                  orientacion: it.compuesta?.orientacion || it.orientacion || undefined,
-                  partes:      Array.isArray(it.compuesta?.partes) ? it.compuesta.partes : undefined,
-                })),
-                comuna: input.comuna || state.comuna || '',
-                texto_cliente: _textoCliente,
-              };
-              await priceAllFn(_sondaA);
-              _sondaA.items.forEach((x, k) => {
-                const _it = (input.items || [])[k];
-                if (!_it) return;
-                if (Number(x.unit_price) > 0 && x.confidence === 'high') {
+            // Se prueban los colores EN ORDEN y la A es el primero que el motor sabe cotizar.
+            // Si ninguno sale, la terna se cae entera y queda una sola propuesta con el precio
+            // que ya venia: nunca se emite un documento con la etiqueta de un color y el precio
+            // de otro. Es la misma regla que ya aplicaban las opciones B y C, que se descartan
+            // solas cuando su color no se puede cotizar; la A era la unica excepcion.
+            const _sinCotizar = [];
+            let _colorAok = null;
+            for (const _cand of _coloresTerna) {
+              try {
+                const _sondaA = {
+                  items: (input.items || []).map((it) => ({
+                    product:     it.producto_label || it.product || 'Ventana',
+                    measures:    _measuresForEngine(it),
+                    color:       _cand,
+                    qty:         Number(it.qty) || 1,
+                    ambiente:    it.ambiente || '',
+                    descripcion: it.descripcion || it.ambiente || '',
+                    orientacion: it.compuesta?.orientacion || it.orientacion || undefined,
+                    partes:      Array.isArray(it.compuesta?.partes) ? it.compuesta.partes : undefined,
+                  })),
+                  comuna: input.comuna || state.comuna || '',
+                  texto_cliente: _textoCliente,
+                };
+                await priceAllFn(_sondaA);
+                const _todas = _sondaA.items.length === (input.items || []).length
+                  && _sondaA.items.every((x) => Number(x.unit_price) > 0 && x.confidence === 'high');
+                if (!_todas) { _sinCotizar.push(_cand); continue; }
+                _sondaA.items.forEach((x, k) => {
+                  const _it = (input.items || [])[k];
+                  if (!_it) return;
+                  _it.color       = _cand;
                   _it.unit_price  = Number(x.unit_price);
                   _it.total_price = Number(x.total_price) || Number(x.unit_price) * (Number(_it.qty) || 1);
                   _it.source      = x.source || _it.source;
                   _it.confidence  = x.confidence;
-                }
-              });
-            } catch (e) { log('error', 'generarPdf.opcionA.precio', e?.message || e); }
+                });
+                _colorAok = _cand;
+                break;
+              } catch (e) {
+                _sinCotizar.push(_cand);
+                log('error', 'generarPdf.opcionA.precio', `${_cand}: ${e?.message || e}`);
+              }
+            }
+            if (!_colorAok) {
+              // Ningun color de la terna se pudo cotizar. Se rotula BLANCO, que es el color al
+              // que corresponde el precio que ya traia (es el defecto del motor), asi la etiqueta
+              // y el precio quedan coherentes. La terna NO se anula: mas abajo, al ver que quedo
+              // una sola propuesta, sale el aviso de siempre ("se la prepare en Blanco... se la
+              // recotizo sin costo"). Anularla aca dejaba al cliente con una blanca y SIN
+              // enterarse de que el color no lo eligio el.
+              (input.items || []).forEach((it) => { it.color = 'Blanco'; });
+              state.default_color = state.default_color || 'Blanco';
+              log('error', 'generarPdf.opcionA.precio',
+                from + ': el motor no cotizo NINGUNO de los colores; sale una sola en Blanco con aviso');
+            } else if (_sinCotizar.length) {
+              // Salen los que si se pudieron, y las letras se recalculan sobre esos: sin esto,
+              // el aviso previo prometeria un color que nunca va a llegar.
+              _coloresTerna = _coloresTerna.filter((c) => !_sinCotizar.includes(c));
+              log('warn', 'generarPdf.opcionA.precio',
+                `${from}: el motor no cotizo ${_sinCotizar.join(' / ')}; la terna queda en ${_coloresTerna.join(' / ')}`);
+              if (_coloresTerna.length < 2) _coloresTerna = null;
+            }
           }
 
           // ── [thermal 2026-06-25] Uw SIEMPRE del MOTOR, nunca del LLM ───────
@@ -2618,7 +2652,16 @@ Comuna: ${datos.comuna}`
             : null;
           const receptorDoc = receptorParaDocumento(
             state.receptor ? fusionarReceptor(_receptorLLM, state.receptor) : _receptorLLM,
-            { nombreFallback: clientName, textoCliente: userText }
+            // [2026-08-31 - tridente/Gemini] TODO lo que escribio el cliente, no solo este turno.
+            // La compuerta de procedencia exige que el dato del LLM APAREZCA en lo que el
+            // cliente escribio. Con `userText` se comparaba contra ESTE mensaje, asi que el
+            // caso que justifica los parametros rut/razon_social del LLM quedaba muerto: el
+            // cliente dice su RUT en un mensaje, en el siguiente dice "si, cotizame", y el
+            // RUT se descartaba por "inventado". Es literalmente el caso que describe el
+            // comentario de abajo ("el cliente la escribio en un mensaje que el extractor no
+            // rotulo"). La compuerta sigue siendo real: el dato tiene que estar en algo que
+            // el cliente ESCRIBIO, solo que ahora se mira toda la conversacion.
+            { nombreFallback: clientName, textoCliente: _textoCliente || userText }
           );
           // EL RECEPTOR SOBREVIVE AL TURNO. Si la razon social la aporto el LLM (porque el
           // cliente la escribio en un mensaje que el extractor no rotulo), sin esto se
@@ -3343,7 +3386,7 @@ Comuna: ${datos.comuna}`
           // ahi vuelve el aviso de siempre. Nunca en silencio.
           if (_coloresTerna) {
             if (_opcionesEntregadas.length >= 2) {
-              _avisoColor = `\n\n${textoDeOpciones(_opcionesEntregadas)}`;
+              _avisoColor = `\n\n${textoDeOpciones(_opcionesEntregadas, _coloresTerna)}`;
             } else {
               _avisoColor = '\n\n🎨 Se la preparé en *Blanco* mientras me confirma el color. '
                 + 'Si prefiere Nogal, Roble Dorado, Grafito Antracita o Negro, me avisa y se la '
