@@ -75,9 +75,15 @@ test('monto: con decimales chilenos (coma)', () => {
 // ───────────────────────────────────────────────────────────────────────────
 
 test('irregulares: 21 / 100 / 101 / 500 / 700 / 900 / 1M / 2M', () => {
-  assert.equal(numeroAPalabras(21), 'veintiún');       // apocope: "veintiún mil pesos"
+  // [2026-08-31] numeroAPalabras recibe el apocope del llamador, porque depende de
+  // si despues viene un sustantivo. Suelto: "veintiuno". Delante de "pesos" o
+  // "mil": "veintiun". El test viejo pedia apocope SIEMPRE, y por eso "1.000.021"
+  // se leia "un millon veintiun", cortado.
+  assert.equal(numeroAPalabras(21), 'veintiuno');
+  assert.equal(numeroAPalabras(21, true), 'veintiún');
   assert.equal(numeroAPalabras(100), 'cien');
-  assert.equal(numeroAPalabras(101), 'ciento un');
+  assert.equal(numeroAPalabras(101), 'ciento uno');
+  assert.equal(numeroAPalabras(101, true), 'ciento un');
   assert.equal(numeroAPalabras(500), 'quinientos');
   assert.equal(numeroAPalabras(700), 'setecientos');
   assert.equal(numeroAPalabras(900), 'novecientos');
@@ -245,4 +251,50 @@ test('REGRESION: y las unidades de verdad siguen blindadas', () => {
   assert.equal(textoParaVoz('subio un 25%'), 'subio un 25%');
   assert.equal(textoParaVoz('mide 12 m2'), 'mide 12 m2');
   assert.equal(textoParaVoz('corredera de 1500x1200'), 'corredera de 1500x1200');
+});
+
+// ── TRIDENTE 2026-08-31 ──────────────────────────────────────────────────────
+// Gemini (via wrapper, repo intacto => veredicto valido) reporto 7 hallazgos; se
+// EJECUTARON uno por uno y 4 se confirmaron. Los 3 refutados: el RUT sin puntos y
+// el doble espacio ya funcionaban, y el negativo si convertia el monto (lo que
+// fallaba era el signo, no la cifra). Solo se testea lo confirmado.
+test('TRIDENTE/Gemini: $1 se dice en singular', () => {
+  assert.equal(textoParaVoz('cuesta $1'), 'cuesta un peso');
+  assert.equal(textoParaVoz('cuesta $2'), 'cuesta dos pesos');
+});
+
+test('TRIDENTE/Gemini: un numero suelto no se apocopa, un monto si', () => {
+  assert.equal(textoParaVoz('El ID es 1.000.021'), 'El ID es un millón veintiuno');
+  assert.equal(textoParaVoz('son $21.000'), 'son veintiún mil pesos');
+  assert.equal(textoParaVoz('son $1.000.021'), 'son un millón veintiún pesos');
+});
+
+test('TRIDENTE/Gemini: un dominio sin http:// no se destroza', () => {
+  assert.equal(textoParaVoz('mira activalabs.ai/p/1.000.000'), 'mira activalabs.ai/p/1.000.000');
+  assert.equal(textoParaVoz('ver https://activaspa.cl/x'), 'ver https://activaspa.cl/x');
+});
+
+test('TRIDENTE/Gemini: un monto negativo dice "menos", no "guion"', () => {
+  assert.equal(textoParaVoz('El descuento es -$2.500'), 'El descuento es menos dos mil quinientos pesos');
+  // El signo no puede comerse el espacio de antes: "quedo enseis millones" fue una
+  // regresion real que introdujo el primer intento de este arreglo.
+  assert.equal(textoParaVoz('quedo en $6.200.000 más IVA'),
+    'quedo en seis millones doscientos mil pesos más IVA');
+});
+
+// Codex corrio 72 casos reales y saco tres formas chilenas que quedaban en digitos.
+test('TRIDENTE/Codex: las formas chilenas de escribir plata tambien se dicen', () => {
+  assert.equal(textoParaVoz('El presupuesto es $1.200.- más IVA'),
+    'El presupuesto es mil doscientos pesos más IVA');          // el sufijo ".-" de toda la vida
+  assert.equal(textoParaVoz('CLP 1.200.000'), 'un millón doscientos mil pesos');
+  assert.equal(textoParaVoz('CLP1.200.000'), 'un millón doscientos mil pesos');
+  assert.equal(textoParaVoz('El saldo es $-2.500'), 'El saldo es menos dos mil quinientos pesos');
+});
+
+test('TRIDENTE: la normalizacion previa no toca fechas, folios, telefonos ni medidas', () => {
+  assert.equal(textoParaVoz('entrega el 31-08-2026'), 'entrega el 31-08-2026');
+  assert.equal(textoParaVoz('N° 0392-B'), 'N° 0392-B');
+  assert.equal(textoParaVoz('+56 9 5729 6035'), '+56 9 5729 6035');
+  assert.equal(textoParaVoz('1.200 x 2.400 mm'), '1.200 x 2.400 mm');
+  assert.equal(textoParaVoz('RUT 76.123.456-7'), 'RUT 76.123.456-7');
 });

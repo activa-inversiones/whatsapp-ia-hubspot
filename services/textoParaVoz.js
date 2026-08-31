@@ -83,7 +83,7 @@ function bajoMillon(n, apocope) {
  * Numero entero a palabras. Devuelve null si no es convertible (NaN, negativo,
  * no entero, o tan grande que no vale la pena arriesgarse).
  */
-export function numeroAPalabras(n) {
+export function numeroAPalabras(n, apocope = false) {
   const num = Number(n);
   if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0 || num > 999999999999) return null;
   if (num === 0) return 'cero';
@@ -92,7 +92,11 @@ export function numeroAPalabras(n) {
   let out = '';
   if (millones === 1) out = 'un millón';
   else if (millones > 1) out = `${bajoMillon(millones, true)} millones`;
-  if (resto > 0) out = out ? `${out} ${bajoMillon(resto, true)}` : bajoMillon(resto, true);
+  // [2026-08-31 - tridente/Gemini] El apocope va SOLO si despues viene un sustantivo
+  // masculino ("veintiun mil pesos"). Leyendo un numero suelto, 1.000.021 decia
+  // "un millon veintiun" y sonaba cortado: ahi corresponde "veintiuno". Los millones
+  // de la izquierda SIEMPRE llevan apocope porque los sigue la palabra "millones".
+  if (resto > 0) out = out ? `${out} ${bajoMillon(resto, apocope)}` : bajoMillon(resto, apocope);
   return out;
 }
 
@@ -104,12 +108,15 @@ export function numeroAPalabras(n) {
  * centavos: string opcional de 1-2 digitos (decimal chileno, rarisimo).
  */
 export function montoAPalabras(entero, centavos = null) {
-  const palabras = numeroAPalabras(entero);
+  // apocope=true: aca el numero SIEMPRE va seguido de "pesos".
+  const palabras = numeroAPalabras(entero, true);
   if (palabras === null) return null;
   const num = Number(entero);
   // "un millón DE pesos" / "dos millones DE pesos": solo cuando es millon redondo.
   const conDe = num >= 1000000 && num % 1000000 === 0;
-  let out = `${palabras} ${conDe ? 'de pesos' : 'pesos'}`;
+  // [2026-08-31 - tridente/Gemini] $1 decia "un pesos".
+  const unidad = num === 1 ? 'peso' : (conDe ? 'de pesos' : 'pesos');
+  let out = `${palabras} ${unidad}`;
   if (centavos) {
     const c = numeroAPalabras(Number(String(centavos).padEnd(2, '0')));
     if (c) out += ` con ${c}`;
@@ -215,6 +222,10 @@ const BLINDADOS = [
   // Cualquier corrida larga de digitos SIN puntos de miles = codigo/telefono/ID,
   // nunca un monto escrito a la chilena.
   /\b\d{7,}\b/g,
+
+  // [2026-08-31 - tridente/Gemini] Dominios SIN http:// ni www. Antes solo se blindaba
+  // con protocolo, asi que "activalabs.ai/p/1.000.000" salia "...ai/p/un millon".
+  /\b[a-zA-Z][\w-]*(?:\.[\w-]+)*\.(?:cl|com|ai|net|org|app|io)(?:\/\S*)?/gi,
 ];
 
 function blindar(texto) {
@@ -250,15 +261,29 @@ function aEntero(str) {
 function convertirMontos(texto) {
   let t = texto;
 
+  // [2026-08-31 - tridente/Codex] NORMALIZACION previa. Codex corrio 72 casos reales y
+  // saco tres formas chilenas que las reglas de abajo no reconocian y quedaban en digitos:
+  //   "$1.200.-"      el sufijo de toda la vida; el TTS decia "punto guion"
+  //   "CLP 1.200.000" y "CLP1.200.000" con la sigla ADELANTE (las reglas solo la
+  //                   esperaban atras), asi que salia "ce ele pe un millon..."
+  //   "$-2.500"       el menos DESPUES del signo peso
+  // Se llevan a la forma canonica y las reglas (a)/(b) hacen el resto. Mas barato y mas
+  // seguro que meterle tres alternativas mas a cada regex.
+  t = t.replace(/\$\s*-\s*(?=\d)/g, '-$');                    // $-2.500  -> -$2.500
+  t = t.replace(/\bCLP\s*(?=\d)/gi, '$');                      // CLP 1.200 -> $1.200
+  t = t.replace(/(\d)\.-(?!\d)/g, '$1');                        // 1.200.-   -> 1.200
+
+
   // (a) Con signo peso: "$6.200.000" · "$ 323.016" · "$2.500,50" · "$6.200.000 pesos"
   //     El "pesos" opcional del final se consume para no decirlo dos veces.
   t = t.replace(
-    /\$\s?(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d{1,2}))?(?:\s*(?:pesos?|CLP))?/gi,
-    (m, num, dec) => {
+    /(-\s*)?\$\s?(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d{1,2}))?(?:\s*(?:pesos?|CLP))?/gi,
+    (m, menos, num, dec) => {
       const n = aEntero(num);
       if (n === null) return m;
       const w = montoAPalabras(n, dec || null);
-      return w === null ? m : w;
+      // [2026-08-31 - tridente/Gemini] El menos quedaba suelto y el TTS decia "guion dos mil".
+      return w === null ? m : (menos ? 'menos ' + w : w);
     }
   );
 
