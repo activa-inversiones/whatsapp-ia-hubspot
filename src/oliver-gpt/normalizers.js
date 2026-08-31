@@ -326,10 +326,56 @@ export function nextMissing(d) {
 
 
 /**
+ * TODO LO QUE ESCRIBIO EL CLIENTE EN ESTA CONVERSACION, en un solo string.
+ *
+ * Los gates que preguntan "¿esto lo eligio el cliente o se lo pusimos nosotros?" (color,
+ * apertura) necesitan medir contra SUS palabras. Se juntan sus mensajes del historial
+ * —incluido el texto que la vision saco de sus imagenes, que entra al historial como mensaje
+ * del cliente— mas el del turno actual.
+ *
+ * ⛔ NO se mira lo que escribio Oliver: si el ofrecio "corredera blanca", eso no es que el
+ * cliente la haya pedido. Vive aca y no en cada canal porque WhatsApp e IG/FB tienen que
+ * medir lo MISMO — dos copias de esta regla se desincronizan.
+ */
+export function textoDelCliente(history, text) {
+  return [
+    ...(Array.isArray(history) ? history : [])
+      .filter((m) => m && m.role === 'user')
+      .map((m) => String(m.content || '')),
+    String(text || ''),
+  ].join('  ');
+}
+
+/**
  * Los 5 colores REALES del catalogo. Ningun otro existe: si el cliente dice "cafe", el
  * prompt de Oliver lo mapea a Nogal antes de llegar aca.
  */
 export const COLORES_CATALOGO = ['Blanco', 'Nogal', 'Roble Dorado', 'Grafito Antracita', 'Negro'];
+
+/**
+ * ¿EL COLOR LO DIJO EL CLIENTE, O SE LO PUSIMOS NOSOTROS?
+ *
+ * 🔴 [2026-08-29] Se mide en el TEXTO DEL CLIENTE y no en el item, por la misma razon por la
+ * que `aperturaFueExplicita` mira el texto: para cuando el item existe, el color YA se
+ * resolvio. El system-prompt le ordena al modelo rellenar Blanco, asi que `item.color` dice
+ * "Blanco" tanto si el cliente lo pidio como si nadie lo nombro nunca. Mirar ahi da siempre
+ * verde y no caza nada. El unico lugar donde "no dijo" sigue siendo distinguible de "dijo
+ * blanco" es lo que escribio el cliente.
+ *
+ * Reconoce los 5 del catalogo con las grafias que usa la gente (el prompt ya mapea "cafe" a
+ * Nogal antes de llegar aca, pero el texto crudo pasa por este chequeo ANTES de ese mapeo).
+ * "New Black" entra por "black": el PDF lo llama asi y el catalogo de texto lo llama "Negro".
+ *
+ * ⛔ NO se acepta cualquier palabra que suene a color: si se colara un falso positivo, un
+ * cliente que no eligio nada dejaria de recibir las tres propuestas y volveria el Blanco
+ * inventado. Ante la duda, false — que es "preguntar/proponer", el lado barato del error.
+ */
+export function colorFueExplicito(text) {
+  const t = String(text || '').toLowerCase();
+  if (!t.trim()) return false;
+  return /\b(blanc[oa]s?|nogal(es)?|roble|dorad[oa]s?|madera|grafito|antracita|gris(es)?|plomo|negr[oa]s?|black|caf[eé]s?)(?![a-záéíóúñ])/
+    .test(t);
+}
 
 /**
  * RECUERDA EL COLOR DE LA CONVERSACION.

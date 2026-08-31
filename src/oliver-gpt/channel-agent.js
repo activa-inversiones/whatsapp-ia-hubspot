@@ -29,7 +29,13 @@
 // ESM, Node 18+.
 
 import { handleTurn as realHandleTurn } from './agent.js';
-import { recordarColor } from './normalizers.js';   // [2026-08-25] el color se recuerda entre turnos
+import { recordarColor, textoDelCliente } from './normalizers.js';   // [2026-08-25] el color se recuerda entre turnos - [2026-08-31] y se mide en lo que dijo el cliente
+// [2026-08-31] LAS TRES PROPUESTAS A/B/C POR COLOR - el MISMO modulo que usa WhatsApp
+// (webhook.js). Los dos canales rotulan igual, usan las mismas letras del folio y le dicen lo
+// mismo al cliente: dos copias de esta regla se desincronizarian, como ya paso con la
+// escalacion (el titulo viejo de Marcelo quedo vivo en IG/FB durante semanas).
+import { foliosDeOpciones, letrasReservadas, textoDeOpciones } from './propuestas-color.js';
+import { priceAllEngine as realPriceAllEngine } from '../../services/enginePricer.js';   // precio REAL por color (motor LOCAL)
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
 import * as realBridge from '../../services/salesOsBridge.js';
 import { sendWhatsAppText as realSendWhatsAppText } from '../sales-agent/whatsapp-adapter.js';
@@ -223,6 +229,7 @@ export async function handleChannelTurn(
   const addZohoNote           = deps.addZohoNote            || realAddZohoNote;
   const attachPdfToDeal       = deps.attachPdfToDeal        || realAttachPdfToDeal;
   const sendChannelDocument   = deps.sendChannelDocument   || realSendChannelDocument;
+  const priceAllFn            = deps.priceAllEngine        || realPriceAllEngine;   // [2026-08-31] precio por color, inyectable para poder probarlo
   const loadSession           = deps.loadSession            || realLoadSession;
   const persistSession        = deps.persistSession         || realPersistSession;
   const conv = deps.conv || CONV;
@@ -494,13 +501,33 @@ export async function handleChannelTurn(
 
           // ── [PDF-RACE 2026-07-01] GUARD de COMPLETITUD: PDF formal SOLO con datos confirmados ──
           // (compartido con webhook.js). Sin nombre real o ítems incompletos: NO se quema folio ISO.
-          const _gate = quoteDataComplete(input, state);
+          // 🔴 [2026-08-31] IG/FB YA PUEDE CAZAR EL "BLANCO QUE NADIE PIDIO" - Y SIN RIESGO.
+          // Se pasa `textoColor` y NO `textoCliente`, y la diferencia es la que la compuerta
+          // cruzada dejo escrita: `textoCliente` activa TAMBIEN el gate de la APERTURA, que SI
+          // bloquea y que en este canal no tiene rama de pregunta ni reloj => dejaria PDFs
+          // bloqueados con el mensaje generico y para siempre (Codex, 2a pasada). El gate del
+          // color, desde hoy, no bloquea nada: entrega tres propuestas. Por eso es seguro.
+          const _gate = quoteDataComplete(input, state, { textoColor: textoDelCliente(history, text) });
           if (!_gate.ok) {
             log('error', 'generarPdf.gate', `PDF bloqueado por datos incompletos: ${_gate.missing.join(', ')}`);
             return { ok: false, reason: 'datos_incompletos', missing: _gate.missing,
               message: _gate.missing.includes('name')
                 ? '¿A nombre de quién emito la Propuesta Técnica Económica? Con eso te la envío al tiro.'
                 : 'Antes de emitir la propuesta formal necesito confirmar un detalle de las ventanas. Ya te pregunto.' };
+          }
+
+          // 🎨 [2026-08-31 - DECISION DEL DUENO] SIN COLOR -> TRES PROPUESTAS, TAMBIEN ACA.
+          // *"cuando cliente no entrega color entreguemosle blanco, nogal y negro"*. La regla,
+          // los colores, las letras y el texto son los MISMOS que en WhatsApp (propuestas-color.js):
+          // lo unico distinto es la caneria de envio, que en este canal es `sendChannelDocument`.
+          // ⛔ Igual que en WhatsApp: NO se escribe `state.default_color`. El cliente no eligio.
+          let _coloresTerna = null;
+          let _letrasTerna = 0;
+          if (_gate.coloresPropuestos && _gate.coloresPropuestos.length > 1) {
+            _coloresTerna = _gate.coloresPropuestos.slice();
+            (input.items || []).forEach((it) => { it.color = _coloresTerna[0]; });
+            log('info', 'generarPdf.color',
+              `${convKey}: sin color del cliente -> ${_coloresTerna.length} propuestas (${_coloresTerna.join(' / ')})`);
           }
 
           // Paso 1: correlativo ISO — MISMA fuente única que WhatsApp (un solo folio).
@@ -537,6 +564,18 @@ export async function handleChannelTurn(
             for (const [k, v] of RECENT_QUOTES) if (!v || v.at < cutoff) RECENT_QUOTES.delete(k);
           }
 
+          // 🎨 [2026-08-31] Los folios de las tres, de una sola vez: 0392 - 0392-B - 0392-C.
+          // Un solo correlativo ISO; las variantes son LETRAS (verificado contra la BD viva:
+          // la letra no consume correlativo). `alternativas` se arrastra en `last_quote` para
+          // que una segunda terna del mismo cliente no reuse la B y la C.
+          const _folios = _coloresTerna
+            ? foliosDeOpciones(quoteNumber, _coloresTerna.length, Number((lq || {}).alternativas) || 0)
+            : [];
+          if (_coloresTerna && _folios.length < 2) {
+            log('warn', 'generarPdf.opciones', `${convKey}: no se pudieron componer las letras sobre ${quoteNumber}; sale una sola`);
+            _coloresTerna = null;
+          }
+
           // Paso 2: PDF premium (mismo generador → folio ISO impreso en el documento).
           const clientName = input.name || state.name || senderName || 'Cliente';
           const clientPhone = input.phone || '';
@@ -549,6 +588,9 @@ export async function handleChannelTurn(
           const pdfData = {
             name: clientName, phone: clientPhone, comuna: clientComuna,
             address: state.address || '',
+            // 🎨 [2026-08-31] Que opcion es esta, visible al abrir el archivo (paridad con
+            // WhatsApp). `undefined` sin terna => el documento sale exactamente como siempre.
+            opcion: _coloresTerna ? { letra: _folios[0].letra, color: _coloresTerna[0] } : undefined,
             default_color: (input.items?.[0]?.color) || state.default_color || '',
             items: (input.items || []).map((it) => ({
               product: it.producto_label || it.product || 'Ventana',
@@ -568,6 +610,117 @@ export async function handleChannelTurn(
             sendChannelDocument(channel, senderId, pdfBuffer, filename, `Propuesta Técnica Económica N° ${quoteNumber} · Activa Inversiones`));
           const pdfSent = !!(sr && sr.ok !== false);
           const outsideWindow = !!(sr && sr.outsideWindow);
+
+          // 🎨 Paso 3-bis: LAS OTRAS DOS PROPUESTAS (opciones B y C)
+          // Mismo diseno que WhatsApp (webhook.js, Paso 3b-bis) y por las mismas razones:
+          //   - CADA UNA AISLADA: el `try` va DENTRO del bucle, asi un fallo en la B no se
+          //     lleva la C, y el cliente nunca queda sin nada por un error parcial.
+          //   - EL PRECIO DE CADA COLOR SE LO DA EL MOTOR, nunca se deriva del blanco. Si el
+          //     motor no cotiza ESE color para TODOS los items, la opcion se descarta entera:
+          //     antes eso que un documento formal con la etiqueta de un color y el precio de
+          //     otro (regla anti-alucinacion del proyecto).
+          //   - `status:'alternativa'` y NO 'sent': guarda la fila (trazabilidad ISO, cada
+          //     folio en su propia fila) y NO dispara conversion - un cliente que no eligio
+          //     color es UNA oportunidad, no tres. Ver el comentario largo en webhook.js.
+          const _opcionesEntregadas = [];
+          if (_coloresTerna && _folios.length > 1) {
+            if (pdfSent) _opcionesEntregadas.push({ letra: _folios[0].letra, color: _coloresTerna[0], numero: quoteNumber });
+            for (let _i = 1; _i < _folios.length && _i < _coloresTerna.length; _i++) {
+              const _colorOp = _coloresTerna[_i];
+              const _numOp   = _folios[_i].numero;
+              const _letraOp = _folios[_i].letra;
+              try {
+                const _sonda = {
+                  items: (input.items || []).map((it) => ({
+                    product:     it.producto_label || it.product || 'Ventana',
+                    measures:    it.measures || '',
+                    color:       _colorOp,
+                    qty:         Number(it.qty) || 1,
+                    ambiente:    it.ambiente || '',
+                    descripcion: it.descripcion || it.ambiente || '',
+                  })),
+                  comuna: clientComuna,
+                };
+                await priceAllFn(_sonda);
+                const _todosConPrecio = _sonda.items.length === (input.items || []).length
+                  && _sonda.items.every((x) => Number(x.unit_price) > 0 && x.confidence === 'high');
+                if (!_todosConPrecio) {
+                  log('error', 'generarPdf.opcion',
+                    `${convKey}: opcion ${_letraOp} (${_colorOp}) DESCARTADA - el motor no cotizo ese color para todos los items; ${_numOp} no se emite`);
+                  continue;
+                }
+                const _pdfOp = {
+                  ...pdfData,
+                  quote_num: _numOp,
+                  default_color: _colorOp,
+                  opcion: { letra: _letraOp, color: _colorOp },
+                  items: (input.items || []).map((it, k) => {
+                    const _p = _sonda.items[k] || {};
+                    return {
+                      product:        _p.producto_label || it.producto_label || it.product || 'Ventana',
+                      producto_label: _p.producto_label || it.producto_label || it.product || 'Ventana',
+                      measures:       it.measures || '',
+                      color:          _colorOp,
+                      qty:            Number(it.qty) || 1,
+                      unit_price:     Number(_p.unit_price) || 0,
+                      glass_label:    _p.glass_label || it.glass_label || 'Termopanel DVH',
+                      ambiente:       it.ambiente || '',
+                      termico:        _p.termico || null,
+                    };
+                  }),
+                };
+                const _bufOp = await generatePdf(_pdfOp, _numOp);
+                const _totalOp = _pdfOp.items.reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0);
+                const _srOp = await safe('generarPdf.opcion.send', () => sendChannelDocument(
+                  channel, senderId, _bufOp, `${_numOp}.pdf`,
+                  `Propuesta Técnica Económica N° ${_numOp} · Opción ${_letraOp} — ${_colorOp} · Activa Inversiones`));
+                const _sentOp = !!(_srOp && _srOp.ok !== false);
+                if (_sentOp) _opcionesEntregadas.push({ letra: _letraOp, color: _colorOp, numero: _numOp });
+                else log('error', 'generarPdf.opcion', `${convKey}: opcion ${_letraOp} (${_colorOp}) ${_numOp} NO se pudo entregar`);
+
+                await safe('generarPdf.opcion.registro', () => bridge.pushQuoteEvent({
+                  phone: crmPhone, channel, customer_name: clientName,
+                  amount_total: _totalOp, currency: 'CLP',
+                  status: 'alternativa', quote_number: _numOp,
+                  variante: { letra: _letraOp, color: _colorOp, base: _folios[0].numero,
+                              motivo: 'cliente_no_declaro_color', pdf_sent: _sentOp },
+                  items: _pdfOp.items.map((it) => ({
+                    producto: it.producto_label || null, medidas: it.measures || null,
+                    cantidad: Number(it.qty) || 1, unitario: Number(it.unit_price) || null,
+                    color: it.color || null, vidrio: it.glass_label || null,
+                    ambiente: it.ambiente || null, uw: it.termico?.uw ?? null,
+                  })),
+                  lead: {
+                    source: channel || 'oliver_gpt', channel: channel || null,
+                    lead_name: clientName || null, name: clientName || null,
+                    phone: crmPhone || null, comuna: clientComuna || null, city: clientComuna || null,
+                    status: 'quoted', external_id: senderId || null,
+                  },
+                  // ⛔ SIN click-ids: no dispara conversion y no debe invitar a que alguien
+                  // "arregle" el status manana y triplique el reporte a Meta/Google.
+                }));
+              } catch (e) {
+                log('error', 'generarPdf.opcion.err', `${_letraOp} (${_colorOp}) ${_numOp}: ${e?.message || e}`);
+              }
+            }
+            // Las letras quedan consumidas aunque una haya fallado: reciclarlas pondria dos
+            // documentos distintos bajo el mismo numero (el pisado del caso Paula).
+            _letrasTerna = letrasReservadas(_folios);
+            log('info', 'generarPdf.opciones',
+              `${convKey}: ${_opcionesEntregadas.length}/${_folios.length} propuestas entregadas (${_opcionesEntregadas.map((o) => `${o.letra}=${o.color}`).join(', ') || 'ninguna'})`);
+          }
+          // Lo que se le dice al cliente: SOLO lo que de verdad salio. Con una sola no hay
+          // terna que explicar, pero tampoco puede quedarse con una blanca sin enterarse de
+          // que el color no lo eligio el.
+          const _avisoOpciones = !_coloresTerna ? ''
+            : _opcionesEntregadas.length >= 2
+              ? `\n\n${textoDeOpciones(_opcionesEntregadas)}`
+              // En USTED, igual que `textoDeOpciones`: los dos textos se pegan al MISMO mensaje
+              // y mezclar tu/usted en un parrafo es la falta que el system-prompt prohibe con
+              // nombre y apellido (Gemini, compuerta del 28-ago).
+              : '\n\n🎨 Se la preparé en *Blanco* mientras me confirma el color. Si prefiere'
+                + ' Nogal, Roble Dorado, Grafito Antracita o Negro, me avisa y se la recotizo'
+                + ' sin costo; el color cambia el precio, por eso se lo digo.';
 
           // Paso 4: Zoho CRM (fire-and-forget, channel-agnostic).
           const grandTotal = Number(input.grand_total) ||
@@ -635,25 +788,33 @@ export async function handleChannelTurn(
             // fallo queda escalated=true y el guard de arriba corta todo reintento futuro en código.
             const _attempts = ((lq && lq.quote_number === quoteNumber) ? (Number(lq.deliveryAttempts) || 0) : 0) + 1;
             state.last_quote = { quote_number: quoteNumber, at: Date.now(),
-              deliveryAttempts: _attempts, escalated: _attempts >= 2, pdf_sent: false };
+              deliveryAttempts: _attempts, escalated: _attempts >= 2, pdf_sent: false,
+              // [2026-08-31] Las letras que la terna reservo: sin esto, una segunda terna del
+              // mismo cliente volveria a componer -B y -C y habria dos documentos distintos
+              // bajo el mismo folio (el pisado del caso Paula).
+              alternativas: Math.max(Number((lq || {}).alternativas || 0), _letrasTerna) };
             await safe('generarPdf.escalate', () =>
               notifyHighValue(sendWhatsAppText, senderId,
                 { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
                 `[${channel}] PDF ${quoteNumber} no se pudo entregar${outsideWindow ? ' (fuera de ventana 24h)' : ''} (intento ${_attempts}) — enviarlo desde el inbox (ops.activalabs.ai)`));
             return { ok: true, quote_number: quoteNumber, pdf_sent: false,
-              message: `Tu Propuesta Técnica Económica N° ${quoteNumber} está lista ✅ No pude enviarte el archivo por este canal — el Ing. Marcelo Cifuentes Méndez (Ingeniero Civil Industrial, Gerente de Ingeniería de Activa) te la enviará directamente a tu WhatsApp. 📲 +56 9 5729 6035` };
+              // Si la A no salio pero las alternativas si, se le dice cuales tiene: quedarse
+              // callado sobre archivos que el cliente YA recibio es peor que el fallo mismo.
+              message: `Tu Propuesta Técnica Económica N° ${quoteNumber} está lista ✅ No pude enviarte el archivo por este canal — el Ing. Marcelo Cifuentes Méndez (Ingeniero Civil Industrial, Gerente de Ingeniería de Activa) te la enviará directamente a tu WhatsApp. 📲 +56 9 5729 6035`
+                + (_opcionesEntregadas.length >= 2 ? `\n\n${textoDeOpciones(_opcionesEntregadas)}` : '') };
           }
 
           // [IG-LOOP 2026-07-01] entrega OK → registrar folio como entregado (dedup honesto + reuso).
           state.last_quote = { quote_number: quoteNumber, at: Date.now(),
-            deliveryAttempts: 0, escalated: false, pdf_sent: true };
+            deliveryAttempts: 0, escalated: false, pdf_sent: true,
+            alternativas: Math.max(Number((lq || {}).alternativas || 0), _letrasTerna) };
           return { ok: true, quote_number: quoteNumber, pdf_sent: true,
             // [2026-08-08] Mismo cierre activo que en webhook.js: este mensaje llega justo
             // cuando el cliente ve el precio, y decia "Cualquier duda la vemos" — el cierre
             // pasivo que el paso 8 prohibe. Esta en CODIGO, asi que el prompt no lo tocaba.
             message: `Listo ✅ Te envié tu Propuesta Técnica Económica N° ${quoteNumber} acá mismo (PDF).
 
-Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?` };
+Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?${_avisoOpciones}` };
         }),
     };
 

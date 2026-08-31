@@ -7,6 +7,8 @@
 // "[Enlace a la cotización]" como texto y el cliente NO recibía el PDF.
 
 import { aperturaFueExplicita, detectHojas, FABRICATION_LIMITS as _LIMITES } from '../../services/enginePricer.js';
+import { colorFueExplicito } from './normalizers.js';        // [2026-08-29] el color se mide en lo que dijo el CLIENTE
+import { COLORES_PROPUESTA } from './propuestas-color.js';   // [2026-08-31] sin color → tres propuestas A/B/C
 
 /** ¿El cliente está afirmando que quiere el PDF? (incluye afirmaciones cortas). */
 export function isPdfAffirmative(text) {
@@ -100,13 +102,78 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
   // blanca CON el aviso de que es blanca y de que se recotiza sin costo.
   const ESPERA_COLOR_MS = Number(process.env.ESPERA_COLOR_MS || 60_000);
   const colorRecordado = String(state.default_color || '').trim();
-  const faltaColor = !colorRecordado && items.some((it) => !String(it.color || '').trim());
+
+  // 🔴 [2026-08-31] EL TEXTO DEL COLOR SE PASA APARTE, Y NO ES UN CAPRICHO.
+  //
+  // Hasta hoy los dos gates —color y apertura— compartian `textoCliente`, asi que IG/FB no
+  // podia activar uno sin activar el otro. Y activarle el de la APERTURA a IG/FB esta vetado
+  // por la compuerta cruzada: ese gate SI bloquea y en IG/FB no hay rama de pregunta ni
+  // reloj ⇒ bloquearia PDFs con el mensaje generico y para siempre. Consecuencia: IG/FB
+  // tampoco podia cazar el "Blanco que nadie pidio".
+  //
+  // Desde hoy el gate del COLOR **ya no bloquea nada** (entrega tres propuestas), asi que
+  // activarlo en IG/FB no puede costar un PDF: es seguro por construccion. Se separan los dos
+  // textos para poder hacer eso y NADA MAS que eso — el de la apertura sigue igual.
+  // `textoColor` cae a `textoCliente` cuando no se pasa, asi WhatsApp no cambia.
+  const textoCliente = opciones.textoCliente;
+  const textoColor = opciones.textoColor !== undefined ? opciones.textoColor : textoCliente;
+  const gateColor = textoColor !== undefined && textoColor !== null;
+
+  // 🔴 [2026-08-29] EL BLANCO QUE NADIE PIDIO. El color efectivo de cada item es el suyo o,
+  // si no trae, el recordado de la conversacion — que es exactamente lo que va a ver el motor.
+  // Se mide contra el TEXTO DEL CLIENTE por la misma razon que la apertura: el system-prompt
+  // le ordena al modelo rellenar "Blanco", asi que el item dice Blanco tanto si el cliente lo
+  // pidio como si nadie lo nombro nunca. Mirar solo el item da siempre verde y no caza nada.
+  const _colorEfectivo = items
+    .map((it) => String(it.color || '').trim() || colorRecordado)
+    .filter(Boolean);
+  const _todoBlanco = _colorEfectivo.length > 0 && _colorEfectivo.every((c) => /^blanco$/i.test(c));
+  const _blancoQueNadiePidio = gateColor && _todoBlanco && !colorFueExplicito(String(textoColor));
+  const faltaColor = _blancoQueNadiePidio
+    || (!colorRecordado && items.some((it) => !String(it.color || '').trim()));
+  // ¿Hay algun color REAL puesto (algo distinto de Blanco)? Entonces el cliente si eligio y
+  // lo que falta es completar, no proponer: ese caso conserva el camino viejo. La terna solo
+  // tiene sentido cuando NADIE eligio nada — proponerle tres colores a alguien que ya pidio
+  // Nogal seria ignorarlo.
+  const _hayColorReal = _colorEfectivo.some((c) => !/^blanco$/i.test(c));
   let colorAsumido = false;
 
-  if (faltaColor) {
+  // 🔴 [2026-08-31 · DECISION DEL DUEÑO] SIN COLOR YA NO SE FRENA NI SE INVENTA: SALEN TRES.
+  //
+  // Textual: *"cuando cliente no entrega color entreguemosle blanco, nogal y negro"* +
+  // *"entregar 3 propuestas tecnica economicas una blanco, nogal y new black"*.
+  //
+  // QUE REEMPLAZA, exactamente: la rama de abajo tenia DOS salidas y las dos costaban plata.
+  //   · `missing.push('color')` → frenaba el PDF. Y el plazo de gracia es PASIVO: solo se
+  //     re-evalua cuando el cliente vuelve a escribir, asi que el que pregunta, no contesta y
+  //     se va NO RECIBE NADA. Sin PDF no sale el evento de cotizacion ⇒ Google Ads no recibe
+  //     la conversion (medido: webhook.click-ids.test.js).
+  //   · `colorAsumido = true` → salia UNA blanca. Mejor que nada, pero es un color que el
+  //     cliente no eligio, y el foliado vale 69-88 % mas: cotizar blanco y entregar nogal es
+  //     recotizar o comerse la diferencia.
+  // Ninguna de las dos hace falta ya: con tres propuestas rotuladas no hay nada que inventar
+  // ni nada que esperar.
+  //
+  // ⚠️ Y SE SIGUE PREGUNTANDO EL COLOR — una propuesta con el color correcto es mejor que
+  // tres. Lo que cambia es DONDE se pregunta, no SI se pregunta: Oliver ya lo pide en su
+  // flujo normal de datos ANTES de cotizar, y el mensaje que acompana a las tres lo vuelve a
+  // pedir (`textoDeOpciones`), asi el cliente puede colapsar a una sola en el turno siguiente.
+  // El prompt ya decia, textual, *"El color NO es bloqueante"*: el gate que bloqueaba lo
+  // contradecia. Ahora vuelven a decir lo mismo.
+  //
+  // ↩️ COMO SE REVIERTE si el dueño lo prefiere al reves (preguntar bloqueando y sacar la
+  // terna solo despues del plazo): cambiar el `if` de abajo por
+  //     if (preguntaVigente(state.color_preguntado_at) && (Date.now() - state.color_preguntado_at) >= ESPERA_COLOR_MS)
+  //         coloresPropuestos = COLORES_PROPUESTA.slice();
+  //     else missing.push('color');
+  // Todo lo demas (reloj, mensaje del gate, `datoQuePregunta`) sigue en pie para eso.
+  let coloresPropuestos = null;
+  if (faltaColor && !_hayColorReal) coloresPropuestos = COLORES_PROPUESTA.slice();
+  else if (faltaColor) {
     const preguntadoAt = Number(state.color_preguntado_at) || 0;
-    // Ya se le pregunto EN ESTA CONVERSACION y paso el tiempo de gracia ⇒ se emite en blanco,
-    // avisando. Si la pregunta es de hace tres dias no cuenta: se vuelve a preguntar.
+    // Pedido MIXTO (una ventana Nogal y otra sin color): el cliente SI eligio, solo falta
+    // completar. Se le pregunta, y pasado el plazo se completa con Blanco avisando — que es
+    // el comportamiento de siempre, intacto.
     if (preguntaVigente(preguntadoAt) && (Date.now() - preguntadoAt) >= ESPERA_COLOR_MS) colorAsumido = true;
     else missing.push('color');
   }
@@ -134,7 +201,10 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
   //     audio sin transcribir). Eso es precisamente "no nombro la apertura" ⇒ SE PREGUNTA.
   // Cuando las dos se trataban igual, una cotizacion pedida con una sola foto ilegible salia
   // corredera sin preguntar ni avisar — o sea el reclamo del dueño, intacto, por otro camino.
-  const textoCliente = opciones.textoCliente;
+  // `textoCliente` ya se leyo arriba. ⚠️ [2026-08-31] Este gate mira `textoCliente` y NO
+  // `textoColor`: son la misma cosa en WhatsApp, pero IG/FB manda solo el segundo, y este
+  // gate SI bloquea. Cuando compartian variable, activarle el color a IG/FB le activaba
+  // tambien la apertura — justo lo que la compuerta cruzada veto.
   const gateApertura = textoCliente !== undefined && textoCliente !== null;
   const faltaTipo = gateApertura && !aperturaFueExplicita(String(textoCliente));
   let tipoAsumido = false;
@@ -187,7 +257,9 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
     else missing.push('hojas');
   }
 
-  return { ok: missing.length === 0, missing, colorAsumido, tipoAsumido, hojasAsumido };
+  // `coloresPropuestos`: null = el cliente eligio (o eligio a medias) ⇒ sale UNA propuesta,
+  // como siempre. Array = nadie eligio ⇒ salen esas tres, rotuladas A/B/C.
+  return { ok: missing.length === 0, missing, colorAsumido, tipoAsumido, hojasAsumido, coloresPropuestos };
 }
 
 /**

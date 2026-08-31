@@ -137,8 +137,19 @@ test('🔴 el reloj del COLOR tambien — el mismo defecto, y ese ya esta en pro
 
   await handleWebhook({ body: {} }, makeRes(), deps);
   assert.ok(guardado, 'la sesion tiene que persistirse');
-  assert.ok(guardado.state.color_preguntado_at,
-    'se le pregunto el color y el reloj NO quedo guardado');
+  // [2026-08-31] ESTE CASO CAMBIO DE DESENLACE POR UNA DECISION DEL DUENO, no por un arreglo.
+  // Antes, sin color, el gate PREGUNTABA y guardaba `color_preguntado_at`; el reloj existia
+  // para que la propuesta asumida saliera igual cuando el cliente no contestaba, y este test
+  // defendia que ese reloj se persistiera (si no, bucle: se pregunta para siempre).
+  // Desde el 31-ago no se pregunta ni se frena: salen TRES propuestas rotuladas A/B/C. Sin
+  // espera no hay reloj que persistir, y sin freno no hay bucle posible.
+  // Lo que este test protege ahora es lo que de verdad importa: que al cliente NO se lo frene
+  // por un dato que no dio. El reloj del TIPO DE APERTURA, que sigue vigente, se prueba en el
+  // test de arriba y no se toco.
+  assert.equal(guardado.state.color_preguntado_at, undefined,
+    'ya no se pregunta el color: no hay reloj que arrancar');
+  assert.ok(!(guardado.state.pendiente_color || guardado.state.esperando_color),
+    'y no queda al cliente esperando por un dato que ya no bloquea');
 });
 
 /* =========================================================================

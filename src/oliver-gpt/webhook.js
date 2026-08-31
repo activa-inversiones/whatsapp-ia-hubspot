@@ -49,7 +49,14 @@ import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
 import { laminasParaInforme, laminaTermopanel } from '../../services/laminasThermal.js';   // [2026-08-24] isotermas del FEM
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
-import { recordarColor, anticipoDeLoCotizado } from './normalizers.js';   // [2026-08-25/28] color recordado + anticipo de la propuesta
+import { recordarColor, anticipoDeLoCotizado, textoDelCliente } from './normalizers.js';   // [2026-08-25/28] color recordado + anticipo de la propuesta · [2026-08-31] lo que dijo el cliente
+// 🔴 [2026-08-30] A NOMBRE DE QUIEN VAN LOS DOCUMENTOS (RUT + razon social o persona).
+// Pedido del dueño a partir del caso de Alfredo Arias Luengo (conv 56952077379, CUATRO
+// reclamos). La captura es DETERMINISTA —no depende de que el LLM la pase— por la misma
+// razon por la que `extractComuna` lo es: medido contra la BD viva, de 249 sesiones activas
+// en 20 dias solo 6 tenian `data.name`, y la de Alfredo NO lo tenia aunque el lo escribio
+// tres veces. Un dato que depende del modelo se pierde.
+import { extraerReceptor, receptorParaDocumento, fusionarReceptor } from '../../services/receptorCliente.js';
 import { elegirVideo, mensajeDelVideo, mediaIdsDisponibles } from '../../services/videosFabrica.js';   // [2026-08-25] video de fabrica tras la propuesta
 // [2026-08-28] INFORME DE VIENTOS en la secuencia (pedido del dueno: "dale, agrega el
 // informe de vientos a la secuencia de Oliver"). THERMAL calcula (se pide por HTTP, regla
@@ -131,6 +138,11 @@ import {
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
 import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
+// [2026-08-31] LAS TRES PROPUESTAS A/B/C POR COLOR — compartidas con channel-agent.js (IG/FB)
+// para que los dos canales roten igual, usen las MISMAS letras del folio y le digan al
+// cliente lo mismo. `LETRAS_ALTERNATIVA` es ademas la fuente unica del sufijo ISO: antes el
+// literal 'BCDEF…' estaba escrito dos veces en este mismo archivo.
+import { LETRAS_ALTERNATIVA, foliosDeOpciones, letrasReservadas, textoDeOpciones, avisoPrevioOpciones } from './propuestas-color.js';
 import { toFile as realToFile } from 'openai/uploads';
 import {
   loadSession as realLoadSession,
@@ -236,7 +248,9 @@ const RATE_MAP = new Map();
  * @returns {{numero:string|null, motivo:string}} numero null = pedir correlativo nuevo
  */
 export function numeroDeDocumento({ lastQuote, sig, ventanaMs, ahora = Date.now() } = {}) {
-  const LETRAS = 'BCDEFGHIJKLMNOPQRSTUVWXYZ';
+  // [2026-08-31] Las letras salen de `propuestas-color.js`: la terna A/B/C compone folios con
+  // las MISMAS y dos copias del alfabeto se desincronizan igual que dos copias de una regla.
+  const LETRAS = LETRAS_ALTERNATIVA;
   const lq = lastQuote;
   if (!lq || !lq.quote_number) return { numero: null, motivo: 'sin_folio_previo' };
   if (!(ahora - (lq.at || 0) < ventanaMs)) return { numero: null, motivo: 'folio_vencido' };
@@ -267,7 +281,7 @@ export function numeroDeDocumento({ lastQuote, sig, ventanaMs, ahora = Date.now(
 export function alternativasEntregadas(quoteNumber, previas = 0) {
   const letra = (String(quoteNumber || '').match(/-([A-Z])$/) || [])[1];
   const base = Number(previas) || 0;
-  return letra ? Math.max(base, 'BCDEFGHIJKLMNOPQRSTUVWXYZ'.indexOf(letra) + 1) : base;
+  return letra ? Math.max(base, LETRAS_ALTERNATIVA.indexOf(letra) + 1) : base;
 }
 
 /**
@@ -705,6 +719,12 @@ export async function handleWebhook(req, res, deps = {}) {
     const uploadWaDocument = deps.uploadWaDocument || realUploadWaDocument;
     const sendWaDocument   = deps.sendWaDocument   || realSendWaDocument;
     const generatePdf      = deps.generatePdf      || realGeneratePdf;
+    // [2026-08-31] El pricer, INYECTABLE. Las tres propuestas por color exigen re-cotizar en
+    // el motor una vez por color (el precio de un Nogal NO se puede derivar del blanco), y sin
+    // poder inyectarlo esa rama no se podia probar sin pegarle a produccion. Los dos usos
+    // viejos (blindaje label↔precio y termico) se dejan como estaban a proposito: son codigo
+    // que cobra y no necesitan el cambio.
+    const priceAllFn       = deps.priceAllEngine   || priceAllEngine;
     const upsertZohoDeal   = deps.upsertZohoDeal   || realUpsertZohoDeal;
     const addZohoNote      = deps.addZohoNote      || realAddZohoNote;
     const attachPdfToDeal  = deps.attachPdfToDeal  || realAttachPdfToDeal;
@@ -1187,6 +1207,41 @@ export async function handleWebhook(req, res, deps = {}) {
       return; // el finally libera el lock
     }
 
+    // ── (5a1) [2026-08-30] RUT DEL RECEPTOR — captura DETERMINISTA ───────
+    // Pedido del dueño: *"un cliente quiere que le agreguen el rut de la empresa o rut
+    // persona; normalmente piden rut empresa con nombre de rut empresa o nombre de la
+    // persona que la pide"*. Caso Alfredo Arias Luengo (conv 56952077379): reclamo CUATRO
+    // veces y el PDF nunca tuvo donde ponerlo.
+    //
+    // VA ACA, ANTES DE TODO, por dos razones medidas:
+    //  1. `state` es lo que leen `toolCtx.generarPdf` y la secuencia de informes DURANTE el
+    //     turno. Si se capturara despues de handleTurn, el cliente que escribe "agregale mi
+    //     RUT 77.448.504-K" recibiria la propuesta de ESTE turno todavia sin el RUT y habria
+    //     que pedirle que la pidiera de nuevo — exactamente lo que enojo a Alfredo.
+    //  2. Determinista y no via LLM: de 249 sesiones con actividad en 20 dias, solo 6 tenian
+    //     `data.name` (el dato que hoy depende del modelo). Si el RUT se modelara como el
+    //     nombre, correria la misma suerte.
+    //
+    // ⛔ NO MOLESTA A QUIEN NO LO PIDIO: `extraerReceptor` devuelve null cuando el cliente no
+    // hablo de RUT, que es el 99 % de los mensajes (medido: 7 conversaciones de 782).
+    // ⛔ Un RUT que no pasa modulo 11 NO se guarda: queda la marca `receptor_rechazado` para
+    // que Oliver lo vuelva a pedir, y ningun documento lo ve nunca.
+    {
+      const _rut = extraerReceptor(userText, { previo: state.receptor });
+      if (_rut && _rut.ok) {
+        state.receptor = _rut.receptor;
+        // Vive en el NIVEL SUPERIOR del state a proposito: `resetIfInactive` limpia
+        // `lockedData` a los 7 dias y conserva el resto. El espejo en lockedData es para que
+        // el prompt no lo vuelva a preguntar; que ese espejo caduque no borra el dato.
+        state.lockedData = { ...(state.lockedData || {}), rut: _rut.receptor.rut };
+        delete state.receptor_rechazado;
+        log('info', 'receptor.rut', `RUT capturado para ${from} (${_rut.receptor.clienteTipo})`);
+      } else if (_rut) {
+        state.receptor_rechazado = { crudo: _rut.crudo, motivo: _rut.motivo, at: Date.now() };
+        log('warn', 'receptor.rut', `RUT rechazado para ${from}: motivo=${_rut.motivo}`);
+      }
+    }
+
     // ── (5a2) [2026-07-06 LOTE2] ANTI-LOOP de imágenes ilegibles ─────────
     // Caso real (Flavio, 15 fotos en 2 min): la visión falló en TODAS y Oliver repitió ~14 veces
     // "no me llegan" (FALSO: sí llegan y quedan en el panel vía saveMedia). Determinista, antes del
@@ -1596,8 +1651,21 @@ export async function handleWebhook(req, res, deps = {}) {
           // en la secuencia informe-primero este bloque corre ANTES de que el turno persista
           // state.name — el nombre viaja por opción desde el llamador (el mismo clientName de
           // la propuesta). state.name queda de fallback para el camino clásico.
+          // [2026-08-30] EL RUT DEL DESTINATARIO tambien en el informe. Hasta hoy el documento
+          // identificaba al EMISOR (Activa Inversiones EIRL, RUT 76.486.825-0, en el aviso
+          // legal) pero no al receptor: un informe "de uso exclusivo del destinatario" que no
+          // puede decir quien es ese destinatario protege menos de lo que promete.
+          // Ya validado por modulo 11; `{...{}}` no agrega nada ⇒ sin RUT el informe sale
+          // identico a como salia antes de este cambio.
+          // ⚠️ Se resuelve ACA ARRIBA y no dentro de la llamada a proposito: el bloque de
+          // opciones lo vigila un test de FUENTE (informeTermico.cableado.test.js, "tramo 3")
+          // que exige ver `ventanas,` cerca de la llamada. Un comentario largo metido en medio
+          // lo empuja fuera de la ventana y pone el test en rojo sin que el codigo este mal.
+          const _rcpInforme = receptorParaDocumento(state.receptor,
+            { nombreFallback: nombre || state.name || '' }) || {};
           const pdfBuf = await (deps.generarInformeTermicoPdf || generarInformeTermicoPdf)(datos, {
-            nombre: nombre || state.name || '', firma: FIRMA, esReferenciaRegional: esRef, vidrios, laminas, termopanel,
+            nombre: nombre || state.name || '', ..._rcpInforme,
+            firma: FIRMA, esReferenciaRegional: esRef, vidrios, laminas, termopanel,
             numeroInforme,
             // Lo que hace que el informe sea de SU proyecto y no un catalogo.
             suVidrio: glassLabel, suUw: uw, suProducto: producto,
@@ -2021,10 +2089,9 @@ Comuna: ${datos.comuna}`
           // visión sacó de sus imágenes, que entra al historial como mensaje del cliente) y
           // el del turno actual. NO se mira lo que escribió Oliver: si él dice "corredera"
           // ofreciéndola, eso no es que el cliente la haya pedido.
-          const _textoCliente = [
-            ...(history || []).filter((m) => m && m.role === 'user').map((m) => String(m.content || '')),
-            String(userText || ''),
-          ].join('  ');
+          // [2026-08-31] El armado vive en `normalizers.textoDelCliente`: IG/FB tiene que medir
+          // EXACTAMENTE lo mismo para que el gate del color se comporte igual en los dos canales.
+          const _textoCliente = textoDelCliente(history, userText);
           const _gate = quoteDataComplete(input, state, { textoCliente: _textoCliente });
           if (!_gate.ok) {
             log('error', 'generarPdf.gate', `PDF bloqueado por datos incompletos: ${_gate.missing.join(', ')}`);
@@ -2131,7 +2198,31 @@ Comuna: ${datos.comuna}`
           // Sale la propuesta en Blanco, pero SE LO DECIMOS. Lo que no vuelve a pasar es
           // entregar blanco sin avisar: eso es lo que costaba recotizaciones y disgustos.
           let _avisoColor = '';
-          if (_gate.colorAsumido) {
+          // 🎨 [2026-08-31 · DECISION DEL DUEÑO] TRES PROPUESTAS, UNA POR COLOR.
+          // Textual: *"cuando cliente no entrega color entreguemosle blanco, nogal y negro"*.
+          // La OPCION A viaja por el camino de siempre (este mismo `generarPdf`, con todo lo
+          // que cuelga de el: Zoho, informe termico, video, conversion). Las otras dos salen
+          // en el Paso 3b·bis, mas abajo, cada una aislada de la otra.
+          // ⛔ NO se escribe `state.default_color`: el cliente NO eligio ninguno. Guardarlo
+          // seria repetir el defecto del 29-ago —el Blanco inventado quedaba marcado como una
+          // eleccion del cliente y apagaba el gate para siempre—. Si el cliente responde cual
+          // quiere, `recordarColor` lo guarda entonces, que es cuando de verdad lo eligio.
+          let _coloresTerna = null;
+          // Cuantas letras del folio quedan RESERVADAS por la terna. Variable local (no
+          // `state`): `agent.handleTurn` saca la foto del estado al empezar, asi que esto no
+          // sobreviviria el turno de todos modos — y no tiene por que: solo tiene que llegar
+          // hasta el `state.last_quote` del final de esta misma llamada.
+          let _letrasTerna = 0;
+          if (_gate.coloresPropuestos && _gate.coloresPropuestos.length > 1) {
+            _coloresTerna = _gate.coloresPropuestos.slice();
+            const _colorA = _coloresTerna[0];
+            (input.items || []).forEach((it) => { it.color = _colorA; });
+            log('info', 'generarPdf.color',
+              `${from}: sin color del cliente → ${_coloresTerna.length} propuestas (${_coloresTerna.join(' / ')})`);
+          } else if (_gate.colorAsumido) {
+            // Pedido MIXTO (el cliente eligio un color para unas ventanas y no para otras):
+            // no se le proponen tres colores a quien ya eligio uno. Se completa con Blanco y
+            // se le avisa — el comportamiento de siempre, intacto.
             (input.items || []).forEach((it) => { if (!String(it.color || '').trim()) it.color = 'Blanco'; });
             state.default_color = state.default_color || 'Blanco';
             _avisoColor = '\n\n🎨 Se la preparé en *Blanco* mientras me confirma el color. '
@@ -2239,6 +2330,50 @@ Comuna: ${datos.comuna}`
             }
           } catch (e) {
             log('error', 'generarPdf.guard.apertura.err', e?.message || e); // no bloquear el PDF si el motor no responde
+          }
+
+
+          // ⛔ [2026-08-31] LA OPCION A TAMBIEN SE COTIZA PARA SU COLOR.
+          // No alcanza con cambiarle la etiqueta arriba: el precio que trae `input.items` lo
+          // compuso el turno anterior con el color por DEFECTO, y las opciones B/C SI se
+          // re-cotizan (paso 3b·bis). Mientras la A fue el Blanco coincidia por casualidad;
+          // al pasar el orden a "del mas caro al mas economico" (decision del dueno) la A
+          // quedo rotulada New Black CON EL PRECIO DEL BLANCO — un documento formal con la
+          // etiqueta de un color y el precio de otro, que es justo lo que el resto de este
+          // archivo prohibe.
+          // La guardia de apertura de arriba NO cubre esto: solo corre para labels que
+          // `aperturaFromLabel` reconoce, y ademas usa el motor importado, no el inyectado.
+          // Va DESPUES de ella a proposito: el precio del color es el que tiene que quedar.
+          // Si el motor no responde, se sigue con lo que habia: nunca se frena al cliente.
+          if (_coloresTerna && _coloresTerna.length > 1) {
+            try {
+              const _colorA = _coloresTerna[0];
+              const _sondaA = {
+                items: (input.items || []).map((it) => ({
+                  product:     it.producto_label || it.product || 'Ventana',
+                  measures:    _measuresForEngine(it),
+                  color:       _colorA,
+                  qty:         Number(it.qty) || 1,
+                  ambiente:    it.ambiente || '',
+                  descripcion: it.descripcion || it.ambiente || '',
+                  orientacion: it.compuesta?.orientacion || it.orientacion || undefined,
+                  partes:      Array.isArray(it.compuesta?.partes) ? it.compuesta.partes : undefined,
+                })),
+                comuna: input.comuna || state.comuna || '',
+                texto_cliente: _textoCliente,
+              };
+              await priceAllFn(_sondaA);
+              _sondaA.items.forEach((x, k) => {
+                const _it = (input.items || [])[k];
+                if (!_it) return;
+                if (Number(x.unit_price) > 0 && x.confidence === 'high') {
+                  _it.unit_price  = Number(x.unit_price);
+                  _it.total_price = Number(x.total_price) || Number(x.unit_price) * (Number(_it.qty) || 1);
+                  _it.source      = x.source || _it.source;
+                  _it.confidence  = x.confidence;
+                }
+              });
+            } catch (e) { log('error', 'generarPdf.opcionA.precio', e?.message || e); }
           }
 
           // ── [thermal 2026-06-25] Uw SIEMPRE del MOTOR, nunca del LLM ───────
@@ -2435,14 +2570,75 @@ Comuna: ${datos.comuna}`
           catch { /* el guardia en memoria sigue cubriendo esta instancia */ }
           if (RECENT_QUOTES.size > 500) RECENT_QUOTES.clear(); // backstop de memoria
 
+          // ── 🎨 [2026-08-31] LOS FOLIOS DE LAS TRES OPCIONES, DE UNA SOLA VEZ ──
+          // Un solo correlativo ISO y las variantes por LETRA: 0392 · 0392-B · 0392-C. Es el
+          // mismo sufijo que ya existe desde el 26-ago (caso Paula) y esta VERIFICADO contra
+          // la BD viva (31-ago): `quote_counters.last_seq = 391` con la fila
+          // `CM-FR-004-2026-0391-B` presente ⇒ la letra NO consume correlativo, y cada letra
+          // cae en su propia fila de `quotes` (el pisado por numero desaparece solo).
+          // Pedir tres `next-number` en cambio quemaria 0392/0393/0394 para un mismo cliente.
+          const _folios = _coloresTerna ? foliosDeOpciones(quoteNumber, _coloresTerna.length,
+            Number((state.last_quote || {}).alternativas) || 0) : [];
+          // Si por lo que sea no se pudieron componer las letras (folio raro, alfabeto
+          // agotado), se sigue de largo con UNA sola propuesta: nunca se frena al cliente.
+          if (_coloresTerna && _folios.length < 2) {
+            log('warn', 'generarPdf.opciones', `${from}: no se pudieron componer las letras sobre ${quoteNumber}; sale una sola`);
+            _coloresTerna = null;
+          }
+
           // ── Paso 2: Generar PDF premium ──────────────────────────────────────
           const clientName  = atribucion?.name || input.name  || state.name  || push_name || 'Cliente';
           // [2026-08-08] La atribución del dueño manda por encima de todo: si escribió
           // "CLIENTE Juan +569…", la cotización es de Juan aunque la charla sea con él.
           const clientPhone = atribucion?.phone || input.phone || state.telefono || from;
           const clientComuna = input.comuna || state.comuna || '';
+
+          // 🔴 [2026-08-30 · caso Alfredo, 4 reclamos] A NOMBRE DE QUIEN VA LA PROPUESTA.
+          // Dos fuentes, y el orden importa: MANDA lo que capturo el codigo (state.receptor,
+          // extraido literal de lo que escribio el cliente) y el LLM solo RELLENA lo que
+          // falte —tipicamente la razon social cuando el cliente la dijo en otro mensaje—.
+          // `fusionarReceptor(previo, nuevo)` hace ganar al `nuevo`, por eso el determinista
+          // va segundo.
+          //
+          // ⛔ ANTI-ALUCINACION: venga de donde venga, el RUT vuelve a pasar por modulo 11
+          // dentro de `receptorParaDocumento`. Si no cierra, sale vacio y el documento se
+          // emite SIN RUT. Un RUT inventado por el modelo en una propuesta formal es un
+          // problema legal: el cliente la lleva a facturar y no le cuadra.
+          // Y por eso viaja `textoCliente`: la compuerta de procedencia exige que un dato de
+          // origen 'llm' APAREZCA en lo que el cliente escribio. El modulo 11 dice si un RUT
+          // esta bien escrito, no si alguien lo dijo — 1 de cada 11 numeros al azar lo pasa.
+          const _receptorLLM = (input.rut || input.razon_social || input.cliente_tipo)
+            ? {
+              rut: String(input.rut || ''),
+              razonSocial: String(input.razon_social || ''),
+              clienteTipo: input.cliente_tipo === 'empresa' ? 'empresa'
+                : (input.cliente_tipo === 'particular' ? 'particular' : ''),
+              origen: 'llm',
+            }
+            : null;
+          const receptorDoc = receptorParaDocumento(
+            state.receptor ? fusionarReceptor(_receptorLLM, state.receptor) : _receptorLLM,
+            { nombreFallback: clientName, textoCliente: userText }
+          );
+          // EL RECEPTOR SOBREVIVE AL TURNO. Si la razon social la aporto el LLM (porque el
+          // cliente la escribio en un mensaje que el extractor no rotulo), sin esto se
+          // perderia: `agent.handleTurn` saca la foto del estado AL EMPEZAR, asi que todo lo
+          // que una tool escriba durante el turno queda afuera. Es el mismo defecto que ya
+          // costo los relojes de los gates el 25-ago; se cierra igual, con el merge de mas
+          // abajo (`if (state.receptor) newState.receptor = state.receptor`).
+          if (receptorDoc) {
+            state.receptor = fusionarReceptor(state.receptor, {
+              clienteTipo: receptorDoc.clienteTipo,
+              razonSocial: receptorDoc.razonSocial,
+              rut: receptorDoc.rut,          // ya validado por modulo 11 (vacio si no cerro)
+            });
+          }
+
           const pdfData = {
             name:    clientName,
+            // { nombre, razonSocial, rut, clienteTipo } o null. Sin receptor la propuesta se
+            // imprime EXACTAMENTE como antes de este cambio.
+            receptor: receptorDoc,
             phone:   clientPhone,
             comuna:  clientComuna,
             address: state.address || '',
@@ -2450,6 +2646,10 @@ Comuna: ${datos.comuna}`
             descuento_mercado_pct: descuentoMercadoPct,         // descuento de mercado YA aplicado a los precios (se MUESTRA al cliente)
             is_partial:   Boolean(input.is_partial),            // [2026-07-02 BUG parcial] parte del pedido escaló a Marcelo
             partial_note: String(input.partial_note || '').slice(0, 200),
+            // 🎨 [2026-08-31] QUE OPCION ES ESTA — el PDF se identifica SOLO. El cliente abre
+            // el archivo y ve "OPCIÓN A · COLOR BLANCO" arriba, sin tener que volver al chat.
+            // `undefined` cuando no hay terna ⇒ el documento sale exactamente como siempre.
+            opcion: _coloresTerna ? { letra: _folios[0].letra, color: _coloresTerna[0] } : undefined,
             default_color: (input.items?.[0]?.color) || state.default_color || '',
             items:   (input.items || []).map((it) => ({
               product:        it.producto_label || it.product || 'Ventana',
@@ -2580,7 +2780,13 @@ Comuna: ${datos.comuna}`
               const folioV = `INF-V-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-`
                 + `${Date.now().toString(36).toUpperCase().slice(-4)}`;
               const pdfV = await (deps.generarInformeVientosPdf || generarInformeVientosPdf)(datosV, {
-                nombre: clientName, comuna: clientComuna, numeroInforme: folioV,
+                nombre: clientName,
+                // [2026-08-30] El mismo receptor que la propuesta: los tres documentos de la
+                // tanda salen a nombre de quien corresponde, no dos con RUT y uno sin.
+                // `receptorDoc` ya viene validado por modulo 11; si es null, `{...null}` es
+                // `{}` y el informe queda identico a como salia antes.
+                ...(receptorDoc || {}),
+                comuna: clientComuna, numeroInforme: folioV,
                 ilegibles, firma: FIRMA,
               });
               if (!pdfV) { soltarV(); return 'fallo'; }
@@ -2778,7 +2984,15 @@ Comuna: ${datos.comuna}`
           // ancho y el alto nombrados. Si el envío del texto falla, el PDF sale igual:
           // el anticipo es una cortesía, no una compuerta.
           try {
-            const anticipo = anticipoDeLoCotizado(input.items);
+            let anticipo = anticipoDeLoCotizado(input.items);
+            // 🎨 [2026-08-31] Y SI VAN TRES, SE AVISA ANTES DE MANDARLAS. Tres PDF seguidos
+            // sin explicacion se leen como un bot trabado (es literalmente lo que paso con
+            // Jessica el 08-ago y con Paula el 26-ago). Primero se dice que vienen tres y de
+            // que color; el mapeo con folio y letra va en el cierre, cuando ya llegaron.
+            if (anticipo && _coloresTerna) {
+              const _previo = avisoPrevioOpciones(_coloresTerna);
+              if (_previo) anticipo = `${anticipo}\n\n${_previo}`;
+            }
             if (anticipo) {
               const antEnv = await enviarSinPausa(from, anticipo);
               if (antEnv?.ok === true) {
@@ -2928,11 +3142,243 @@ Comuna: ${datos.comuna}`
                         media_id: waDocMediaId, pdf_sent: docSent },
           }));
 
+          // ── 🎨 Paso 3b·bis: LAS OTRAS DOS PROPUESTAS (opciones B y C) ────────
+          // [2026-08-31 · DECISION DEL DUEÑO] *"entregar 3 propuestas tecnica economicas una
+          // blanco, nogal y new black"*. La A ya salio por el camino de arriba; aca salen las
+          // otras dos. Van DESPUES de la A a proposito: la primera propuesta es la que arrastra
+          // todo lo que cuelga de una venta (Zoho, informe termico, video, conversion) y no se
+          // le puede agregar latencia por delante.
+          //
+          // 🛟 CADA UNA AISLADA DE LA OTRA. Instruccion explicita: si una de las tres falla, las
+          // otras salen igual y queda registrado cual fallo. Por eso el `try` esta DENTRO del
+          // bucle y no alrededor: una excepcion en la B no puede llevarse la C.
+          //
+          // ⛔ EL PRECIO DE CADA COLOR SE LE PIDE AL MOTOR, NUNCA SE DERIVA. Un Nogal NO es "el
+          // blanco mas un porcentaje": es otra cotizacion. Si el motor no devuelve un precio
+          // propio para ESE color en TODOS los items, la opcion se descarta entera — antes que
+          // emitir un documento formal con la etiqueta de un color y el precio de otro. Es la
+          // regla anti-alucinacion del proyecto aplicada al caso: si falta un dato, se marca,
+          // no se rellena. Cotizar de nuevo no cuesta plata: el motor es LOCAL (quoteEngine.js).
+          const _opcionesEntregadas = [];
+          if (_coloresTerna && _folios.length > 1) {
+            if (docSent) _opcionesEntregadas.push({ letra: _folios[0].letra, color: _coloresTerna[0], numero: quoteNumber,
+              total: (input.items || []).reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0) });
+            for (let _i = 1; _i < _folios.length && _i < _coloresTerna.length; _i++) {
+              const _colorOp = _coloresTerna[_i];
+              const _numOp   = _folios[_i].numero;
+              const _letraOp = _folios[_i].letra;
+              try {
+                // 1) Precio REAL del motor para ESTE color. Mismo shape de sonda que el
+                //    blindaje label↔precio de mas arriba (probado), con TODOS los items y con
+                //    la composicion/orientacion, para que una compuesta no se re-cotice como
+                //    un pano suelto.
+                const _sonda = {
+                  items: (input.items || []).map((it) => ({
+                    product:     it.producto_label || it.product || 'Ventana',
+                    measures:    _measuresForEngine(it),
+                    color:       _colorOp,
+                    qty:         Number(it.qty) || 1,
+                    ambiente:    it.ambiente || '',
+                    descripcion: it.descripcion || it.ambiente || '',
+                    orientacion: it.compuesta?.orientacion || it.orientacion || undefined,
+                    partes:      Array.isArray(it.compuesta?.partes) ? it.compuesta.partes : undefined,
+                  })),
+                  comuna: input.comuna || state.comuna || '',
+                  texto_cliente: _textoCliente,
+                };
+                await priceAllFn(_sonda);
+                const _todosConPrecio = _sonda.items.length === (input.items || []).length
+                  && _sonda.items.every((x) => Number(x.unit_price) > 0 && x.confidence === 'high');
+                if (!_todosConPrecio) {
+                  log('error', 'generarPdf.opcion',
+                    `${from}: opcion ${_letraOp} (${_colorOp}) DESCARTADA — el motor no cotizo ese color para todos los items; ${_numOp} no se emite`);
+                  continue;
+                }
+
+                // 2) El documento. Se parte del MISMO `pdfData` de la opcion A (cliente,
+                //    receptor/RUT, descuentos, comuna) y solo se cambian color, precios y
+                //    folio: asi las tres propuestas son la misma propuesta, no tres distintas.
+                const _pdfOp = {
+                  ...pdfData,
+                  quote_num: _numOp,
+                  default_color: _colorOp,
+                  opcion: { letra: _letraOp, color: _colorOp },
+                  items: (input.items || []).map((it, k) => {
+                    const _p = _sonda.items[k] || {};
+                    return {
+                      product:        _p.producto_label || it.producto_label || it.product || 'Ventana',
+                      producto_label: _p.producto_label || it.producto_label || it.product || 'Ventana',
+                      // La MEDIDA que ve el cliente sale del item original (ya corregida por el
+                      // bloque termico si venia dada vuelta), no del formato interno "AxBmm".
+                      measures:       it.measures || '',
+                      color:          _colorOp,
+                      qty:            Number(it.qty) || 1,
+                      unit_price:     Number(_p.unit_price) || 0,   // del motor, para ESTE color
+                      glass_label:    _p.glass_label || it.glass_label || 'Termopanel DVH',
+                      ambiente:       it.ambiente || '',
+                      termico:        _p.termico || null,
+                      compuesta:      _p.compuesta || it.compuesta || undefined,
+                      hoja_mm:        Number(it.hoja_mm) || undefined,
+                    };
+                  }),
+                };
+                const _bufOp = await generatePdf(_pdfOp, _numOp);
+                const _fileOp = `${_numOp}.pdf`;
+                const _totalOp = _pdfOp.items.reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0);
+
+                // 3) Entrega. Un fallo de envio NO descarta el documento: ya existe, tiene
+                //    folio y queda registrado (abajo) como emitido-no-entregado. Lo que si
+                //    hace es no nombrarlo en el mensaje: prometerle al cliente un archivo que
+                //    no le llego es peor que no mencionarlo.
+                let _mediaOp = null;
+                let _sentOp = false;
+                try {
+                  _mediaOp = await uploadWaDocument(_bufOp, _fileOp);
+                  const _resOp = await sendWaDocument(from, _mediaOp, _fileOp,
+                    `Propuesta Técnica Económica N° ${_numOp} · Opción ${_letraOp} — ${_colorOp} · Activa Inversiones`);
+                  _sentOp = !!(_resOp && _resOp.ok);
+                } catch (e) { log('error', 'generarPdf.opcion.envio', e?.message || e); }
+                if (_sentOp) _opcionesEntregadas.push({ letra: _letraOp, color: _colorOp, numero: _numOp, total: _totalOp });
+                else log('error', 'generarPdf.opcion', `${from}: opcion ${_letraOp} (${_colorOp}) ${_numOp} NO se pudo entregar`);
+
+                // 4) Que el operador la vea en el cockpit igual que la A (archivo + espejo).
+                safe('generarPdf.opcion.storeMedia', async () => {
+                  if (!SALES_OS_URL) return;
+                  await fetch(`${SALES_OS_URL}/api/v5/media/store`, {
+                    method: 'POST',
+                    headers: { 'x-api-key': OPERATOR_TOKEN, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      phone: from, direction: 'outbound', media_type: 'document', mime_type: 'application/pdf',
+                      filename: _fileOp, wa_media_id: _mediaOp || '', media_base64: _bufOp.toString('base64'),
+                      file_size: _bufOp.length, ai_description: `Propuesta ${_numOp} · opción ${_letraOp} ${_colorOp}`,
+                    }),
+                    signal: AbortSignal.timeout(15000),
+                  });
+                });
+                safe('generarPdf.opcion.mirror', () => bridge.pushConversationEvent({
+                  channel: 'whatsapp', external_id: from, direction: 'outbound',
+                  actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
+                  body: _sentOp
+                    ? `📄 Propuesta ${_fileOp} (opción ${_letraOp} · ${_colorOp}) enviada al cliente`
+                    : `⚠️ Propuesta ${_fileOp} (opción ${_letraOp} · ${_colorOp}) NO se pudo entregar`,
+                  metadata: { source: 'oliver_gpt_pdf_opcion', quote_number: _numOp, filename: _fileOp,
+                              media_id: _mediaOp, pdf_sent: _sentOp, opcion: _letraOp, color: _colorOp },
+                }));
+
+                // 5) SU PROPIA FILA EN `quotes` — trazabilidad ISO. Sin esto pasa lo del caso
+                //    Paula: dos documentos con el mismo numero, la fila se busca por
+                //    `(tenant_id, quote_number)` y el segundo PISA al primero, asi que la
+                //    cotizacion que el cliente tiene en la mano no existe en el registro.
+                //
+                // 🔴 `status: 'alternativa'` Y NO 'sent', A PROPOSITO — ESTO TOCA PLATA.
+                //    `fireConversion` (sales-os/src/server.js:539) mapea SOLO
+                //    sent/formal_sent/diagnostico/accepted/won. Cualquier otro estado guarda la
+                //    fila y NO dispara conversion. Es exactamente lo que se necesita: **un
+                //    cliente que no eligio color es UNA oportunidad, no tres**. Reportarle tres
+                //    quote_sent a Meta/Google por un solo lead le enseña al algoritmo que ese
+                //    trafico convierte el triple de lo que convierte, y el algoritmo reparte el
+                //    presupuesto con eso. La conversion la dispara SOLO la opcion A, en el Paso
+                //    6, con el mismo valor que tenia la blanca de antes: para el algoritmo, este
+                //    cambio es invisible. Y de yapa, tampoco se triplican el seguimiento
+                //    automatico ni el TTL, que cuelgan del mismo 'sent'.
+                //
+                // ⚠️ ORDEN: estas van ANTES del 'sent' de la opcion A (Paso 6), asi la etapa
+                //    del embudo de la conversacion termina en 'sent' y no en 'alternativa'.
+                //    Doble red: `upsertConversation` tiene el guardia "el embudo no retrocede"
+                //    (conversationService.js:112) y 'alternativa' puntua 0, asi que aunque el
+                //    orden se invirtiera nunca podria pisar un 'sent'. Se await a proposito.
+                await safe('generarPdf.opcion.registro', () => bridge.pushQuoteEvent({
+                  phone:         clientPhone,
+                  channel:       'whatsapp',
+                  customer_name: clientName,
+                  amount_total:  _totalOp,
+                  currency:      'CLP',
+                  status:        'alternativa',
+                  quote_number:  _numOp,
+                  receptor:      receptorDoc || null,
+                  // Que fue esta fila y de que documento es hermana: sin esto, dentro de un mes
+                  // nadie sabe por que hay tres folios seguidos para el mismo cliente.
+                  variante: { letra: _letraOp, color: _colorOp, base: _folios[0].numero,
+                              motivo: 'cliente_no_declaro_color', pdf_sent: _sentOp },
+                  items: _pdfOp.items.map((it) => ({
+                    producto: it.producto_label || null,
+                    medidas:  it.measures || null,
+                    cantidad: Number(it.qty) || 1,
+                    unitario: Number(it.unit_price) || null,
+                    color:    it.color || null,
+                    vidrio:   it.glass_label || null,
+                    ambiente: it.ambiente || null,
+                    uw:       it.termico?.uw ?? null,
+                  })),
+                  // El MISMO lead que la opcion A: es un solo cliente. Sin `lead`,
+                  // `quoteService.upsertQuote` deja `lead_id` NULL y el JOIN quotes→leads
+                  // se rompe para estas filas.
+                  lead: {
+                    source: 'oliver_gpt', channel: 'whatsapp',
+                    lead_name: clientName || null, name: clientName || null,
+                    phone: clientPhone || from || null,
+                    comuna: clientComuna || null, city: clientComuna || null,
+                    status: 'quoted', external_id: from || null,
+                  },
+                  // ⛔ SIN click-ids. No los necesita (no dispara conversion) y mandarlos
+                  // invitaria a que alguien "arregle" el status mañana y triplique el reporte.
+                }));
+              } catch (e) {
+                log('error', 'generarPdf.opcion.err', `${_letraOp} (${_colorOp}) ${_numOp}: ${e?.message || e}`);
+              }
+            }
+            // Las letras quedan CONSUMIDAS aunque una haya fallado: reciclar la B despues
+            // pondria dos documentos distintos bajo el mismo numero, que es el pisado que
+            // esto vino a cerrar. Un hueco en la numeracion se explica (queda en el log);
+            // una colision no se explica de ninguna manera.
+            _letrasTerna = letrasReservadas(_folios);
+            log('info', 'generarPdf.opciones',
+              `${from}: ${_opcionesEntregadas.length}/${_folios.length} propuestas entregadas (${_opcionesEntregadas.map((o) => `${o.letra}=${o.color}`).join(', ') || 'ninguna'})`);
+          }
+
+          // 🎨 [2026-08-31] Y AHORA SE LE DICE AL CLIENTE CUAL ES CUAL — pedido EXPLICITO del
+          // dueño: *"le decimos a cliente cuel es cada una"*. Se nombran SOLO las que de verdad
+          // salieron. Si al final quedo una sola (las otras dos fallaron), el cliente no puede
+          // quedarse con una propuesta blanca sin enterarse de que el color no lo eligio el:
+          // ahi vuelve el aviso de siempre. Nunca en silencio.
+          if (_coloresTerna) {
+            if (_opcionesEntregadas.length >= 2) {
+              _avisoColor = `\n\n${textoDeOpciones(_opcionesEntregadas)}`;
+            } else {
+              _avisoColor = '\n\n🎨 Se la preparé en *Blanco* mientras me confirma el color. '
+                + 'Si prefiere Nogal, Roble Dorado, Grafito Antracita o Negro, me avisa y se la '
+                + 'recotizo sin costo; el color cambia el precio, por eso se lo digo.';
+              log('warn', 'generarPdf.opciones', `${from}: la terna quedo en una sola propuesta; sale el aviso de Blanco`);
+            }
+          }
+
           // ── Paso 4: Zoho CRM (Deal upsert + Note) ───────────────────────────
           // Fire-and-forget: si Zoho falla no bloquea el resto del flujo.
           // [FIX 2026-06-19 COB-07] SIEMPRE recalcular desde los items (unit_price NETO del motor);
           // ignorar input.grand_total (si el LLM lo alucina con IVA, inflaría el monto a Zoho/CXM).
-          const grandTotal = (input.items || []).reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0);
+          const _totalDocA = (input.items || []).reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0);
+
+          // 💰 [2026-08-31] QUE MONTO SE LE REPORTA A META Y GOOGLE CUANDO SALEN TRES.
+          // ESTO TOCA PLATA Y ES UNA DECISION DEL DUENO, no del codigo. Queda en UNA linea
+          // (`_montoReportado`) justamente para que se pueda cambiar sin tocar nada mas.
+          //
+          // El cliente recibio tres propuestas y NO eligio ninguna todavia. Los tres precios
+          // son distintos (el New Black sale ~44% mas que el Blanco), asi que "cuanto vale
+          // esta cotizacion" no tiene una respuesta unica.
+          //
+          // Se reporta EL MAS BAJO de las que salieron, por dos razones:
+          //   1. Es lo que las plataformas reciben HOY: antes la opcion A era el Blanco. Este
+          //      cambio de orden es una decision de PRESENTACION al cliente y no tiene por que
+          //      mover la senal que entrena el reparto de presupuesto.
+          //   2. Es el piso real del negocio: si el cliente elige el mas barato, es lo que hay.
+          //      Reportar el mas caro por algo que nadie eligio le ensena al algoritmo que ese
+          //      trafico vale mas de lo que se sabe.
+          // Cuando el cliente ELIGE, ahi si corresponde reportar lo que eligio — eso todavia
+          // no existe (es el defecto B2: el sistema no entiende "quiero la B").
+          const _montoReportado = (_opcionesEntregadas && _opcionesEntregadas.length > 1)
+            ? Math.min(..._opcionesEntregadas.map((o) => Number(o.total) || Infinity).filter(Number.isFinite))
+            : _totalDocA;
+          const grandTotal = Number.isFinite(_montoReportado) && _montoReportado > 0 ? _montoReportado : _totalDocA;
           safe('generarPdf.zoho', async () => {
             const dealId = await upsertZohoDeal({
               phone:      clientPhone,
@@ -2942,6 +3388,10 @@ Comuna: ${datos.comuna}`
               grand_total: grandTotal,
               stageKey:   'propuesta',
               quote_number: quoteNumber,
+              // [2026-08-30] El RUT y la razon social al Deal, en `Description` (campo estandar
+              // de texto libre): cuando Marcelo abre el Deal para facturar lo tiene ahi sin
+              // ir a buscar el PDF. Ya validado por modulo 11; null si no hay.
+              receptor:   receptorDoc,
             });
             if (dealId) {
               await addZohoNote(dealId, `Cotización enviada: ${quoteNumber}`,
@@ -2977,6 +3427,13 @@ Comuna: ${datos.comuna}`
               currency:        'CLP',
               status:          'sent',       // server.js lo mapea a 'quote_sent'
               quote_number:    quoteNumber,
+              // 🔴 [2026-08-30] A NOMBRE DE QUIEN SE EMITIO. Un documento formal tiene que
+              // poder reconstruirse desde la BD: si mañana hay una disputa por una factura,
+              // `quotes.payload->'receptor'` dice con que RUT y a que razon social salio esa
+              // propuesta. `quoteService.upsertQuote` (sales-os) guarda el payload entero en
+              // la columna jsonb, asi que con mandarlo alcanza — cero cambios del servidor.
+              // Solo viaja si paso modulo 11: en la BD tampoco entra un RUT inventado.
+              receptor:        receptorDoc || null,
               // 🔴 [2026-08-25] #203 — LA COTIZACION GUARDA QUE SE COTIZO, no solo cuanto.
               // Medido contra la BD viva: 343 de 395 cotizaciones de los ultimos 90 dias
               // tienen un `payload` que solo trae atribucion (lead + click-ids) — ni una
@@ -3077,7 +3534,10 @@ Comuna: ${datos.comuna}`
               // proximo PDF es una correccion de este o un documento distinto.
               sig: _quoteSig,
               quote_base: String(quoteNumber).replace(/-[A-Z]$/, ''),
-              alternativas: Number((state.last_quote || {}).alternativas || 0) };
+              // [2026-08-31] `_letrasTerna` = las letras que la terna A/B/C ya reservo. Se
+              // cuentan aunque el envio haya fallado: reciclar una letra pondria dos
+              // documentos distintos bajo el mismo folio.
+              alternativas: Math.max(Number((state.last_quote || {}).alternativas || 0), _letrasTerna) };
             await safe('generarPdf.escalate', () =>
               notifyHighValue(enviarSinPausa, from,
                 { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
@@ -3087,7 +3547,12 @@ Comuna: ${datos.comuna}`
               // [2026-07-01 Bug#2 paridad] explícito y honesto: Marcelo la envía (no "si no la ves" vago).
               // [Gemini, compuerta 28-ago] En USTED (el resto del flujo habla de usted) y
               // sin guion largo: este texto SÍ le llega al cliente cuando Meta rechaza.
-              message: `Su Propuesta Técnica Económica N° ${quoteNumber} está lista ✅ Tuve un problema para adjuntarle el archivo: el Ing. Marcelo Cifuentes se la enviará directamente en un momento. 📲 +56 9 5729 6035`,
+              // 🎨 [2026-08-31] Si la A no se pudo entregar pero las alternativas SI llegaron,
+              // el cliente tiene dos PDF en la mano mientras le decimos que no pudimos
+              // mandarle nada. Se le nombran las que si recibio. `_avisoColor` ya trae solo lo
+              // entregado (la A no entra en la lista cuando docSent es false).
+              message: `Su Propuesta Técnica Económica N° ${quoteNumber} está lista ✅ Tuve un problema para adjuntarle el archivo: el Ing. Marcelo Cifuentes se la enviará directamente en un momento. 📲 +56 9 5729 6035`
+                + (_opcionesEntregadas.length >= 2 ? _avisoColor : ''),
             };
           }
           // [PDF-RACE 2026-07-01] entrega OK → registrar folio para reuso (revisiones = mismo folio).
@@ -3099,7 +3564,11 @@ Comuna: ${datos.comuna}`
             // Se cuenta solo cuando el documento SALIO (una alternativa no entregada no
             // consume su letra) y DERIVADO de la letra, no +1 por entrega: reenviar la misma
             // -B no debe quemar la C (Codex, 26-ago).
-            alternativas: alternativasEntregadas(quoteNumber, (state.last_quote || {}).alternativas) };
+            // [2026-08-31] …y las que reservo la terna A/B/C de este mismo turno: la B y la C
+            // ya tienen dueño aunque el cliente todavia no elija ninguna.
+            alternativas: Math.max(
+              alternativasEntregadas(quoteNumber, (state.last_quote || {}).alternativas),
+              _letrasTerna) };
           return {
             ok: true,
             quote_number: quoteNumber,
@@ -3211,6 +3680,12 @@ Comuna: ${datos.comuna}`
     // (ese si persiste porque `recordarColor` escribe sobre la copia, DESPUES del turno).
     // No lo cazaba ningun test porque los `handleTurn` falsos copian el estado DESPUES de
     // llamar la tool — mas indulgentes que produccion. Ver gate-reloj-persiste.test.js.
+    // 🔴 [2026-08-30] EL RECEPTOR (RUT + razon social), por la MISMA razon exacta. La captura
+    // determinista corre ANTES del turno, asi que ya viaja en la foto; lo que se rescata aca
+    // es lo que `generarPdf` haya completado DURANTE el turno con lo que aporto el LLM.
+    if (state.receptor) newState.receptor = state.receptor;
+    if (state.receptor_rechazado) newState.receptor_rechazado = state.receptor_rechazado;
+    else delete newState.receptor_rechazado;   // el RUT bueno del turno borra el rechazo viejo
     if (state.color_preguntado_at) newState.color_preguntado_at = state.color_preguntado_at;
     if (state.tipo_preguntado_at) newState.tipo_preguntado_at = state.tipo_preguntado_at;
     if (state.hojas_preguntado_at) newState.hojas_preguntado_at = state.hojas_preguntado_at;

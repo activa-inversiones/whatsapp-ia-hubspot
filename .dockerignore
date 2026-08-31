@@ -1,0 +1,42 @@
+# .dockerignore — [2026-08-29, auditoria adversarial]
+#
+# POR QUE EXISTE. El Dockerfile hace `COPY . .` y este repo NO tenia .dockerignore: todo lo
+# que estuviera en la carpeta al construir entraba a la imagen. Medido: hay un `.env` REAL en
+# el working copy (git lo ignora, Docker no), y `index.js` carga dotenv al arrancar. Con un
+# build local (`docker build .`) esa imagen se lleva las credenciales de produccion adentro,
+# y una imagen se comparte, se sube a un registry y se guarda.
+#
+# Railway construye desde git, asi que hoy el riesgo no se materializa en el deploy normal —
+# esto cierra la puerta del build LOCAL y de cualquier CI futuro, que es donde el mismo
+# descuido si te alcanza.
+#
+# REGLA AL EDITAR: esto solo puede EXCLUIR cosas que la app no necesita en runtime. Si algo
+# se saca de mas, el contenedor arranca sin ese archivo y el fallo aparece recien en
+# produccion. Ante la duda, NO se agrega.
+
+# ── Secretos: la razon de ser de este archivo ──────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+*.p12
+credentials*.json
+service-account*.json
+
+# ── Dependencias: se instalan con `npm ci` DENTRO de la imagen ─────────────────
+# Ademas, copiar el node_modules de Windows a un contenedor Linux rompe los binarios
+# nativos: excluirlo no es solo peso, es correccion.
+node_modules
+npm-debug.log*
+
+# ── Metadatos de git (la imagen no necesita el historial) ──────────────────────
+.git
+.gitignore
+.github
+
+# ── Ruido local ────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log
+tmp/
+temp/
