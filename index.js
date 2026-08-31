@@ -332,6 +332,7 @@ import { detectOutOfCatalog, outOfCatalogRetentionMessage } from "./services/oli
 import { shouldSkipFollowup } from "./services/oliverFollowup.js"; // [2026-06-10] no enviar follow-up a Marcelo/internos
 import { parseAgendaVoz } from "./services/agendaVoz.js"; // [2026-07-07 ZL-F3] agenda por voz del CEO — parser determinista
 import { addZohoNote as zohoAddNote } from "./services/zohoCommercial.js"; // [2026-07-07] "Salesforce reutilizando Zoho": nota en el Deal cuando sales-os marca un seguimiento hecho
+import { camposContactoReceptor, contactoEsElMismo, necesitaActualizarContacto } from "./services/zohoBooksReceptor.js"; // [2026-08-30] RUT + razón social del cliente hacia el contacto de Books
 import { persistHandoff, isHandoffActive } from "./services/oliverHandoff.js"; // [2026-06-10 #B/GT-07] handoff persistente (bot no revive)
 import { isSessionStuck, sessionStuckAlertMessage } from "./services/stuckLeadMonitor.js"; // [2026-06-10 #C] aviso lead pegado (no perder Dalias en silencio)
 import { isVisionUnreadable, imageUnreadableMessage } from "./services/oliverVision.js"; // [2026-06-10 G2] imagen ilegible → no mentir "recibí tus medidas"
@@ -2323,17 +2324,56 @@ async function waDownload(url) {
   };
 }
 
+// [2026-08-31 · tablero #581] UN RECHAZO POR FIRMA YA NO ES MUDO.
+// Nació el mismo día en que se cerró el fail-open (#578): con la firma ya exigiéndose, el modo de
+// falla cambió de lado. Si algún día `APP_SECRET` se rota mal o se copia el de la app equivocada,
+// Oliver rechazaría TODOS los mensajes de clientes devolviendo 200 y haciendo `return` — sin error,
+// sin log, sin nada. Quedaría sordo en silencio y nos enteraríamos cuando un cliente reclame.
+// Se distinguen los dos motivos porque significan cosas distintas:
+//   · sin_firma   → alguien pegó la URL del webhook a mano (curioso, bot, escáner). Es ruido.
+//   · no_coincide → la firma llegó pero no cierra ⇒ CASI SIEMPRE es el secreto equivocado. Grave.
+const _sigRechazos = { total: 0, sin_firma: 0, no_coincide: 0, ultimo_at: null, ultimo_motivo: null };
+let _sigUltimoLog = 0;
+
+function _registrarRechazoFirma(motivo) {
+  _sigRechazos.total += 1;
+  _sigRechazos[motivo] += 1;
+  _sigRechazos.ultimo_at = new Date().toISOString();
+  _sigRechazos.ultimo_motivo = motivo;
+  // Log con techo: un escáner golpeando la URL no puede inundar los logs de Railway (ni la factura).
+  // 1 línea por minuto como máximo; el contador de /health sí lleva la cuenta exacta.
+  const ahora = Date.now();
+  if (ahora - _sigUltimoLog > 60_000) {
+    _sigUltimoLog = ahora;
+    logErr("webhook.firma_rechazada",
+      new Error(`motivo=${motivo} · total=${_sigRechazos.total} (sin_firma=${_sigRechazos.sin_firma}, no_coincide=${_sigRechazos.no_coincide}). ` +
+        `Si no_coincide sube y los clientes dejaron de recibir respuesta, revisar APP_SECRET: tiene que ser el de la app "Activa Inversiones EIRL" (1174828311519839).`));
+  }
+}
+
 function verifySig(req) {
   if (!META.SECRET) return true;
+  // MEMOIZADO: el handler del webhook llama a verifySig hasta 8 veces en el MISMO request
+  // (los intercepts de comandos del dueño, más el camino normal). Sin esto un solo mensaje
+  // rechazado contaría como 8 y el HMAC se recalcularía 8 veces por mensaje.
+  if (req._sigOk !== undefined) return req._sigOk;
   const sig = req.get("X-Hub-Signature-256") || req.get("x-hub-signature-256");
-  if (!sig || !req.rawBody) return false;
-  const exp =
-    "sha256=" + crypto.createHmac("sha256", META.SECRET).update(req.rawBody).digest("hex");
-  try {
-    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(exp));
-  } catch {
+  if (!sig || !req.rawBody) {
+    _registrarRechazoFirma("sin_firma");
+    req._sigOk = false;
     return false;
   }
+  const exp =
+    "sha256=" + crypto.createHmac("sha256", META.SECRET).update(req.rawBody).digest("hex");
+  let ok = false;
+  try {
+    ok = crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(exp));
+  } catch {
+    ok = false;   // largos distintos: timingSafeEqual lanza en vez de devolver false
+  }
+  if (!ok) _registrarRechazoFirma("no_coincide");
+  req._sigOk = ok;
+  return ok;
 }
 
 /* =========================
@@ -4029,6 +4069,15 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
   return withRetry(async () => {
     const h = await zhH();
     let customer_id = null;
+    // 🔴 [2026-08-30] IDENTIDAD DEL RECEPTOR (RUT + razón social) hacia el contacto de Books.
+    // `data.receptor` viene YA VALIDADO por módulo 11 (services/receptorCliente.js): si el RUT
+    // no cerraba, llega vacío y acá no se manda nada. Los campos son los CONFIRMADOS en el
+    // OpenAPI oficial (company_name, customer_sub_type); el RUT viaja solo si el dueño
+    // configuró el campo personalizado — ver services/zohoBooksReceptor.js.
+    // ⛔ NUNCA en tax_id: en Zoho ese campo es el id de una TASA de impuesto y rompería la
+    // cotización (este mismo archivo usa ZOHO.TAX_ID con su semántica real, más abajo).
+    const camposReceptor = camposContactoReceptor(data?.receptor);
+    let contactoZoho = null;   // el objeto completo, para poder confirmar identidad antes de escribir
     // [PROD] Buscar primero por teléfono (más confiable que nombre)
     if (phone) {
       try {
@@ -4036,8 +4085,10 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
           `${ZOHO.BOOKS_API}/contacts?organization_id=${ZOHO.ORG_ID}&phone=${encodeURIComponent(phone)}`,
           { headers: h, httpsAgent, timeout: 20000 }
         );
-        if (phoneSearch.data?.contacts?.length)
-          customer_id = phoneSearch.data.contacts[0].contact_id;
+        if (phoneSearch.data?.contacts?.length) {
+          contactoZoho = phoneSearch.data.contacts[0];
+          customer_id = contactoZoho.contact_id;
+        }
       } catch {}
     }
     // Fallback: buscar por nombre
@@ -4047,8 +4098,10 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
           `${ZOHO.BOOKS_API}/contacts?organization_id=${ZOHO.ORG_ID}&contact_name=${encodeURIComponent(customer_name || "Cliente WhatsApp")}`,
           { headers: h, httpsAgent, timeout: 20000 }
         );
-        if (searchResp.data?.contacts?.length)
-          customer_id = searchResp.data.contacts[0].contact_id;
+        if (searchResp.data?.contacts?.length) {
+          contactoZoho = searchResp.data.contacts[0];
+          customer_id = contactoZoho.contact_id;
+        }
       } catch {}
     }
 
@@ -4067,10 +4120,39 @@ async function zhBooksCreateEstimate(data, customer_name, phone) {
               is_primary_contact: true,
             },
           ],
+          // Contacto NUEVO: nace ya con su identidad tributaria, sin necesitar un PUT después.
+          ...camposReceptor,
         },
         { headers: h, httpsAgent, timeout: 20000 }
       );
       customer_id = createResp.data?.contact?.contact_id;
+    } else if (necesitaActualizarContacto(contactoZoho, camposReceptor)) {
+      // ── CONTACTO QUE YA EXISTÍA, creado ANTES de que capturáramos el RUT ──
+      // Se completa con PUT /contacts/{id} (operationId update_contact del OpenAPI oficial).
+      //
+      // 🔴 PERO SOLO SI LA IDENTIDAD SE PUEDE CONFIRMAR. La búsqueda de arriba se queda con
+      // `contacts[0]` sin comprobar nada, y el parámetro `phone` de Zoho matchea con
+      // semántica "contiene": puede devolver a OTRO cliente. Mientras solo se leía un id para
+      // colgarle una cotización eso era cosmético; escribirle el RUT de un cliente al contacto
+      // equivocado NO lo es — es el problema legal que la regla anti-alucinación busca evitar,
+      // y encima silencioso (nadie se entera hasta que alguien factura mal).
+      if (!contactoEsElMismo(contactoZoho, { phone, contactName: customer_name })) {
+        logInfo("zhBooksCreateEstimate",
+          `contacto ${customer_id} NO confirmado (teléfono/nombre no calzan) — se usa para la cotización pero NO se le escribe el RUT`);
+      } else {
+        try {
+          await axios.put(
+            `${ZOHO.BOOKS_API}/contacts/${customer_id}?organization_id=${ZOHO.ORG_ID}`,
+            camposReceptor,
+            { headers: h, httpsAgent, timeout: 20000 }
+          );
+          logInfo("zhBooksCreateEstimate", `contacto ${customer_id} completado con la identidad del receptor`);
+        } catch (e) {
+          // No bloquea la cotización: el documento que recibe el cliente es el PDF propio,
+          // que ya lleva el RUT. Esto solo enriquece el contacto de Books.
+          logErr("zhBooksCreateEstimate.updateContact", e);
+        }
+      }
     }
 
     if (!customer_id) {
@@ -4470,6 +4552,10 @@ app.get("/health", async (_req, res) => {
     // fail-closed sin apagar el bot a ciegas. Si dice DISABLED, cualquiera con la URL puede
     // inyectarle mensajes falsos a Oliver.
     webhook_signature: META.SECRET ? "enforced" : "DISABLED_fail_open",
+    // [2026-08-31 #581] Que se pueda MIRAR sin entrar a los logs — mismo criterio que
+    // `reporte_costo` de abajo. Si `no_coincide` sube y los clientes dejaron de recibir
+    // respuesta, el APP_SECRET es de la app equivocada y Oliver esta sordo.
+    webhook_rechazos: _sigRechazos,
     voice_tts: VOICE_ENABLED
       ? `enabled/${VOICE_SEND_MODE}`
       : "disabled",
