@@ -235,6 +235,19 @@ export function fusionarReceptor(previo, nuevo) {
   const razonSocial = n.razonSocial || p.razonSocial || '';
   const nombre = n.nombre || p.nombre || '';
   const rut = n.rut || p.rut || '';
+  // 🔴 [2026-08-31 · tridente/Codex] PROCEDENCIA POR CAMPO, no una sola para todo el objeto.
+  // Antes `origen` era uno solo, y como el determinista gana la fusion, el resultado quedaba
+  // marcado 'cliente' COMPLETO. Consecuencia medida: el cliente decia solo su RUT, el LLM
+  // agregaba "Inmobiliaria Fantasma SpA", y esa razon social inventada entraba al documento
+  // formal SIN pasar por la compuerta — el RUT verdadero le lavaba la procedencia al dato
+  // falso. Ahora cada campo recuerda de donde vino y se verifica por separado.
+  const deQuien = (campo) => (n[campo] ? (n.origen || 'cliente')
+    : (p[campo] ? (p.origen || 'cliente') : 'cliente'));
+  const origenCampos = {
+    razonSocial: deQuien('razonSocial'),
+    nombre:      deQuien('nombre'),
+    rut:         deQuien('rut'),
+  };
   return {
     // Si en algún turno se supo que era empresa, un turno posterior sin razón social no lo
     // degrada a particular: el cliente no "deja de ser" una empresa entre dos mensajes.
@@ -245,6 +258,7 @@ export function fusionarReceptor(previo, nuevo) {
     nombre,
     rut,
     origen: n.origen || p.origen || 'cliente',
+    origenCampos,
     at: n.at || p.at || Date.now(),
   };
 }
@@ -282,15 +296,25 @@ export function receptorParaDocumento(receptor, opts = {}) {
   // en lo que el cliente escribió. Si no aparece, se cae — el documento sale sin él, que es
   // exactamente lo que hay que hacer cuando no se sabe.
   const declarado = String(opts.textoCliente || '');
-  const debeVerificarse = receptor.origen !== 'cliente' && declarado.trim() !== '';
+  // [2026-08-31 · tridente/Codex] Se mira la procedencia DE CADA CAMPO. `origenCampos` lo pone
+  // fusionarReceptor; si no viene (objeto viejo, o armado a mano) se cae al `origen` unico de
+  // antes, asi nada que ya funcionaba se rompe.
+  const _oc = (receptor.origenCampos && typeof receptor.origenCampos === 'object')
+    ? receptor.origenCampos : null;
+  const _vieneDelCliente = (campo) => (_oc ? _oc[campo] === 'cliente' : receptor.origen === 'cliente');
+  const _hayTexto = declarado.trim() !== '';
   let rutVerificado = v.valido;
-  if (debeVerificarse) {
+  if (_hayTexto && !_vieneDelCliente('rut')) {
     const soloDigitos = (x) => String(x || '').replace(/[^0-9kK]/g, '').toUpperCase();
     const rutEnTexto = soloDigitos(declarado).includes(soloDigitos(v.formateado)) && soloDigitos(v.formateado).length >= 8;
     if (!rutEnTexto) rutVerificado = false;
-    if (razonSocial) {
+  }
+  if (_hayTexto && !_vieneDelCliente('razonSocial')) {
+    {
+      if (razonSocial) {
       const norm = (x) => String(x || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
-      if (!norm(declarado).includes(norm(razonSocial))) razonSocial = '';
+        if (!norm(declarado).includes(norm(razonSocial))) razonSocial = '';
+      }
     }
   }
 

@@ -273,3 +273,38 @@ test('el nombre del perfil de WhatsApp NO se vuelve el titular fiscal junto a un
   const r = _rpd({ rut: '20.708.686-K', origen: 'cliente' }, { nombreFallback: 'Rubí - Lar' });
   assert.equal(r.contacto, 'Rubí - Lar', 'el nombre del perfil viaja como CONTACTO');
 });
+
+// ── TRIDENTE/Codex 2026-08-31 ────────────────────────────────────────────────
+// Un RUT verdadero le lavaba la procedencia a una razon social inventada.
+// `fusionarReceptor` marcaba `origen` UNO SOLO para todo el objeto y el determinista
+// (el cliente) ganaba, asi que el resultado quedaba 'cliente' COMPLETO y la compuerta
+// ni se ejecutaba. Codex lo reprodujo ejecutando: cliente dice solo su RUT, el LLM
+// agrega "Inmobiliaria Fantasma SpA", y esa razon social entraba al documento formal.
+// En una cotizacion que el cliente lleva a facturar, eso no tiene arreglo despues.
+test('🔴 TRIDENTE: un RUT verdadero NO le lava la procedencia a una razon social inventada', () => {
+  const fusion = fusionarReceptor(
+    { razonSocial: 'Inmobiliaria Fantasma SpA', clienteTipo: 'empresa', origen: 'llm' },
+    { rut: '20.708.686-K', origen: 'cliente' },
+  );
+  const doc = receptorParaDocumento(fusion, {
+    nombreFallback: 'Juan',
+    textoCliente: 'hola, mi rut es 20.708.686-K, cotizame una ventana',
+  });
+  assert.equal(doc.razonSocial, '', 'la razon social que el cliente nunca dijo NO puede salir');
+  assert.equal(doc.rut, '20.708.686-K', 'pero el RUT que SI dijo se conserva');
+});
+
+test('🔴 TRIDENTE: y la razon social que el cliente SI dijo en otro mensaje sobrevive', () => {
+  // El otro lado de la moneda: la compuerta no puede volverse tan estricta que mate el
+  // caso que justifica los parametros del LLM (el dato repartido en varios mensajes).
+  const fusion = fusionarReceptor(
+    { razonSocial: 'Maya Mapu SpA', clienteTipo: 'empresa', origen: 'llm' },
+    { rut: '77.448.504-K', origen: 'cliente' },
+  );
+  const doc = receptorParaDocumento(fusion, {
+    nombreFallback: 'Juan',
+    textoCliente: 'somos Maya Mapu SpA . mi rut es 77.448.504-K . cotizame',
+  });
+  assert.equal(doc.razonSocial, 'Maya Mapu SpA');
+  assert.equal(doc.rut, '77.448.504-K');
+});
