@@ -395,8 +395,16 @@ function tipoDeParte(t) {
  *
  * Devuelve null si el label no es de compuesta o no se puede leer con confianza.
  */
-function partesDesdeLabel(it, ancho_mm, alto_mm) {
-  const label = `${String(it?.product || "")} ${String(it?.producto_label || "")}`;
+export function partesDesdeLabel(it, ancho_mm, alto_mm) {
+  // 🔴 [2026-08-31] NO SE CONCATENAN SI SON EL MISMO TEXTO. Antes se pegaban `product` y
+  // `producto_label` siempre, y cuando los dos traian la misma descripcion de la compuesta
+  // el buscador de panos la encontraba DOS VECES: una ventana de "proyectante arriba + fija
+  // abajo" se dibujaba con CUATRO panos (proyectante, fija, proyectante, fija). Reclamo del
+  // dueno sobre la propuesta 0395-B: "esa solo debio tener una proyectante arriba y una fija
+  // abajo". El precio estaba BIEN; lo que mentia era el dibujo, que es lo que el cliente mira.
+  const _a = String(it?.product || "").trim();
+  const _b = String(it?.producto_label || "").trim();
+  const label = (_a && _b && _a === _b) ? _a : `${_a} ${_b}`;
   if (!/compuesta/i.test(label)) return null;
   // 🔴 [Gemini, compuerta e0631c4] LA PALABRA SOLA NO ALCANZA: un label que menciona
   // "compuesta" de pasada ("Ventana Fija — no confundir con la compuesta de ayer") derivaba
@@ -416,9 +424,25 @@ function partesDesdeLabel(it, ancho_mm, alto_mm) {
     .map((m) => ({ tipo: m[1].toUpperCase().startsWith('FIJ') ? 'FIJA' : m[1].toUpperCase(),
                    mm: parseFloat(m[2].replace(',', '.')) }));
   if (conMedida.length >= 2) {
+    // 🔴 [2026-08-31] LOS PANOS TIENEN QUE SUMAR LA VENTANA. Es la comprobacion que caza
+    // cualquier lectura de mas, no solo la duplicacion de arriba: si los panos leidos suman
+    // MUCHO mas que la medida real, se leyo de mas. Se prueba quedandose con la primera
+    // mitad (que es exactamente el caso de la duplicacion) y, si tampoco cierra, se cae a
+    // null: mejor un dibujo simple que uno que no es la ventana del cliente.
+    const _total = vertical ? Number(alto_mm) : Number(ancho_mm);
+    const _suma = (arr) => arr.reduce((s, x) => s + (Number(x.mm) || 0), 0);
+    let _panos = conMedida;
+    if (_total > 0) {
+      const _cierra = (arr) => arr.length >= 2 && Math.abs(_suma(arr) - _total) <= Math.max(20, _total * 0.04);
+      if (!_cierra(_panos)) {
+        const _mitad = _panos.slice(0, Math.floor(_panos.length / 2));
+        if (_cierra(_mitad)) _panos = _mitad;
+        else return null;
+      }
+    }
     return {
       orientacion: vertical ? 'vertical' : 'horizontal',
-      partes: conMedida.map((p) => vertical
+      partes: _panos.map((p) => vertical
         ? { tipo: p.tipo, alto_mm: p.mm, ancho_mm }
         : { tipo: p.tipo, ancho_mm: p.mm, alto_mm }),
       derivado_de: 'label_con_medidas',
