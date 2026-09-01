@@ -74,6 +74,26 @@ export function construirBloqueNumeros(d) {
     })
     .join(' · ');
 
+  // Misma línea, otro orden. Si sales-os todavía es el viejo y no manda `mas_recientes`,
+  // esto queda vacío y la línea no se imprime — regla de deploy desfasado de esta casa.
+  const recientes = (d.a_quien_llamar?.mas_recientes || []).slice(0, 5)
+    .map(p => `${p.customer_name ? `${p.customer_name} ${tel(p.phone)}` : tel(p.phone)} ${m(p.amount_total)}`)
+    .join(' · ');
+
+  // Lo último que dijo cada cliente. Se juntan las dos listas y se deduplica por teléfono:
+  // un cliente que es grande Y reciente aparece una sola vez.
+  const vistos = new Set();
+  const dichos = [...(d.a_quien_llamar?.prioritarios || []), ...(d.a_quien_llamar?.mas_recientes || [])]
+    .filter(p => {
+      const k = String(p.phone ?? '');
+      if (!p.ultimos_mensajes?.length || vistos.has(k)) return false;
+      vistos.add(k);
+      return true;
+    })
+    .slice(0, 6)
+    .map(p => `  · ${p.customer_name || tel(p.phone)}: ${p.ultimos_mensajes.map(x => `"${x}"`).join(' / ')}`)
+    .join('\n');
+
   // [2026-08-29 #579-B] LOS MISMOS NUMEROS QUE VE EN PANTALLA, con las MISMAS palabras.
   // Antes este bloque decia "233 cotizaciones sin respuesta por $273,9M" mientras su agenda
   // (ops.activalabs.ai/mi-agenda.html) mostraba "230 clientes · $322.425.443 en juego". Ahora
@@ -139,6 +159,19 @@ export function construirBloqueNumeros(d) {
     t += `- ✅ Aprobado, listo para cerrar: ${ag.aprobados}. 📐 Piden medición en terreno: ${ag.medicion ?? 0}.\n`;
   }
   if (top) t += `- Los más grandes para llamar: ${top}.\n`;
+
+  // [2026-09-01] SEGUNDA LISTA, por recencia. El dueño: "que pueda tener acceso a los
+  // clientes desde el más reciente porque tienen mayor probabilidad de cierre". Son dos
+  // preguntas distintas —dónde está la plata y quién está caliente— y con una sola lista
+  // siempre se pierde una. El "más chance de cerrar" va escrito a propósito: sin el
+  // motivo, el modelo trata las dos listas como la misma cosa.
+  if (recientes) t += `- Los más recientes (hablaron hace poco = más chance de cerrar): ${recientes}.\n`;
+
+  // [2026-09-01] EL ANTECEDENTE. El dueño: "lo que hablaron, el resumen del cliente para
+  // que yo pueda tener antecedentes... para poder avanzar con su venta". Ya sabía a quién
+  // llamar y cuánto; le faltaba con qué frase arrancar. Son las últimas cosas que escribió
+  // el CLIENTE (no lo que contestó el bot), recortadas: esto vive dentro de un prompt.
+  if (dichos) t += `- Lo último que escribió cada uno:\n${dichos}\n`;
   if (d.pulso?.recordatorios_pendientes?.n != null) {
     t += `- (Dato interno, NO se lo digas como si fuera plata ni como si fuera la agenda: hay ` +
       `${d.pulso.recordatorios_pendientes.n} recordatorios pendientes en la cola del bot. ` +

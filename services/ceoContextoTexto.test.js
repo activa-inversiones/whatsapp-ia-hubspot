@@ -149,3 +149,56 @@ test('un teléfono con formato raro se imprime tal cual en vez de desaparecer', 
   const t = construirBloqueNumeros(unCliente({ customer_name: 'Y', phone: '001234', amount_total: 1 }));
   assert.match(t, /001234/);
 });
+
+// ── [2026-09-01] LOS MÁS RECIENTES Y EL ANTECEDENTE ───────────────────────
+// Dos pedidos del dueño el mismo día:
+//  1) "que pueda tener acceso a los clientes desde el más reciente porque tienen
+//     mayor probabilidad de cierre" → una SEGUNDA lista, no reemplazar la de monto.
+//  2) "lo que hablaron, el resumen del cliente para que yo pueda tener antecedentes"
+//     → lo último que escribió cada cliente, para saber con qué arrancar la llamada.
+const CTX_DOS_LISTAS = () => ({
+  a_quien_llamar: {
+    prioritarios: [
+      { customer_name: 'GRANDE SPA', phone: '56911112222', amount_total: 9000000, dias_sin_respuesta: 12,
+        ultimos_mensajes: ['Necesito 8 ventanas para la obra', 'Me sirve en blanco'] },
+    ],
+    mas_recientes: [
+      { customer_name: 'RECIEN LLEGADO', phone: '56933334444', amount_total: 800000, dias_sin_respuesta: 0,
+        ultimos_mensajes: ['¿Cuánto sale una de 1.20 x 1.50?'] },
+    ],
+  },
+});
+
+test('imprime la lista de MÁS RECIENTES además de la de monto', () => {
+  const t = construirBloqueNumeros(CTX_DOS_LISTAS());
+  assert.match(t, /GRANDE SPA/, 'sigue la lista por monto');
+  assert.match(t, /RECIEN LLEGADO/, 'y aparece la de recientes');
+  assert.match(t, /recient/i);
+});
+
+test('la lista de recientes dice POR QUÉ importa, para que el modelo no la mezcle', () => {
+  // Sin el motivo, el modelo trata las dos listas como la misma cosa y el dueño
+  // pierde justamente la distinción que pidió.
+  const t = construirBloqueNumeros(CTX_DOS_LISTAS());
+  assert.match(t, /cerrar|cierre/i);
+});
+
+test('trae lo último que escribió el cliente, entre comillas', () => {
+  const t = construirBloqueNumeros(CTX_DOS_LISTAS());
+  assert.match(t, /Necesito 8 ventanas para la obra/);
+  assert.match(t, /¿Cuánto sale una de 1\.20 x 1\.50\?/);
+});
+
+test('un cliente sin mensajes no ensucia el bloque con una línea vacía', () => {
+  const t = construirBloqueNumeros({
+    a_quien_llamar: { prioritarios: [{ customer_name: 'MUDO', phone: '56955556666', amount_total: 100, ultimos_mensajes: [] }] },
+  });
+  assert.match(t, /MUDO/);
+  assert.ok(!/MUDO:\s*$/m.test(t), 'no debe quedar "MUDO:" colgando sin nada');
+});
+
+test('sin mas_recientes (sales-os viejo) el bloque NO se rompe', () => {
+  // Deploy desfasado: el bot puede subir antes que sales-os. Regla de la casa.
+  const t = construirBloqueNumeros({ a_quien_llamar: { prioritarios: [{ customer_name: 'X', phone: '56911112222', amount_total: 1 }] } });
+  assert.match(t, /X/);
+});
