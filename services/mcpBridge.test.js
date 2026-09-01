@@ -262,3 +262,62 @@ describe('mcpBridge · un fallo del MCP no puede tumbar a Oliver', () => {
     assert.match(r.error, /timeout/);
   });
 });
+
+describe('mcpBridge · un error del servidor NO puede llegar disfrazado de dato', () => {
+  // 🔴 POR QUÉ EXISTE ESTE BLOQUE (tridente 01-sep, hallazgo de Codex, reproducido):
+  // el protocolo MCP distingue dos cosas y el puente las trataba igual.
+  //   · Falla de TRANSPORTE (no contesta, timeout, HTTP 500) → el fetch tira, ya cubierto.
+  //   · Falla de la TOOL: el servidor contesta 200 con un result perfectamente formado que
+  //     lleva `isError: true` y el mensaje adentro del texto. Así responden LOS DOS
+  //     servidores: `tools.js:26` (imperium) y `activaMcp.js:40` (activa), ambos con
+  //     `{ content:[{type:'text', text:'Error: …'}], isError:true }`.
+  // El puente leía `r.content` y devolvía `{ok:true, data:'Error: base caída'}`. O sea:
+  // le entregaba al LLM un error con etiqueta de éxito, y quien decidía qué hacer con eso
+  // era el modelo — que puede perfectamente leérselo al cliente como si fuera su estado.
+  // El mock viejo nunca generaba `isError`, por eso los 29 tests pasaban con el bug adentro.
+  const ENV_OK = {
+    OLIVER_MCP_ENABLED: 'true',
+    OLIVER_MCP_SERVERS: 'imperium=https://ops.activalabs.ai/mcp',
+    OLIVER_MCP_ALLOW: 'imperium_ot_estado',
+  };
+
+  // Servidor que contesta 200 y bien formado, pero marcando el error como manda el protocolo.
+  function mcpQueFalla(texto = 'Error: no se pudo leer la base') {
+    return async (url, opts) => {
+      const body = JSON.parse(opts.body);
+      return {
+        ok: true,
+        json: async () => ({
+          jsonrpc: '2.0', id: body.id,
+          result: { content: [{ type: 'text', text: texto }], isError: true },
+        }),
+      };
+    };
+  }
+
+  it('isError:true del servidor se devuelve como ok:false, no como dato', async () => {
+    const b = await cargar(ENV_OK);
+    const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' }, { fetchFn: mcpQueFalla() });
+    assert.equal(r.ok, false, 'un error del servidor NO es un éxito');
+    assert.match(String(r.error), /no se pudo leer la base/);
+    assert.equal(r.data, undefined, 'no puede viajar como dato: el modelo se lo cree');
+  });
+
+  it('el error viaja aunque el servidor lo mande como JSON estructurado', async () => {
+    // activaMcp usa `ERROR: …` en texto plano; imperium serializa objetos. Los dos casos.
+    const b = await cargar(ENV_OK);
+    const cuerpo = JSON.stringify({ ok: false, error: 'token vencido' });
+    const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' }, { fetchFn: mcpQueFalla(cuerpo) });
+    assert.equal(r.ok, false);
+    assert.match(String(r.error), /token vencido/);
+  });
+
+  it('sin isError, una respuesta normal sigue siendo ok:true', async () => {
+    // La cura no puede volver error a todo: el camino feliz no se toca.
+    const b = await cargar(ENV_OK);
+    const srv = fakeMcp({ resultado: { estado: 'en fabricación' } });
+    const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' }, { fetchFn: srv.fetchFn });
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.data, { estado: 'en fabricación' });
+  });
+});

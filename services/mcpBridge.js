@@ -247,6 +247,14 @@ export async function ejecutarToolMcp(nombreCompleto, input = {}, { fetchFn = fe
       fetchFn, timeoutMs,
     });
     const texto = (r?.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
+    // 🔴 El protocolo MCP marca el fallo de la TOOL acá, no en el transporte: el servidor
+    // contesta HTTP 200 con un result bien formado y `isError: true`. Los DOS servidores
+    // lo usan así (temp-sales-os tools.js:26 y temp-cxm activaMcp.js:40). Sin esta línea
+    // el error volvía como `{ok:true, data:"Error: …"}`: un fallo con etiqueta de éxito,
+    // y era el LLM el que decidía qué hacer con él — pudiendo leérselo al cliente como si
+    // fuera su estado. (tridente 01-sep, hallazgo de Codex, reproducido)
+    if (r?.isError) return { ok: false, error: texto || `la tool ${partes.tool} devolvió un error sin detalle` };
+
     let data = texto;
     try { data = JSON.parse(texto); } catch { /* texto plano es una respuesta válida */ }
     return { ok: true, data };
