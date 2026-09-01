@@ -752,7 +752,36 @@ export function partesTodasIguales(ps) {
   });
 }
 
+/**
+ * [2026-08-31] TOOL_DEFS + las tools que expongan los servidores MCP ya existentes
+ * (`imperium` en sales-os, `activa` en el CXM). Se reusan los MISMOS servidores que
+ * usamos nosotros y que alimentan los informes, para que el bot y el informe miren
+ * exactamente los mismos datos — pedido del dueño, 31-ago.
+ *
+ * Nace APAGADO: sin `OLIVER_MCP_ENABLED=true` devuelve TOOL_DEFS tal cual y Oliver
+ * se comporta igual que hoy. Si el servidor MCP no contesta, tampoco pasa nada: el
+ * puente devuelve [] y el bot sigue cotizando. Un fallo de MCP no puede costar una venta.
+ */
+export async function toolDefsConMcp() {
+  try {
+    const { listarToolsMcp } = await import('../../services/mcpBridge.js');
+    const extra = await listarToolsMcp();
+    return extra.length ? [...TOOL_DEFS, ...extra] : TOOL_DEFS;
+  } catch (e) {
+    console.warn(`[tools] no se pudieron sumar tools MCP: ${e.message}`);
+    return TOOL_DEFS;
+  }
+}
+
 export async function runTool(name, input = {}, ctx = {}) {
+  // [2026-08-31] Las tools del puente MCP llegan con prefijo `mcp_` y no entran al
+  // switch: se despachan al servidor MCP. La denylist del puente se vuelve a evaluar
+  // ahí adentro, así que un nombre inventado por el modelo no pasa igual.
+  if (name.startsWith('mcp_')) {
+    const { ejecutarToolMcp } = await import('../../services/mcpBridge.js');
+    return ejecutarToolMcp(name, input);
+  }
+
   switch (name) {
     case 'listar_vidrios':
       return listarVidrios(input.tipo);

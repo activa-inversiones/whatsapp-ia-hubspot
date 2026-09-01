@@ -27,7 +27,7 @@
 // ESM, Node 18+.
 
 import { buildSystemBlocks, buildSessionContext } from './system-prompt.js';
-import { TOOL_DEFS, runTool } from './tools.js';
+import { TOOL_DEFS, toolDefsConMcp, runTool } from './tools.js';
 import { extractComuna, detectConfirmation, sanitizeChilean } from './normalizers.js';
 import * as realEngine from './engine.js';
 
@@ -78,7 +78,7 @@ export async function handleTurn({ history = [], userText, state = {}, toolCtx =
     const pass1 = await engine.orchestratorPass1({
       system,
       messages: workingMessages,
-      tools: TOOL_DEFS,
+      tools: await toolDefsConMcp(),
     });
 
     const calls = pass1.tool_calls || [];
