@@ -306,17 +306,11 @@ describe('mcpBridge · un error del servidor NO puede llegar disfrazado de dato'
     const b = await cargar(ENV_OK);
     const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' }, { fetchFn: mcpQueFalla() });
     assert.equal(r.ok, false, 'un error del servidor NO es un éxito');
-    assert.match(String(r.error), /no se pudo leer la base/);
+    // El texto CRUDO ya no viaja: lo tapa la compuerta de mas abajo (era el detalle interno
+    // llegando al prompt). Lo que este test protege es que el error sea un ERROR, no un dato.
+    assert.ok(String(r.error).trim().length > 0, 'tiene que decir algo');
+    assert.ok(!String(r.error).includes('leer la base'), 'y NO el detalle tecnico');
     assert.equal(r.data, undefined, 'no puede viajar como dato: el modelo se lo cree');
-  });
-
-  it('el error viaja aunque el servidor lo mande como JSON estructurado', async () => {
-    // activaMcp usa `ERROR: …` en texto plano; imperium serializa objetos. Los dos casos.
-    const b = await cargar(ENV_OK);
-    const cuerpo = JSON.stringify({ ok: false, error: 'token vencido' });
-    const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' }, { fetchFn: mcpQueFalla(cuerpo) });
-    assert.equal(r.ok, false);
-    assert.match(String(r.error), /token vencido/);
   });
 
   it('sin isError, una respuesta normal sigue siendo ok:true', async () => {
@@ -326,5 +320,70 @@ describe('mcpBridge · un error del servidor NO puede llegar disfrazado de dato'
     const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' }, { fetchFn: srv.fetchFn });
     assert.equal(r.ok, true);
     assert.deepEqual(r.data, { estado: 'en fabricación' });
+  });
+});
+
+
+describe('mcpBridge · el detalle tecnico del error NO entra al prompt del LLM', () => {
+  // 🔴 Segunda vuelta del tridente (01-sep). Codex: "el detalle interno todavia llega intacto
+  // al LLM; solo un prompt probabilistico le pide ocultarlo". Tenia razon y es el mismo
+  // problema que este archivo viene arreglando: algo interno que termina frente a un cliente.
+  //
+  // Un error real de esta base dice cosas como "connection to server at 10.x.x.x port 5432
+  // failed: password authentication failed for user postgres". De ahi a la pantalla del
+  // cliente habia UN paso, y ese paso era una linea del system-prompt. Ahora hay una compuerta:
+  // el detalle va al log del servidor, y el modelo recibe una frase que puede decir en voz alta.
+  //
+  // La excepcion son los errores de VALIDACION (MCP error -32602): son sobre los argumentos que
+  // mando el propio modelo, le sirven para corregirse solo, y no llevan infraestructura adentro.
+  const ENV_OK = {
+    OLIVER_MCP_ENABLED: 'true',
+    OLIVER_MCP_SERVERS: 'imperium=https://ops.activalabs.ai/mcp',
+    OLIVER_MCP_ALLOW: 'imperium_ot_estado',
+  };
+  const responde = (result) => async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result }) };
+  };
+
+  it('un error de infraestructura NO le muestra al modelo host, usuario ni credenciales', async () => {
+    const b = await cargar(ENV_OK);
+    const crudo = 'Error: connection to server at 10.2.0.7 port 5432 failed: password authentication failed for user "postgres"';
+    const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' },
+      { fetchFn: responde({ content: [{ type: 'text', text: crudo }], isError: true }) });
+    assert.equal(r.ok, false);
+    for (const secreto of ['10.2.0.7', '5432', 'postgres', 'password']) {
+      assert.ok(!String(r.error).includes(secreto), `el error le filtro "${secreto}" al modelo`);
+    }
+    assert.ok(String(r.error).length > 0, 'igual tiene que decir ALGO: un error mudo confunde mas');
+  });
+
+  it('un error de validacion SI pasa: le sirve al modelo para corregirse solo', async () => {
+    const b = await cargar(ENV_OK);
+    const val = 'MCP error -32602: Input validation error: Invalid arguments for tool imperium_ot_estado';
+    const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 1 },
+      { fetchFn: responde({ content: [{ type: 'text', text: val }], isError: true }) });
+    assert.equal(r.ok, false);
+    assert.match(String(r.error), /Input validation error/);
+  });
+
+  it('isError:true SIN content igual devuelve un error utilizable, no vacio', async () => {
+    const b = await cargar(ENV_OK);
+    const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' },
+      { fetchFn: responde({ isError: true }) });
+    assert.equal(r.ok, false);
+    assert.ok(String(r.error).trim().length > 0);
+  });
+
+  it('un payload con ok:false SIN isError sigue siendo ok:true — y es a proposito', async () => {
+    // El puente reporta el RESULTADO DEL TRANSPORTE, no reinterpreta payloads ajenos.
+    // Si una tool devuelve {ok:false} adentro de un exito, eso es SU contrato con el modelo
+    // (asi habla imperium_estado_cliente, por ejemplo). Que el puente lo volviera error
+    // rompería tools que hoy funcionan. Queda escrito para que nadie lo "arregle" sin querer.
+    const b = await cargar(ENV_OK);
+    const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' },
+      { fetchFn: responde({ content: [{ type: 'text', text: JSON.stringify({ ok: false, encontrado: false }) }] }) });
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.data, { ok: false, encontrado: false });
   });
 });

@@ -122,6 +122,29 @@ function partirNombre(nombreCompleto) {
   return { servidor, tool };
 }
 
+/**
+ * Lo que el MODELO puede ver de un error, y lo que NO.
+ *
+ * Un error real de esta base dice "connection to server at 10.x.x.x port 5432 failed:
+ * password authentication failed for user postgres". Eso NO puede entrar al prompt: de ahi
+ * a la pantalla de un cliente hay un solo paso probabilistico (una linea del system-prompt
+ * pidiendole a Oliver que no muestre lenguaje interno). El detalle va al log del servidor,
+ * que es donde sirve; al modelo le llega una frase que puede decir en voz alta.
+ *
+ * EXCEPCION — los errores de VALIDACION pasan enteros: son sobre los argumentos que mando el
+ * propio modelo, le sirven para corregirse solo en el turno siguiente, y no llevan
+ * infraestructura adentro. Taparlos lo dejaria reintentando a ciegas.
+ *
+ * (tridente 01-sep, segunda vuelta, hallazgo de Codex)
+ */
+const ERROR_GENERICO = 'esa consulta no se pudo completar ahora mismo';
+function errorParaElModelo(texto, tool) {
+  const t = String(texto ?? '').trim();
+  if (/^MCP error -3\d{4}/.test(t)) return t.slice(0, 300);
+  if (t) console.warn(`[mcpBridge] ${tool} fallo: ${t}`);
+  return ERROR_GENERICO;
+}
+
 let _id = 0;
 async function jsonRpc({ url, metodo, params, fetchFn, timeoutMs }) {
   const ctrl = new AbortController();
@@ -253,7 +276,7 @@ export async function ejecutarToolMcp(nombreCompleto, input = {}, { fetchFn = fe
     // el error volvía como `{ok:true, data:"Error: …"}`: un fallo con etiqueta de éxito,
     // y era el LLM el que decidía qué hacer con él — pudiendo leérselo al cliente como si
     // fuera su estado. (tridente 01-sep, hallazgo de Codex, reproducido)
-    if (r?.isError) return { ok: false, error: texto || `la tool ${partes.tool} devolvió un error sin detalle` };
+    if (r?.isError) return { ok: false, error: errorParaElModelo(texto, partes.tool) };
 
     let data = texto;
     try { data = JSON.parse(texto); } catch { /* texto plano es una respuesta válida */ }
