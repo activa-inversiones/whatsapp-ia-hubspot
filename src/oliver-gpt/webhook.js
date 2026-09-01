@@ -142,7 +142,8 @@ import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMo
 // para que los dos canales roten igual, usen las MISMAS letras del folio y le digan al
 // cliente lo mismo. `LETRAS_ALTERNATIVA` es ademas la fuente unica del sufijo ISO: antes el
 // literal 'BCDEF…' estaba escrito dos veces en este mismo archivo.
-import { LETRAS_ALTERNATIVA, foliosDeOpciones, letrasReservadas, textoDeOpciones, avisoPrevioOpciones } from './propuestas-color.js';
+import { LETRAS_ALTERNATIVA, foliosDeOpciones, letrasReservadas, textoDeOpciones, avisoPrevioOpciones,
+  avisoColorNoElegido, opcionYaEntregada } from './propuestas-color.js';
 import { toFile as realToFile } from 'openai/uploads';
 import {
   loadSession as realLoadSession,
@@ -348,6 +349,13 @@ export function huellaDelInforme({ comuna = '', producto = '', glassLabel = '' }
 // re-cálculo por pérdida de estado (el bug que generó 0003 y 0004 en el mismo chat).
 const RECENT_QUOTES = new Map();
 const QUOTE_DEDUP_MS = 120000; // 2 min
+// [PDF-RACE 2026-07-01] REUSAR el folio de la sesión (ventana 48h): una corrección del
+// cliente = REVISIÓN del MISMO folio, no correlativo nuevo (antes: 0081→0085→0086 en una
+// sola sesión = 3 folios ISO quemados para la misma propuesta).
+// [2026-08-31 · tridente] Subida al modulo porque ahora la miran DOS decisiones —el reuso del
+// folio y la eleccion de una opcion ya entregada— y una de las dos corre antes que la otra.
+// Dos copias del mismo plazo se desincronizan igual que dos copias de una regla.
+const QUOTE_REUSE_MS = 48 * 60 * 60 * 1000;
 const CONTROL_CACHE = new Map(); // [FIX 2026-06-19 CON-02] último control conocido por waId → fail-closed hacia el operador si sales-os cae
 
 /**
@@ -2308,6 +2316,16 @@ Comuna: ${datos.comuna}`
           // MOTOR la apertura del label y, si el precio recibido no corresponde, lo CORREGIMOS al del
           // motor (NUNCA inventado). Conservador: solo ítems con apertura inequívoca; si el motor
           // falla, NO bloquea (el PDF sale con el precio que vino). Soporta pedido mixto (ítem×ítem).
+          //
+          // ⏱️ [2026-08-31 · tridente] SE LLAMA UNA VEZ, NO DOS. Cuando sale la terna A/B/C, la
+          // sonda de la opcion A (justo abajo) le pide al motor el precio de TODOS los items y
+          // PISA el `unit_price` de cada uno: correr esta guardia antes es pedirle al motor lo
+          // mismo dos veces seguidas, y su resultado no sobrevive ni una linea. Con el motor
+          // lento (timeout 15 s) eso es un cuarto de minuto de espera del cliente por un dato
+          // que se descarta. Queda envuelta para poder correrla EN EL UNICO caso en que su
+          // resultado sobrevive: cuando el motor no cotizo ningun color de la terna y el PDF
+          // sale con el precio que ya traia — ahi la guardia vuelve a ser la unica revision.
+          const _guardiaApertura = async () => {
           try {
             const _val = (input.items || [])
               .map((it) => ({ it, ap: aperturaFromLabel(it.producto_label || it.product || '') }))
@@ -2344,6 +2362,9 @@ Comuna: ${datos.comuna}`
           } catch (e) {
             log('error', 'generarPdf.guard.apertura.err', e?.message || e); // no bloquear el PDF si el motor no responde
           }
+          };
+          // Sin terna, el camino de siempre: la guardia corre aca y es la unica revision.
+          if (!(_coloresTerna && _coloresTerna.length > 1)) await _guardiaApertura();
 
 
           // ⛔ [2026-08-31] LA OPCION A TAMBIEN SE COTIZA PARA SU COLOR.
@@ -2413,6 +2434,9 @@ Comuna: ${datos.comuna}`
               state.default_color = state.default_color || 'Blanco';
               log('error', 'generarPdf.opcionA.precio',
                 from + ': el motor no cotizo NINGUNO de los colores; sale una sola en Blanco con aviso');
+              // Este es el unico caso en que el precio que sale es el que YA traia el item ⇒ la
+              // guardia label-precio vuelve a ser la unica revision y tiene que correr.
+              await _guardiaApertura();
             } else if (_sinCotizar.length) {
               // Salen los que si se pudieron, y las letras se recalculan sobre esos: sin esto,
               // el aviso previo prometeria un color que nunca va a llegar.
@@ -2508,6 +2532,104 @@ Comuna: ${datos.comuna}`
             ]),
             total: Number(input.grand_total) || 0,
           });
+          // 🟠 [2026-08-31 · tridente] LA FIRMA DEL *PROYECTO*: lo mismo que `_quoteSig` pero SIN
+          // el color ni el precio. Responde una sola pregunta, y `_quoteSig` no la puede responder:
+          // "esto que me piden ahora, ¿es el MISMO proyecto de las tres propuestas, nada mas que en
+          // otro color?". `_quoteSig` cambia con el color A PROPOSITO (para el dedup, otro color ES
+          // otro documento), asi que comparando con ella un "me quedo con la B" es indistinguible de
+          // "cotizame otra cosa" — y por eso terminaba emitiendo un documento nuevo y una segunda
+          // conversion. El label entra en minusculas porque el motor lo devuelve con la grafia que
+          // le toque; la medida y la cantidad, tal cual: si alguna cambia, ya no es el mismo pedido.
+          const _sigProyecto = JSON.stringify((input.items || []).map((it) => [
+            String(it.producto_label || it.product || '').trim().toLowerCase(),
+            String(it.measures || '').trim(),
+            Number(it.qty) || 1,
+          ]));
+          // ── 🟠💰 [2026-08-31 · tridente] ELEGIR UNA OPCION YA OFRECIDA NO ES UNA COTIZACION NUEVA ──
+          // ESTO TOCA PLATA, y Codex lo reprodujo ejecutando: primer turno sin color → salen A/B/C
+          // con UNA conversion 'sent'. Segundo turno, "me quedo con la B" → se emitia OTRO documento
+          // (…-D, Nogal) y OTRA conversion 'sent' por un monto distinto. A Meta y a Google les
+          // llegaban DOS ventas cotizadas por UN cliente, con dos montos: el algoritmo aprende que
+          // ese trafico convierte el doble y reparte el presupuesto del dueño con un dato falso.
+          //
+          // El cliente ya tiene ese documento en la mano, con su folio y su fila en `quotes`. Elegir
+          // entre lo que ya se le mando es el MISMO negocio, decidido — no uno nuevo. Asi que no se
+          // quema otra letra, no se emite otro PDF y no se dispara otra conversion: se registra la
+          // ELECCION sobre el folio que ya existe.
+          //
+          // ⛔ LA ELECCION SE REGISTRA COMO EVENTO DE CONVERSACION, NO COMO UPSERT DE `quotes`.
+          // La fila del folio elegido YA EXISTE (la creo el turno de la terna) con su lead_id y su
+          // receptor/RUT. Un `pushQuoteEvent` sobre ella seria un UPSERT, y desde este punto del
+          // flujo no se tienen a mano ni el `receptorDoc` (se arma mas abajo, en el Paso 2) ni el
+          // resto del payload: reescribir la fila con menos datos de los que tiene puede borrar el
+          // RUT con el que se emitio un documento formal. `pushConversationEvent` es append-only:
+          // deja el rastro visible para el operador en el cockpit y no puede pisar nada.
+          // 📌 Marcar ademas la fila de `quotes` como "la elegida" es util para los tableros, pero
+          // exige comprobar antes, del lado de sales-os, que `upsertQuote` no reemplaza el payload
+          // entero. Queda como pendiente, no como suposicion.
+          //
+          // Y NO se dispara ninguna conversion nueva: `fireConversion` (sales-os) mapea solo
+          // sent/formal_sent/diagnostico/accepted/won, y aca no se manda ninguno de esos. Cuando el
+          // dueño decida que la eleccion debe reportarle un monto corregido a las plataformas, ese
+          // cambio entra ACA — es una decision suya, no del codigo.
+          const _coloresPedidos = [...new Set((input.items || [])
+            .map((it) => String(it.color || '').trim()).filter(Boolean))];
+          const _eleccion = opcionYaEntregada({
+            lastQuote: state.last_quote,
+            texto:     _textoCliente,
+            // Un pedido con DOS colores distintos no es elegir una de las tres: es otra cosa.
+            color:     _coloresPedidos.length === 1 ? _coloresPedidos[0] : '',
+            sigProyecto: _sigProyecto,
+            ventanaMs: QUOTE_REUSE_MS,
+          });
+          if (_eleccion) {
+            log('info', 'generarPdf.eleccion',
+              `${from}: eligio la opcion ${_eleccion.letra} (${_eleccion.color}) ${_eleccion.numero} — no se emite documento nuevo ni se dispara otra conversion`);
+            // Idempotente: si el cliente repite su eleccion (o Meta reintenta el mensaje), no se
+            // apila un evento por turno. El primero ya dejo el registro.
+            const _yaRegistrada = String(state.last_quote?.eleccion?.numero || '') === String(_eleccion.numero);
+            if (!_yaRegistrada) {
+              await safe('generarPdf.eleccion.registro', () => bridge.pushConversationEvent({
+                channel:      'whatsapp',
+                external_id:  from,
+                direction:    'outbound',
+                actor_type:   'ai',
+                actor_name:   'Oliver',
+                message_type: 'text',
+                body:         `✅ El cliente eligió la opción ${_eleccion.letra} — ${_eleccion.color} (N° ${_eleccion.numero}). No se emite documento nuevo.`,
+                metadata: { source: 'oliver_gpt_eleccion_opcion', quote_number: _eleccion.numero,
+                            opcion: _eleccion.letra, color: _eleccion.color,
+                            base: String(_eleccion.numero).replace(/-[A-Z]$/, ''),
+                            motivo: 'cliente_eligio_opcion', elegida: true },
+              }));
+            }
+            // Ahora SI eligio el color: se recuerda. Antes no se guardaba a proposito (las tres
+            // salieron porque no habia eleccion); esto es el momento en que deja de ser cierto.
+            state.default_color = _eleccion.color;
+            // El rastro apunta al documento ELEGIDO: si manana el cliente corrige una medida, la
+            // revision cuelga de la propuesta que se quedo, no de la primera de la terna. `sig` se
+            // actualiza al pedido de este turno para que un "si, esa" repetido siga siendo la misma.
+            state.last_quote = {
+              ...state.last_quote,
+              quote_number: _eleccion.numero,
+              at: Date.now(),
+              pdf_sent: true,
+              sig: _quoteSig,
+              eleccion: { letra: _eleccion.letra, color: _eleccion.color, numero: _eleccion.numero, at: Date.now() },
+            };
+            return {
+              ok: true,
+              quote_number: _eleccion.numero,
+              pdf_sent: false,          // no se reenvia: el cliente ya la tiene
+              eleccion: true,
+              // ⛔ SIN MONTO (regla #13): el precio va solo en el PDF, y el PDF ya lo tiene.
+              message: `Perfecto: se queda con la opción ${_eleccion.letra} — ${_eleccion.color}, N° ${_eleccion.numero}. `
+                + 'Esa queda como su propuesta definitiva; las otras dos las dejo sin efecto.\n\n'
+                + '¿Necesita alguna modificación? Me la dice y se la cambio sin problema. '
+                + 'Y cuénteme cuándo lo puedo contactar de nuevo para ver cómo seguimos.',
+            };
+          }
+
           //
           // 🔴 [2026-08-26] EL GUARDIA VIVIA SOLO EN MEMORIA, Y ASI NO GUARDA NADA.
           // Caso real: Paula (0346) recibio DOS VECES la misma propuesta y DOS VECES el
@@ -2535,10 +2657,6 @@ Comuna: ${datos.comuna}`
           const OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || '';
           let quoteNumber = null;
           let descuentoMercadoPct = 0; // [2026-06-24] viene del correlativo → se muestra en el PDF
-          // [PDF-RACE 2026-07-01] REUSAR el folio de la sesión (ventana 48h): una corrección del
-          // cliente = REVISIÓN del MISMO folio, no correlativo nuevo (antes: 0081→0085→0086 en una
-          // sola sesión = 3 folios ISO quemados para la misma propuesta).
-          const QUOTE_REUSE_MS = 48 * 60 * 60 * 1000;
           // [2026-08-08] esRevision: ¿este PDF es la PRIMERA propuesta o una corrección de
           // una que el cliente YA recibió? Caso real del 08-ago (Jessica, +56965340471): en
           // 5 minutos recibió TRES PDF del folio 0258 —mientras todavía daba las medidas— y
@@ -3217,35 +3335,70 @@ Comuna: ${datos.comuna}`
           // no se rellena. Cotizar de nuevo no cuesta plata: el motor es LOCAL (quoteEngine.js).
           const _opcionesEntregadas = [];
           if (_coloresTerna && _folios.length > 1) {
-            if (docSent) _opcionesEntregadas.push({ letra: _folios[0].letra, color: _coloresTerna[0], numero: quoteNumber,
+            // 🟠 [2026-08-31 · tridente] EL COLOR SALE DEL DOCUMENTO, NO DE LA TERNA. `_coloresTerna[0]`
+            // es lo que se QUISO cotizar; el item dice lo que de verdad se imprimio. Cuando el motor
+            // no cotizo NINGUN color de la terna, mas arriba los items se rotulan Blanco (para que la
+            // etiqueta cuadre con el precio) pero la terna queda intacta ⇒ el registro decia New Black
+            // sobre un PDF blanco, y de ahi salia despues el aviso que le mentia al cliente.
+            const _colorRealA = String((input.items || [])[0]?.color || '').trim() || _coloresTerna[0];
+            if (docSent) _opcionesEntregadas.push({ letra: _folios[0].letra, color: _colorRealA, numero: quoteNumber,
               total: (input.items || []).reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0) });
+            // ── ⏱️ [2026-08-31 · tridente] LOS PRECIOS DE LAS OTRAS DOS, EN PARALELO ──────
+            // 1) Precio REAL del motor para CADA color. Mismo shape de sonda que el blindaje
+            //    label↔precio de mas arriba (probado), con TODOS los items y con la
+            //    composicion/orientacion, para que una compuesta no se re-cotice como un
+            //    pano suelto.
+            //
+            // Se piden JUNTOS y no uno tras otro porque el cliente esta esperando: encadenadas
+            // sumaban sus plazos (con el motor lento, 15 s cada una) al final de una cadena que
+            // ya venia con la recotizacion de la A y la del termico. En paralelo la espera es
+            // la de la mas lenta, no la suma. Son sondas independientes: cada una lleva su
+            // propio objeto y el motor no comparte estado entre llamadas.
+            //
+            // ⛔ SOLO EL PRECIO VA EN PARALELO. La ENTREGA de los documentos sigue siendo
+            // secuencial y en orden (abajo), a proposito: el orden A → B → C es lo que el
+            // aviso previo le anuncio al cliente, y un archivo que llega antes que el otro por
+            // una carrera se lee como desorden. La latencia molesta; un documento mal
+            // entregado cuesta un cliente.
+            const _pendientes = [];
             for (let _i = 1; _i < _folios.length && _i < _coloresTerna.length; _i++) {
-              const _colorOp = _coloresTerna[_i];
-              const _numOp   = _folios[_i].numero;
-              const _letraOp = _folios[_i].letra;
+              _pendientes.push({ color: _coloresTerna[_i], numero: _folios[_i].numero, letra: _folios[_i].letra });
+            }
+            const _sondas = await Promise.all(_pendientes.map(async (_op) => {
+              const _sonda = {
+                items: (input.items || []).map((it) => ({
+                  product:     it.producto_label || it.product || 'Ventana',
+                  measures:    _measuresForEngine(it),
+                  color:       _op.color,
+                  qty:         Number(it.qty) || 1,
+                  ambiente:    it.ambiente || '',
+                  descripcion: it.descripcion || it.ambiente || '',
+                  orientacion: it.compuesta?.orientacion || it.orientacion || undefined,
+                  partes:      Array.isArray(it.compuesta?.partes) ? it.compuesta.partes : undefined,
+                })),
+                comuna: input.comuna || state.comuna || '',
+                texto_cliente: _textoCliente,
+              };
               try {
-                // 1) Precio REAL del motor para ESTE color. Mismo shape de sonda que el
-                //    blindaje label↔precio de mas arriba (probado), con TODOS los items y con
-                //    la composicion/orientacion, para que una compuesta no se re-cotice como
-                //    un pano suelto.
-                const _sonda = {
-                  items: (input.items || []).map((it) => ({
-                    product:     it.producto_label || it.product || 'Ventana',
-                    measures:    _measuresForEngine(it),
-                    color:       _colorOp,
-                    qty:         Number(it.qty) || 1,
-                    ambiente:    it.ambiente || '',
-                    descripcion: it.descripcion || it.ambiente || '',
-                    orientacion: it.compuesta?.orientacion || it.orientacion || undefined,
-                    partes:      Array.isArray(it.compuesta?.partes) ? it.compuesta.partes : undefined,
-                  })),
-                  comuna: input.comuna || state.comuna || '',
-                  texto_cliente: _textoCliente,
-                };
                 await priceAllFn(_sonda);
-                const _todosConPrecio = _sonda.items.length === (input.items || []).length
-                  && _sonda.items.every((x) => Number(x.unit_price) > 0 && x.confidence === 'high');
-                if (!_todosConPrecio) {
+              } catch (e) {
+                // Una sonda caida NO puede llevarse la otra: por eso el catch esta DENTRO del
+                // map y devuelve null en vez de rechazar la promesa.
+                log('error', 'generarPdf.opcion.precio', `${_op.letra} (${_op.color}): ${e?.message || e}`);
+                return null;
+              }
+              const _todosConPrecio = _sonda.items.length === (input.items || []).length
+                && _sonda.items.every((x) => Number(x.unit_price) > 0 && x.confidence === 'high');
+              return _todosConPrecio ? _sonda : null;
+            }));
+
+            for (let _p = 0; _p < _pendientes.length; _p++) {
+              const _colorOp = _pendientes[_p].color;
+              const _numOp   = _pendientes[_p].numero;
+              const _letraOp = _pendientes[_p].letra;
+              const _sonda   = _sondas[_p];
+              try {
+                if (!_sonda) {
                   log('error', 'generarPdf.opcion',
                     `${from}: opcion ${_letraOp} (${_colorOp}) DESCARTADA — el motor no cotizo ese color para todos los items; ${_numOp} no se emite`);
                   continue;
@@ -3401,12 +3554,45 @@ Comuna: ${datos.comuna}`
             if (_opcionesEntregadas.length >= 2) {
               _avisoColor = `\n\n${textoDeOpciones(_opcionesEntregadas, _coloresTerna)}`;
             } else {
-              _avisoColor = '\n\n🎨 Se la preparé en *Blanco* mientras me confirma el color. '
-                + 'Si prefiere Nogal, Roble Dorado, Grafito Antracita o Negro, me avisa y se la '
-                + 'recotizo sin costo; el color cambia el precio, por eso se lo digo.';
-              log('warn', 'generarPdf.opciones', `${from}: la terna quedo en una sola propuesta; sale el aviso de Blanco`);
+              // 🟠 [2026-08-31 · tridente] EL AVISO DICE EL COLOR QUE EL CLIENTE RECIBIO DE VERDAD.
+              // Estaba escrito FIJO en "Blanco" y la que sobrevive no es la blanca: la terna sale del
+              // mas caro al mas economico, asi que la que queda de pie por defecto es la New Black.
+              // Codex lo reprodujo ejecutando — se entrega solo la A (New Black), fallan la B y la C,
+              // y el mensaje afirmaba "Blanco" sobre un PDF que dice New Black.
+              const _colorEntregado = _opcionesEntregadas[0]?.color
+                || String((input.items || [])[0]?.color || '').trim()
+                || _coloresTerna[0];
+              _avisoColor = `\n\n${avisoColorNoElegido(_colorEntregado)}`;
+              log('warn', 'generarPdf.opciones',
+                `${from}: la terna quedo en una sola propuesta (${_colorEntregado}); sale el aviso de color unico`);
             }
           }
+
+          // 🟠💰 [2026-08-31 · tridente] EL MAPEO LETRA → COLOR → FOLIO SE GUARDA.
+          // Sin esto, cuando el cliente contesta "me quedo con la B" el sistema no tiene con que
+          // saber que la B era la Nogal ni que su folio ya existe: emitia un documento nuevo y una
+          // SEGUNDA conversion 'sent' por el mismo negocio. Es el dato que `opcionYaEntregada`
+          // necesita, y se escribe en el MISMO turno en que las tres salen — que es el unico turno
+          // en que se conoce.
+          //
+          // Solo entran las que se ENTREGARON de verdad: una opcion que el cliente nunca recibio no
+          // la puede elegir, y darla por elegida lo dejaria con un documento que no tiene.
+          //
+          // `sig_proyecto` viaja al lado a proposito: es lo que despues permite distinguir "elijo la
+          // B" (mismo proyecto, otro color) de "la B pero de 2 metros" (otro pedido, que SI es un
+          // documento nuevo). Sin la firma, la eleccion se daria por buena sobre un pedido cambiado.
+          const _rastroDeLaTerna = () => (_opcionesEntregadas.length >= 2
+            ? {
+              opciones: _opcionesEntregadas.map((o) => ({
+                letra: o.letra, color: o.color, numero: o.numero, total: Number(o.total) || 0,
+              })),
+              sig_proyecto: _sigProyecto,
+            }
+            // Sin terna el rastro se rearma sin `opciones` ⇒ el mapeo se PIERDE, y esta bien
+            // que se pierda: si se emitio un documento nuevo, la terna anterior ya no es lo
+            // ultimo que el cliente tiene en la mano. Un mapeo viejo sobreviviendo a un
+            // documento nuevo es como se dan por elegidas propuestas que ya no corresponden.
+            : {});
 
           // ── Paso 4: Zoho CRM (Deal upsert + Note) ───────────────────────────
           // Fire-and-forget: si Zoho falla no bloquea el resto del flujo.
@@ -3593,7 +3779,8 @@ Comuna: ${datos.comuna}`
               // [2026-08-31] `_letrasTerna` = las letras que la terna A/B/C ya reservo. Se
               // cuentan aunque el envio haya fallado: reciclar una letra pondria dos
               // documentos distintos bajo el mismo folio.
-              alternativas: Math.max(Number((state.last_quote || {}).alternativas || 0), _letrasTerna) };
+              alternativas: Math.max(Number((state.last_quote || {}).alternativas || 0), _letrasTerna),
+              ..._rastroDeLaTerna() };
             await safe('generarPdf.escalate', () =>
               notifyHighValue(enviarSinPausa, from,
                 { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
@@ -3624,7 +3811,8 @@ Comuna: ${datos.comuna}`
             // ya tienen dueño aunque el cliente todavia no elija ninguna.
             alternativas: Math.max(
               alternativasEntregadas(quoteNumber, (state.last_quote || {}).alternativas),
-              _letrasTerna) };
+              _letrasTerna),
+            ..._rastroDeLaTerna() };
           return {
             ok: true,
             quote_number: quoteNumber,

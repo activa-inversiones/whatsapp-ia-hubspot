@@ -226,3 +226,140 @@ export function textoDeOpciones(entregadas = [], anunciadas = COLORES_PROPUESTA)
 
 
 
+
+/**
+ * EL AVISO CUANDO QUEDO UNA SOLA PROPUESTA — Y DICE EL COLOR QUE DE VERDAD RECIBIO.
+ *
+ * 🟠 [2026-08-31 · tridente, defecto reproducido por Codex] El aviso estaba escrito FIJO en
+ * "Blanco". Cuando de las tres quedaba UNA sola entregada, esa una podia ser New Black o
+ * Nogal — el orden es del mas caro al mas economico, asi que la que sobrevive por defecto es
+ * la New Black, no la Blanca. El cliente leia "se la prepare en Blanco" y abria un PDF que
+ * decia New Black. Se le mentia sobre lo que tiene en la mano, que es lo unico que este
+ * modulo entero vino a evitar.
+ *
+ * Los colores que se le ofrecen salen del catalogo MENOS el que recibio: ofrecerle el color
+ * que ya tiene se lee como que no leimos lo que le mandamos.
+ *
+ * @param {string} color  el color del documento que el cliente REALMENTE recibio
+ */
+export function avisoColorNoElegido(color) {
+  const entregado = CATALOGO_VISIBLE.find((c) => c.toLowerCase() === String(color || '').trim().toLowerCase())
+    || String(color || '').trim()
+    || 'Blanco';
+  const otros = _restoDelCatalogo([entregado]);
+  const lista = otros.length > 1
+    ? `${otros.slice(0, -1).join(', ')} o ${otros[otros.length - 1]}`
+    : (otros[0] || '');
+  return `🎨 Se la preparé en *${entregado}* mientras me confirma el color.`
+    + (lista ? ` Si prefiere ${lista}, me avisa y se la recotizo sin costo;` : ' Si prefiere otro color, me avisa;')
+    + ' el color cambia el precio, por eso se lo digo.';
+}
+
+/**
+ * EL COLOR DE CATALOGO AL QUE APUNTA UN TEXTO, o null si no apunta a ninguno.
+ *
+ * ⚠️ NO se puede usar `normalizers.normColor` para esto: aquella DEVUELVE "BLANCO" cuando no
+ * reconoce nada (es un resolvedor para el motor, y ahi un default es lo correcto). Aca se
+ * necesita lo contrario — poder decir "no dijo ningun color" — porque el resultado decide si
+ * un pedido se trata como ELEGIR una propuesta ya entregada o como una cotizacion nueva. Con
+ * un default, cualquier texto sin color elegiria la opcion blanca por su cuenta.
+ *
+ * Devuelve la grafia que ve el cliente ("New Black", no "NEGRO"), que es con la que se
+ * guardaron las opciones y con la que se le habla.
+ */
+export function colorDeCatalogo(texto) {
+  const t = String(texto || '').toLowerCase().trim();
+  if (!t) return null;
+  if (/blanc/.test(t)) return 'Blanco';
+  // "roble dorado" antes que "nogal": las dos son de la familia madera y el orden decide.
+  if (/roble|dorad/.test(t)) return 'Roble Dorado';
+  if (/nogal|madera/.test(t)) return 'Nogal';
+  if (/grafito|antracita/.test(t)) return 'Grafito Antracita';
+  if (/negr|black/.test(t)) return 'New Black';
+  return null;
+}
+
+/**
+ * LA LETRA QUE EL CLIENTE ELIGIO, si es que nombro una de las que se le ofrecieron.
+ *
+ * 🔴 EXIGE UNA PALABRA DE CONTEXTO ("la B", "opcion B", "me quedo con la C"). Una letra
+ * suelta no alcanza: en castellano una letra sola aparece dentro de cualquier frase y un
+ * falso positivo aca es caro — significaria dar por elegida una propuesta que el cliente no
+ * eligio. Ante la duda, null, que devuelve el flujo al camino de siempre.
+ *
+ * ⛔ Y solo devuelve letras que SE OFRECIERON de verdad. Si nunca salio una opcion D, un
+ * "la D" no puede resolver a nada.
+ *
+ * @param {string} texto              lo que escribio el cliente
+ * @param {string[]} letrasOfrecidas  las letras que el cliente tiene en la mano
+ */
+export function letraElegidaEnTexto(texto, letrasOfrecidas = []) {
+  const validas = new Set((Array.isArray(letrasOfrecidas) ? letrasOfrecidas : [])
+    .map((l) => String(l || '').trim().toUpperCase()).filter(Boolean));
+  if (!validas.size) return null;
+  const t = String(texto || '');
+  if (!t.trim()) return null;
+  // Las palabras con las que la gente nombra una opcion en el chat. "numero" queda afuera a
+  // proposito: "el numero 0392-B" es un FOLIO, y ese caso lo resuelve el folio, no la letra.
+  const re = /\b(?:opci[oó]n|alternativa|propuesta|la|el|con)\s+([a-z])\b/gi;
+  let m;
+  let hallada = null;
+  while ((m = re.exec(t)) !== null) {
+    const letra = m[1].toUpperCase();
+    if (!validas.has(letra)) continue;
+    // Dos letras distintas nombradas en el mismo mensaje ("entre la B y la C") NO es una
+    // eleccion: es una duda. Se devuelve null y contesta el cerebro, como hoy.
+    if (hallada && hallada !== letra) return null;
+    hallada = letra;
+  }
+  return hallada;
+}
+
+/**
+ * ¿ESTE PEDIDO ES *ELEGIR* UNA PROPUESTA QUE EL CLIENTE YA TIENE, O ES UNA COTIZACION NUEVA?
+ *
+ * 🟠💰 [2026-08-31 · tridente, reproducido por Codex] ESTO TOCA PLATA. Sin esta pregunta, un
+ * "me quedo con la B" emitia OTRO documento (…-D) y disparaba una SEGUNDA conversion 'sent'
+ * por un monto distinto. A Meta y a Google les llegaban DOS ventas cotizadas por UN cliente,
+ * y el algoritmo aprendia que ese trafico convierte el doble de lo que convierte: reparte el
+ * presupuesto del dueño con un dato falso. Elegir entre lo que ya se le mando NO es un
+ * negocio nuevo — es el MISMO negocio, decidido.
+ *
+ * Se responde que si solo cuando se cumplen TODAS:
+ *   1. la terna salio de verdad (hay 2 o mas opciones entregadas guardadas);
+ *   2. el rastro sigue vigente (la misma ventana de reuso que el folio: 48 h);
+ *   3. **es el MISMO proyecto**: misma lista de ventanas, mismas medidas, misma cantidad.
+ *      Sin esto, "me quedo con la B pero de 2 metros" se daria por elegida y el cliente se
+ *      quedaria con un documento que ya no dice lo que pidio;
+ *   4. apunta a una opcion concreta, por LETRA o por COLOR.
+ *
+ * ⚠️ LA LETRA MANDA SOBRE EL COLOR, y no es un detalle de estilo. Cuando el cliente escribe
+ * "me quedo con la B", el modelo suele rellenar el color por defecto (Blanco) porque el
+ * system-prompt se lo ordena: si mandara el color, se daria por elegida la opcion BLANCA
+ * cuando el cliente pidio la NOGAL. La letra es lo que escribio el cliente; el color, en ese
+ * mensaje, es lo que rellenamos nosotros.
+ *
+ * @param {object}   o
+ * @param {object}   o.lastQuote    `state.last_quote` (trae `opciones` y `sig_proyecto`)
+ * @param {string}   o.texto        lo que escribio el cliente
+ * @param {string}   o.color        el color que trae el pedido (uno solo, o '' si son varios)
+ * @param {string}   o.sigProyecto  firma del proyecto de ESTE pedido (sin color ni precio)
+ * @param {number}   o.ventanaMs    cuanto vale el rastro
+ * @returns {{letra:string,color:string,numero:string,total:number}|null}
+ */
+export function opcionYaEntregada({ lastQuote, texto, color, sigProyecto, ventanaMs, ahora = Date.now() } = {}) {
+  const lq = lastQuote || {};
+  const ops = (Array.isArray(lq.opciones) ? lq.opciones : []).filter((o) => o && o.numero && o.color);
+  if (ops.length < 2) return null;
+  if (!(ahora - (Number(lq.at) || 0) < (Number(ventanaMs) || 0))) return null;
+  // El proyecto tiene que ser el MISMO. Si no hay firma guardada (rastro escrito por una
+  // version anterior), no se adivina: se devuelve al camino de siempre.
+  if (!sigProyecto || !lq.sig_proyecto || lq.sig_proyecto !== sigProyecto) return null;
+
+  const porLetra = letraElegidaEnTexto(texto, ops.map((o) => o.letra));
+  if (porLetra) return ops.find((o) => String(o.letra).toUpperCase() === porLetra) || null;
+
+  const buscado = colorDeCatalogo(color);
+  if (!buscado) return null;
+  return ops.find((o) => colorDeCatalogo(o.color) === buscado) || null;
+}
