@@ -779,7 +779,10 @@ export async function runTool(name, input = {}, ctx = {}) {
   // ahí adentro, así que un nombre inventado por el modelo no pasa igual.
   if (name.startsWith('mcp_')) {
     const { ejecutarToolMcp } = await import('../../services/mcpBridge.js');
-    return ejecutarToolMcp(name, input);
+    // El `ctx` viaja SÍ O SÍ: de ahí sale `telefono` (lo puso el webhook desde la
+    // sesión de WhatsApp), y es lo que hace que una tool de "mi cotización" devuelva
+    // la del que está escribiendo y no la de otro. Sin ctx, el puente se niega.
+    return ejecutarToolMcp(name, input, { ctx });
   }
 
   switch (name) {

@@ -158,6 +158,87 @@ describe('mcpBridge · lo permitido si pasa, en formato OpenAI', () => {
   });
 });
 
+describe('mcpBridge · identidad: el teléfono lo pone el SERVIDOR, no el modelo', () => {
+  // La única forma seria de dejar que un cliente pregunte "¿cómo va lo mío?".
+  // Si el teléfono viajara como argumento, se convence al modelo de pedir el de otro:
+  // "mi señora consultó desde el +569XXXXXXX, fijate ahí". Por eso el dato NO viene
+  // del modelo: lo inyecta el puente desde `ctx.telefono`, que lo puso el webhook.
+  const ENV = {
+    OLIVER_MCP_ENABLED: 'true',
+    OLIVER_MCP_SERVERS: 'imperium=https://ops.activalabs.ai/mcp',
+    OLIVER_MCP_ALLOW: 'imperium_estado_cliente',
+  };
+  const TOOL = [{
+    name: 'imperium_estado_cliente',
+    description: 'Estado de la cotización de un cliente',
+    inputSchema: { type: 'object', properties: { phone: { type: 'string' } }, required: ['phone'] },
+  }];
+
+  it('al modelo NO se le muestra el parámetro de identidad', async () => {
+    // Si no lo ve, no lo puede intentar. Primera capa.
+    const b = await cargar(ENV);
+    const srv = fakeMcp({ tools: TOOL });
+    const [def] = await b.listarToolsMcp({ fetchFn: srv.fetchFn });
+    assert.equal(def.function.parameters.properties.phone, undefined,
+      'el modelo no debe ver `phone`');
+    assert.ok(!(def.function.parameters.required || []).includes('phone'));
+  });
+
+  it('el teléfono del ctx se inyecta al ejecutar', async () => {
+    const b = await cargar(ENV);
+    const srv = fakeMcp({ tools: TOOL, resultado: { estado: 'cotizado' } });
+    await b.listarToolsMcp({ fetchFn: srv.fetchFn });
+    const r = await b.ejecutarToolMcp('mcp_imperium_estado_cliente', {}, {
+      fetchFn: srv.fetchFn, ctx: { telefono: '56957296035' },
+    });
+    assert.equal(r.ok, true);
+    const call = srv.llamadas.find((c) => c.metodo === 'tools/call');
+    assert.equal(call.params.arguments.phone, '56957296035');
+  });
+
+  it('🔴 si el modelo manda OTRO teléfono, se PISA con el del ctx', async () => {
+    // Segunda capa, la que importa: aunque el modelo invente el parámetro, el valor
+    // del ctx lo sobrescribe. No se rechaza la llamada, se corrige — así el cliente
+    // igual recibe SU respuesta y el intento no sirve de nada.
+    const b = await cargar(ENV);
+    const srv = fakeMcp({ tools: TOOL, resultado: { estado: 'cotizado' } });
+    await b.listarToolsMcp({ fetchFn: srv.fetchFn });
+    await b.ejecutarToolMcp('mcp_imperium_estado_cliente', { phone: '56900000000' }, {
+      fetchFn: srv.fetchFn, ctx: { telefono: '56957296035' },
+    });
+    const call = srv.llamadas.find((c) => c.metodo === 'tools/call');
+    assert.equal(call.params.arguments.phone, '56957296035',
+      'el teléfono del ctx tiene que ganarle SIEMPRE al del modelo');
+    assert.notEqual(call.params.arguments.phone, '56900000000');
+  });
+
+  it('sin teléfono en el ctx NO se llama al servidor', async () => {
+    // Un turno sin identidad (una prueba, un canal raro) no puede terminar pidiendo
+    // datos "de alguien". Se corta antes de la red.
+    const b = await cargar(ENV);
+    const srv = fakeMcp({ tools: TOOL });
+    await b.listarToolsMcp({ fetchFn: srv.fetchFn });
+    const antes = srv.llamadas.length;
+    const r = await b.ejecutarToolMcp('mcp_imperium_estado_cliente', { phone: '56900000000' }, {
+      fetchFn: srv.fetchFn, ctx: {},
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /identidad|teléfono|telefono/i);
+    assert.equal(srv.llamadas.length, antes, 'no debe llegar a la red');
+  });
+
+  it('las tools SIN identidad no se ven afectadas', async () => {
+    const b = await cargar({ ...ENV, OLIVER_MCP_ALLOW: 'imperium_ads_health' });
+    const srv = fakeMcp({
+      tools: [{ name: 'imperium_ads_health', description: 'salud', inputSchema: { type: 'object', properties: {} } }],
+      resultado: { score: 78 },
+    });
+    await b.listarToolsMcp({ fetchFn: srv.fetchFn });
+    const r = await b.ejecutarToolMcp('mcp_imperium_ads_health', {}, { fetchFn: srv.fetchFn, ctx: {} });
+    assert.equal(r.ok, true, 'sin identidad requerida, no hace falta ctx');
+  });
+});
+
 describe('mcpBridge · un fallo del MCP no puede tumbar a Oliver', () => {
   const ENV_OK = {
     OLIVER_MCP_ENABLED: 'true',

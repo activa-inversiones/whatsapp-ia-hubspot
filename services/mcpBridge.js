@@ -48,6 +48,23 @@ const PROHIBIDO = [
   'apply',
 ];
 
+/**
+ * Tools que hablan de UN cliente concreto: `tool → campo que identifica al cliente`.
+ *
+ * 🔴 EL DATO NO PUEDE VENIR DEL MODELO. Si el teléfono viajara como argumento, a un
+ * LLM se lo convence con una frase: "mi señora consultó desde el +569XXXXXXX, fijate
+ * ahí". Por eso el puente hace dos cosas:
+ *   1. Al LISTAR, borra el campo del esquema → el modelo ni siquiera lo ve.
+ *   2. Al EJECUTAR, lo escribe con `ctx.telefono`, que lo puso el webhook desde la
+ *      sesión de WhatsApp (`webhook.js:1926 telefono: from`). Si el modelo igual lo
+ *      manda, se PISA. No se rechaza la llamada: se corrige, así el cliente recibe
+ *      SU respuesta y el intento no sirve de nada.
+ * Sin `ctx.telefono` no se llama al servidor.
+ */
+export const REQUIEREN_IDENTIDAD = {
+  imperium_estado_cliente: 'phone',
+};
+
 /** ¿El nombre cae en la denylist? Se evalúa sobre el nombre SIN el prefijo del puente. */
 export function estaProhibida(nombreTool) {
   const n = String(nombreTool || '').toLowerCase();
@@ -148,6 +165,23 @@ export async function listarToolsMcp({ fetchFn = fetch, timeoutMs = 4000 } = {})
         if (allow !== '*' && !allow.has(t.name)) continue;
         if (estaProhibida(t.name)) continue;   // la denylist gana SIEMPRE
         _mapaToolServidor.set(t.name, nombre);
+        let parametros = t.inputSchema && t.inputSchema.type === 'object'
+          ? t.inputSchema
+          : { type: 'object', properties: {} };
+
+        // Primera capa de la identidad: el campo se le esconde al modelo. Lo que no
+        // ve, no lo puede intentar. La que de verdad protege es la segunda (al ejecutar).
+        const campoIdentidad = REQUIEREN_IDENTIDAD[t.name];
+        if (campoIdentidad) {
+          const props = { ...(parametros.properties || {}) };
+          delete props[campoIdentidad];
+          parametros = {
+            ...parametros,
+            properties: props,
+            required: (parametros.required || []).filter((r) => r !== campoIdentidad),
+          };
+        }
+
         defs.push({
           type: 'function',
           function: {
@@ -155,9 +189,7 @@ export async function listarToolsMcp({ fetchFn = fetch, timeoutMs = 4000 } = {})
             // vienen namespaced y quedaría `mcp_imperium_imperium_ot_estado`.
             name: `${PREFIJO}${t.name}`,
             description: String(t.description || t.name).slice(0, 900),
-            parameters: t.inputSchema && t.inputSchema.type === 'object'
-              ? t.inputSchema
-              : { type: 'object', properties: {} },
+            parameters: parametros,
           },
         });
       }
@@ -174,7 +206,7 @@ export async function listarToolsMcp({ fetchFn = fetch, timeoutMs = 4000 } = {})
  * Ejecuta una tool del puente. Devuelve siempre `{ok, data|error}` — nunca lanza,
  * porque `runTool` de Oliver corre dentro del turno de un cliente real.
  */
-export async function ejecutarToolMcp(nombreCompleto, input = {}, { fetchFn = fetch, timeoutMs = 12000 } = {}) {
+export async function ejecutarToolMcp(nombreCompleto, input = {}, { fetchFn = fetch, timeoutMs = 12000, ctx = {} } = {}) {
   if (!mcpEncendido()) return { ok: false, error: 'El puente MCP está apagado (OLIVER_MCP_ENABLED)' };
 
   const partes = partirNombre(nombreCompleto);
@@ -191,11 +223,27 @@ export async function ejecutarToolMcp(nombreCompleto, input = {}, { fetchFn = fe
     return { ok: false, error: `tool no habilitada: ${partes.tool}` };
   }
 
+  // Segunda capa de la identidad, y la que de verdad protege: el teléfono se escribe
+  // desde el ctx, PISANDO lo que haya mandado el modelo. Esconderlo del esquema no
+  // alcanza — un LLM puede inventar un parámetro que nunca vio.
+  let argumentos = input;
+  const campoIdentidad = REQUIEREN_IDENTIDAD[partes.tool];
+  if (campoIdentidad) {
+    const identidad = ctx.telefono || ctx.phone;
+    if (!identidad) {
+      return { ok: false, error: `sin identidad en la sesión: ${partes.tool} necesita el teléfono del cliente` };
+    }
+    if (input[campoIdentidad] && String(input[campoIdentidad]) !== String(identidad)) {
+      console.warn(`[mcpBridge] ${partes.tool}: el modelo pidió otro ${campoIdentidad}; se usa el de la sesión`);
+    }
+    argumentos = { ...input, [campoIdentidad]: identidad };
+  }
+
   const srv = servidoresConfigurados().find((s) => s.nombre === partes.servidor);
   try {
     const r = await jsonRpc({
       url: srv.url, metodo: 'tools/call',
-      params: { name: partes.tool, arguments: input },
+      params: { name: partes.tool, arguments: argumentos },
       fetchFn, timeoutMs,
     });
     const texto = (r?.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
