@@ -116,3 +116,36 @@ test('payload vacio o roto devuelve "" y no explota', () => {
   assert.ok(t.length > 0);
   assert.match(t, /Leads de HOY[^\n]*: \?/, 'lo que falta se muestra como "?", no como 0');
 });
+
+// ── [2026-09-01] EL TELÉFONO, PARA PODER LLAMAR ───────────────────────────
+// Pedido del dueño, textual: "la idea es que me deje el resumen del cliente,
+// pincharlo para que yo pueda llamarlo por teléfono".
+// El bloque imprimía `customer_name || phone`: con nombre, el teléfono NO viajaba,
+// así que el modelo no lo tenía y no podía dárselo aunque quisiera.
+const unCliente = (p) => ({ a_quien_llamar: { prioritarios: [p] } });
+
+test('el teléfono viaja aunque el cliente tenga nombre', () => {
+  const t = construirBloqueNumeros(unCliente({
+    customer_name: 'VICTOR ACEVEDO', phone: '56957296035',
+    amount_total: 7245446, dias_sin_respuesta: 3, es_vip: true,
+  }));
+  assert.match(t, /VICTOR ACEVEDO/);
+  assert.match(t, /\+56 9 5729 6035/, 'el teléfono tiene que estar, y en formato pinchable');
+});
+
+test('el teléfono va en formato que WhatsApp convierte en link', () => {
+  // Sin el +56 y los espacios, WhatsApp lo deja como texto muerto y no se puede
+  // tocar para llamar — que es justo lo que el dueño pidió poder hacer.
+  const t = construirBloqueNumeros(unCliente({ customer_name: 'X', phone: '56911112222', amount_total: 100 }));
+  assert.match(t, /\+56 9 1111 2222/);
+});
+
+test('sin nombre sigue mostrando el teléfono (no rompe el caso viejo)', () => {
+  const t = construirBloqueNumeros(unCliente({ phone: '56957296035', amount_total: 500 }));
+  assert.match(t, /\+56 9 5729 6035/);
+});
+
+test('un teléfono con formato raro se imprime tal cual en vez de desaparecer', () => {
+  const t = construirBloqueNumeros(unCliente({ customer_name: 'Y', phone: '001234', amount_total: 1 }));
+  assert.match(t, /001234/);
+});

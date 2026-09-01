@@ -1532,8 +1532,14 @@ async function handleCeoAssistant(inc, textSinWake) {
         else msg = `No pude posponer: ${a.error || "error desconocido"}`;
       }
       if (msg) {
-        if (wasVoice) { try { await sendVoiceOrAudio(waId, msg, "audio"); return; } catch (e) { logErr("ceo_assistant.agenda_voz.voice", e); } }
+        // [2026-09-01] EL TEXTO VA SIEMPRE. Antes, si le hablabas por voz, el `return`
+        // de aca cortaba antes de mandarlo y la respuesta quedaba SOLO en un audio: no se
+        // puede releer, ni copiar un telefono para llamar, ni buscarla despues en el chat.
+        // Pedido del dueno (01-sep): "todo me lo deja por voz... la idea es que me deje el
+        // resumen del cliente, pincharlo para que yo pueda llamarlo".
+        // Ahora: texto primero (queda), audio despues (si hablo por voz).
         await waSendH(waId, msg, true);
+        if (wasVoice) { try { await sendVoiceOrAudio(waId, msg, "audio"); } catch (e) { logErr("ceo_assistant.agenda_voz.voice", e); } }
         return;
       }
     }
@@ -1571,6 +1577,11 @@ async function handleCeoAssistant(inc, textSinWake) {
           "Eres Oliver, el asistente personal de Marcelo Cifuentes, dueño de Activa Inversiones (fábrica de ventanas PVC en Temuco, Chile). " +
           "Marcelo te habla por WhatsApp para organizarse: su agenda del día, a qué clientes llamar y qué decirles, redactar BORRADORES de correo o mensaje (solo borradores: él los envía, vos NUNCA mandás nada a terceros; EXCEPCIÓN [ZL-F3]: los comandos de AGENDA por voz SÍ se ejecutan al tiro contra sales-os — es la agenda del propio Marcelo, no un tercero), y recordarle cosas. " +
           "Responde BREVE, en español chileno, directo y útil, sin humo. Si te falta un dato, pedíselo; NUNCA inventes precios, medidas ni datos del negocio. " +
+          // [2026-09-01] Cuando pregunta a quien llamar, lo que necesita es poder ACTUAR:
+          // el numero para tocarlo y llamar, y el antecedente para saber que decirle.
+          // Sin esto el modelo contestaba solo el nombre y el monto, y el dueno tenia
+          // que ir a buscar el telefono a otro lado.
+          "Cuando te pregunte a quien llamar o por el cliente de mayor monto: dale el NOMBRE, el MONTO, los DIAS sin respuesta y SIEMPRE el TELEFONO tal cual aparece abajo (formato +56 9 XXXX XXXX, que en WhatsApp queda tocable para llamar). Un cliente por linea, del mas grande al mas chico. Si sabes que cotizo, decilo en media linea para que sepa con que arrancar la conversacion. " +
           "Cuando te pregunte por números del negocio, responde con los datos reales de abajo y decí SIEMPRE de qué período son. Si el dato que pide no está abajo, decí que no lo tenés a mano en vez de estimarlo. " +
           // [2026-08-31 defecto-2] La regla vive en services/ceoContextoTexto.js para que el
           // prompt y el bloque de datos no puedan decir cosas distintas.
@@ -1584,11 +1595,17 @@ async function handleCeoAssistant(inc, textSinWake) {
   } catch (e) { logErr("ceo_assistant.brain", e); }
   if (!respuesta) respuesta = "Disculpá, no pude procesar eso ahora. ¿Lo intentás de nuevo?";
   // 4) Responder: por voz si te habló por voz; si la voz falla, cae a texto.
+  // [2026-09-01] EL TEXTO VA SIEMPRE. Antes, si le hablabas por voz, el `return`
+  // de aca cortaba antes de mandarlo y la respuesta quedaba SOLO en un audio: no se
+  // puede releer, ni copiar un telefono para llamar, ni buscarla despues en el chat.
+  // Pedido del dueno (01-sep): "todo me lo deja por voz... la idea es que me deje el
+  // resumen del cliente, pincharlo para que yo pueda llamarlo".
+  // Ahora: texto primero (queda), audio despues (si hablo por voz).
+  await waSendH(waId, respuesta, true);
   if (wasVoice) {
-    try { await sendVoiceOrAudio(waId, respuesta, "audio"); return; }
+    try { await sendVoiceOrAudio(waId, respuesta, "audio"); }
     catch (e) { logErr("ceo_assistant.voice", e); }
   }
-  await waSendH(waId, respuesta, true);
 }
 
 // Dispatcher de cubicación pendiente — revisar cada 15s, enviar a los 60s

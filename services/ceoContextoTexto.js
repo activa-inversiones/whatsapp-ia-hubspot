@@ -29,6 +29,20 @@ export const VERSION = '1.0.0';
 
 const m = (n) => (n == null ? '?' : '$' + Number(n).toLocaleString('es-CL'));
 
+/**
+ * Teléfono en el formato que WhatsApp convierte en link tocable: `+56 9 5729 6035`.
+ * Pegado y sin el `+` queda texto muerto y el dueño no puede llamar desde el chat,
+ * que es exactamente lo que pidió poder hacer.
+ * Si el número no tiene la forma chilena esperada se devuelve tal cual — mostrarlo
+ * raro es mejor que no mostrarlo.
+ */
+const tel = (v) => {
+  const d = String(v ?? '').replace(/\D/g, '');
+  if (d.length === 11 && d.startsWith('569')) return `+56 9 ${d.slice(3, 7)} ${d.slice(7)}`;
+  if (d.length === 9 && d.startsWith('9')) return `+56 9 ${d.slice(1, 5)} ${d.slice(5)}`;
+  return String(v ?? '');
+};
+
 // Las dos ventanas, escritas una sola vez para que el prompt y el codigo no se separen.
 export const REGLA_PERIODOS =
   'CADA LÍNEA DE ABAJO DICE SU PERÍODO Y NO SE MEZCLAN. ' +
@@ -46,8 +60,18 @@ export const REGLA_PERIODOS =
 export function construirBloqueNumeros(d) {
   if (!d || typeof d !== 'object') return '';
 
+  // [2026-09-01] EL TELÉFONO VIAJA SIEMPRE, no solo cuando falta el nombre.
+  // Pedido del dueño, textual: "que me deje el resumen del cliente, pincharlo para
+  // que yo pueda llamarlo por teléfono". Antes esto decía `customer_name || phone`:
+  // con nombre, el número NO llegaba al modelo, así que no podía dárselo aunque
+  // quisiera. Y va en formato +56 9 XXXX XXXX porque así WhatsApp lo convierte en
+  // link tocable; pegado y sin el +, queda texto muerto.
   const top = (d.a_quien_llamar?.prioritarios || []).slice(0, 5)
-    .map(p => `${p.customer_name || p.phone} ${m(p.amount_total)} (${p.dias_sin_respuesta}d${p.es_vip ? ', VIP' : ''})`)
+    .map(p => {
+      const quien = p.customer_name ? `${p.customer_name} ${tel(p.phone)}` : tel(p.phone);
+      const dias = p.dias_sin_respuesta == null ? '' : ` (${p.dias_sin_respuesta}d${p.es_vip ? ', VIP' : ''})`;
+      return `${quien} ${m(p.amount_total)}${dias}`;
+    })
     .join(' · ');
 
   // [2026-08-29 #579-B] LOS MISMOS NUMEROS QUE VE EN PANTALLA, con las MISMAS palabras.
