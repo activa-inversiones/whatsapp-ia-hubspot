@@ -27,7 +27,14 @@ async function cargar(env = {}) {
   return bridge;
 }
 
-// Servidor MCP falso: responde JSON-RPC como lo hacen imperium y activa-mcp.
+// Servidor MCP falso: responde JSON-RPC en JSON, como lo hace `imperium`.
+// ⚠️ OJO — este mock NO representa a `activa` (temp-cxm). Medido el 01-sep levantando el
+// servidor real: `activaMcp.js:308` construye el transporte SIN `enableJsonResponse: true`,
+// asi que contesta `text/event-stream` y el `res.json()` del puente (mcpBridge.js:141) tira
+// SyntaxError. Consecuencia medida: las tools del CXM no se listan NUNCA y el servidor entero
+// es invisible para Oliver, en silencio. Eso NO lo arregla este archivo — es un cambio en el
+// CXM (una palabra) y va aparte. Se deja escrito aca para que nadie lea este mock y crea que
+// el camino del CXM esta probado: no lo esta.
 function fakeMcp({ tools = [], resultado = { ok: true }, falla = null } = {}) {
   const llamadas = [];
   return {
