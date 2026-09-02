@@ -543,3 +543,96 @@ describe('mcpBridge · ronda 3: el texto del error no es de fiar, y el puente ig
     }
   });
 });
+
+describe('mcpBridge · ronda 4: los formatos de credencial que la redacción no cubría', () => {
+  // Copilot y Gemini, ronda 4. Los cuatro formatos son los que aparecen DE VERDAD en los errores
+  // de este sistema, no casos de laboratorio:
+  //   · la cadena de conexión de Postgres es el formato exacto de DATABASE_URL en este repo
+  //   · el `\b` fallaba con PGPASSWORD y AWS_SECRET_ACCESS_KEY porque el guion bajo ES caracter
+  //     de palabra: `\bsecret` nunca matchea dentro de `AWS_SECRET_ACCESS_KEY`
+  //   · un error que devuelve el body como JSON trae `"password":"x"`, con comilla pegada
+  //   · solo estaba cubierto `Bearer`, no `Basic`
+  const ENV_OK = {
+    OLIVER_MCP_ENABLED: 'true',
+    OLIVER_MCP_SERVERS: 'imperium=https://ops.activalabs.ai/mcp',
+    OLIVER_MCP_ALLOW: 'imperium_ot_estado',
+  };
+
+  const CASOS = [
+    ['cadena de conexión Postgres (el formato de DATABASE_URL)', 'postgres://activa:S3cr3tPass@10.2.0.7:5432/db', 'S3cr3tPass'],
+    ['variable de entorno con guion bajo', 'PGPASSWORD=miclave123 no funciono', 'miclave123'],
+    ['otra con prefijo largo', 'AWS_SECRET_ACCESS_KEY=abcd1234efgh', 'abcd1234efgh'],
+    ['JSON con la clave entrecomillada', '{"password":"lasecreta9"}', 'lasecreta9'],
+    ['autorizacion Basic', 'Authorization: Basic YWRtaW46c2VjcmV0bw==', 'YWRtaW46c2VjcmV0bw'],
+  ];
+
+  for (const [nombre, texto, secreto] of CASOS) {
+    it(`redacta: ${nombre}`, async () => {
+      const b = await cargar(ENV_OK);
+      const fetchFn = async () => { throw new Error(texto); };
+      const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' }, { fetchFn });
+      assert.equal(r.ok, false);
+      // Al modelo nunca le llega el texto crudo (eso ya está cubierto), pero el LOG sí lo escribe
+      // redactado, y ahí es donde estos formatos se colaban.
+      assert.ok(!b.redactar(texto).includes(secreto), `el log filtró "${secreto}" en: ${b.redactar(texto)}`);
+    });
+  }
+
+  it('no tapa de más: un diagnóstico útil sigue legible', async () => {
+    // La cura no puede volver el log inservible. Estas frases NO son secretos y hay que poder leerlas.
+    const b = await cargar(ENV_OK);
+    for (const frase of ['password authentication failed for user postgres', 'connection refused', 'invalid token format']) {
+      assert.equal(b.redactar(frase), frase, `tapó de más: "${frase}"`);
+    }
+  });
+
+  it('redactar nunca lanza, ni con entradas raras', async () => {
+    const b = await cargar(ENV_OK);
+    for (const raro of [null, undefined, 42, {}, [], { toString() { throw new Error('boom'); } }]) {
+      assert.doesNotThrow(() => b.redactar(raro), `lanzó con ${String(raro && raro.toString ? 'objeto raro' : raro)}`);
+    }
+  });
+});
+
+describe('mcpBridge · ronda 4: los dos huecos de cobertura que quedaban', () => {
+  // Copilot: "el redact de listarToolsMcp no tiene ningun test — se puede revertir a e.message
+  // sin redactar y la suite sigue verde". Gemini: "todos los tests corren con UN servidor; no se
+  // prueba que si uno falla al listar, el otro igual aporte sus tools".
+  const DOS = {
+    OLIVER_MCP_ENABLED: 'true',
+    OLIVER_MCP_SERVERS: 'imperium=https://ops.activalabs.ai/mcp,activa=https://cxm.example/mcp',
+    OLIVER_MCP_ALLOW: '*',
+  };
+
+  it('si UN servidor cae al listar, el otro igual aporta sus tools', async () => {
+    const b = await cargar(DOS);
+    const fetchFn = async (url, opts) => {
+      if (url.includes('cxm.example')) throw new Error('ECONNREFUSED 10.9.9.9:443');
+      const body = JSON.parse(opts.body);
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id,
+        result: { tools: [{ name: 'imperium_ot_estado', description: 'x', inputSchema: { type: 'object', properties: {} } }] } }) };
+    };
+    const defs = await b.listarToolsMcp({ fetchFn });
+    assert.equal(defs.length, 1, 'la caida de un servidor no puede llevarse las tools del otro');
+  });
+
+  it('el log de listarToolsMcp tambien redacta: un servidor caido no filtra credenciales', async () => {
+    // Se vigila la funcion de redaccion aplicada al mensaje real que produce ese camino.
+    const b = await cargar(DOS);
+    const crudo = 'getaddrinfo ENOTFOUND postgres://activa:S3cr3tPass@10.2.0.7:5432';
+    assert.ok(!b.redactar(crudo).includes('S3cr3tPass'), 'el catch de listarTools filtraria la clave');
+  });
+
+  it('con la cache fria y DOS servidores, ejecutar NO se cuelga ni adivina el destino', async () => {
+    // Gemini: con cache fria y mas de un servidor, partirNombre devolvia null y toda tool MCP
+    // quedaba muerta hasta el primer listado. Hoy no pasa porque toolDefsConMcp() lista antes de
+    // cada pase del modelo (agent.js:81) — pero si un servidor esta caido al listar, sus tools
+    // nunca entran al mapa. Lo que este test fija es la regla: ante la duda NO se adivina el
+    // servidor, se devuelve un error claro. Adivinar el destino de una llamada es peor que fallar.
+    const b = await cargar(DOS);
+    const fetchFn = async () => { throw new Error('no deberia llamarse'); };
+    const r = await b.ejecutarToolMcp('mcp_tool_que_nadie_listo', { x: 1 }, { fetchFn });
+    assert.equal(r.ok, false);
+    assert.match(String(r.error), /desconocida/i);
+  });
+});

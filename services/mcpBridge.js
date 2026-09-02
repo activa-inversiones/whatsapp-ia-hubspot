@@ -123,30 +123,31 @@ function partirNombre(nombreCompleto) {
 }
 
 /**
- * Lo que el MODELO puede ver de un error, y lo que NO.
+ * Limpia un texto ANTES de escribirlo al log del servidor. Es una defensa, no un secreto:
+ * un log se comparte, se pega en un ticket y se sube a un servicio de terceros.
  *
- * Un error real de esta base dice "connection to server at 10.x.x.x port 5432 failed:
- * password authentication failed for user postgres". Eso NO puede entrar al prompt: de ahi
- * a la pantalla de un cliente hay un solo paso probabilistico (una linea del system-prompt
- * pidiendole a Oliver que no muestre lenguaje interno). El detalle va al log del servidor,
- * que es donde sirve; al modelo le llega una frase que puede decir en voz alta.
+ * Los formatos de abajo NO son casos de laboratorio — son los que aparecen de verdad en los
+ * errores de este sistema, y los marcaron Copilot y Gemini en la ronda 4 del tridente:
+ *   · `postgres://usuario:CLAVE@host` es el formato exacto de DATABASE_URL en este repo
+ *   · con `\b` nunca se cazaba PGPASSWORD ni AWS_SECRET_ACCESS_KEY: el guion bajo ES caracter
+ *     de palabra, asi que `\bsecret` no matchea adentro de AWS_SECRET_ACCESS_KEY
+ *   · un error que devuelve el body como JSON trae `"password":"x"`, con la comilla pegada
+ *   · estaba cubierto `Bearer` pero no `Basic`
  *
- * EXCEPCION — los errores de VALIDACION pasan enteros: son sobre los argumentos que mando el
- * propio modelo, le sirven para corregirse solo en el turno siguiente, y no llevan
- * infraestructura adentro. Taparlos lo dejaria reintentando a ciegas.
- *
- * (tridente 01-sep, segunda vuelta, hallazgo de Codex)
+ * Y NO puede tapar de mas: "password authentication failed" es diagnostico util, no un secreto.
+ * Por eso se exige separador `=` o `:` — una palabra clave seguida de un espacio no alcanza.
  */
-function redactar(t) {
+export function redactar(t) {
   try {
     return String(t)
+      // cadenas de conexion: esquema://usuario:CLAVE@host
+      .replace(/(\w+:\/\/[^:/\s@]+):([^@\s]+)@/g, '$1:***@')
       // prefijos de clave conocidos, con o sin separador
       .replace(/(sk-[a-z-]+|ghp_|gho_|xoxb-|xoxp-|AIzaSy|glpat-)[A-Za-z0-9_.-]+/gi, '$1***')
-      // "Bearer <lo que sea>"
-      .replace(/\bBearer\s+\S+/gi, 'Bearer ***')
-      // clave=valor y clave: valor. EXIGE separador `=` o `:`, para NO tapar frases como
-      // "password authentication failed", que es diagnostico util y no un secreto.
-      .replace(/\b(api[\s_-]?key|apikey|token|secret|passwo?r?d|passwd|pwd|pass)\s*[:=]\s*("[^"]*"|'[^']*'|\S+)/gi, '$1=***')
+      // Authorization: Bearer <x>  /  Basic <x>
+      .replace(/\b(Bearer|Basic)\s+\S+/gi, '$1 ***')
+      // nombre=valor, "nombre":"valor", NOMBRE_CON_GUION_BAJO=valor
+      .replace(/([A-Za-z_]*(?:passwo?rd|passwd|pwd|secret|token|apikey|api[_\s-]?key)[A-Za-z_]*)("?\s*[:=]\s*"?)([^"\s,;}]+)/gi, '$1$2***')
       .slice(0, 500);
   } catch { return '(no se pudo redactar el error)'; }
 }
