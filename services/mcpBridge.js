@@ -138,16 +138,29 @@ function partirNombre(nombreCompleto) {
  * (tridente 01-sep, segunda vuelta, hallazgo de Codex)
  */
 function redactar(t) {
-  return String(t)
-    .replace(/(sk-[a-z-]+|ghp_|xoxb-|AIzaSy)[A-Za-z0-9_-]+/gi, '$1***')
-    .replace(/(Bearer|api[_-]?key|token|password|pass)(["' :=]+)[^\s",;]{8,}/gi, '$1$2***')
-    .slice(0, 500);
+  try {
+    return String(t)
+      // prefijos de clave conocidos, con o sin separador
+      .replace(/(sk-[a-z-]+|ghp_|gho_|xoxb-|xoxp-|AIzaSy|glpat-)[A-Za-z0-9_.-]+/gi, '$1***')
+      // "Bearer <lo que sea>"
+      .replace(/\bBearer\s+\S+/gi, 'Bearer ***')
+      // clave=valor y clave: valor. EXIGE separador `=` o `:`, para NO tapar frases como
+      // "password authentication failed", que es diagnostico util y no un secreto.
+      .replace(/\b(api[\s_-]?key|apikey|token|secret|passwo?r?d|passwd|pwd|pass)\s*[:=]\s*("[^"]*"|'[^']*'|\S+)/gi, '$1=***')
+      .slice(0, 500);
+  } catch { return '(no se pudo redactar el error)'; }
 }
 
 const ERROR_GENERICO = 'esa consulta no se pudo completar ahora mismo';
 function errorParaElModelo(texto, tool) {
   const t = String(texto ?? '').trim();
-  if (/^MCP error -32602/.test(t)) return t.split('\n')[0].slice(0, 200);
+  // Los argumentos invalidos (-32602) SI se le avisan al modelo, para que se corrija solo en el
+  // turno siguiente en vez de reintentar a ciegas. Pero se le avisa la CLASE de error, NO el texto
+  // del servidor: Codex reprodujo "MCP error -32602: password=supersecreto host=10.2.0.7" llegando
+  // entero solo por empezar con ese codigo. El texto de un error no es un lugar confiable, y
+  // redactarlo no alcanza — el host sobrevivia igual. Los nombres de los campos el modelo ya los
+  // tiene en el esquema de la tool. (tridente 01-sep RONDA 3)
+  if (/^MCP error -32602/.test(t)) return `argumentos invalidos para ${tool}: revisa el esquema y volve a intentar`;
   // Al log SI va el detalle —es donde sirve— pero redactando lo que parezca credencial: un log
   // se comparte, se pega en un ticket y se sube a un servicio de terceros.
   if (t) console.warn(`[mcpBridge] ${tool} fallo: ${redactar(t)}`);
@@ -228,7 +241,7 @@ export async function listarToolsMcp({ fetchFn = fetch, timeoutMs = 4000 } = {})
     } catch (e) {
       // A propósito silencioso hacia el LLM, ruidoso en el log: el cliente no tiene
       // por qué enterarse de que un servidor interno está caído.
-      console.warn(`[mcpBridge v${VERSION}] ${nombre} no respondió tools/list: ${e.message}`);
+      console.warn(`[mcpBridge v${VERSION}] ${nombre} no respondió tools/list: ${redactar(e.message)}`);
     }
   }
   return defs;
@@ -239,6 +252,14 @@ export async function listarToolsMcp({ fetchFn = fetch, timeoutMs = 4000 } = {})
  * porque `runTool` de Oliver corre dentro del turno de un cliente real.
  */
 export async function ejecutarToolMcp(nombreCompleto, input = {}, { fetchFn = fetch, timeoutMs = 12000, ctx = {} } = {}) {
+  // 🔴 `input = {}` y `ctx = {}` son defaults de parametro: SOLO cubren `undefined`. Con `null`
+  // —o un string, o un numero— la linea `entrada[campoIdentidad]` de mas abajo explota ANTES del
+  // try, el TypeError se escapa, y el catch de agent.js lo mete CRUDO en el tool_result que ve
+  // el modelo. El comentario de arriba promete "nunca lanza": esto lo hace cierto tambien
+  // cuando lo llaman mal. (tridente 01-sep RONDA 3, hallazgo de Codex, reproducido)
+  const esObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const entrada = esObj(input) ? input : {};
+  const sesion = esObj(ctx) ? ctx : {};
   if (!mcpEncendido()) return { ok: false, error: 'El puente MCP está apagado (OLIVER_MCP_ENABLED)' };
 
   const partes = partirNombre(nombreCompleto);
@@ -258,17 +279,17 @@ export async function ejecutarToolMcp(nombreCompleto, input = {}, { fetchFn = fe
   // Segunda capa de la identidad, y la que de verdad protege: el teléfono se escribe
   // desde el ctx, PISANDO lo que haya mandado el modelo. Esconderlo del esquema no
   // alcanza — un LLM puede inventar un parámetro que nunca vio.
-  let argumentos = input;
+  let argumentos = entrada;
   const campoIdentidad = REQUIEREN_IDENTIDAD[partes.tool];
   if (campoIdentidad) {
-    const identidad = ctx.telefono || ctx.phone;
+    const identidad = sesion.telefono || sesion.phone;
     if (!identidad) {
       return { ok: false, error: `sin identidad en la sesión: ${partes.tool} necesita el teléfono del cliente` };
     }
-    if (input[campoIdentidad] && String(input[campoIdentidad]) !== String(identidad)) {
+    if (entrada[campoIdentidad] && String(entrada[campoIdentidad]) !== String(identidad)) {
       console.warn(`[mcpBridge] ${partes.tool}: el modelo pidió otro ${campoIdentidad}; se usa el de la sesión`);
     }
-    argumentos = { ...input, [campoIdentidad]: identidad };
+    argumentos = { ...entrada, [campoIdentidad]: identidad };
   }
 
   const srv = servidoresConfigurados().find((s) => s.nombre === partes.servidor);

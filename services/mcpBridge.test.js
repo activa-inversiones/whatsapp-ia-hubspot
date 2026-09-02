@@ -367,7 +367,11 @@ describe('mcpBridge · el detalle tecnico del error NO entra al prompt del LLM',
     const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 1 },
       { fetchFn: responde({ content: [{ type: 'text', text: val }], isError: true }) });
     assert.equal(r.ok, false);
-    assert.match(String(r.error), /Input validation error/);
+    // RONDA 3: ya no viaja el texto del servidor, solo la CLASE de error. El modelo se entera
+    // de que mando mal los argumentos —que es lo que necesita para corregirse— sin recibir
+    // una linea que puede traer un host o una clave adentro.
+    assert.match(String(r.error), /argumentos invalidos/i);
+    assert.ok(!String(r.error).includes('Input validation error'), 'no puede venir el texto del servidor');
   });
 
   it('isError:true SIN content igual devuelve un error utilizable, no vacio', async () => {
@@ -440,12 +444,15 @@ describe('mcpBridge · la compuerta tapaba UNA puerta y dejaba la ventana abiert
     sinFiltrar(r, 'json-rpc');
   });
 
-  it('un HTTP 500 con cuerpo sensible tampoco', async () => {
+  it('un HTTP 500 REAL (no una excepcion fabricada) tampoco filtra', async () => {
+    // Codex ronda 3: el test anterior lanzaba una excepcion a mano, asi que nunca recorria la
+    // rama del HTTP no-ok dentro de jsonRpc. Un test que no toca el camino que dice proteger
+    // es un test que miente. Ahora devuelve una respuesta no-ok de verdad.
     const b = await cargar(ENV_OK);
-    const fetchFn = async () => { throw new Error('Bearer sk-ant-api03-XXXX rechazado por el upstream'); };
+    const fetchFn = async () => ({ ok: false, status: 500, json: async () => ({ error: 'Bearer sk-ant-api03-XXXX invalido' }) });
     const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' }, { fetchFn });
     assert.equal(r.ok, false);
-    sinFiltrar(r, 'http');
+    sinFiltrar(r, 'http-500-real');
   });
 
   it('solo -32602 pasa entero; -32603 y -32000 NO son validación y se tapan', async () => {
@@ -462,10 +469,77 @@ describe('mcpBridge · la compuerta tapaba UNA puerta y dejaba la ventana abiert
     });
     const val = await b.ejecutarToolMcp('mcp_imperium_ot_estado', {}, {
       fetchFn: conCodigo('MCP error -32602: Input validation error: Invalid arguments') });
-    assert.match(String(val.error), /Input validation error/, '-32602 tiene que pasar');
+    assert.match(String(val.error), /argumentos invalidos/i, '-32602 tiene que avisarle al modelo que la culpa es suya');
 
     const interno = await b.ejecutarToolMcp('mcp_imperium_ot_estado', {}, {
       fetchFn: conCodigo('MCP error -32603: password authentication failed for user "postgres"') });
     sinFiltrar(interno, '-32603');
+  });
+});
+
+describe('mcpBridge · ronda 3: el texto del error no es de fiar, y el puente igual puede explotar', () => {
+  const ENV_OK = {
+    OLIVER_MCP_ENABLED: 'true',
+    OLIVER_MCP_SERVERS: 'imperium=https://ops.activalabs.ai/mcp',
+    OLIVER_MCP_ALLOW: 'imperium_ot_estado,imperium_estado_cliente',
+  };
+
+  it('🔴 un -32602 que traiga un secreto NO pasa entero solo por empezar con ese codigo', async () => {
+    // Codex ronda 3, reproducido: la excepcion de validacion se reconocia SOLO por el texto.
+    // Cualquier mensaje que empiece con "MCP error -32602:" pasaba intacto — y el texto de un
+    // error no es un lugar confiable. Reprodujo: "MCP error -32602: password=supersecreto
+    // host=10.2.0.7" llegando entero al modelo.
+    // La excepcion sigue existiendo (al modelo le sirve saber que mando mal un argumento),
+    // pero ahora tambien se redacta: dejar pasar la CLASE de error no es dejar pasar el CONTENIDO.
+    const b = await cargar(ENV_OK);
+    const fetchFn = async (url, opts) => ({
+      ok: true,
+      json: async () => ({
+        jsonrpc: '2.0', id: JSON.parse(opts.body).id,
+        result: {
+          content: [{ type: 'text', text: 'MCP error -32602: password=supersecreto host=10.2.0.7' }],
+          isError: true,
+        },
+      }),
+    });
+    const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', {}, { fetchFn });
+    assert.equal(r.ok, false);
+    assert.ok(!String(r.error).includes('supersecreto'), `filtro la clave: ${r.error}`);
+    assert.ok(!String(r.error).includes('10.2.0.7'), `filtro el host: ${r.error}`);
+  });
+
+  it('🔴 con argumentos basura NO lanza: promete "nunca lanza" y tiene que cumplirlo', async () => {
+    // Codex ronda 3: con `input` null explotaba ANTES del try, el TypeError se escapaba, y el
+    // catch de agent.js lo convertia en un tool_result crudo que entraba al modelo. Un modulo
+    // que promete degradar tiene que degradar tambien cuando lo llaman mal.
+    const b = await cargar(ENV_OK);
+    const fetchFn = async () => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { content: [] } }) });
+    // OJO: tiene que ser una tool de REQUIEREN_IDENTIDAD. El primer intento uso
+    // imperium_ot_estado y el test paso sin tocar el camino que explota: la linea que
+    // revienta es `input[campoIdentidad]`, y solo se ejecuta para las tools con identidad.
+    for (const malo of [null, undefined, 'texto', 42, []]) {
+      const r = await b.ejecutarToolMcp('mcp_imperium_estado_cliente', malo, { fetchFn, ctx: { telefono: '56957296035' } });
+      assert.equal(typeof r, 'object', `con ${JSON.stringify(malo)} no devolvio un objeto`);
+      assert.ok('ok' in r, `con ${JSON.stringify(malo)} no devolvio {ok}`);
+    }
+    // Y el nombre de tool tampoco puede tumbarlo.
+    for (const malo of [null, undefined, 42, {}]) {
+      const r = await b.ejecutarToolMcp(malo, { ot: 'X' }, { fetchFn });
+      assert.equal(r.ok, false);
+    }
+  });
+
+  it('redactar tapa lo que debe y NO tapa "password authentication" (que es diagnostico)', async () => {
+    const b = await cargar(ENV_OK);
+    const casos = [
+      ['api key = miclavesecreta123', 'miclavesecreta123', false],
+      ['Bearer sk-ant-api03-ABCDEF', 'sk-ant-api03-ABCDEF', false],
+      ['token: abc12345', 'abc12345', false],
+    ];
+    for (const [texto, secreto] of casos) {
+      const fetchFn = async () => { throw new Error(texto); };
+      const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' }, { fetchFn });
+      assert.ok(!String(r.error).includes(secreto), `${texto} → filtro "${secreto}"`);
+    }
   });
 });
