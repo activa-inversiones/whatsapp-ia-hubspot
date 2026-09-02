@@ -266,7 +266,10 @@ describe('mcpBridge · un fallo del MCP no puede tumbar a Oliver', () => {
     const srv = fakeMcp({ falla: 'timeout' });
     const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' }, { fetchFn: srv.fetchFn });
     assert.equal(r.ok, false);
-    assert.match(r.error, /timeout/);
+    // El texto crudo del fallo ya NO viaja al modelo: lo tapa errorParaElModelo (ronda 2 del
+    // tridente). Lo que este test protege es lo de siempre — que degrade y NO lance.
+    assert.ok(String(r.error).trim().length > 0, 'tiene que decir algo');
+    assert.ok(!String(r.error).includes('timeout'), 'y no el detalle interno');
   });
 });
 
@@ -378,12 +381,91 @@ describe('mcpBridge · el detalle tecnico del error NO entra al prompt del LLM',
   it('un payload con ok:false SIN isError sigue siendo ok:true — y es a proposito', async () => {
     // El puente reporta el RESULTADO DEL TRANSPORTE, no reinterpreta payloads ajenos.
     // Si una tool devuelve {ok:false} adentro de un exito, eso es SU contrato con el modelo
-    // (asi habla imperium_estado_cliente, por ejemplo). Que el puente lo volviera error
+    // no reinterpreta payloads ajenos. Codex marco que el ejemplo que estaba aca era FALSO:
+    // imperium_estado_cliente NO es un caso de esos — su {ok:false} lo convierte el servidor
+    // en isError:true (tools.js:255, `if (!r.ok) return errorResult(r.error)`). El caso real es
+    // una tool futura que devuelva {ok:false} en su payload sin marcarlo: ahi el ok:false es SU
+    // contrato con el modelo, y volverlo error desde el puente romperia su semantica.
     // rompería tools que hoy funcionan. Queda escrito para que nadie lo "arregle" sin querer.
     const b = await cargar(ENV_OK);
     const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' },
       { fetchFn: responde({ content: [{ type: 'text', text: JSON.stringify({ ok: false, encontrado: false }) }] }) });
     assert.equal(r.ok, true);
     assert.deepEqual(r.data, { ok: false, encontrado: false });
+  });
+});
+describe('mcpBridge · la compuerta tapaba UNA puerta y dejaba la ventana abierta', () => {
+  // 🔴 Ronda 2 del tridente, 01-sep. Codex: "errorParaElModelo() solo cubre result.isError;
+  // los errores JSON-RPC y las excepciones salen crudos por el catch. Reproduje host, usuario
+  // y token llegando intactos". Tenía razón — y es peor que el bug original, porque el camino
+  // que quedó abierto es EXACTAMENTE el que lleva el detalle de infraestructura:
+  //   · fallo de red   → "connect ECONNREFUSED 10.2.0.7:5432"
+  //   · error JSON-RPC → jsonRpc hace `throw new Error(j.error.message)` con el texto del servidor
+  //   · HTTP no-200    → "HTTP 500"
+  // Los tres caían en `catch (e) { return { ok:false, error: e.message } }`, sin pasar por la
+  // compuerta. Se arregló la puerta y se dejó la ventana.
+  const ENV_OK = {
+    OLIVER_MCP_ENABLED: 'true',
+    OLIVER_MCP_SERVERS: 'imperium=https://ops.activalabs.ai/mcp',
+    OLIVER_MCP_ALLOW: 'imperium_ot_estado',
+  };
+  const SECRETOS = ['10.2.0.7', 'postgres', 'password', 'Bearer', 'sk-ant-api03'];
+
+  function sinFiltrar(r, ctx) {
+    for (const s of SECRETOS) {
+      assert.ok(!String(r.error).includes(s), `${ctx}: le filtró "${s}" al modelo → ${r.error}`);
+    }
+    assert.ok(String(r.error).trim().length > 0, `${ctx}: un error mudo confunde más que uno genérico`);
+  }
+
+  it('un fallo de RED no le pasa host ni puerto al modelo', async () => {
+    const b = await cargar(ENV_OK);
+    const fetchFn = async () => { throw new Error('connect ECONNREFUSED 10.2.0.7:5432'); };
+    const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' }, { fetchFn });
+    assert.equal(r.ok, false);
+    sinFiltrar(r, 'red');
+  });
+
+  it('un error JSON-RPC del servidor tampoco: hoy sale crudo por el throw de jsonRpc', async () => {
+    const b = await cargar(ENV_OK);
+    const fetchFn = async (url, opts) => ({
+      ok: true,
+      json: async () => ({
+        jsonrpc: '2.0', id: JSON.parse(opts.body).id,
+        error: { code: -32603, message: 'password authentication failed for user "postgres" at 10.2.0.7' },
+      }),
+    });
+    const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' }, { fetchFn });
+    assert.equal(r.ok, false);
+    sinFiltrar(r, 'json-rpc');
+  });
+
+  it('un HTTP 500 con cuerpo sensible tampoco', async () => {
+    const b = await cargar(ENV_OK);
+    const fetchFn = async () => { throw new Error('Bearer sk-ant-api03-XXXX rechazado por el upstream'); };
+    const r = await b.ejecutarToolMcp('mcp_imperium_ot_estado', { ot: 'X' }, { fetchFn });
+    assert.equal(r.ok, false);
+    sinFiltrar(r, 'http');
+  });
+
+  it('solo -32602 pasa entero; -32603 y -32000 NO son validación y se tapan', async () => {
+    // El regex era /^MCP error -3\d{4}/ y dejaba pasar -32603 (internal error) y -32000, que
+    // son justamente los que llevan el mensaje del servidor adentro. Solo -32602 (invalid
+    // params) habla de los argumentos que mandó el modelo.
+    const b = await cargar(ENV_OK);
+    const conCodigo = (txt) => async (url, opts) => ({
+      ok: true,
+      json: async () => ({
+        jsonrpc: '2.0', id: JSON.parse(opts.body).id,
+        result: { content: [{ type: 'text', text: txt }], isError: true },
+      }),
+    });
+    const val = await b.ejecutarToolMcp('mcp_imperium_ot_estado', {}, {
+      fetchFn: conCodigo('MCP error -32602: Input validation error: Invalid arguments') });
+    assert.match(String(val.error), /Input validation error/, '-32602 tiene que pasar');
+
+    const interno = await b.ejecutarToolMcp('mcp_imperium_ot_estado', {}, {
+      fetchFn: conCodigo('MCP error -32603: password authentication failed for user "postgres"') });
+    sinFiltrar(interno, '-32603');
   });
 });

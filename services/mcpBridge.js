@@ -137,11 +137,20 @@ function partirNombre(nombreCompleto) {
  *
  * (tridente 01-sep, segunda vuelta, hallazgo de Codex)
  */
+function redactar(t) {
+  return String(t)
+    .replace(/(sk-[a-z-]+|ghp_|xoxb-|AIzaSy)[A-Za-z0-9_-]+/gi, '$1***')
+    .replace(/(Bearer|api[_-]?key|token|password|pass)(["' :=]+)[^\s",;]{8,}/gi, '$1$2***')
+    .slice(0, 500);
+}
+
 const ERROR_GENERICO = 'esa consulta no se pudo completar ahora mismo';
 function errorParaElModelo(texto, tool) {
   const t = String(texto ?? '').trim();
-  if (/^MCP error -3\d{4}/.test(t)) return t.slice(0, 300);
-  if (t) console.warn(`[mcpBridge] ${tool} fallo: ${t}`);
+  if (/^MCP error -32602/.test(t)) return t.split('\n')[0].slice(0, 200);
+  // Al log SI va el detalle —es donde sirve— pero redactando lo que parezca credencial: un log
+  // se comparte, se pega en un ticket y se sube a un servicio de terceros.
+  if (t) console.warn(`[mcpBridge] ${tool} fallo: ${redactar(t)}`);
   return ERROR_GENERICO;
 }
 
@@ -282,7 +291,12 @@ export async function ejecutarToolMcp(nombreCompleto, input = {}, { fetchFn = fe
     try { data = JSON.parse(texto); } catch { /* texto plano es una respuesta válida */ }
     return { ok: true, data };
   } catch (e) {
-    return { ok: false, error: e.message };
+    // 🔴 ESTA es la ventana que quedaba abierta cuando se tapo la puerta de `isError`: aca caen
+    // el fallo de red ("connect ECONNREFUSED 10.2.0.7:5432"), el error JSON-RPC (jsonRpc hace
+    // `throw new Error(j.error.message)` con el texto crudo del servidor) y el HTTP no-200.
+    // Los tres llevan infraestructura adentro y salian sin pasar por la compuerta.
+    // (tridente 01-sep RONDA 2, hallazgo de Codex, reproducido: host, usuario y token intactos)
+    return { ok: false, error: errorParaElModelo(e.message, partes?.tool || nombreCompleto) };
   }
 }
 
