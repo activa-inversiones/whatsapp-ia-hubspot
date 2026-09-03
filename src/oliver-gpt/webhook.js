@@ -137,6 +137,7 @@ import {
 } from '../../services/voiceBridge.js'; // [F4] voz saliente
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
+import { extractName, isLikelyName } from '../../services/oliverName.js'; // [2026-09-03] el nombre que llega TARDE, para reemitir la propuesta
 import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
 // [2026-08-31] LAS TRES PROPUESTAS A/B/C POR COLOR — compartidas con channel-agent.js (IG/FB)
 // para que los dos canales roten igual, usen las MISMAS letras del folio y le digan al
@@ -2100,8 +2101,32 @@ Comuna: ${datos.comuna}`
           // [2026-08-31] El armado vive en `normalizers.textoDelCliente`: IG/FB tiene que medir
           // EXACTAMENTE lo mismo para que el gate del color se comporte igual en los dos canales.
           const _textoCliente = textoDelCliente(history, userText);
-          const _gate = quoteDataComplete(input, state, { textoCliente: _textoCliente });
-          if (!_gate.ok) {
+          // [2026-09-03] `pushName` y `comuna`: con que nombre sale la propuesta cuando el
+          // cliente no lo dio. El nombre ya no bloquea (ver pdf-intent.js), asi que estos dos
+          // son lo que evita que el documento salga a nombre de "Cliente" a secas.
+          const _gate = quoteDataComplete(input, state, {
+            textoCliente: _textoCliente, pushName: push_name, comuna: state.comuna || input.comuna || '' });
+          // 🔴 [2026-09-03] UNA REEMISION NO SE VUELVE A GATEAR, Y CASI SE ME PASA.
+          //
+          // Cuando el nombre llega tarde se reimprime un documento que YA SE ENTREGO: sus items,
+          // su color y su apertura se decidieron —o se asumieron con aviso— en el momento de
+          // emitirlo. Volver a pasarlos por el gate mide el mensaje EQUIVOCADO: el texto de este
+          // turno es el nombre ("Luis Hernández"), que obviamente no nombra ninguna apertura.
+          //
+          // MEDIDO, no supuesto: sin esta linea, el test de la reemision devuelve
+          // `{ok:false, missing:['tipo']}` y al cliente que da su nombre le llega "¿Qué tipo de
+          // apertura necesita?" — con su propuesta ya emitida y a nombre del rotulo, para
+          // siempre. El gate del nombre que acabamos de sacar, reapareciendo por la puerta de
+          // atras y disfrazado de gate de la apertura.
+          //
+          // ⛔ Lo que NO se salta: el guard anti-alucinacion de precios de mas arriba, que corre
+          // ANTES y no distingue reemisiones. Un item sin `unit_price` sigue abortando el PDF.
+          // ⛔ EL LLM NO PUEDE ACTIVAR ESTA BANDERA. `generar_pdf_cotizacion` declara sus
+          // parametros con `additionalProperties: false` (tools.js) y `reemision_nombre` NO esta
+          // entre ellos: un modelo que la escriba la ve descartada antes de salir. El unico
+          // camino que la enciende es el bloque determinista de mas abajo, en codigo.
+          const _esReemisionNombre = input.reemision_nombre === true;
+          if (!_gate.ok && !_esReemisionNombre) {
             log('error', 'generarPdf.gate', `PDF bloqueado por datos incompletos: ${_gate.missing.join(', ')}`);
             // 🔴 [2026-08-25] EL COLOR TIENE SU PROPIA PREGUNTA, y se hace ACÁ.
             //
@@ -2646,7 +2671,19 @@ Comuna: ${datos.comuna}`
             try { _prevQuote = (await (deps.leerEstado || leerEstado)(_claveQuote)) || null; }
             catch { /* red caida: se degrada al guardia en memoria */ }
           }
-          if (_prevQuote && (Date.now() - _prevQuote.at) < QUOTE_DEDUP_MS && _prevQuote.sig === _quoteSig) {
+          // 🔴 [2026-09-03] LA CORRECCION DEL NOMBRE NO ES UN DUPLICADO.
+          //
+          // Este guard compara `_quoteSig`, que son items + total y NO el nombre. O sea: la
+          // reemision "ahora a nombre de Luis" tiene la firma IDENTICA a la que acaba de salir
+          // y caia aca dentro. El cliente que contesta su nombre RAPIDO —el caso normal, no el
+          // raro— recibia "Ya te emiti tu propuesta N° X" en vez del PDF corregido, y el
+          // documento se quedaba para siempre a nombre de "Cliente de Padre Las Casas".
+          //
+          // Medido: sin esta excepcion, el test de la reemision entrega 1 documento donde
+          // tienen que ser 2. El dedup sigue intacto para todo lo demas — es la defensa contra
+          // el doble "confirmo" y los reintentos de Meta, y esa no se toca.
+          if (!_esReemisionNombre
+              && _prevQuote && (Date.now() - _prevQuote.at) < QUOTE_DEDUP_MS && _prevQuote.sig === _quoteSig) {
             log('info', 'generarPdf.dedup',
               `Cotización IDÉNTICA duplicada evitada para ${from}; reusando ${_prevQuote.quote_number}`);
             return { ok: true, quote_number: _prevQuote.quote_number, pdf_sent: false, deduped: true };
@@ -2752,11 +2789,53 @@ Comuna: ${datos.comuna}`
           }
 
           // ── Paso 2: Generar PDF premium ──────────────────────────────────────
-          const clientName  = atribucion?.name || input.name  || state.name  || push_name || 'Cliente';
+          // [2026-09-03] El nombre lo resuelve EL GATE (`resolverNombre` en pdf-intent.js) y no
+          // esta cascada, para que el documento y el aviso al cliente no puedan discrepar: si el
+          // encabezado dice "Cliente de Padre Las Casas" y el mensaje no lo menciona, el cliente
+          // se entera del rotulo abriendo el PDF. Dos copias de la regla se desincronizan.
+          // La atribucion del dueño sigue mandando por encima de todo (ver abajo).
+          const clientName  = atribucion?.name || _gate.nombre || 'Cliente';
           // [2026-08-08] La atribución del dueño manda por encima de todo: si escribió
           // "CLIENTE Juan +569…", la cotización es de Juan aunque la charla sea con él.
           const clientPhone = atribucion?.phone || input.phone || state.telefono || from;
           const clientComuna = input.comuna || state.comuna || '';
+
+          // 🔴 [2026-09-03] EL NOMBRE LO PUSIMOS NOSOTROS — Y SE LO DECIMOS.
+          //
+          // Decision del dueño: *"LA IDEA ES COTIZARLE IGUAL A CLIENTE SOLO ACTUALIZAR SI
+          // DESPUES VIENE EL DATO CORRECTO"*. La primera mitad la resuelve el gate (el nombre
+          // ya no bloquea). La SEGUNDA MITAD es este aviso: si el cliente no se entera de que
+          // la propuesta salio a nombre de un rotulo, no tiene por que corregirlo — y entonces
+          // "actualizar despues" no ocurre NUNCA. Sin esto, el cambio queda a medias.
+          //
+          // Mismo criterio que el color y la apertura: asumir un dato esta bien; asumirlo EN
+          // SILENCIO es lo que cuesta plata y recotizaciones.
+          //
+          // ⚠️ VA DESPUES DE `clientName` A PROPOSITO. El texto nombra el rotulo EXACTO que
+          // quedo impreso en el PDF, y `clientName` es quien lo decide (la atribucion del
+          // dueño puede pisarlo). Construirlo antes lo dejaba fuera del alcance de esa
+          // variable — un ReferenceError en el turno que entrega la cotizacion.
+          //
+          // ⚠️ Y NO SE REPITE. Se avisa UNA vez por conversacion (`nombre_avisado_at`): el
+          // cliente que pide tres correcciones no puede recibir tres veces el mismo parrafo
+          // pidiendole el nombre — es exactamente el "bot trabado" que leyo Jessica.
+          let _avisoNombre = '';
+          if (_gate.nombreAsumido && !state.nombre_avisado_at) {
+            // El texto cambia segun DE DONDE salio el nombre, porque no son la misma
+            // situacion: del perfil de WhatsApp es un nombre que el cliente reconoce y que
+            // probablemente esta bien; el rotulo de la comuna pide el nombre de frente.
+            // Nunca se le dice "no me diste el nombre": eso le echa al cliente la culpa de
+            // algo que es nuestro.
+            _avisoNombre = _gate.nombreOrigen === 'perfil_whatsapp'
+              ? `
+
+📄 La emití a nombre de *${clientName}*. Si va a otro nombre o necesita el RUT para factura, me lo dice y se la reemito con el mismo número.`
+              : `
+
+📄 Como todavía no tengo su nombre, la emití como *${clientName}*. Dígame a nombre de quién va —o el RUT si la necesita para factura— y se la reemito con el mismo número, sin costo.`;
+            log('info', 'generarPdf.nombre',
+              `${from}: nombre ASUMIDO (${_gate.nombreOrigen}) -> "${clientName}"; se le avisa y se le ofrece reemitir`);
+          }
 
           // 🔴 [2026-08-30 · caso Alfredo, 4 reclamos] A NOMBRE DE QUIEN VA LA PROPUESTA.
           // Dos fuentes, y el orden importa: MANDA lo que capturo el codigo (state.receptor,
@@ -3813,6 +3892,28 @@ Comuna: ${datos.comuna}`
               alternativasEntregadas(quoteNumber, (state.last_quote || {}).alternativas),
               _letrasTerna),
             ..._rastroDeLaTerna() };
+          // 🔴 [2026-09-03] LO QUE HACE FALTA PARA REEMITIRLA CUANDO LLEGUE EL NOMBRE.
+          // Decision del dueño: *"SOLO ACTUALIZAR SI DESPUES VIENE EL DATO CORRECTO"*. Para
+          // poder actualizar hay que poder RE-COTIZAR lo mismo, y `last_quote` guarda el folio
+          // pero NO los items. Se guardan aca, y solo cuando el nombre lo pusimos nosotros: si
+          // el cliente lo dio, no hay nada que actualizar y no hay por que arrastrar el peso.
+          // ⚠️ El folio NO se vuelve a pedir: `numeroDeDocumento` ve la misma firma (`_quoteSig`
+          // no incluye el nombre) dentro de las 48 h de QUOTE_REUSE_MS y devuelve motivo
+          // 'revision' con el MISMO numero. O sea, corregir el nombre NO quema un correlativo
+          // ISO — que es justo lo que costo 3 folios en 5 minutos en el caso Jessica.
+          if (_gate.nombreAsumido) {
+            state.nombre_pendiente = { quote_number: quoteNumber, at: Date.now(),
+              items: input.items || [], grand_total: input.grand_total || 0 };
+          } else {
+            delete state.nombre_pendiente;   // ya tiene nombre de verdad: no hay nada que corregir
+          }
+          // 🔴 [2026-09-03] EL AVISO SE MARCA COMO DADO ACA, Y NO DONDE SE CONSTRUYE.
+          // Si se marcaba al construirlo, la rama de mas arriba —"tuve un problema para
+          // adjuntarle el archivo", cuando Meta rechaza el documento— dejaba la marca puesta
+          // sin que el aviso viajara en NINGUN mensaje: el cliente nunca se enteraba de a
+          // nombre de quien salio su propuesta, y como la marca ya estaba, tampoco se le
+          // decia la proxima vez. Aca abajo el texto SI sale con el mensaje.
+          if (_avisoNombre) state.nombre_avisado_at = Date.now();
           return {
             ok: true,
             quote_number: quoteNumber,
@@ -3855,10 +3956,78 @@ Comuna: ${datos.comuna}`
             // [Dueño, 28-ago] El resumen ("Le coticé:") ya NO va acá: se convirtió en el
             // ANTICIPO y viaja ANTES del documento (Paso 2-bis), que es donde el cliente
             // puede corregir una medida al revés A TIEMPO. Los avisos de ajuste se quedan.
-            ) + _avisoColor + _avisoTipo + _avisoHojas,
+            ) + _avisoNombre + _avisoColor + _avisoTipo + _avisoHojas,
           };
         }),
     };
+
+    // ── 🔴 [2026-09-03] EL NOMBRE LLEGO TARDE → SE REEMITE LA MISMA PROPUESTA ──────
+    //
+    // La otra mitad de la decision del dueño: *"LA IDEA ES COTIZARLE IGUAL A CLIENTE SOLO
+    // ACTUALIZAR SI DESPUES VIENE EL DATO CORRECTO"*. La propuesta ya salio con un rotulo
+    // ("Cliente de Padre Las Casas" o el nombre del perfil de WhatsApp) y se le AVISO. Si
+    // ahora contesta su nombre, la propuesta se corrige sola.
+    //
+    // ⚠️ VA EN CODIGO, NO EN EL PROMPT, y es la leccion mas cara de este archivo. El PDF-01
+    // de junio nacio exactamente de esto: el LLM escribia "[Enlace a la cotizacion]" y el
+    // cliente no recibia nada. Dejar la reemision a criterio del modelo es dejarla a que
+    // ocurra a veces — y "a veces" sobre el documento que el cliente lleva a facturar no
+    // sirve.
+    //
+    // ⚠️ NO QUEMA UN CORRELATIVO ISO. `_quoteSig` no incluye el nombre, asi que dentro de las
+    // 48 h de QUOTE_REUSE_MS `numeroDeDocumento` devuelve motivo 'revision' con el MISMO
+    // folio, y el mensaje de generarPdf ya dice "Le corregi la propuesta N° X ... Es la misma
+    // propuesta actualizada, no una nueva". Es la rama que se arreglo el 08-ago por el caso
+    // Jessica (3 folios en 5 minutos); acá se REUSA, no se duplica.
+    //
+    // ⚠️ SOLO SI EL MENSAJE ES UN NOMBRE. `isLikelyName` / `extractName` (services/oliverName.js,
+    // el mismo modulo que usa el camino clasico) descartan "si", "cuanto sale", "gris", una
+    // medida o un saludo. Si no es un nombre, no se toca nada y el turno sigue su curso
+    // normal: el LLM contesta lo que el cliente haya preguntado. Reemitir por un "ok" seria
+    // mandarle un PDF corregido a nombre de "Ok".
+    if (state.nombre_pendiente && Array.isArray(state.nombre_pendiente.items)
+        && state.nombre_pendiente.items.length
+        && (Date.now() - (state.nombre_pendiente.at || 0)) < QUOTE_REUSE_MS
+        && (isLikelyName(userText) || extractName(userText))) {
+      const _np = state.nombre_pendiente;
+      const _nombreReal = extractName(userText) || String(userText || '').trim();
+      state.name = _nombreReal;                 // para el resto del turno y los siguientes
+      const pdfRes = await safe('pdf.nombre-tardio', () => toolCtx.generarPdf({
+        name: _nombreReal, phone: state.telefono || from, comuna: state.comuna || '',
+        items: _np.items, grand_total: _np.grand_total,
+        // Abre el dedup de 2 min SOLO para este caso: la firma (items + total) es la misma
+        // que la de hace un minuto, y sin esto el cliente que contesta rapido se queda con el
+        // documento a nombre del rotulo. Ver el guard en `generarPdf`.
+        reemision_nombre: true,
+      }));
+      // El rastro se borra SOLO si la reemision salio. Borrarlo antes —que es como estaba—
+      // significaba que un fallo de red o de Meta dejaba al cliente con su propuesta a nombre
+      // del rotulo Y sin ninguna forma de que se corrigiera sola: la unica pista de que habia
+      // algo que corregir se habia ido con el intento fallido.
+      if (pdfRes && pdfRes.ok) delete state.nombre_pendiente;
+      const replyMsg = (pdfRes && pdfRes.message)
+        || `Listo, ${_nombreReal} ✅ Le reemití la Propuesta Técnica Económica N° ${_np.quote_number} a su nombre. Es la misma propuesta corregida, no una nueva.`;
+      await safe('pdf.nombre.send', () => sendWhatsAppText(from, replyMsg));
+      await safe('pdf.nombre.persistIn', () => bridge.pushConversationEvent({
+        channel: 'whatsapp', external_id: from, direction: 'inbound', actor_type: 'customer',
+        actor_name: _nombreReal, message_type: 'text', body: userText,
+        metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, nombre_tardio: true },
+      }));
+      await safe('pdf.nombre.persistOut', () => bridge.pushConversationEvent({
+        channel: 'whatsapp', external_id: from, direction: 'outbound', actor_type: 'ai',
+        actor_name: 'Oliver', message_type: 'text', body: replyMsg,
+        metadata: { source: 'oliver_gpt_webhook', nombre_tardio: true, quote_number: pdfRes?.quote_number },
+      }));
+      const histNom = [...history, { role: 'user', content: userText }, { role: 'assistant', content: replyMsg }];
+      await landingAttributionReady;
+      const toStoreNom = { history: histNom.length > MAX_HISTORY ? histNom.slice(-MAX_HISTORY) : histNom,
+                           state: { ...state, lastMessageAt: Date.now() } };
+      conv.set(from, toStoreNom);
+      persistSessionFn(from, toStoreNom, deps);
+      log('info', 'pdf.nombre-tardio',
+        `${from}: nombre "${_nombreReal}" llego despues de la propuesta; reemitida ${pdfRes?.quote_number || _np.quote_number}`);
+      return; // 200 ya enviado; el finally libera el lock
+    }
 
     // ── [FIX 2026-06-19 PDF-01] ENTREGA DETERMINISTA DEL PDF (NO depende del LLM) ──
     // Si el cliente CONFIRMA tras una cotización ya lista (state.pending_quote del turno
@@ -3933,6 +4102,19 @@ Comuna: ${datos.comuna}`
     if (state.color_preguntado_at) newState.color_preguntado_at = state.color_preguntado_at;
     if (state.tipo_preguntado_at) newState.tipo_preguntado_at = state.tipo_preguntado_at;
     if (state.hojas_preguntado_at) newState.hojas_preguntado_at = state.hojas_preguntado_at;
+    // 🔴 [2026-09-03] LOS DOS RASTROS DEL NOMBRE ASUMIDO, POR LA MISMA RAZON QUE LOS RELOJES.
+    // `handleTurn` devuelve un state armado por el cerebro; lo que escribio el CODIGO durante
+    // el turno (dentro de `generarPdf`, que corre como tool) no esta ahi y se perderia.
+    //   · `nombre_avisado_at`: sin esto, el aviso "la emiti a nombre de X" se repite en CADA
+    //     propuesta — el "bot trabado" que leyo Jessica.
+    //   · `nombre_pendiente`: sin esto, el nombre que llega tarde no encuentra que reemitir y
+    //     la segunda mitad de la decision del dueño no ocurre nunca.
+    // El `delete` explicito importa: cuando el cliente YA dio su nombre, `generarPdf` borra
+    // `nombre_pendiente`, y un merge que solo copia lo que existe (`if (state.X)`) no propaga
+    // borrados — el rastro viejo revivia y se reemitia una propuesta ya corregida.
+    if (state.nombre_avisado_at) newState.nombre_avisado_at = state.nombre_avisado_at;
+    if (state.nombre_pendiente) newState.nombre_pendiente = state.nombre_pendiente;
+    else delete newState.nombre_pendiente;
     // [CTWA-SALUDO 2026-07-18] one-shot: ya viajó en el contexto de ESTE turno → jamás repetir.
     if (newState.ctwa_saludo_pending) delete newState.ctwa_saludo_pending;
 

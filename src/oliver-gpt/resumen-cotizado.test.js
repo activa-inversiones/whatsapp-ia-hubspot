@@ -93,7 +93,10 @@ test('🔴 [dueño 28-ago] el anticipo va ANTES del documento, no pegado al cier
   assert.ok(iAnticipo > 0, 'el webhook tiene que usar el anticipo');
   assert.ok(iUpload > 0, 'no se encontro el envio del PDF de la propuesta');
   assert.ok(iAnticipo < iUpload, 'el anticipo se envia ANTES de subir el documento');
-  const iCierre = wh.indexOf(') + _avisoColor');
+  // [2026-09-03] Ancla en la CADENA de avisos, no en su primer eslabon: `_avisoNombre` se
+  // sumo delante y `') + _avisoColor'` dejo de existir literalmente. Lo que este test mide
+  // —que el cierre no repita el resumen— no cambio.
+  const iCierre = wh.indexOf('_avisoColor + _avisoTipo');
   assert.ok(iCierre > 0, 'no se encontro el mensaje de cierre');
   const bloque = wh.slice(Math.max(0, iCierre - 300), iCierre + 200);
   assert.doesNotMatch(bloque, /anticipoDeLoCotizado|resumenDeLoCotizado/,

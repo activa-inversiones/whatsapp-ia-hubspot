@@ -9,6 +9,7 @@
 import { aperturaFueExplicita, detectHojas, FABRICATION_LIMITS as _LIMITES } from '../../services/enginePricer.js';
 import { colorFueExplicito } from './normalizers.js';        // [2026-08-29] el color se mide en lo que dijo el CLIENTE
 import { COLORES_PROPUESTA } from './propuestas-color.js';   // [2026-08-31] sin color → tres propuestas A/B/C
+import { needsName } from '../../services/oliverName.js';    // [2026-09-03] la lista de genéricos vive en UN solo lugar
 
 /** ¿El cliente está afirmando que quiere el PDF? (incluye afirmaciones cortas). */
 export function isPdfAffirmative(text) {
@@ -66,6 +67,56 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
 }
 
 /**
+ * [2026-09-03] ¿CON QUE NOMBRE SALE EL DOCUMENTO, y lo dio el cliente o se lo pusimos?
+ *
+ * Decision del dueño: la propuesta sale IGUAL aunque el cliente no diga su nombre, y se
+ * actualiza si el dato llega despues. Esta funcion es la que decide con que sale, y sobre
+ * todo la que deja constancia de si el cliente lo dio (`asumido: false`) o no
+ * (`asumido: true`) — porque de eso depende que Oliver le avise y le ofrezca reemitirla.
+ *
+ * ORDEN, y por que ese:
+ *   1. `input.name`  — lo que el cliente dijo en ESTE turno. Manda sobre todo.
+ *   2. `state.name`  — lo que dijo en un turno anterior de la misma conversacion.
+ *   3. `pushName`    — el nombre de perfil de WhatsApp. Meta lo manda en CADA mensaje
+ *      entrante y el adaptador ya lo captura (whatsapp-adapter.js:87); el gate no lo
+ *      miraba. En el caso Luis del 03-sep habria bastado con esto.
+ *   4. `Cliente de <comuna>` — la comuna SI la tenemos casi siempre (210 de 272
+ *      conversaciones medidas). Es un rotulo honesto: no afirma un nombre de persona.
+ *   5. `Cliente` — el ultimo recurso.
+ *
+ * ⛔ LO QUE NO HACE: inventar. Nunca deriva un nombre del telefono, ni de una razon social,
+ * ni "completa" un nombre a medias. Los pasos 4 y 5 son ROTULOS, no nombres de persona, y
+ * por eso pueden ir en un documento formal sin mentir sobre quien pidio la cotizacion.
+ *
+ * ⚠️ UN TELEFONO NO ES UN NOMBRE. Mucha gente tiene su propio numero como nombre de perfil.
+ * "+56 9 9494 0848" en el encabezado de una Propuesta Tecnica Economica se ve peor —y dice
+ * menos— que "Cliente de Padre Las Casas".
+ *
+ * La lista de genericos ("cliente", "usuario", "sin nombre"…) NO se copia aca: se importa
+ * `needsName` de services/oliverName.js, que es donde vive. Dos copias de esa lista se
+ * desincronizan, que es la leccion que este repo ya escribio en normalizers.js:384.
+ *
+ * @returns {{ nombre: string, asumido: boolean, origen: 'cliente'|'perfil_whatsapp'|'comuna'|'generico' }}
+ */
+export function resolverNombre({ input = {}, state = {}, pushName = '', comuna = '' } = {}) {
+  const dicho = String(input.name || state.name || '').trim();
+  if (dicho && !needsName({ name: dicho })) return { nombre: dicho, asumido: false, origen: 'cliente' };
+
+  const perfil = String(pushName || '').trim();
+  // Solo dos descartes, los dos medidos: el generico ("Cliente", "usuario") y el que es
+  // en realidad un numero. `\p{L}` exige AL MENOS una letra: "+56 9 9494 0848" no tiene
+  // ninguna, "José 2" si.
+  const perfilSirve = perfil && !needsName({ name: perfil }) && /\p{L}/u.test(perfil)
+    && !/^[\d\s+()\-.]+$/.test(perfil);
+  if (perfilSirve) return { nombre: perfil, asumido: true, origen: 'perfil_whatsapp' };
+
+  const _com = String(comuna || state.comuna || '').trim();
+  if (_com) return { nombre: `Cliente de ${_com}`, asumido: true, origen: 'comuna' };
+
+  return { nombre: 'Cliente', asumido: true, origen: 'generico' };
+}
+
+/**
  * [PDF-RACE 2026-07-01] Guard de COMPLETITUD antes de quemar folio ISO / emitir el PDF (COMPARTIDO).
  * Evidencia BD: PDFs emitidos 9-13 seg ANTES de que el cliente respondiera nombre/color/tipo
  * (folios 0081/0085/0086 Ximena, 0060/0061 Vivi, 0090 Julio — causalidad invertida probada).
@@ -74,8 +125,33 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
  */
 export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
   const missing = [];
-  const name = String(input.name || state.name || '').trim();
-  if (!name || /^cliente$/i.test(name)) missing.push('name');
+  // 🔴 [2026-09-03 · DECISION DEL DUEÑO] EL NOMBRE YA NO FRENA LA COTIZACION.
+  //
+  // Textual: *"LA IDEA ES COTIZARLE IGUAL A CLIENTE SOLO ACTUALIZAR SI DESPUES VIENE EL
+  // DATO CORRECTO"*.
+  //
+  // QUE HABIA ACA, y lo que costaba:
+  //     if (!name || /^cliente$/i.test(name)) missing.push('name');
+  // De los cuatro datos de este gate, `name` era el UNICO sin plazo de gracia: color,
+  // apertura y hojas se preguntan una vez y pasado el plazo la propuesta sale igual con
+  // aviso; el nombre bloqueaba PARA SIEMPRE. Y `datoQuePregunta` lo pone PRIMERO en la
+  // cascada, asi que era el que mas veces frenaba.
+  //
+  // CASO REAL QUE LO CIERRA (BD viva, 03-sep 12:04 hora Chile, wa_id 56994940848): el
+  // cliente dio medidas y comuna, Oliver pregunto "¿A nombre de quien preparo la
+  // propuesta?", no contesto nunca y la conversacion murio ahi — sin PDF no sale el evento
+  // de cotizacion, asi que Google y Meta tampoco recibieron la conversion.
+  //
+  // LA MEDIDA que lo dimensiona (30 dias, conversaciones de >= 6 mensajes): 272
+  // conversaciones, 210 con comuna guardada (77 %), **2 con nombre guardado (0,7 %)**. El
+  // nombre es el dato que el cliente casi nunca da; era justo el que bloqueaba.
+  //
+  // ⚠️ NO SE INVENTA UN NOMBRE DE PERSONA. `resolverNombre` usa, en este orden, lo que el
+  // cliente dijo → el perfil de WhatsApp que Meta ya nos manda → "Cliente de <comuna>" →
+  // "Cliente". Cuando el cliente no lo dio, `nombreAsumido` sale en true y el llamador
+  // tiene que AVISARLE y ofrecerle reemitir. Un documento formal a nombre de alguien que no
+  // lo pidio, sin decirselo, seria el mismo defecto del "Blanco que nadie pidio".
+  const _nom = resolverNombre({ input, state, pushName: opciones.pushName, comuna: opciones.comuna });
   const items = Array.isArray(input.items) ? input.items : [];
   if (!items.length) missing.push('items');
   items.forEach((it, i) => {
@@ -272,7 +348,10 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
 
   // `coloresPropuestos`: null = el cliente eligio (o eligio a medias) ⇒ sale UNA propuesta,
   // como siempre. Array = nadie eligio ⇒ salen esas tres, rotuladas A/B/C.
-  return { ok: missing.length === 0, missing, colorAsumido, tipoAsumido, hojasAsumido, coloresPropuestos };
+  return { ok: missing.length === 0, missing, colorAsumido, tipoAsumido, hojasAsumido, coloresPropuestos,
+    // [2026-09-03] Con que nombre sale el documento, y si el cliente lo dio o se lo pusimos
+    // nosotros. `nombreAsumido` es lo que dispara el aviso y la oferta de reemitir.
+    nombre: _nom.nombre, nombreAsumido: _nom.asumido, nombreOrigen: _nom.origen };
 }
 
 /**

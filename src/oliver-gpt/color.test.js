@@ -117,9 +117,22 @@ test('un color en blanco o de relleno NO cuenta como color informado', () => {
   }
 });
 
-test('🔒 el gate sigue exigiendo lo de antes (no se relajo nada)', () => {
+// 🔴 [2026-09-03 · EL DUEÑO CAMBIO DE DECISION — NO ES UNA REGRESION, NO LO "RESTAURES"]
+// Este test exigia `missing.includes('name')`: sin nombre, NO habia cotizacion. El dueño lo
+// dio vuelta, textual: *"LA IDEA ES COTIZARLE IGUAL A CLIENTE SOLO ACTUALIZAR SI DESPUES
+// VIENE EL DATO CORRECTO"*. La razon esta medida: en 30 dias, 272 conversaciones de >= 6
+// mensajes tenian comuna en 210 casos (77 %) y nombre en **2** (0,7 %). El nombre es el dato
+// que el cliente casi nunca da, y era el unico del gate que bloqueaba para siempre.
+// Lo que reemplaza al bloqueo esta en nombre-asumido.test.js: la propuesta sale con el mejor
+// nombre disponible y `nombreAsumido` obliga a avisarle al cliente.
+test('🔒 el gate sigue exigiendo lo que SI hace falta para cotizar (items, medidas, precio)', () => {
   const conColor = { color: 'Blanco' };
-  assert.ok(quoteDataComplete({ items: [itemOk(conColor)] }, {}).missing.includes('name'));
+  // El nombre ya NO frena — pero tampoco se pierde el dato: sale rotulado como asumido.
+  const sinNombre = quoteDataComplete({ items: [itemOk(conColor)] }, {});
+  assert.equal(sinNombre.missing.includes('name'), false, 'el nombre ya no bloquea');
+  assert.equal(sinNombre.nombreAsumido, true, 'pero queda constancia de que no lo dio el cliente');
+  // Estos tres SI siguen bloqueando: sin ellos no hay NADA que cotizar (no son datos que el
+  // cliente "no quiso dar", son la cotizacion misma).
   assert.ok(quoteDataComplete({ name: 'V', items: [] }, {}).missing.includes('items'));
   assert.ok(quoteDataComplete({ name: 'V', items: [itemOk({ ...conColor, unit_price: 0 })] }, {})
     .missing.some((m) => m.includes('unit_price')));
@@ -264,7 +277,11 @@ test('🔴 el aviso de "va en blanco" existe y ofrece recotizar', async () => {
   // 🔴 Y EL AVISO TIENE QUE LLEGARLE AL CLIENTE. Se construia en una variable que nadie
   // usaba: el cliente recibia su propuesta en blanco sin enterarse, que es justo el defecto
   // que este arreglo vino a cerrar. Un mensaje que no se manda no existe.
-  assert.match(wh, /\) \+ _avisoColor/, 'el aviso se concatena al mensaje de la propuesta');
+  // [2026-09-03] El ancla acepta OTROS avisos delante (hoy `_avisoNombre`): lo que este test
+  // cuida es que `_avisoColor` viaje en el mensaje, no en que sea el primero de la fila.
+  // Escrito literal, cada aviso nuevo rompia este test sin que nada se hubiera roto.
+  assert.match(wh, /\)\s*\+\s*(?:_aviso\w+\s*\+\s*)*_avisoColor/,
+    'el aviso se concatena al mensaje de la propuesta');
 });
 
 /* =========================================================================

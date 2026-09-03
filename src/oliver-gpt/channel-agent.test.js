@@ -258,9 +258,21 @@ test('PDF DETERMINISTA: cotiza → "ok envíamela" entrega el PDF en código (si
   assert.match(out2.reply, /CM-FR-004-2026-0030/, 'con el folio ISO real');
 });
 
-// [PDF-RACE 2026-07-01] GATE de completitud: sin NOMBRE real no se emite PDF ni se quema folio
-// (casos BD: 0081/0085/0086 emitidos antes de que el cliente respondiera). Oliver pide el nombre.
-test('GATE: sin nombre NO se emite PDF ni se quema folio → pide el nombre', async () => {
+// 🔴 [2026-09-03 · EL DUEÑO CAMBIO DE DECISION — NO ES UNA REGRESION, NO LO "RESTAURES"]
+// Este test exigia lo contrario: *"sin nombre NO se emite PDF ni se quema folio → pide el
+// nombre"*. Nacio del PDF-RACE del 01-jul (folios 0081/0085/0086 emitidos ANTES de que la
+// clienta respondiera), y esa parte sigue viva: lo que NO puede pasar es emitir mientras se
+// espera una respuesta. Lo que cambio es que ya no se espera ninguna.
+//
+// Instruccion del dueño, textual: *"LA IDEA ES COTIZARLE IGUAL A CLIENTE SOLO ACTUALIZAR SI
+// DESPUES VIENE EL DATO CORRECTO"*. Medido contra la BD viva el 03-sep: en 30 dias, de 272
+// conversaciones de >= 6 mensajes, 210 tenian comuna (77 %) y **2 tenian nombre (0,7 %)**. El
+// nombre era el unico dato del gate sin plazo de gracia, y el que el cliente casi nunca da:
+// bloqueaba para siempre. Caso que lo cerro: wa_id 56994940848, 03-sep 12:04 hora Chile.
+//
+// Lo que este test fija AHORA: la propuesta sale igual, con el nombre del perfil del canal
+// (en IG/FB, `senderName`), y NO se pierde la constancia de que el cliente no lo dio.
+test('sin nombre la propuesta SALE igual, a nombre del perfil del canal', async () => {
   stubFetch('CM-FR-004-2026-0500');
   const conv = new Map();
   const htCotizaSinNombre = async () => ({
@@ -276,9 +288,10 @@ test('GATE: sin nombre NO se emite PDF ni se quema folio → pide el nombre', as
 
   const { deps: d2, log: log2 } = mkDeps({ handleTurn: async () => ({ reply: 'NO_DEBERIA', history: [], state: {}, toolCalls: [] }), conv });
   const out2 = await handleChannelTurn({ channel: 'instagram', senderId: 'IG_gate', text: 'sí envíamela', msgId: 'g2', sendFn: async () => ({ ok: true }) }, d2);
-  assert.equal(log2.attachments.length, 0, 'NO entrega PDF sin nombre');
-  assert.match(out2.reply, /a nombre de qui[eé]n/i, 'pide el nombre del cliente');
-  assert.doesNotMatch(out2.reply, /CM-FR-004-2026-0500/, 'NO quemó folio');
+  assert.equal(log2.attachments.length, 1, 'la propuesta SALE aunque el cliente no diera su nombre');
+  assert.match(out2.reply, /CM-FR-004-2026-0500/, 'con su folio ISO real');
+  assert.doesNotMatch(out2.reply, /a nombre de qui[eé]n/i,
+    'y ya NO se frena al cliente para pedirle el nombre antes de cotizar');
 });
 
 // [Ronda 2.1 — Codex] Error de turno tras hidratar una sesión VENCIDA (>7 días): el

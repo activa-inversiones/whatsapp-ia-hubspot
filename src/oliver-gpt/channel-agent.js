@@ -542,13 +542,21 @@ export async function handleChannelTurn(
           // tres cosas: el gate del color, la compuerta de procedencia del receptor (un dato
           // del LLM tiene que APARECER en lo que el cliente escribio) y las sondas de precio.
           const _textoCliente = textoDelCliente(history, text);
-          const _gate = quoteDataComplete(input, state, { textoColor: _textoCliente });
+          // [2026-09-03] `pushName`/`comuna`: con que nombre sale el documento cuando el cliente
+          // no lo dio. En IG/FB el equivalente del push_name de WhatsApp es `senderName` (el
+          // nombre publico del perfil), que este canal ya recibe.
+          const _gate = quoteDataComplete(input, state, { textoColor: _textoCliente,
+            pushName: senderName, comuna: state.comuna || input.comuna || '' });
           if (!_gate.ok) {
             log('error', 'generarPdf.gate', `PDF bloqueado por datos incompletos: ${_gate.missing.join(', ')}`);
+            // 🔴 [2026-09-03] LA RAMA DEL NOMBRE YA NO EXISTE, y no es un olvido.
+            // Decision del dueño: *"LA IDEA ES COTIZARLE IGUAL A CLIENTE SOLO ACTUALIZAR SI
+            // DESPUES VIENE EL DATO CORRECTO"*. `quoteDataComplete` ya no mete 'name' en
+            // `missing`, asi que preguntarlo aca dejaria un mensaje muerto. Lo que queda en
+            // este gate son los datos SIN los cuales no hay nada que cotizar (items, medidas,
+            // precio) — y esos no se le piden al cliente con un texto generico, se resuelven.
             return { ok: false, reason: 'datos_incompletos', missing: _gate.missing,
-              message: _gate.missing.includes('name')
-                ? '¿A nombre de quién emito la Propuesta Técnica Económica? Con eso te la envío al tiro.'
-                : 'Antes de emitir la propuesta formal necesito confirmar un detalle de las ventanas. Ya te pregunto.' };
+              message: 'Antes de emitir la propuesta formal necesito confirmar un detalle de las ventanas. Ya te pregunto.' };
           }
 
           // 🎨 [2026-08-31 - DECISION DEL DUENO] SIN COLOR -> TRES PROPUESTAS, TAMBIEN ACA.
@@ -697,7 +705,10 @@ export async function handleChannelTurn(
           }
 
           // Paso 2: PDF premium (mismo generador → folio ISO impreso en el documento).
-          const clientName = input.name || state.name || senderName || 'Cliente';
+          // [2026-09-03] Lo resuelve el gate (`resolverNombre`), igual que en WhatsApp: una sola
+          // regla para los dos canales. Antes esta cascada y la del webhook eran dos copias, y
+          // dos copias de una regla se desincronizan.
+          const clientName = _gate.nombre || senderName || 'Cliente';
           const clientPhone = input.phone || '';
           // [2026-08-28] Identidad CRM por canal (caso Alfredo): en WhatsApp senderId ES el
           // teléfono del hilo real → manda senderId (el celular dictado para el documento creaba
