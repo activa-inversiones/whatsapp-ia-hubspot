@@ -129,3 +129,39 @@ describe('quoteDataComplete — el nombre ya NO bloquea (caso Luis, 03-sep)', ()
       false, 'precio 0 no es una cotizacion');
   });
 });
+
+/* =========================================================================
+ * COMPUERTA DE PROCEDENCIA — hallazgo 2 de la compuerta cruzada (Codex, 03-sep)
+ * ========================================================================= */
+
+describe('un nombre que el cliente NUNCA dijo no puede pasar por dato suyo', () => {
+  test('🔴 el LLM inventa "Juan Pérez" y el cliente jamás lo escribió → cuenta como ASUMIDO', () => {
+    // Por que importa: `asumido:false` apaga DOS cosas a la vez — el aviso al cliente y la
+    // correccion posterior. Un nombre alucinado se quedaba impreso para siempre en un
+    // documento formal y nadie se enteraba. Es la misma compuerta que el repo ya le exige al
+    // RUT desde el 30-ago (un dato de origen 'llm' tiene que APARECER en lo que el cliente
+    // escribio); el nombre no merecia menos.
+    const g = quoteDataComplete({ name: 'Juan Pérez', items }, { comuna: 'Temuco' },
+      { textoCliente: 'hola, quiero cotizar una corredera de 1500x1200' });
+    assert.equal(g.nombreAsumido, true, 'no lo dijo el cliente: no cuenta como dato suyo');
+    assert.equal(g.nombreOrigen, 'llm_no_corroborado');
+    // El nombre NO se tira: se imprime igual. Tirarlo perdia nombres legitimos que el cliente
+    // dio hace veinte mensajes y que el historial recortado ya no contiene (caso Alfredo, 2
+    // tests reales en rojo). Lo que cierra el vector es el AVISO, no el descarte.
+    assert.equal(g.nombre, 'Juan Pérez');
+  });
+
+  test('el nombre que el cliente SI escribió pasa, aunque el LLM lo devuelva con tildes', () => {
+    // El cliente escribe rapido y sin tildes ("soy jose perez"); el modelo lo devuelve
+    // prolijo ("José Pérez"). Comparar literal rechazaria un nombre legitimo.
+    const g = quoteDataComplete({ name: 'José Pérez', items }, {},
+      { textoCliente: 'hola soy jose perez, quiero cotizar' });
+    assert.equal(g.nombreAsumido, false);
+    assert.equal(g.nombre, 'José Pérez');
+  });
+
+  test('sin textoCliente la compuerta NO se activa (IG/FB se comporta como antes)', () => {
+    const g = quoteDataComplete({ name: 'Juan Pérez', items }, {}, {});
+    assert.equal(g.nombreAsumido, false, 'no puede romper lo que no recibe');
+  });
+});

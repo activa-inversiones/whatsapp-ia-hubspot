@@ -195,3 +195,42 @@ test('un "ok gracias" NO dispara una reemision a nombre de "Ok"', async () => {
   assert.equal(spy.propuestas.length, 1,
     'solo un mensaje que PARECE un nombre corrige el documento');
 });
+
+/* =========================================================================
+ * LOS HALLAZGOS DE LA COMPUERTA CRUZADA (Codex, 03-sep) — fijados para que no vuelvan
+ * ========================================================================= */
+
+test('🔴 [hallazgo 6] el cliente contesta SOLO su RUT → también se reemite', () => {
+  // El aviso PROMETE: "dígame a nombre de quién va —o el RUT si la necesita para factura— y
+  // se la reemito". Con solo los detectores de nombre, el que contestaba unicamente
+  // "77.448.504-K" no gatillaba nada: el RUT quedaba en state.receptor y la propuesta seguia
+  // a nombre del rotulo. Prometer y no cumplir es peor que no prometer.
+  return (async () => {
+    const { deps, spy } = armar([
+      'cotizame estas ventanas correderas',
+      '77.448.504-K',                       // ni nombre ni saludo: solo el RUT
+    ]);
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.equal(spy.propuestas.length, 1);
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.equal(spy.propuestas.length, 2, 'el RUT corrige el documento igual que el nombre');
+  })();
+});
+
+test('🔴 [hallazgo 7] con atribución del dueño NO se avisa un nombre asumido', async () => {
+  // Si el dueño cargo al cliente a mano ("CLIENTE Juan +569..."), el documento sale a nombre de
+  // Juan: decirle "todavia no tengo su nombre, la emiti como Juan" contradice el PDF que el
+  // cliente tiene en la mano, y ademas dejaba un pendiente que despues le reenviaba el mismo
+  // documento sin motivo.
+  //
+  // ⚠️ SE MIDE SOBRE LA FUENTE, y no montando un turno, porque `atribucion` solo existe cuando
+  // el mensaje viene DEL DUEÑO (`esDuenio`): reproducir eso pide media conversacion del dueño
+  // y el test terminaria midiendo el camino del takeover, no esta regla. Es el mismo recurso
+  // que ya usa color.test.js para el aviso del color.
+  const { readFile } = await import('node:fs/promises');
+  const wh = await readFile(new URL('./webhook.js', import.meta.url), 'utf8');
+  assert.match(wh, /const _nombreAsumido = _gate\.nombreAsumido && !atribucion\?\.name;/,
+    'la atribucion del dueño apaga el "nombre asumido"');
+  assert.match(wh, /if \(_nombreAsumido\) \{[\s\S]{0,40}?state\.nombre_pendiente/,
+    'y por lo tanto tampoco deja un pendiente que reemitir');
+});

@@ -98,9 +98,43 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
  *
  * @returns {{ nombre: string, asumido: boolean, origen: 'cliente'|'perfil_whatsapp'|'comuna'|'generico' }}
  */
-export function resolverNombre({ input = {}, state = {}, pushName = '', comuna = '' } = {}) {
+export function resolverNombre({ input = {}, state = {}, pushName = '', comuna = '', textoCliente } = {}) {
   const dicho = String(input.name || state.name || '').trim();
-  if (dicho && !needsName({ name: dicho })) return { nombre: dicho, asumido: false, origen: 'cliente' };
+  // 🔴 [2026-09-03 · compuerta cruzada, hallazgo 2 de Codex] COMPUERTA DE PROCEDENCIA.
+  // `input.name` lo escribe el LLM, y un nombre que el cliente nunca dijo entraba aca como
+  // dato suyo (`asumido:false`) — lo que apaga el aviso Y la correccion posterior: el
+  // documento se quedaba para siempre a nombre de alguien inventado y nadie se enteraba.
+  // Es EXACTAMENTE la compuerta que el repo ya le exige al RUT desde el 30-ago
+  // (receptorParaDocumento: un dato de origen 'llm' tiene que APARECER en lo que el cliente
+  // escribio). El nombre no merecia menos.
+  // Se compara sin tildes ni mayusculas: el cliente escribe "jose" y el LLM devuelve "José".
+  // Si el llamador NO pasa `textoCliente` (IG/FB hoy), la compuerta no se activa y el canal
+  // se comporta como antes — no puede romper lo que no recibe.
+  //
+  // ⚠️ LA COMPUERTA MIDE `input.name`, NO `state.name`, Y LA DIFERENCIA ES UNA REGRESION QUE
+  // YA COMETI. Al aplicarsela tambien al state, el caso Alfredo Arias Luengo se rompio: habia
+  // dado su nombre en un turno anterior, el historial de ESE turno ya no lo contenia, y su
+  // propuesta paso a decir "Cliente de Temuco". Un nombre en `state` ya sobrevivio a su turno
+  // —lo puso `extractName` sobre el mensaje del propio cliente, la reemision determinista, o
+  // un turno anterior que si paso por aca—; el que hay que vigilar es el que el modelo AFIRMA
+  // AHORA. (Medido: webhook.receptor-rut.test.js, 2 tests en rojo con la version anterior.)
+  const _pelado = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const _delTurno = String(input.name || '').trim();
+  const _dicente = !_delTurno || textoCliente === undefined || textoCliente === null
+    || _pelado(textoCliente).includes(_pelado(_delTurno));
+  if (dicho && !needsName({ name: dicho })) {
+    // ⚠️ UN NOMBRE NO CORROBORADO NO SE TIRA: SE ROTULA. Bajarlo a "Cliente de <comuna>" era
+    // mi primera version y rompio dos tests reales (caso Alfredo) por una razon de fondo: el
+    // historial se recorta (MAX_HISTORY), asi que "no aparece en lo que escribio" tambien pasa
+    // con nombres LEGITIMOS que el cliente dio hace veinte mensajes. Perder el nombre bueno es
+    // peor que imprimir uno dudoso: lo que hace falta es que el cliente se ENTERE y lo pueda
+    // corregir, y eso es exactamente lo que hace `asumido:true` (dispara el aviso y deja el
+    // pendiente para reemitir). Asi el vector que señalo Codex —un nombre alucinado que se
+    // queda impreso PARA SIEMPRE porque nadie avisa— queda cerrado sin tirar datos buenos.
+    return _dicente
+      ? { nombre: dicho, asumido: false, origen: 'cliente' }
+      : { nombre: dicho, asumido: true, origen: 'llm_no_corroborado' };
+  }
 
   const perfil = String(pushName || '').trim();
   // Solo dos descartes, los dos medidos: el generico ("Cliente", "usuario") y el que es
@@ -151,7 +185,10 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
   // "Cliente". Cuando el cliente no lo dio, `nombreAsumido` sale en true y el llamador
   // tiene que AVISARLE y ofrecerle reemitir. Un documento formal a nombre de alguien que no
   // lo pidio, sin decirselo, seria el mismo defecto del "Blanco que nadie pidio".
-  const _nom = resolverNombre({ input, state, pushName: opciones.pushName, comuna: opciones.comuna });
+  const _nom = resolverNombre({ input, state, pushName: opciones.pushName, comuna: opciones.comuna,
+    // La compuerta de procedencia mide contra lo que el cliente escribio. `textoColor` es el
+    // mismo texto en IG/FB (ese canal no manda `textoCliente`), asi que sirve para los dos.
+    textoCliente: opciones.textoCliente !== undefined ? opciones.textoCliente : opciones.textoColor });
   const items = Array.isArray(input.items) ? input.items : [];
   if (!items.length) missing.push('items');
   items.forEach((it, i) => {

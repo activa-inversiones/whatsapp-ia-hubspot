@@ -417,6 +417,44 @@ function rawMessage(body) {
   return body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0] || null;
 }
 
+/**
+ * [2026-09-03] ¿Este mensaje es SOLO el dato que faltaba (el nombre o el RUT), y nada mas?
+ *
+ * 🔴 POR QUE "Y NADA MAS", medido: la reemision determinista SECUESTRA el turno (contesta,
+ * persiste y hace `return` sin pasar por el cerebro). Si alcanzaba con que el mensaje
+ * CONTUVIERA un nombre o un RUT, un "soy Luis, y ademas quiero agregar dos ventanas mas"
+ * disparaba la reemision y la segunda mitad de la frase no se contestaba nunca. Aislado en
+ * webhook.receptor-rut.test.js, donde un turno que traia el RUT junto con otra cosa dejaba de
+ * ejecutar el flujo normal.
+ *
+ * Por eso NO se usa `extractName` a secas (extrae el nombre de una frase mas larga): se usa
+ * `isLikelyName`, que pregunta si el mensaje COMPLETO es un nombre. Y para el RUT se saca el
+ * numero y sus palabras de etiqueta; si lo que queda son mas de tres palabras, el cliente
+ * dijo algo mas y el turno le pertenece al cerebro, no a esta rama.
+ */
+export function soloEsElDatoQueFaltaba(texto, state = {}) {
+  const t = String(texto || '').trim();
+  if (!t) return false;
+  if (isLikelyName(t)) return true;                       // el mensaje ENTERO es un nombre
+  if (!extraerReceptor(t, { previo: state.receptor })?.receptor?.rut) return false;
+  // Es un RUT valido: ¿venia solo? Fuera el numero y las palabras que lo anuncian.
+  const resto = t
+    // El separador va como \P{L}\P{N} y NO como una clase de guiones literales: los seis guiones
+    // Unicode (‐ ‑ ‒ – — −) que llegan al pegar desde Word o iOS se corrompen al pasar por
+    // cualquier herramienta que no respete UTF-8, y una clase corrupta deja de matchear EN
+    // SILENCIO — el RUT quedaba entero y "77.448.504-K" contaba como cuatro palabras.
+    .replace(/\d{1,3}(?:[^\p{L}\p{N}]?\d{3}){1,2}[^\p{L}\p{N}]{0,3}[0-9kK](?![\p{L}\p{N}])/gu, ' ')
+    // Palabras que solo ANUNCIAN el RUT y no son contenido. ASCII puro, y los limites de
+    // palabra escritos a mano: una version anterior de esta linea llevaba un caracter
+    // BACKSPACE literal (0x08) donde debia ir el limite de palabra —lo dejo la herramienta de
+    // edicion y el regex compilaba igual—, asi que no borraba NADA y "77.448.504-K" contaba
+    // como cuatro palabras. En silencio, que es lo peor: no fallaba, solo no gatillaba.
+    .replace(/\b(rut|r\.?u\.?t\.?|rol|unico|tributario|mi|el|la|de|del|es|son|para|factura|facturar|a|nombre)\b/gi, ' ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+  return resto.split(/\s+/).filter(Boolean).length <= 3;
+}
+
 // Descarga el binario de un media id de WhatsApp (2 pasos: URL firmada → blob).
 async function downloadWaMedia(mediaId, deps) {
   const fetchFn = deps.fetchFn || fetch;
@@ -2105,7 +2143,10 @@ Comuna: ${datos.comuna}`
           // cliente no lo dio. El nombre ya no bloquea (ver pdf-intent.js), asi que estos dos
           // son lo que evita que el documento salga a nombre de "Cliente" a secas.
           const _gate = quoteDataComplete(input, state, {
-            textoCliente: _textoCliente, pushName: push_name, comuna: state.comuna || input.comuna || '' });
+            // [hallazgo 7 de Codex] MISMO ORDEN que `clientComuna` de mas abajo (`input` primero).
+            // Estaban al reves: una comuna corregida en el turno daba un PDF de Padre Las Casas
+            // rotulado "Cliente de Temuco" — el rotulo y el documento contandose distinto.
+            textoCliente: _textoCliente, pushName: push_name, comuna: input.comuna || state.comuna || '' });
           // 🔴 [2026-09-03] UNA REEMISION NO SE VUELVE A GATEAR, Y CASI SE ME PASA.
           //
           // Cuando el nombre llega tarde se reimprime un documento que YA SE ENTREGO: sus items,
@@ -2125,7 +2166,14 @@ Comuna: ${datos.comuna}`
           // parametros con `additionalProperties: false` (tools.js) y `reemision_nombre` NO esta
           // entre ellos: un modelo que la escriba la ve descartada antes de salir. El unico
           // camino que la enciende es el bloque determinista de mas abajo, en codigo.
-          const _esReemisionNombre = input.reemision_nombre === true;
+          // 🔴 [hallazgo 3 de Codex] DEFENSA EN PROFUNDIDAD: la bandera SOLA no basta.
+          // Ademas de venir en true, tiene que existir `state.nombre_pendiente` — o sea, una
+          // propuesta REALMENTE emitida con nombre asumido que corregir. Sin esto, la bandera
+          // por si sola desactivaba el gate y el dedup: cualquier camino que algun dia la
+          // seteara podria emitir PDFs incompletos o repetidos. Que hoy el LLM no pueda
+          // mandarla (`additionalProperties:false` en tools.js) es cierto y no es suficiente:
+          // ese esquema esta en OTRO archivo y nadie lo va a recordar al agregar un parametro.
+          const _esReemisionNombre = input.reemision_nombre === true && !!state.nombre_pendiente;
           if (!_gate.ok && !_esReemisionNombre) {
             log('error', 'generarPdf.gate', `PDF bloqueado por datos incompletos: ${_gate.missing.join(', ')}`);
             // 🔴 [2026-08-25] EL COLOR TIENE SU PROPIA PREGUNTA, y se hace ACÁ.
@@ -2819,8 +2867,13 @@ Comuna: ${datos.comuna}`
           // ⚠️ Y NO SE REPITE. Se avisa UNA vez por conversacion (`nombre_avisado_at`): el
           // cliente que pide tres correcciones no puede recibir tres veces el mismo parrafo
           // pidiendole el nombre — es exactamente el "bot trabado" que leyo Jessica.
+          // [hallazgo 7 de Codex] Si la ATRIBUCION DEL DUEÑO puso el nombre ("CLIENTE Juan +569…"),
+          // el documento sale a nombre de Juan y no hay nada que asumir ni que avisar: decirle
+          // "todavia no tengo su nombre, la emiti como Juan" seria contradecir el propio PDF, y
+          // ademas dejaba un `nombre_pendiente` que despues reenviaba el mismo documento.
+          const _nombreAsumido = _gate.nombreAsumido && !atribucion?.name;
           let _avisoNombre = '';
-          if (_gate.nombreAsumido && !state.nombre_avisado_at) {
+          if (_nombreAsumido && !state.nombre_avisado_at) {
             // El texto cambia segun DE DONDE salio el nombre, porque no son la misma
             // situacion: del perfil de WhatsApp es un nombre que el cliente reconoce y que
             // probablemente esta bien; el rotulo de la comuna pide el nombre de frente.
@@ -3901,9 +3954,12 @@ Comuna: ${datos.comuna}`
           // no incluye el nombre) dentro de las 48 h de QUOTE_REUSE_MS y devuelve motivo
           // 'revision' con el MISMO numero. O sea, corregir el nombre NO quema un correlativo
           // ISO — que es justo lo que costo 3 folios en 5 minutos en el caso Jessica.
-          if (_gate.nombreAsumido) {
+          if (_nombreAsumido) {
             state.nombre_pendiente = { quote_number: quoteNumber, at: Date.now(),
-              items: input.items || [], grand_total: input.grand_total || 0 };
+              items: input.items || [], grand_total: input.grand_total || 0,
+              // El rotulo con el que salio. Si el cliente corrige SOLO el RUT, la reemision
+              // conserva este mismo encabezado en vez de quedarse sin ninguno.
+              nombre_usado: clientName };
           } else {
             delete state.nombre_pendiente;   // ya tiene nombre de verdad: no hay nada que corregir
           }
@@ -3988,10 +4044,22 @@ Comuna: ${datos.comuna}`
     if (state.nombre_pendiente && Array.isArray(state.nombre_pendiente.items)
         && state.nombre_pendiente.items.length
         && (Date.now() - (state.nombre_pendiente.at || 0)) < QUOTE_REUSE_MS
-        && (isLikelyName(userText) || extractName(userText))) {
+        && soloEsElDatoQueFaltaba(userText, state)) {
       const _np = state.nombre_pendiente;
-      const _nombreReal = extractName(userText) || String(userText || '').trim();
-      state.name = _nombreReal;                 // para el resto del turno y los siguientes
+      // 🔴 [hallazgo 6 de Codex] EL RUT TAMBIEN CORRIGE, porque el aviso lo PROMETE.
+      // El texto que acompaña la propuesta dice "digame a nombre de quien va —o el RUT si la
+      // necesita para factura— y se la reemito". Con solo los detectores de nombre, el cliente
+      // que contestaba UNICAMENTE su RUT ("77.448.504-K") no gatillaba nada: el RUT se capturaba
+      // en `state.receptor` (paso 5a1, determinista) y ahi se quedaba, con su propuesta sin
+      // corregir. Prometer algo y no cumplirlo es peor que no prometerlo.
+      // ⚠️ El RUT NO se re-valida aca: `extraerReceptor` ya lo paso por modulo 11 y
+      // `receptorParaDocumento` lo vuelve a validar antes de imprimirlo. Este `if` solo decide
+      // SI se reemite, no que se imprime.
+      // Si vino solo el RUT y ningun nombre, el documento conserva el rotulo y gana el RUT —
+      // que es exactamente lo que el cliente pidio al mandarlo.
+      const _nombreReal = extractName(userText)
+        || (isLikelyName(userText) ? String(userText || '').trim() : (state.name || _np.nombre_usado || ''));
+      if (_nombreReal) state.name = _nombreReal; // para el resto del turno y los siguientes
       const pdfRes = await safe('pdf.nombre-tardio', () => toolCtx.generarPdf({
         name: _nombreReal, phone: state.telefono || from, comuna: state.comuna || '',
         items: _np.items, grand_total: _np.grand_total,
@@ -4006,7 +4074,7 @@ Comuna: ${datos.comuna}`
       // algo que corregir se habia ido con el intento fallido.
       if (pdfRes && pdfRes.ok) delete state.nombre_pendiente;
       const replyMsg = (pdfRes && pdfRes.message)
-        || `Listo, ${_nombreReal} ✅ Le reemití la Propuesta Técnica Económica N° ${_np.quote_number} a su nombre. Es la misma propuesta corregida, no una nueva.`;
+        || `Listo${_nombreReal ? `, ${_nombreReal}` : ''} ✅ Le reemití la Propuesta Técnica Económica N° ${_np.quote_number} con esos datos. Es la misma propuesta corregida, no una nueva.`;
       await safe('pdf.nombre.send', () => sendWhatsAppText(from, replyMsg));
       await safe('pdf.nombre.persistIn', () => bridge.pushConversationEvent({
         channel: 'whatsapp', external_id: from, direction: 'inbound', actor_type: 'customer',
