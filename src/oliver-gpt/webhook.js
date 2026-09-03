@@ -726,6 +726,71 @@ function proveedorDelTurno() {
   } catch { return {}; }
 }
 
+/* =========================================================================
+ * 🔴 [2026-09-03] EL BOT SE DETIENE CUANDO EL CLIENTE ESCRIBE.
+ *
+ * LO MEDIDO (BD viva, 14 dias): 54 rafagas de >= 5 piezas salientes seguidas sin ninguna
+ * entrada del cliente, a 29 clientes, peor caso 12 piezas. Y midiendo con `enviado_at` —la
+ * hora REAL en que el cliente escribio, no la hora en que procesamos su mensaje— la mediana
+ * de respuesta tras una rafaga es NEGATIVA: -2,8 min en las de 8 o mas. El cliente ya habia
+ * escrito TRES MINUTOS ANTES de que el bot terminara de mandarle documentos.
+ *
+ * POR QUE NO SE ENTERABA: el lock por telefono. La secuencia larga dura 2-3 minutos con el
+ * lock tomado; el mensaje nuevo queda encolado esperando y la secuencia no puede verlo.
+ *
+ * ═══ EL NUMERO SE TOMA AL LLEGAR, Y NO ES UN DETALLE ═══
+ * La version obvia —fotografiar el ultimo inbound al EMPEZAR la secuencia— la mato Codex en
+ * la compuerta cruzada con un caso exacto: A toma el lock, B llega y actualiza el marcador,
+ * y A RECIEN ENTONCES arranca su secuencia, fotografiando la marca DE B. La comparacion daba
+ * siempre igual y no abortaba nunca. Por eso `anotarLlegada` corre ANTES del lock y cada
+ * turno se lleva SU numero: un turno viejo lo sabe aunque recien ahora empiece a mandar.
+ *
+ * ⚠️ ALCANCE HONESTO, y sale escrito porque los tres revisores lo levantaron: esto es un Map
+ * en memoria del proceso, no sobrevive a un redeploy ni se comparte entre instancias. NO se
+ * puso en el KV compartido a proposito: el `locks` que serializa los turnos —del que cuelga
+ * todo esto— es TAMBIEN un Map local. Un marcador distribuido sobre un lock local no da mas
+ * garantia, da confianza falsa. Este marcador es exactamente tan confiable como el lock que
+ * ya gobierna el orden de los turnos, ni mas ni menos. El dia que el lock se haga
+ * distribuido, este se muda con el.
+ * ========================================================================= */
+let SEQ_TURNO = 0;
+const TURNO_VIGENTE = new Map();   // telefono normalizado -> numero del ultimo turno que llego
+
+const _telClave = (tel) => String(tel || '').replace(/\D/g, '');
+
+/**
+ * Anota que llego un mensaje de este cliente y devuelve el numero de ESTE turno.
+ * Se llama ANTES de tomar el lock. El numero es global y creciente: no hay dos turnos con el
+ * mismo numero ni siquiera entre clientes distintos, asi que un numero viejo nunca puede
+ * confundirse con uno nuevo.
+ */
+export function anotarLlegada(telefono) {
+  const k = _telClave(telefono);
+  const n = ++SEQ_TURNO;
+  if (k) TURNO_VIGENTE.set(k, n);
+  return n;
+}
+
+/**
+ * ¿Este turno sigue siendo el ultimo del cliente, o ya llego uno mas nuevo?
+ *
+ * DEGRADA A "SI" ante la duda, y es deliberado: sin numero de turno (un llamador que
+ * todavia no lo pasa) o sin registro del cliente, se comporta EXACTAMENTE como antes. Un
+ * arreglo que corta envios por un dato que no recibio es peor que el defecto que vino a
+ * cerrar — la misma regla que ya rige los gates del color y de la apertura.
+ */
+export function turnoVigente(telefono, miTurno) {
+  if (!miTurno) return true;
+  const k = _telClave(telefono);
+  if (!k) return true;
+  const ultimo = TURNO_VIGENTE.get(k);
+  if (!ultimo) return true;
+  return ultimo === miTurno;
+}
+
+/** Solo para los tests: deja la numeracion como recien arrancado el proceso. */
+export function _resetTurnos() { SEQ_TURNO = 0; TURNO_VIGENTE.clear(); }
+
 export async function handleWebhook(req, res, deps = {}) {
   // ── (1) ACK INMEDIATO a Meta. Nada antes de esto puede lanzar. ──────────
   try {
@@ -914,6 +979,14 @@ export async function handleWebhook(req, res, deps = {}) {
       // 15 min cubre de sobra la ventana de reintentos de Meta sin llenar la tabla.
       (deps.escribirEstado || escribirEstado)(`msg:${msgId}`, true, 15 * 60);
     }
+
+    // ── (2a·bis) 🔴 [2026-09-03] EL NUMERO DE ESTE TURNO — ANTES DEL LOCK, SIEMPRE ──
+    // Va aca y no mas abajo por el caso que Codex uso para matar la version anterior: si el
+    // numero se tomara despues de entrar al lock, un turno A que espero 2 minutos a que se
+    // liberara el lock se numeraria DESPUES de B y creeria ser el vigente. Tomado al llegar,
+    // A conserva su numero viejo y sabe que quedo atras — que es justo lo que hay que saber
+    // para no seguir descargandole documentos a alguien que ya escribio otra cosa.
+    const miTurno = anotarLlegada(from);
 
     // ── (2b) MUTEX — adquirir lock antes de cualquier I/O. Serializa ─────
     // mensajes concurrentes del mismo número (doble-tap). El release se llama
@@ -2980,6 +3053,20 @@ Comuna: ${datos.comuna}`
           // con qué espera.
           let videoCortesiaEnviado = false;
           const enviarVideoCortesia = async (demoraMs) => {
+              // 🔴 [2026-09-03] SI EL CLIENTE YA ESCRIBIO, EL VIDEO NO SALE.
+              //
+              // Es el primer corte del arreglo de las rafagas, y se elige el video a proposito:
+              // es la pieza mas prescindible de la secuencia y la que llega mas tarde (50 s
+              // despues del PDF). Cortar aca baja la rafaga sin poder costar una cotizacion.
+              //
+              // ⚠️ VA ANTES DE `videoCortesiaEnviado = true` Y ANTES DE RESERVAR LA TANDA, y
+              // eso lo pidio la compuerta: si se cortara despues de marcar, el video quedaria
+              // "visto" 180 dias sin haber llegado nunca, y la tanda quedaria reservada 10 min
+              // sin envio. Cortar antes de reservar no deja ningun estado huerfano.
+              if (!turnoVigente(from, miTurno)) {
+                log('info', 'rafaga.corte', `${from}: el cliente escribio; no se manda el video de cortesia`);
+                return;
+              }
               videoCortesiaEnviado = true;
               const claveVistos = `videos_fabrica:vistos:${String(from).replace(/\D/g, '')}`;
               // Inyectable como todo lo demas: sin esto el caso "no hay ningun video
@@ -3047,6 +3134,16 @@ Comuna: ${datos.comuna}`
           // (mismo criterio anti-spam que el térmico). Folio serie LOCAL propia INF-V
           // mientras sales-os no tenga la serie CM-FR de vientos (tablero #541).
           const enviarInformeVientos = async () => {
+            // 🔴 [2026-09-03] SEGUNDO CORTE DE LA RAFAGA: el informe de vientos es el TERCER
+            // documento de la secuencia y llega ~25 s despues del anterior. Si el cliente ya
+            // escribio, se lo guarda para el turno siguiente en vez de encimarselo.
+            // Igual que el video: ANTES de calcular la huella y de reservar `:en_curso`, para
+            // no dejar un candado tomado sin envio (defecto que la compuerta anticipo).
+            // Su propuesta con el precio NO se corta nunca — eso se decide aparte.
+            if (!turnoVigente(from, miTurno)) {
+              log('info', 'rafaga.corte', `${from}: el cliente escribio; el informe de vientos queda para el proximo turno`);
+              return 'cliente_escribio';
+            }
             const _tel = String(from).replace(/\D/g, '');
             const ultimaV = (input.items || []).at(-1) || {};
             const _huellaV = huellaDelInforme({
