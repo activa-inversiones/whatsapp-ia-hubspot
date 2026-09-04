@@ -12,12 +12,13 @@
 // corresponde a que ventana. Medido el 03-sep: 86 informes termicos entregados, 84 documentos
 // distintos — casi todos compartiendo nombre.
 //
-// ⚠️ ESTO YA SE INTENTO Y SE REVIRTIO EL 03-SEP. Aquella version metia el CORRELATIVO ISO en
-// el nombre (`Informe-Termico-Vilcun-CM-FR-006-2026-0093.pdf`) y rompio
-// `webhook.informe.test.js:536`, que fija una decision deliberada: al cliente se le manda el
-// nombre LEGIBLE a proposito, y el correlativo ya viaja en la copia de archivo de WorkDrive.
-// Se reverte y se le pregunto al dueno. El eligio la letra, que es lo mejor de los dos
-// mundos: distingue sin convertir el nombre en un serial.
+// ⚠️ EL NOMBRE LLEVA LAS DOS COSAS, Y ASI SE LLEGO. El 03-sep meti el correlativo ISO solo,
+// rompio `webhook.informe.test.js:536` —que fijaba el nombre pelado a proposito, por
+// legibilidad— y lo revertí para preguntarle al dueno. Pidio la letra A/B/C. Al implementarla
+// corrigio de nuevo, textual: *"pero debe tener el correlativo de registro ISO o no esta
+// dentro del ISO"*. Tenia razon: la letra distingue un archivo de otro, pero solo el
+// correlativo lo amarra al REGISTRO. Version final: `-A-CM-FR-006-2026-0093.pdf`, que
+// distingue, es legible Y es auditable. Ninguna de las dos sola alcanzaba.
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -52,13 +53,26 @@ describe('nombreConLetra — el nombre que ve el cliente', () => {
     assert.equal(nombreConLetra('Informe-Termico-Vilcun.pdf', 1), 'Informe-Termico-Vilcun-B.pdf');
   });
 
-  test('sigue siendo legible: la comuna se lee, no se convierte en un serial', () => {
-    // Es la razon por la que la version con el correlativo ISO se reverte: el nombre que
-    // llega al telefono tiene que poder leerse de un vistazo.
-    const n = nombreConLetra('Informe-Vientos-Padre-Las-Casas.pdf', 2);
-    assert.equal(n, 'Informe-Vientos-Padre-Las-Casas-C.pdf');
+  test('🔴 [correccion del dueño] EL CORRELATIVO ISO VA EN EL NOMBRE', () => {
+    // Textual: *"pero debe tener el correlativo de registro ISO o no esta dentro del ISO"*.
+    // La letra distingue un archivo de otro; el correlativo lo amarra al REGISTRO. Un
+    // documento formal cuyo nombre no permite encontrarlo en el registro no esta dentro del
+    // sistema de gestion — y el nombre es lo unico que un auditor mira antes de abrirlo.
+    const n = nombreConLetra('Informe-Vientos-Padre-Las-Casas.pdf', 2, 'CM-FR-007-2026-0004');
+    assert.equal(n, 'Informe-Vientos-Padre-Las-Casas-C-CM-FR-007-2026-0004.pdf');
     assert.match(n, /Padre-Las-Casas/, 'la comuna sigue a la vista');
-    assert.doesNotMatch(n, /CM-FR/, 'y NO se le mete el correlativo al cliente');
+    assert.match(n, /CM-FR-007-2026-0004/, 'y el correlativo tambien');
+  });
+
+  test('sin folio sale solo con la letra: nunca se frena un envio por no numerarlo', () => {
+    // Si sales-os no contesto, el informe SALE igual. Un documento entregado con nombre
+    // incompleto se explica; uno que no salio, no.
+    assert.equal(nombreConLetra('Informe-Termico-Temuco.pdf', 1), 'Informe-Termico-Temuco-B.pdf');
+  });
+
+  test('un folio con caracteres raros se limpia: el nombre viaja a Meta y a WorkDrive', () => {
+    const n = nombreConLetra('Informe-Termico-Temuco.pdf', 0, 'CM/FR 006:2026*0001');
+    assert.doesNotMatch(n, /[/:*]/, 'sin caracteres que rompan un envio');
   });
 
   test('conserva la extension y no la duplica', () => {
@@ -75,6 +89,9 @@ describe('nombreConLetra — el nombre que ve el cliente', () => {
     // EXACTAMENTE como antes. Es preferible un nombre repetido a un informe que no sale.
     assert.equal(nombreConLetra('Informe-Termico-Temuco.pdf', null), 'Informe-Termico-Temuco.pdf');
     assert.equal(nombreConLetra('Informe-Termico-Temuco.pdf', undefined), 'Informe-Termico-Temuco.pdf');
+    // …pero si hay folio, el folio va igual: el ISO no depende de que el contador funcione.
+    assert.equal(nombreConLetra('Informe-Termico-Temuco.pdf', null, 'CM-FR-006-2026-0093'),
+      'Informe-Termico-Temuco-CM-FR-006-2026-0093.pdf');
   });
 
   test('un nombre vacio no inventa nada', () => {

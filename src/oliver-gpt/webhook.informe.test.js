@@ -196,7 +196,9 @@ test('🔴 el informe lleva TODAS las ventanas de la propuesta, y sale UNA vez',
   // [2026-09-04 · #651] El nombre ahora lleva su letra (A, B, C…) para que dos informes
   // distintos de la misma comuna no se pisen en el telefono del cliente. Lo que este test
   // mide —que sale UNA sola vez con TODAS las ventanas— no cambio.
-  assert.match(spy.docsEnviados[0].filename, /^Informe-Termico-Temuco-[A-Z]+\.pdf$/);
+  // [04-sep] Nombre = comuna + letra + correlativo ISO. La letra distingue un archivo de
+  // otro; el correlativo lo amarra al registro (*"o no esta dentro del ISO"*, dueno).
+  assert.match(spy.docsEnviados[0].filename, /^Informe-Termico-Temuco-[A-Z]+-.+\.pdf$/);
   assert.deepEqual(medidasDe(spy.pdfArgs.at(-1).ventanas), medidasDe(VENTANAS),
     'las MISMAS ventanas que declara la propuesta');
 });
@@ -546,10 +548,10 @@ test('📁 el archivo lleva el correlativo: dos informes de la misma comuna no s
   // La letra resuelve las dos cosas: distingue y sigue siendo legible. Lo que NO volvio es
   // meterle el correlativo ISO al cliente — eso se intento el 03-sep, rompio este mismo test
   // y se revertio.
-  assert.match(spy.docsEnviados[0].filename, /^Informe-Termico-Temuco-[A-Z]+\.pdf$/,
-    `al cliente se le manda el nombre legible CON su letra, y llego ${spy.docsEnviados[0].filename}`);
-  assert.doesNotMatch(spy.docsEnviados[0].filename, /CM-FR/,
-    'y sin el correlativo ISO: eso viaja en la copia de archivo, no en el telefono');
+  assert.match(spy.docsEnviados[0].filename, /^Informe-Termico-Temuco-[A-Z]+-.+\.pdf$/,
+    `nombre legible + letra + correlativo, y llego ${spy.docsEnviados[0].filename}`);
+  assert.ok(spy.docsEnviados[0].filename.includes(ev.metadata.informe_number),
+    'y el correlativo del nombre es EL MISMO que quedo en el registro');
 });
 
 test('📁 si sales-os se cuelga (no responde nunca), el informe ya salio igual', async () => {

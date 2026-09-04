@@ -53,14 +53,25 @@ export function letraDeInforme(i) {
  * comportarse EXACTAMENTE como antes de este cambio. Un nombre repetido es molesto; un
  * informe que no sale porque no se pudo numerar es un cliente perdido.
  */
-export function nombreConLetra(nombre, i) {
+export function nombreConLetra(nombre, i, folio) {
   const base = String(nombre || '');
   if (!base) return base;
-  if (i === null || i === undefined) return base;
-  const n = Number(i);
-  if (!Number.isFinite(n)) return base;
   const sinExt = base.replace(/\.pdf$/i, '');
-  return `${sinExt}-${letraDeInforme(n)}.pdf`;
+  const n = Number(i);
+  const letra = (i === null || i === undefined || !Number.isFinite(n)) ? '' : `-${letraDeInforme(n)}`;
+  // 🔴 [2026-09-04 · correccion del dueño] EL CORRELATIVO ISO VA EN EL NOMBRE.
+  // Textual: *"pero debe tener el correlativo de registro ISO o no esta dentro del ISO"*.
+  // Tenia razon y mi version anterior se quedaba corta: la letra distingue un archivo de
+  // otro para el cliente, pero NO lo amarra al registro. Un documento formal cuyo nombre no
+  // permite encontrarlo en el registro no esta dentro del sistema de gestion — es lo unico
+  // que un auditor mira antes de abrirlo.
+  // Se limpia a `[\w-]` porque el nombre viaja a Meta y a WorkDrive: un caracter raro en el
+  // nombre de archivo se convierte en un envio rechazado.
+  const iso = folio ? `-${String(folio).replace(/[^\w-]/g, '')}` : '';
+  // Si no hay ni letra ni folio, se devuelve el nombre de siempre: degradar al comportamiento
+  // anterior es preferible a frenar un envio por no poder numerarlo.
+  if (!letra && !iso) return base;
+  return `${sinExt}${letra}${iso}.pdf`;
 }
 
 export default { letraDeInforme, nombreConLetra, LETRAS_INFORME };

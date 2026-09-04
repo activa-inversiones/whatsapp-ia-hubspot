@@ -1830,8 +1830,12 @@ export async function handleWebhook(req, res, deps = {}) {
           let _letraIdx = null;
           try { _letraIdx = Number(await (deps.leerEstado || leerEstado)(_claveLetra)) || 0; }
           catch { /* sin contador, sale con el nombre de siempre */ }
+          // El folio ISO va en el nombre: *"debe tener el correlativo de registro ISO o no
+          // esta dentro del ISO"* (dueño, 04-sep). Si sales-os no contesto, `numeroInforme`
+          // trae el fallback local y ese viaja igual — un documento entregado con nombre
+          // incompleto se explica; uno que no salio, no.
           const nombreArchivo = nombreConLetra(
-            `Informe-Termico-${String(datos.comuna).replace(/\s+/g, '-')}.pdf`, _letraIdx);
+            `Informe-Termico-${String(datos.comuna).replace(/\s+/g, '-')}.pdf`, _letraIdx, numeroInforme);
           const mediaId = await uploadWaDocument(pdfBuf, nombreArchivo);
           // 🔴 [P1 · Codex, compuerta 24-ago] `mediaId` NO prueba entrega: `sendWaDocument`
           // devuelve {ok:false} SIN lanzar cuando Meta rechaza. La version anterior marcaba
@@ -3271,7 +3275,7 @@ Comuna: ${datos.comuna}`
               try { _letraIdxV = Number(await (deps.leerEstado || leerEstado)(_claveLetraV)) || 0; }
               catch { /* sin contador, sale con el nombre de siempre */ }
               const archivoV = nombreConLetra(
-                `Informe-Vientos-${String(clientComuna || 'proyecto').replace(/\s+/g, '-')}.pdf`, _letraIdxV);
+                `Informe-Vientos-${String(clientComuna || 'proyecto').replace(/\s+/g, '-')}.pdf`, _letraIdxV, folioV);
               const mediaV = await uploadWaDocument(pdfV, archivoV);
               let envioV = null;
               // [Codex, compuerta] El caption promete clima SOLO si el bloque vino del motor.
