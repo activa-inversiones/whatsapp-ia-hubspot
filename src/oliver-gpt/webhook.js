@@ -137,6 +137,7 @@ import {
 } from '../../services/voiceBridge.js'; // [F4] voz saliente
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
+import { captionTermico, captionVientos } from './captionInforme.js'; // [2026-09-04] el cliente tiene que saber que le mandamos
 import { nombreConLetra } from './informeLetra.js'; // [2026-09-04 · #651] dos informes distintos no se llaman igual
 import { extractName, isLikelyName } from '../../services/oliverName.js'; // [2026-09-03] el nombre que llega TARDE, para reemitir la propuesta
 import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
@@ -1843,7 +1844,24 @@ export async function handleWebhook(req, res, deps = {}) {
           // puesto (sin reintento en 30 dias) y la "evidencia" ISO de algo que nunca salio.
           // Ahora TODO lo posterior exige envio.ok === true.
           let envio = null;
-          if (mediaId) envio = await sendWaDocument(from, mediaId, nombreArchivo, `Informe térmico de ${datos.comuna}`);
+          // 🔴 [2026-09-04] EL CAPTION EXPLICA QUE HAY ADENTRO. Pedido del dueño, textual:
+          // *"debemos indicarle a cliente antes lo que le enviamos porque no sabe que tiene el
+          // archivo adentro"*. Antes decia `Informe termico de Vilcun` — una linea para un PDF
+          // de varias paginas. Un documento que el cliente no sabe para que sirve no se abre.
+          // ⚠️ VA EN EL CAPTION Y NO EN UN MENSAJE APARTE: un mensaje previo sumaria otra pieza
+          // a la secuencia, que es justo lo que se acaba de arreglar (54 rafagas de hasta 12
+          // piezas). El caption viaja PEGADO al documento: se entera sin recibir un mensaje mas.
+          // ⚠️ Cada bandera dice si esa seccion EXISTE en el PDF. Prometer una que no esta es
+          // peor que no describirlo: el cliente lo abre buscando algo que no encuentra.
+          const _capT = captionTermico({
+            comuna: datos.comuna,
+            tieneUwNorma: Number(datos.uw_max_Wm2K) > 0,
+            tieneVeredicto: Number.isFinite(Number(uw)) && Number(uw) > 0,
+            tieneCondensacion: Boolean(datos.condensacion),
+            tieneIsotermas: Array.isArray(laminas?.laminas) && laminas.laminas.length > 0,
+            esReferenciaRegional: esRef,
+          });
+          if (mediaId) envio = await sendWaDocument(from, mediaId, nombreArchivo, _capT);
           const entregado = Boolean(mediaId && envio && envio.ok === true);
           if (!entregado) {
             log('warn', 'informeTermico.envio',
@@ -3280,7 +3298,13 @@ Comuna: ${datos.comuna}`
               let envioV = null;
               // [Codex, compuerta] El caption promete clima SOLO si el bloque vino del motor.
               const traeClimaV = Boolean(datosV.clima && !datosV.clima._hueco);
-              if (mediaV) envioV = await sendWaDocument(from, mediaV, archivoV, traeClimaV ? 'Informe de vientos y clima de sus ventanas' : 'Informe de vientos de sus ventanas');
+              // [2026-09-04] Mismo criterio que el termico: se explica que trae el documento.
+              // La regla del clima —prometerlo SOLO si el bloque vino del motor, compuerta del
+              // 28-ago— se conserva tal cual, ahora dentro de `captionVientos`.
+              const _capV = captionVientos({
+                comuna: clientComuna, tieneClima: traeClimaV, nVentanas: legibles.length,
+              });
+              if (mediaV) envioV = await sendWaDocument(from, mediaV, archivoV, _capV);
               if (!(mediaV && envioV && envioV.ok === true)) {
                 log('warn', 'generarPdf.vientos', `informe de vientos ${folioV} NO se entrego: el proximo proyecto reintenta`);
                 soltarV(); return 'fallo';
