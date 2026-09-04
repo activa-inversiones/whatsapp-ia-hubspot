@@ -137,6 +137,7 @@ import {
 } from '../../services/voiceBridge.js'; // [F4] voz saliente
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
+import { nombreConLetra } from './informeLetra.js'; // [2026-09-04 · #651] dos informes distintos no se llaman igual
 import { extractName, isLikelyName } from '../../services/oliverName.js'; // [2026-09-03] el nombre que llega TARDE, para reemitir la propuesta
 import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
 // [2026-08-31] LAS TRES PROPUESTAS A/B/C POR COLOR — compartidas con channel-agent.js (IG/FB)
@@ -1818,7 +1819,19 @@ export async function handleWebhook(req, res, deps = {}) {
 
           // Reusa el mismo par upload+send que ya usa el PDF de la propuesta: subir el
           // documento a Meta y mandarlo por su media_id. Cero maquinaria nueva.
-          const nombreArchivo = `Informe-Termico-${String(datos.comuna).replace(/\s+/g, '-')}.pdf`;
+          // 🔴 [2026-09-04 · #651] LA LETRA QUE DISTINGUE UN INFORME DE OTRO.
+          // Decision del dueño: *"deben diferenciarse igual que en propuesta como A B C D"*.
+          // El contador es por telefono y por tipo, y se lee ANTES de mandar; se incrementa
+          // DESPUES de la entrega confirmada, para que un envio fallido no queme una letra y
+          // deje un hueco (A, C) que nadie sabria explicar.
+          // ⚠️ Si el KV no responde, `_letraIdx` queda null y `nombreConLetra` devuelve el
+          // nombre de siempre: se degrada al comportamiento anterior, nunca se frena el envio.
+          const _claveLetra = `informe_letra:${String(from).replace(/\D/g, '')}:termico`;
+          let _letraIdx = null;
+          try { _letraIdx = Number(await (deps.leerEstado || leerEstado)(_claveLetra)) || 0; }
+          catch { /* sin contador, sale con el nombre de siempre */ }
+          const nombreArchivo = nombreConLetra(
+            `Informe-Termico-${String(datos.comuna).replace(/\s+/g, '-')}.pdf`, _letraIdx);
           const mediaId = await uploadWaDocument(pdfBuf, nombreArchivo);
           // 🔴 [P1 · Codex, compuerta 24-ago] `mediaId` NO prueba entrega: `sendWaDocument`
           // devuelve {ok:false} SIN lanzar cuando Meta rechaza. La version anterior marcaba
@@ -1841,6 +1854,13 @@ export async function handleWebhook(req, res, deps = {}) {
           }
           // Se marca DESPUÉS de que salió DE VERDAD: si el envío falla, el próximo turno reintenta.
           // Con fecha: el candado solo vale si es posterior al ultimo RESET (candadoVigente).
+          // La letra se consume SOLO ahora, con la entrega confirmada. Un ano de TTL: el
+          // contador tiene que sobrevivir a un cliente que vuelve meses despues, o le llegaria
+          // una segunda "A" y volveria a pisarse el archivo.
+          if (_letraIdx !== null) {
+            try { await (deps.escribirEstado || escribirEstado)(_claveLetra, _letraIdx + 1, 365 * 24 * 3600); }
+            catch { /* la proxima repetiria letra: molesto, no grave */ }
+          }
           try { await (deps.escribirEstado || escribirEstado)(clave, { at: Date.now() }, 30 * 24 * 3600); }
           catch { /* no bloquea: el mensaje ya llegó */ }
 
@@ -3244,7 +3264,14 @@ Comuna: ${datos.comuna}`
               });
               if (!pdfV) { soltarV(); return 'fallo'; }
               await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: SEQ_VIENTOS_MS });
-              const archivoV = `Informe-Vientos-${String(clientComuna || 'proyecto').replace(/\s+/g, '-')}.pdf`;
+              // [#651] Misma letra que el termico, con su propio contador: son dos series de
+              // documentos distintas y mezclarlas daria saltos sin explicacion en las dos.
+              const _claveLetraV = `informe_letra:${String(from).replace(/\D/g, '')}:vientos`;
+              let _letraIdxV = null;
+              try { _letraIdxV = Number(await (deps.leerEstado || leerEstado)(_claveLetraV)) || 0; }
+              catch { /* sin contador, sale con el nombre de siempre */ }
+              const archivoV = nombreConLetra(
+                `Informe-Vientos-${String(clientComuna || 'proyecto').replace(/\s+/g, '-')}.pdf`, _letraIdxV);
               const mediaV = await uploadWaDocument(pdfV, archivoV);
               let envioV = null;
               // [Codex, compuerta] El caption promete clima SOLO si el bloque vino del motor.
@@ -3253,6 +3280,10 @@ Comuna: ${datos.comuna}`
               if (!(mediaV && envioV && envioV.ok === true)) {
                 log('warn', 'generarPdf.vientos', `informe de vientos ${folioV} NO se entrego: el proximo proyecto reintenta`);
                 soltarV(); return 'fallo';
+              }
+              if (_letraIdxV !== null) {
+                try { await (deps.escribirEstado || escribirEstado)(_claveLetraV, _letraIdxV + 1, 365 * 24 * 3600); }
+                catch { /* la proxima repetiria letra: molesto, no grave */ }
               }
               try { await (deps.escribirEstado || escribirEstado)(claveV, { at: Date.now() }, 30 * 24 * 3600); }
               catch { /* el candado largo es anti-spam, no entrega */ }

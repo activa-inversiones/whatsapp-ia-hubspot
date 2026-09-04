@@ -193,7 +193,10 @@ test('🔴 el informe lleva TODAS las ventanas de la propuesta, y sale UNA vez',
 
   assert.equal(spy.docsEnviados.length, 1, 'exactamente un informe');
   assert.equal(spy.propuestas.length, 1, 'y una propuesta');
-  assert.match(spy.docsEnviados[0].filename, /^Informe-Termico-Temuco\.pdf$/);
+  // [2026-09-04 · #651] El nombre ahora lleva su letra (A, B, C…) para que dos informes
+  // distintos de la misma comuna no se pisen en el telefono del cliente. Lo que este test
+  // mide —que sale UNA sola vez con TODAS las ventanas— no cambio.
+  assert.match(spy.docsEnviados[0].filename, /^Informe-Termico-Temuco-[A-Z]+\.pdf$/);
   assert.deepEqual(medidasDe(spy.pdfArgs.at(-1).ventanas), medidasDe(VENTANAS),
     'las MISMAS ventanas que declara la propuesta');
 });
@@ -532,9 +535,21 @@ test('📁 el archivo lleva el correlativo: dos informes de la misma comuna no s
     `el archivo tiene que llevar el correlativo ${ev.metadata.informe_number}, y se llama ${reg.filename}`);
   assert.match(reg.filename, /\.pdf$/, 'y seguir siendo un .pdf');
 
-  // Lo que RECIBE el cliente no cambia: ese nombre se lee en el telefono.
-  assert.equal(spy.docsEnviados[0].filename, 'Informe-Termico-Temuco.pdf',
-    'al cliente se le sigue mandando el nombre legible');
+  // 🔴 [2026-09-04 · EL DUEÑO CAMBIO DE DECISION — NO ES UNA REGRESION, NO LO "RESTAURES"]
+  // Esta linea exigia el nombre PELADO (`Informe-Termico-Temuco.pdf`) para todos los de
+  // Temuco. Era deliberado: legible en el telefono. Pero el informe lleva ADENTRO la ventana
+  // del cliente, asi que dos cotizaciones distintas en la misma comuna dan dos documentos
+  // DISTINTOS con el mismo nombre — y el segundo PISA al primero al guardarlo. Medido: 86
+  // informes entregados, 84 documentos distintos.
+  // Instruccion del dueño (#651), textual: *"2 informes distintos se llaman igual, deben
+  // diferenciarse igual que en propuesta como A B C D asi sucesivamente para no perderlos"*.
+  // La letra resuelve las dos cosas: distingue y sigue siendo legible. Lo que NO volvio es
+  // meterle el correlativo ISO al cliente — eso se intento el 03-sep, rompio este mismo test
+  // y se revertio.
+  assert.match(spy.docsEnviados[0].filename, /^Informe-Termico-Temuco-[A-Z]+\.pdf$/,
+    `al cliente se le manda el nombre legible CON su letra, y llego ${spy.docsEnviados[0].filename}`);
+  assert.doesNotMatch(spy.docsEnviados[0].filename, /CM-FR/,
+    'y sin el correlativo ISO: eso viaja en la copia de archivo, no en el telefono');
 });
 
 test('📁 si sales-os se cuelga (no responde nunca), el informe ya salio igual', async () => {
