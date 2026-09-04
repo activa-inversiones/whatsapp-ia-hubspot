@@ -3179,9 +3179,59 @@ Comuna: ${datos.comuna}`
                 comuna: clientComuna, cliente: clientName, ventanas: legibles,
               });
               if (!datosV) { soltarV(); return 'fallo'; }
-              // Folio local visible y fuera de banda (declarado, no disfrazado de CM-FR).
-              const folioV = `INF-V-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-`
-                + `${Date.now().toString(36).toUpperCase().slice(-4)}`;
+              // 🔴 [2026-09-03] CORRELATIVO ISO DE VERDAD (CM-FR-007), pedido ANTES de generar
+              // el PDF y estampado en el documento — el MISMO procedimiento del termico
+              // (CM-FR-006) y de la cotizacion (CM-FR-004). Instruccion del dueño, textual:
+              // *"los folios deben ser guardados como ISO registros como todas las demas
+              // cotizaciones"*.
+              //
+              // QUE HABIA ACA: `INF-V-20260903-WUN7` — fecha mas cuatro caracteres derivados
+              // del reloj. Medido contra la BD viva: 53 informes de vientos entregados en 30
+              // dias con ese folio y **cero filas de registro**. Un folio sin serie no se
+              // audita (nadie puede preguntar "¿falta el 47?") y sin fila no se puede probar
+              // que documento se entrego, a quien ni cuando. Eran 53 documentos tecnicos
+              // firmados fuera del control de registros.
+              //
+              // El fallback local SE CONSERVA y sigue siendo VISIBLE: si sales-os no
+              // contesta, el cliente igual recibe su informe con un numero declarado como
+              // fuera de secuencia. Un numero raro se explica en una auditoria; un documento
+              // que no salio, no.
+              let folioV = '';
+              try {
+                const sosUrl = (process.env.SALES_OS_URL || '').replace(/\/$/, '');
+                const sosTok = process.env.SALES_OS_OPERATOR_TOKEN || '';
+                if (sosUrl && sosTok) {
+                  const rnV = await fetch(`${sosUrl}/internal/informes/next-number`, {
+                    method: 'POST',
+                    headers: { 'x-api-key': sosTok, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenant_id: 'activa', telefono: String(from), tipo: 'vientos' }),
+                    // Mismo criterio que el termico: 5 s. Corre con el cliente esperando.
+                    signal: AbortSignal.timeout(5000),
+                  });
+                  if (rnV.ok) {
+                    const _j = await rnV.json();
+                    const _n = String(_j?.informe_number || '');
+                    // 🔴 [P0 · los TRES revisores, por separado] EL FOLIO SE VERIFICA ANTES DE
+                    // ESTAMPARLO. Sin esto, el orden de deploy podia contaminar la serie
+                    // termica: un servidor VIEJO ignora `tipo:'vientos'`, devuelve un
+                    // CM-FR-006 con ok:true, y el bot lo imprimia en un informe de VIENTOS y
+                    // lo registraba como termico. Documentos de viento consumiendo y
+                    // ensuciando la serie que hoy esta certificando, en silencio y sin un
+                    // solo error visible — el sistema PEOR que antes del cambio.
+                    // Con esta comprobacion el orden de deploy deja de importar: contra un
+                    // servidor viejo el bot cae al folio local, que es exactamente lo que
+                    // hace hoy, y no rompe nada.
+                    if (/^CM-FR-007-/.test(_n)) folioV = _n;
+                    else if (_n) log('warn', 'generarPdf.vientos',
+                      `${from}: el servidor devolvio "${_n}", que NO es de la serie de vientos; se ignora`);
+                  }
+                }
+              } catch { /* sales-os caido: cae al local de abajo, nunca frena el informe */ }
+              if (!folioV) {
+                folioV = `INF-LOCAL-V-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-`
+                  + `${Date.now().toString(36).toUpperCase().slice(-4)}`;
+                log('warn', 'generarPdf.vientos', `${from}: sin correlativo ISO, sale con folio local ${folioV}`);
+              }
               const pdfV = await (deps.generarInformeVientosPdf || generarInformeVientosPdf)(datosV, {
                 nombre: clientName,
                 // [2026-08-30] El mismo receptor que la propuesta: los tres documentos de la
@@ -3207,6 +3257,22 @@ Comuna: ${datos.comuna}`
               try { await (deps.escribirEstado || escribirEstado)(claveV, { at: Date.now() }, 30 * 24 * 3600); }
               catch { /* el candado largo es anti-spam, no entrega */ }
               tokenV = null;   // entregado: la reserva corta muere sola, sin reabrir ventana
+              // 🔴 [P0 · Codex] `sendWaDocument` confirma el POST a Meta, NO la entrega: el
+              // acuse real llega despues por webhook. El termico deja este rastro para que un
+              // `failed` tardio pueda encontrar su candado y soltarlo; vientos no lo dejaba,
+              // asi que un rechazo posterior de Meta dejaba al cliente sin PDF, el candado de
+              // 30 dias puesto y la BD afirmando "entregado".
+              // ⚠️ Esto habilita el DIAGNOSTICO y la liberacion del candado. La maquina de
+              // estados completa (pendiente -> aceptado_meta -> entregado|fallido) que pide la
+              // compuerta es una pieza aparte, y queda anotada como tal.
+              if (envioV?.msgId) {
+                try {
+                  await (deps.escribirEstado || escribirEstado)(`wamsg:${envioV.msgId}`, {
+                    msgId: envioV.msgId, tipo: 'informe_vientos', folio: folioV,
+                    telefono: String(from), clave: claveV,
+                  }, 3 * 24 * 3600);
+                } catch { /* solo se pierde el diagnostico, no la entrega */ }
+              }
               safe('generarPdf.vientos.espejo', () => bridge.pushConversationEvent({
                 channel: 'whatsapp', external_id: from, direction: 'outbound',
                 actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
@@ -3214,6 +3280,49 @@ Comuna: ${datos.comuna}`
                 metadata: { source: 'oliver_gpt_informe_vientos', informe_number: folioV,
                             filename: archivoV, media_id: mediaV },
               }));
+              // 🔴 [2026-09-03] EL REGISTRO ISO DE LA ENTREGA — la mitad que faltaba.
+              // Un correlativo sin fila de registro no es un registro: es un numero impreso.
+              // Va DESPUES de `envioV.ok === true`, igual que el termico: se registra lo que
+              // SE ENTREGO, nunca lo que se intento. Y lleva el sha256 del PDF exacto que
+              // salio — si un dia hay disputa, el archivo del telefono del cliente se
+              // contrasta byte a byte contra este hash.
+              // Best-effort a proposito: si sales-os no responde, el cliente YA tiene su
+              // informe. Perder la fila es malo; frenar la entrega por la fila es peor.
+              safe('generarPdf.vientos.iso', async () => {
+                // Import dinamico, igual que en el termico: `createHash` no esta en el
+                // alcance de este bloque y traerlo arriba tocaria el arranque del modulo.
+                const { createHash } = await import('node:crypto');
+                const sosUrl = (process.env.SALES_OS_URL || '').replace(/\/$/, '');
+                const sosTok = process.env.SALES_OS_OPERATOR_TOKEN || '';
+                if (!sosUrl || !sosTok) return;
+                const rrV = await fetch(`${sosUrl}/internal/informes/registrar`, {
+                  method: 'POST',
+                  headers: { 'x-api-key': sosTok, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    tenant_id: 'activa',
+                    tipo: 'vientos',
+                    informe_number: folioV,
+                    telefono: String(from),
+                    nombre: clientName || '',
+                    comuna: clientComuna || '',
+                    producto: (input.items || []).map((it) => it.producto_label || it.product || '').filter(Boolean).join(' · ') || null,
+                    pdf_bytes: pdfV.length,
+                    pdf_sha256: createHash('sha256').update(pdfV).digest('hex'),
+                    // Amarra el informe a su cotizacion, igual que el termico. Puede venir
+                    // null: el informe sale ANTES del correlativo de la propuesta por diseño.
+                    // [P1 · Codex] `quoteNumber` es el folio de ESTE turno y ya existe en el
+                    // alcance; `state.last_quote` puede ser null en la secuencia
+                    // informe-primero o traer el folio del proyecto ANTERIOR en una sesion
+                    // reusada — amarrando el informe a la cotizacion equivocada.
+                    quote_number: quoteNumber || state?.last_quote?.quote_number || null,
+                    // La fidelidad vive en el JSON; las columnas planas son para el cockpit.
+                    payload: { ventanas: legibles.length, ilegibles,
+                               clima: Boolean(datosV.clima && !datosV.clima._hueco) },
+                  }),
+                  signal: AbortSignal.timeout(6000),
+                });
+                if (!rrV.ok) log('warn', 'generarPdf.vientos.iso', `registro ${folioV}: HTTP ${rrV.status}`);
+              });
               safe('generarPdf.vientos.registro', () => (deps.saveMedia || saveMedia)({
                 phone: from, direction: 'outbound', mediaType: 'document',
                 mimeType: 'application/pdf',
