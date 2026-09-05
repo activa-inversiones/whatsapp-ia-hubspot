@@ -1088,12 +1088,17 @@ async function sendTemplateRecontactoLead(to, nombreCliente = "") {
     nombreCliente ? [{ type: "body", parameters: [{ type: "text", text: nombreCliente }] }] : []
   );
 }
-async function sendTemplateSeguimientoCotizacion(to, nombreCliente = "", numCot = "") {
-  const params = [];
-  if (nombreCliente) params.push({ type: "text", text: nombreCliente });
-  if (numCot) params.push({ type: "text", text: numCot });
+// [#522 2026-09-04] La plantilla APROBADA en Meta tiene UN solo parámetro ({{1}} = nombre). Mandar el
+// número de cotización como 2º parámetro hace que Meta rechace TODO con #132000 ("localizable_params (2)
+// does not match the expected number of params (1)"). Así falló la cadencia de sales-os 40/40 por día
+// desde el 29-ago (lead_events cadence_hsm_failed). El CXM ya lo sabía desde el 13-jul
+// (followupService.js:557) y por eso manda quote_num:'' — acá se corrige en la RAÍZ: `numCot` se acepta
+// por compatibilidad de firma y se IGNORA. Si algún día se aprueba una versión con 2 params, cambiar acá.
+// SIEMPRE 1 param con fallback (mismo patrón que vigencia_precio): nunca 0 params.
+async function sendTemplateSeguimientoCotizacion(to, nombreCliente = "", _numCot = "") {
+  const nombre = (String(nombreCliente || "").trim().split(/\s+/)[0]) || "cliente";
   return _sendMetaTemplate(to, "seguimiento_cotizacion", "es_CL",
-    params.length > 0 ? [{ type: "body", parameters: params }] : []
+    [{ type: "body", parameters: [{ type: "text", text: nombre }] }]
   );
 }
 async function sendTemplateConfirmacionCotizacion(to, nombreCliente = "", numCot = "") {
@@ -5285,6 +5290,19 @@ app.post("/admin/send-template-bulk", express.json({ limit: "1mb" }), async (req
 
     const results = [];
     for (const r of recipients) {
+      // [#522 2026-09-04] CANDADO ÚNICO también en el masivo. Hasta hoy solo /admin/send-template (el
+      // camino del followupService del CXM) pasaba por candadoSeguimiento; el masivo (cadencia de
+      // sales-os) lo puenteaba ⇒ el mismo cliente podía recibir DOS plantillas de seguimiento el mismo
+      // día, una por cada motor. Misma regla, misma clave, mismo estado persistente que el individual.
+      const candadoBulk = await puedeEnviarSeguimiento(
+        { template, phone: r.phone },
+        { leer: leerEstado, onError: (e) => logErr("send-template-bulk.candado.leer", e) },
+      );
+      if (!candadoBulk.permitido) {
+        fireAndForget("logOliverEvent.template_dedupe", logOliverEvent("template_dedupe", { phone: r.phone, template, motivo: candadoBulk.razon, via: "bulk" }));
+        results.push({ phone: r.phone, ok: false, error: `candado_48h:${candadoBulk.razon}` });
+        continue;
+      }
       // Anti rate-limit Meta: 200ms entre envíos
       await sleep(200);
       let single;
@@ -5301,6 +5319,21 @@ app.post("/admin/send-template-bulk", express.json({ limit: "1mb" }), async (req
         default: single = { ok: false, error: "unknown_template" };
       }
       results.push({ phone: r.phone, ok: single.ok, error: single.error });
+      // [#522] Igual que el individual: el candado se marca SOLO si Meta aceptó, y queda rastro en la
+      // conversación para que el dueño y Oliver sepan que ya se le escribió.
+      if (single?.ok) {
+        if (candadoBulk.clave) {
+          await marcarSeguimientoEnviado(candadoBulk.clave,
+            { escribir: escribirEstado, onError: (err) => logErr("send-template-bulk.candado.escribir", err) });
+        }
+        fireAndForget("pushConversationEvent.template_bulk", pushConversationEvent({
+          channel: "whatsapp", external_id: String(r.phone).replace(/\D/g, ""),
+          customer_name: String(r.customer_name || "").trim(),
+          direction: "outbound", actor_type: "ai", actor_name: "Oliver", message_type: "template",
+          body: `[plantilla ${template}${r.quote_num ? ` · ${r.quote_num}` : ""}]`,
+          metadata: { template, quote_num: r.quote_num || null, via: "admin/send-template-bulk" },
+        }));
+      }
     }
 
     const sentOk = results.filter(x => x.ok).length;
