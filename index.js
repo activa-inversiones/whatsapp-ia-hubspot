@@ -1094,9 +1094,10 @@ async function sendTemplateRecontactoLead(to, nombreCliente = "") {
 // desde el 29-ago (lead_events cadence_hsm_failed). El CXM ya lo sabía desde el 13-jul
 // (followupService.js:557) y por eso manda quote_num:'' — acá se corrige en la RAÍZ: `numCot` se acepta
 // por compatibilidad de firma y se IGNORA. Si algún día se aprueba una versión con 2 params, cambiar acá.
-// SIEMPRE 1 param con fallback (mismo patrón que vigencia_precio): nunca 0 params.
+// SIEMPRE 1 param con fallback: nunca 0 params. Se manda el nombre COMPLETO como siempre (no solo el
+// primero: "Constructora Galilea" no puede quedar en "Hola Constructora" — obs. Gemini/Codex, compuerta 04-sep).
 async function sendTemplateSeguimientoCotizacion(to, nombreCliente = "", _numCot = "") {
-  const nombre = (String(nombreCliente || "").trim().split(/\s+/)[0]) || "cliente";
+  const nombre = String(nombreCliente || "").trim() || "cliente";
   return _sendMetaTemplate(to, "seguimiento_cotizacion", "es_CL",
     [{ type: "body", parameters: [{ type: "text", text: nombre }] }]
   );
