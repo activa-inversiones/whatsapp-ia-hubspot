@@ -4587,7 +4587,13 @@ Comuna: ${datos.comuna}`
       bridge.pushConversationEvent({
         channel: 'whatsapp',
         external_id: from,
-        customer_name: newState.name || push_name || '',
+        // [#703 2026-09-10] EL PERFIL MANDA: customer_name ya no recibe la
+        // extraccion del GPT (asi nacian "Ay Le Estare Avisando" y compania).
+        // La extraccion viaja APARTE como nombre_detectado y sales-os la
+        // muestra en gris con "¿se llama asi?" — nunca como nombre confirmado.
+        customer_name: push_name || '',
+        nombre_wsp: push_name || '',
+        nombre_detectado: newState.name || '',
         direction: 'inbound',
         actor_type: 'customer',
         actor_name: 'Cliente',
@@ -4615,7 +4621,9 @@ Comuna: ${datos.comuna}`
         bridge.pushConversationEvent({
           channel: 'whatsapp',
           external_id: from,
-          customer_name: newState.name || push_name || '',
+          customer_name: push_name || '',   // [#703] perfil, no extraccion
+          nombre_wsp: push_name || '',
+          nombre_detectado: newState.name || '',
           direction: 'outbound',
           actor_type: 'ai',
           actor_name: 'Oliver',

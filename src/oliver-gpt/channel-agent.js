@@ -1185,7 +1185,10 @@ Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el li
       bridge.pushConversationEvent({
         channel,
         external_id: senderId,
-        customer_name: newState.name || senderName || '',
+        // [#703 2026-09-10] El perfil IG/FB manda; la extraccion va aparte.
+        customer_name: senderName || '',
+        nombre_wsp: senderName || '',
+        nombre_detectado: newState.name || '',
         direction: 'inbound',
         actor_type: 'customer',
         actor_name: 'Cliente',
@@ -1199,7 +1202,9 @@ Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el li
         bridge.pushConversationEvent({
           channel,
           external_id: senderId,
-          customer_name: newState.name || senderName || '',
+          customer_name: senderName || '',   // [#703] perfil, no extraccion
+          nombre_wsp: senderName || '',
+          nombre_detectado: newState.name || '',
           direction: 'outbound',
           actor_type: 'ai',
           actor_name: 'Oliver',
