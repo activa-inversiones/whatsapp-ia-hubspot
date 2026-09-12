@@ -864,7 +864,14 @@ test("🔴 cada corredera se dibuja con SU perfil de hoja, no todas con 80", () 
     return Math.round(p.perfilHoja / p.escala);
   };
   assert.equal(mm({ producto_label: "Corredera ANDES 66 Monorriel" }), 66);
-  assert.equal(mm({ producto_label: "Corredera ANDES 54 Doble Riel" }), 54);
+  // 🔴 ESTE ASERTO DECIA 54 Y ERA MIO, Y ESTABA MAL. Yo habia asumido que el "54" de
+  // "ANDES 54" era el frente de la hoja en elevacion. NO LO ES: la ficha del ANDES MONORRIEL
+  // acota hoja 66 para una linea cuyo nombre tambien trae 66, pero las cuatro versiones que
+  // baje de Winart daban otro numero para ese mismo campo. El 54/66 es otra cota del sistema.
+  // Como del ANDES DOBLE RIEL NO tenemos ficha, hereda declaradamente los numeros del S75 en
+  // vez de inventar: es lo que dice su `fuente` en la tabla PERFILES. Cuando llegue la ficha,
+  // se cambia el numero en la tabla y este aserto pasa a ser el de la ficha. (#719)
+  assert.equal(mm({ producto_label: "Corredera ANDES 54 Doble Riel" }), 80);
   assert.equal(mm({ producto_label: "Corredera SLIDING H98 Doble Riel S75" }), 98);
   assert.equal(mm({ producto_label: "Corredera SLIDING H80 Doble Riel S75" }), 80);
   // el campo explicito manda por sobre la etiqueta

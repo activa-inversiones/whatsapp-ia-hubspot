@@ -724,6 +724,101 @@ function simboloApertura(tipo, r, manoDerecha = true) {
 
 // Plano completo: todo lo que hay que pintar, ya resuelto en coordenadas.
 // Separado del pintado para poder testearlo sin pdfkit.
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// CATALOGO DE PERFILES POR LINEA — FUENTE UNICA DEL DIBUJO
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 🔴 [2026-09-11] POR QUE EXISTE ESTA TABLA. Reclamo del dueño, textual:
+//   *"no quiero crear motores aparte ni soluciones parche como lo has venido haciendo,
+//    quiero solucion real"*. Y tenia razon: para que el dibujo se pareciera a su plano fui
+//   tapando sintomas uno por uno, y termine con DIECISEIS lugares distintos decidiendo lo
+//   mismo — constantes sueltas, un ternario en el pisado, el parseo del label, una lectura
+//   del webccExport. Cada arreglo tapaba un caso y dejaba los otros afuera.
+//
+// La regla ahora es una sola: CADA LINEA TIENE SUS MEDIDAS, EN UN SOLO LUGAR, CON SU FUENTE.
+// Todo lo que dibuja lee de aca. Si un numero esta mal, se corrige UNA vez.
+//
+// CADA CAMPO LLEVA DE DONDE SALIO. Un numero sin fuente es un supuesto, y los supuestos de
+// este archivo ya costaron una tarde entera: ver ANDES_DOBLE y SLIDING, que siguen con los
+// numeros del S75 porque NO tenemos su ficha. Eso se declara, no se rellena.
+//   marco     = frente del marco en elevacion (mm)
+//   marcoFijo = idem para un paño fijo, cuando la linea usa otro perfil
+//   hoja      = frente del bastidor de la hoja (mm); null = se toma del label o del item
+//   junquillo = frente del junquillo (mm)
+//   pisa      = cuanto monta la hoja SOBRE el marco (mm); 0 si no monta
+const PERFILES = {
+  // ✅ MEDIDO: ficha tecnica HAUSTEK "ANDES MONORRIEL", corte acotado (la mando el dueño).
+  //    Sus tres cotas cierran solas y son la prueba del dibujo:
+  //        marco 50 · hoja 66 · y del conjunto: 34 y 100
+  //        34 + 66 = 100  =>  quedan 34 mm de marco A LA VISTA  =>  la hoja PISA 50-34 = 16
+  //    ⚠️ El junquillo NO viene acotado en esa ficha: se usa el generico de 18,5 (#719).
+  ANDES_MONORRIEL: { marco: 50, marcoFijo: 50, hoja: 66, junquillo: 18.5, pisa: 16,
+    fuente: "ficha HAUSTEK ANDES MONORRIEL (corte acotado) — junquillo no acotado" },
+
+  // ⏳ SIN FICHA. Conserva los numeros del S75 que habia antes. NO se le aplicaron los del
+  //    monorriel: son otro perfil y suponerlo es justo el error que se quiere dejar de cometer.
+  ANDES_DOBLE: { marco: 48, marcoFijo: 48, hoja: null, junquillo: 18.5, pisa: 8,
+    fuente: "SIN FICHA — hereda S75 hasta que el dueño mande la del ANDES DOBLE RIEL (#719)" },
+
+  // ✅ MEDIDO sobre el DXF Ventana_Corredera_80_S75.dxf, seccion A-A (26-ago): jamba del marco
+  //    48,00 de frente · 75,00 de profundidad · hoja 80,10. La hoja sale del label (H80/H98).
+  SLIDING: { marco: 48, marcoFijo: 48, hoja: null, junquillo: 18.5, pisa: 8,
+    fuente: "DXF Ventana_Corredera_80_S75 seccion A-A" },
+
+  // ⏳ SIN FICHA. AMERICANA es monorriel pero es otra linea, con su propio perfil.
+  AMERICANA: { marco: 48, marcoFijo: 48, hoja: null, junquillo: 18.5, pisa: 8,
+    fuente: "SIN FICHA — hereda S75 (#719)" },
+
+  // ✅ MEDIDO en el modelo de Winart version 66979 (campo `ps` y `fm.ew` de cada Frame):
+  //    marco del paño que ABRE 40 · marco del paño FIJO 48 · hoja 58 · junquillo 18,5.
+  //    El fijo lleva marco MAS ANCHO que el que abre, y no lleva bastidor.
+  S60: { marco: 40, marcoFijo: 48, hoja: 58, junquillo: 18.5, pisa: 0,
+    fuente: "webccExport Winart v66979" },
+};
+
+/**
+ * Que linea es esta ventana. Una sola funcion decide, y todo el dibujo la consulta.
+ * El orden importa: lo mas especifico primero.
+ */
+function lineaDe(it, tipo) {
+  const t = `${it?.product || ""} ${it?.producto_label || ""} ${it?.label || ""}`.toUpperCase();
+  if (tipo !== "CORREDERA") return "S60";
+  if (t.includes("AMERICANA")) return "AMERICANA";
+  if (t.includes("SLIDING")) return "SLIDING";
+  // Un monorriel es ANDES salvo que diga otra linea: decision del dueño — "mitad fija mitad
+  // corredera" ES ANDES. Una corredera ANDES que no sea monorriel es la de doble riel.
+  if (esMonorriel(it)) return "ANDES_MONORRIEL";
+  if (t.includes("ANDES")) return "ANDES_DOBLE";
+  return "SLIDING";
+}
+
+/**
+ * Las medidas de perfil que le tocan a ESTA ventana, ya resueltas. Es lo unico que el dibujo
+ * necesita saber sobre perfiles. Prioridad, de mayor a menor:
+ *   1. lo que traiga el propio item (hoja_mm) — el motor sabe que hoja cotizo;
+ *   2. el numero escrito en el label (H80/H98 de SLIDING);
+ *   3. la tabla de arriba.
+ * ⚠️ NO se lee del `webccExport` de Winart: lo intente y sus campos `ps.f`/`ps.sa` NO son el
+ * frente en elevacion. Daban iguales en cuatro versiones y por eso me convencieron — cuatro
+ * mediciones consistentes del campo equivocado dan cuatro veces el numero equivocado.
+ */
+function perfilesDe(it, tipo) {
+  const base = PERFILES[lineaDe(it, tipo)] || PERFILES.S60;
+  const delItem = Number(it?.hoja_mm ?? it?.hojaMm ?? it?.perfil_hoja_mm);
+  const hoja = Number.isFinite(delItem) && delItem > 0 ? delItem
+    : (base.hoja ?? hojaDelLabel(it) ?? (tipo === "CORREDERA" ? 80 : 58));
+  return { ...base, hoja };
+}
+
+/** El frente de la hoja escrito en la etiqueta: "SLIDING H98" -> 98. null si no dice. */
+function hojaDelLabel(it) {
+  const t = `${it?.product || ""} ${it?.producto_label || ""} ${it?.label || ""}`;
+  const mH = t.match(/[^A-Z]H ?(80|98)(?![0-9])/i);
+  if (mH) return Number(mH[1]);
+  const mJ = t.match(/hoja ?(d{2,3}) ?mm/i);
+  if (mJ) return Number(mJ[1]);
+  return null;
+}
 function planoDeVentana(it, caja) {
   const { ancho, alto } = medidas(it?.measures);
   const tipo = tipoDe(it);
@@ -736,110 +831,14 @@ function planoDeVentana(it, caja) {
 
   // Marco y hoja a escala real: 60 mm de marco y 40 mm de hoja son medidas de perfil PVC.
   // Con mínimos en px para que una ventana chica no quede con el marco invisible.
-  // 📏 [2026-08-25] MEDIDAS REALES DEL PERFIL S60, LEIDAS DE WINART — no estimadas.
-  // El dueño pregunto si el dibujo estaba a escala. No lo estaba: se usaba marco 60 / hoja 40,
-  // o sea el marco MAS GRUESO que la hoja, cuando en la ventana real es al reves. Los valores
-  // salen del modelo de la version 66979 (campo `ps` y `fm.ew` de cada Frame):
-  //   marco del paño que ABRE .... 40 mm      (ps.f = 40, ew [40,40,40,40])
-  //   marco del paño FIJO ........ 48 mm      (ps.f = 48 — el fijo lleva marco mas ancho)
-  //   hoja / bastidor ............ 58 mm      (ps.sa = 58, ew [58,58,58,58])
-  //   junquillo (Bead) ........... 18,5 mm    (ps.b = 18.5, en los dos paños)
-  // Winart tambien confirma lo que ya habiamos deducido del plano: en el paño FIJO el vidrio
-  // cuelga del marco con su Bead y NO hay sash. La estructura del dibujo era correcta; lo que
-  // estaba mal eran los gruesos.
-  const MARCO_ABRE_MM = 40, MARCO_FIJO_MM = 48, HOJA_MM = 58, JUNQUILLO_MM = 18.5;
-  // 🔴 [2026-08-25, dato del dueño] LA HOJA DE UNA CORREDERA NO MIDE LO MISMO QUE LA DE UNA
-  // S60. Textual: *"la hoja tiene distintas alturas, por ejemplo 80 mm, 98 mm, depende del
-  // modelo"*. Son las mismas opciones que ya cotiza el motor (H80 economica / H98 reforzada,
-  // y en Andes H54 / H66): el dibujo tiene que mostrar la que se le cotizo, no una fija.
-  // Si el item no dice cual, se usa la H80 — que es la que el motor toma por defecto en las
-  // hojas de menos de 900 mm, o sea la corredera tipica.
-  const HOJA_CORREDERA_DEFAULT_MM = 80;
-  // 🔴 [2026-08-26, correccion del dueño] LOS 70/75 SON PROFUNDIDAD, NO ALTO DE FRENTE.
-  // Textual: *"ese setenta o setenta y cinco que es el marco, que es la PROFUNDIDAD, o sea
-  // desde el exterior hacia el interior... si es de setenta tiene una altura mas alta de
-  // frente, y si es de setenta y cinco tiene una altura mas baja"*. Yo estaba por dibujar
-  // un marco de 70 mm de frente, que habria salido gordisimo.
-  // El alto de frente sale de la MISMA cota del catalogo de WinHouse, que trae los dos
-  // numeros juntos: "Marco doble riel corredera: 70 · 54" → 70 de fondo, 54 DE FRENTE.
-  // (Cotas del proyectista, leidas del DWG original — ver activa-thermal
-  //  data/cotas_catalogo_sliding.json.)
-  // ✅ MEDIDO EN EL DWG, no estimado (2026-08-26). El dueño pregunto derecho: *"lo calculaste
-  // con el dwg o solo lo hiciste al ojo sin calcular nada"*. Era al ojo. Se midio.
-  // Sobre Ventana_Corredera_80_S75.dxf, seccion A-A, separando la geometria del MARCO de los
-  // bloques 'Hoja 80' y acotando cada uno:
-  //     jamba del marco ... 48,00 mm de frente · 75,00 mm de profundidad
-  //     hoja ............... 80,10 mm
-  // Los 75,00 confirman el "S75" y los 80,10 la H80: el dibujo devuelve sus propios nominales
-  // clavados, que es la mejor señal de que la medida esta bien tomada.
-  // 📏 [2026-09-11] FRENTES DE PERFIL DE LA CORREDERA — DE LA FICHA DEL FABRICANTE.
-  // El dueño lo pidio con todas las letras: *"puedes descargar directamente desde Winart este
-  // motor para no estar adivinando, ya es muy molesto tantas veces que te equivocas"*. Y antes:
-  // *"el perfil del marco lo dejas mas alto que el perfil de la hoja, se ve como si tuviera
-  // esteroides"*. Tenia razon en las dos.
-  //
-  // 🔴 MI ERROR, PARA QUE NO SE REPITA: primero saque estos numeros del `webccExport` de Winart,
-  // del campo `ps` (ps.f=36, ps.sa=52). Daban consistentes en CUATRO versiones ANDES, asi que
-  // los di por buenos — pero yo habia SUPUESTO que ps.f/ps.sa eran el frente en elevacion, y
-  // no lo son. La ficha tecnica de HAUSTEK del ANDES MONORRIEL, que mando el dueño, acota el
-  // corte: hoja corredera 66 mm, marco monorriel 50 mm. Que un dato sea consistente NO quiere
-  // decir que sea el dato que uno cree: cuatro mediciones del campo equivocado dan cuatro veces
-  // el numero equivocado.
-  //   ANDES MONORRIEL (ficha HAUSTEK, corte acotado):  marco 50 · hoja 66
-  // ⏳ El junquillo de ANDES no viene acotado en esa ficha: se deja el 18,5 de siempre (#719).
-  // ⏳ El ANDES DOBLE RIEL tiene su propia ficha y NO la tenemos: conserva lo que tenia (#719).
-  const PS_ANDES_MONO = { marco: 50, hoja: 66, junquillo: JUNQUILLO_MM };
-  // SLIDING S75: sus 48 / 80 / 18,5 salen del DXF Ventana_Corredera_80_S75 (medido el 26-ago).
-  // ⏳ NO hay export de Winart de una SLIDING todavia; cuando lo haya, se verifican igual que estos.
-  const PS_SLIDING = { marco: 48, junquillo: 18.5 };
-  // Un monorriel es ANDES salvo que diga otra linea: la decision del dueño de hoy fue que
-  // "mitad fija mitad corredera" ES ANDES. AMERICANA tambien es monorriel pero es otra linea,
-  // con sus propios perfiles, asi que se excluye hasta tener SU ficha.
-  const _txtLinea = `${it?.product || ""} ${it?.producto_label || ""} ${it?.label || ""}`.toUpperCase();
-  const esAndesMono = esMonorriel(it) && !_txtLinea.includes("AMERICANA") && !_txtLinea.includes("SLIDING");
-  // Si el item TRAE el dibujo de Winart, mandan sus numeros por sobre cualquier constante.
-  const psDeWinart = (() => {
-    try {
-      let w = it?.webccExport; if (!w) return null;
-      let j = JSON.parse(w); if (typeof j === "string") j = JSON.parse(j);
-      const ps = (j?.sm || [])[0]?.ps; if (!ps) return null;
-      const n = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : undefined);
-      return { marco: n(ps.f), hoja: n(ps.sa), junquillo: n(ps.b) };
-    } catch { return null; }
-  })();
-  const MARCO_CORREDERA_FRENTE_MM = psDeWinart?.marco ?? (esAndesMono ? PS_ANDES_MONO.marco : PS_SLIDING.marco);
-  // 🔴 [2026-09-11, correccion del dueño] EL FRENTE DE LA HOJA NO ES SIEMPRE EL MISMO, Y EL
-  // NUMERO VIENE ESCRITO EN LA ETIQUETA. Textual: *"el marco tiene por ejemplo una altura y la
-  // hoja otra y las pusiste a la misma altura, me refiero al PERFIL"*.
-  // El item casi nunca trae `hoja_mm`, asi que TODA corredera caia al default de 80 mm: una
-  // "Corredera ANDES 66 Monorriel" se dibujaba con hoja de 80 y una "SLIDING H98" tambien.
-  // El dato estaba a la vista en el propio label del motor —"ANDES 66", "H98"— y el dibujo no lo
-  // leia. Ahora se lee: primero el campo, y si no viene, la etiqueta.
-  //   "Corredera SLIDING H98 Doble Riel S75" -> 98    "Corredera ANDES 54 Doble Riel" -> 54
-  const hojaDelLabel = () => {
-    const t = `${it?.product || ""} ${it?.producto_label || ""} ${it?.label || ""}`;
-    const mH = t.match(/\bH\s?(80|98)\b/i);                    // SLIDING: H80 / H98
-    if (mH) return Number(mH[1]);
-    const mA = t.match(/\bANDES\s+(54|66)\b/i);                // ANDES: 54 / 66
-    if (mA) return Number(mA[1]);
-    const mJ = t.match(/\bhoja\s+(\d{2,3})\s?mm\b/i);          // "hoja 66 mm"
-    if (mJ) return Number(mJ[1]);
-    return NaN;
-  };
-  const hojaDelItem = Number(psDeWinart?.hoja ?? it?.hoja_mm ?? it?.hojaMm ?? it?.perfil_hoja_mm
-    ?? (esAndesMono ? PS_ANDES_MONO.hoja : hojaDelLabel()));
-  const anchoHojaMm = tipo === "CORREDERA"
-    ? (Number.isFinite(hojaDelItem) && hojaDelItem > 0 ? hojaDelItem : HOJA_CORREDERA_DEFAULT_MM)
-    : (Number.isFinite(hojaDelItem) && hojaDelItem > 0 ? hojaDelItem : HOJA_MM);
-  // [2026-09-11] Mira tambien el tipo del PAÑO: en una compuesta `tipo` es "COMPUESTA", asi
-  // que un paño corredera se dibujaba con el marco de una hoja que abate y no con el suyo.
-  const marcoDe = (t) => Math.max(2, (
-    (tipo === "CORREDERA" || t === "CORREDERA") ? MARCO_CORREDERA_FRENTE_MM
-      : t === "FIJA" ? MARCO_FIJO_MM : MARCO_ABRE_MM) * escala);
+  // 📏 Las medidas del perfil salen de la TABLA UNICA `PERFILES` (arriba del archivo),
+  // resueltas por linea. Antes esto eran dieciseis decisiones desparramadas.
+  const P = perfilesDe(it, tipo);
+  const anchoHojaMm = P.hoja;
+  const marcoDe = (t) => Math.max(2, (t === "FIJA" ? P.marcoFijo : P.marco) * escala);
   const marco = marcoDe(tipo);
   const perfilHoja = Math.max(1.8, anchoHojaMm * escala);
-  const junquilloMm = psDeWinart?.junquillo ?? (tipo === "CORREDERA" && esAndesMono ? PS_ANDES_MONO.junquillo : JUNQUILLO_MM);
-  const junquillo = Math.max(0.9, junquilloMm * escala);
+  const junquillo = Math.max(0.9, P.junquillo * escala);
 
   const intX = x + marco, intY = y + marco;
   const intW = Math.max(1, w - 2 * marco), intH = Math.max(1, h - 2 * marco);
@@ -956,7 +955,7 @@ function planoDeVentana(it, caja) {
   // Con los 8 mm que usabamos (medidos sobre el DXF de una SLIDING S75, otra linea) quedaban 42
   // de marco visible en vez de 34, y por eso el marco se veia mas gordo de lo que es.
   // ⏳ Para SLIDING se conservan los 8 mm medidos en SU dxf: cada linea con su dato (#719).
-  const PISA_MARCO_MM = esAndesMono ? 16 : 8;
+  const PISA_MARCO_MM = P.pisa;
   // En una corredera las hojas arrancan ANTES del borde interior del marco, porque lo pisan.
   const pisa = corre ? Math.min(PISA_MARCO_MM * escala, marco * 0.8) : 0;
   const hojas = repartirHojas(
