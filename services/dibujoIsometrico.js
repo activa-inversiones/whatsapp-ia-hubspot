@@ -265,7 +265,13 @@ export function dibujarVentanaIso(doc, caja, it) {
 
   for (const hoja of p.hojas) {
     if (hoja.sinBastidor) {
-      doc.rect(hoja.x, hoja.y, hoja.w, hoja.h).lineWidth(0.4).stroke(p.color.e);
+      // 🔴 [2026-09-11, correccion del dueño] EN LA PARTE FIJA NO HAY HOJA. Textual:
+      // *"EN LA PARTE FIJA NO HAY HOJA ES SOLO EL MARCO CON TERMOPANEL"*.
+      // Aca se trazaba igual el rectangulo de la hoja y el paño fijo quedaba con UNA LINEA DE
+      // MAS, que lo hacia parecer una segunda hoja que tambien abre. El plano 2D ya tenia escrito
+      // que ese contorno NO existe ("sinBastidor le dice al pintado que NO trace el rectangulo de
+      // la hoja"), pero este pintor —el de VOLUMEN, el que sale en la propuesta— nunca lo cumplio.
+      // El fijo es marco + junquillo + termopanel, nada mas. El junquillo se dibuja mas abajo.
     } else {
       // La hoja SOBRESALE del marco hacia el que mira: por eso lleva su propia sombra.
       //
@@ -343,7 +349,15 @@ export function dibujarVentanaIso(doc, caja, it) {
       const saliente = Math.max(1, fuga.dx * 0.5);
       const hacia = { dx: -saliente, dy: saliente };
       const f = manillaFormas(q);
-      if (f) {
+      if (f && f.corredera) {
+        // 🔴 [2026-09-11] La manilla de CORREDERA es de EMBUTIR: va HUNDIDA en el montante, no
+        // en voladizo como la palanca de una abatible. Por eso no lleva ni cuello ni realce —
+        // solo su sombra propia adentro del hueco. Dibujarla saliente era parte de lo que el
+        // dueño vio como falso: *"LA MANILLA IGUAL PORQUE SE VE FALSA LA QUE ESTAMOS ENTREGANDO"*.
+        const b = f.barra;
+        doc.roundedRect(b.x, b.y, b.w, b.h, b.r).lineWidth(0).fill(tinte(p.color.f, 0.62));
+        pintarManilla(doc, f, 0, 0);
+      } else if (f) {
         const sombra = tinte(p.color.f, 0.52);
         const R = (r, ddx, ddy) => doc.roundedRect(r.x + ddx, r.y + ddy, r.w, r.h, Math.min(r.r, r.w / 2, r.h / 2));
         // 1. La sombra que la palanca tira sobre la hoja (corrida al reves del realce).

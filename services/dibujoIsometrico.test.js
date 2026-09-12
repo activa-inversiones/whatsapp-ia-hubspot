@@ -69,7 +69,6 @@ test('🔒 los cuatro puntos de cada cara son distintos (nada colapsa a una lín
 // volumen se pintaría encima de la ventana de al lado o del texto — y eso, en un PDF que va
 // a un cliente, se ve como un error de imprenta.
 
-import { dibujarVentanaIso } from './dibujoIsometrico.js';
 
 /**
  * Un pdfkit de mentira que anota por dónde pasó el lápiz.
@@ -286,4 +285,57 @@ test("🔴 bisel: las caras superior y derecha terminan en el MISMO vertice (sin
   }
   // Y el escalon ES la linea a media profundidad (misma matematica, no una copia divergente).
   assert.deepEqual(c.escalones, c.linea(0.55));
+});
+
+// ── EL PAÑO FIJO NO TIENE HOJA (2026-09-11, correccion del dueño) ───────────────────────────
+// Textual: «EN LA PARTE FIJA NO HAY HOJA ES SOLO EL MARCO CON TERMOPANEL».
+// El plano 2D ya lo tenia escrito desde agosto — `sinBastidor` existe justamente para eso y su
+// comentario dice "en el plano real ese contorno no existe, y dibujarlo hace parecer que el fijo
+// tambien abre". Pero ESTE pintor, el de volumen, el que sale en la propuesta que ve el cliente,
+// trazaba igual el rectangulo de la hoja sobre el paño fijo.
+//
+// 🔴 POR QUE EL TEST ES ASI: el defecto no estaba en la geometria (el plano decia bien
+// `sinBastidor: true`) sino en lo que el pintor DIBUJABA con esa geometria. Un test sobre
+// `planoDeVentana` no lo habria visto nunca — de hecho no lo vio. Por eso aca se graba lo que el
+// pintor traza y se comprueba que sobre el paño fijo no haya un contorno de hoja.
+import { dibujarVentanaIso } from './dibujoIsometrico.js';
+
+/** Doc falso que anota cada rectangulo trazado (x,y,w,h) y si fue con contorno. */
+function docQueAnota() {
+  const rects = [];
+  let pend = [];
+  const d = {
+    save: () => d, restore: () => d, lineWidth: () => d, strokeColor: () => d, fillColor: () => d,
+    fillOpacity: () => d, dash: () => d, undash: () => d, font: () => d, fontSize: () => d,
+    clip: () => { pend = []; return d; },
+    moveTo: () => d, lineTo: () => d, polygon: () => d, text: () => d,
+    rect: (x, y, w, h) => { pend.push({ x, y, w, h }); return d; },
+    roundedRect: (x, y, w, h) => { pend.push({ x, y, w, h }); return d; },
+    fill: () => { pend = []; return d; },
+    stroke: () => { rects.push(...pend); pend = []; return d; },
+    fillAndStroke: () => { rects.push(...pend); pend = []; return d; },
+    page: { width: 300, height: 250 },
+  };
+  d._rects = rects;
+  return d;
+}
+
+test('🔴 el paño FIJO de un monorriel no lleva contorno de hoja: es marco + termopanel', () => {
+  const doc = docQueAnota();
+  const caja = { x: 60, y: 6, w: 156, h: 196 };
+  dibujarVentanaIso(doc, caja, {
+    producto_label: 'Ventana Fija+Corredera', measures: '1500x2100',
+    color: 'blanco', glass_label: 'Termopanel 5+12+5',
+  });
+  // La mitad DERECHA del dibujo es el paño fijo. Ahi no puede haber un rectangulo del tamaño de
+  // una hoja: solo el marco (que es mas grande y arranca a la izquierda), el junquillo y el vidrio.
+  // Todo lo que arranca pasado el 35% del ancho y es casi tan alto como la ventana pertenece al
+  // paño DERECHO (el fijo). El contorno de hoja fantasma arrancaba apenas 3 px antes del medio,
+  // asi que un umbral pegado al centro lo dejaba pasar — la primera version de este test lo
+  // dejo, y por eso estaba en verde con el defecto puesto. Se midio y se corrigio el umbral.
+  const delFijo = doc._rects.filter((r) => r.x > caja.x + caja.w * 0.35 && r.h > caja.h * 0.75);
+  // El fijo es marco + junquillo + termopanel: del marco no sale un rectangulo propio acá, asi
+  // que quedan DOS (junquillo y vidrio). Un tercero es el contorno de hoja que no debe existir.
+  assert.equal(delFijo.length, 2,
+    `el paño fijo traza ${delFijo.length} rectangulos altos; con el contorno de hoja fantasma eran 3`);
 });

@@ -734,7 +734,10 @@ test("🔴 el monorriel se dibuja como UNA ventana: 1 hoja que corre + 1 paño f
   assert.equal(tipoDe(it), "CORREDERA", "un fija+corredera es una corredera, no una compuesta");
   const p = planoDeVentana(it, CAJA);
   assert.equal(p.hojas.length, 2, "el monorriel se ve con dos paños");
-  const [movil, fijo] = p.hojas;
+  // ⚠️ Los paños vienen ORDENADOS PARA PINTAR (el de adelante ultimo), no por posicion. Por eso
+  // se buscan por ROL y no por indice: si no, el test se rompe solo con cambiar el orden de pintado.
+  const movil = p.hojas.find((h) => !h.sinBastidor);
+  const fijo = p.hojas.find((h) => h.sinBastidor);
   assert.notEqual(movil.flecha, 0, "el paño que corre lleva flecha");
   assert.equal(movil.sinBastidor, false, "el que corre SI tiene hoja (bastidor)");
   assert.equal(fijo.flecha, 0, "el paño fijo no corre");
@@ -756,7 +759,9 @@ test("🔴 la flecha apunta HACIA el paño fijo, como en el plano de Winart", ()
   // En el plano de Winart (v69117 y v69118) la hoja movil es la IZQUIERDA (A2), la manilla va
   // en su canto izquierdo y la flecha apunta a la DERECHA, hacia el fijo (A1).
   const p = planoDeVentana({ producto_label: "Ventana Fija+Corredera", measures: "1500x2100" }, CAJA);
-  assert.equal(p.hojas[0].flecha, 1, "la hoja izquierda corre hacia la derecha");
+  const movil = p.hojas.find((h) => h.flecha !== 0);
+  assert.equal(movil.idx, 0, "la hoja que corre es la IZQUIERDA");
+  assert.equal(movil.flecha, 1, "y corre hacia la derecha, hacia el fijo");
 });
 
 test("las compuestas que SI son proyectante siguen dibujandose igual", () => {
@@ -791,5 +796,87 @@ test("🔴 la guardia NO puede tapar un monorriel que menciona otra apertura de 
   assert.equal(tipoDe(it), "CORREDERA");
   const p = planoDeVentana(it, CAJA);
   assert.equal(p.hojas.filter((h) => h.flecha !== 0).length, 1, "un monorriel tiene UNA hoja que corre");
-  assert.equal(p.hojas[1].sinBastidor, true, "y la otra es el paño fijo");
+  assert.equal(p.hojas.filter((h) => h.sinBastidor).length, 1, "y la otra es el paño fijo");
+});
+
+// ── LA MANILLA Y EL ORDEN DE LOS PAÑOS (2026-09-11) ──────────────────────────────────────
+// 🔴 Reclamo del dueño comparando nuestro dibujo con el plano de Winart, textual:
+//   «LA IMAGEN DEBE PARECER MONORRIEL Y LA MANILLA IGUAL PORQUE SE VE FALSA LA QUE ESTAMOS
+//    ENTREGANDO»
+// Eran dos cosas distintas:
+//  1. A la corredera se le dibujaba la manilla de ROSETA + PALANCA, que es la de una ventana que
+//     ABATE. Una corredera lleva manilla de EMBUTIR (la FORNAX del listado de materiales): una
+//     barra angosta hundida en el montante. Por eso se veia falsa.
+//  2. El paño FIJO se dibujaba MAS SALIENTE que la hoja movil (heredaba la regla de la corredera
+//     de dos hojas: par atras / impar adelante), y su canto quedaba como un POSTE grueso en medio
+//     de la ventana que en el plano de Winart no existe. En un monorriel hay UNA via: la hoja que
+//     corre va adelante y el fijo va al ras, dentro del marco.
+
+test("🔴 la corredera lleva manilla de EMBUTIR, no la cremona de palanca", () => {
+  const p = planoDeVentana({ producto_label: "Ventana Fija+Corredera", measures: "1500x2100" }, CAJA);
+  const movil = p.hojas.find((h) => !h.sinBastidor);
+  assert.ok(movil.manilla, "la hoja que corre tiene manilla");
+  assert.equal(movil.manilla.corredera, true, "marcada como manilla de corredera");
+  const f = manillaFormas(movil.manilla);
+  assert.equal(f.corredera, true);
+  assert.ok(f.barra, "es una barra embutida");
+  assert.equal(f.roseta, undefined, "NO lleva roseta");
+  assert.equal(f.palanca, undefined, "NO lleva palanca");
+  // y es angosta: mas alta que ancha, como la del plano de Winart
+  assert.ok(f.barra.h > f.barra.w * 3, `la barra tiene que ser angosta (${f.barra.w}x${f.barra.h})`);
+});
+
+test("🔴 una ventana que ABATE conserva su cremona de roseta y palanca", () => {
+  // La red que impide que el cambio de la corredera se lleve puesta la manilla de las demas.
+  // Caja del TAMAÑO REAL de la propuesta (156x196 px por fila): con la CAJA mini de arriba la
+  // cremona no alcanza el tamaño minimo para dibujar el detalle y manillaFormas devuelve null
+  // — limite viejo del dibujante, no de este cambio.
+  const p = planoDeVentana({ producto_label: "Ventana abatible S60", measures: "800x1200" }, { x: 0, y: 0, w: 156, h: 196 });
+  const f = manillaFormas(p.hojas.find((h) => h.manilla).manilla);
+  assert.ok(f.roseta && f.palanca, "la abatible sigue con roseta + palanca");
+  assert.ok(!f.corredera);
+});
+
+test("🔴 en el monorriel la hoja que corre va ADELANTE y el fijo no esta en riel", () => {
+  const p = planoDeVentana({ producto_label: "Ventana Fija+Corredera", measures: "1500x2100" }, CAJA);
+  assert.equal(p.hojas.find((h) => !h.sinBastidor).riel, 1, "la hoja movil va adelante");
+  assert.equal(p.hojas.find((h) => h.sinBastidor).riel, null, "el paño fijo no corre por ningun riel");
+  // y se pinta ADELANTE: el orden de la lista es orden de pintado, el ultimo queda arriba
+  assert.equal(p.hojas[p.hojas.length - 1].sinBastidor, false, "la hoja movil se pinta encima del fijo");
+});
+
+test("la corredera de DOS hojas moviles conserva sus dos rieles", () => {
+  // Otra red: el cambio es solo del monorriel. En una corredera de 2 hojas las dos corren, y
+  // cada una va por su riel — eso lo corrigio el dueño en agosto y no se toca.
+  const p = planoDeVentana({ producto_label: "Corredera SLIDING H98 Doble Riel S75", measures: "2000x1500" }, CAJA);
+  assert.deepEqual(p.hojas.map((h) => h.riel), [0, 1]);
+});
+
+test("🔴 cada corredera se dibuja con SU perfil de hoja, no todas con 80", () => {
+  // 🔴 Correccion del dueño mirando el dibujo al lado del plano de Winart, textual:
+  //   «EL MARCO TIENE POR EJEMPLO UNA ALTURA Y LA HOJA OTRA Y LAS PUSISTE A LA MISMA ALTURA
+  //    ME REFIERO AL PERFIL»
+  // El item casi nunca trae `hoja_mm`, asi que TODA corredera caia al default de 80 mm: una
+  // "ANDES 66" se dibujaba con hoja de 80 y una "SLIDING H98" tambien. El numero estaba escrito
+  // en el propio label del motor y el dibujo no lo leia.
+  const mm = (it) => {
+    const p = planoDeVentana({ measures: "2000x1500", ...it }, { x: 0, y: 0, w: 156, h: 196 });
+    return Math.round(p.perfilHoja / p.escala);
+  };
+  assert.equal(mm({ producto_label: "Corredera ANDES 66 Monorriel" }), 66);
+  assert.equal(mm({ producto_label: "Corredera ANDES 54 Doble Riel" }), 54);
+  assert.equal(mm({ producto_label: "Corredera SLIDING H98 Doble Riel S75" }), 98);
+  assert.equal(mm({ producto_label: "Corredera SLIDING H80 Doble Riel S75" }), 80);
+  // el campo explicito manda por sobre la etiqueta
+  assert.equal(mm({ producto_label: "Corredera ANDES 66 Monorriel", hoja_mm: 54 }), 54);
+});
+
+test("🔴 el marco y la hoja NO miden lo mismo", () => {
+  // Es el punto del reclamo: son dos perfiles distintos y tienen que verse distintos.
+  for (const lab of ["Corredera ANDES 66 Monorriel", "Corredera SLIDING H98 Doble Riel S75",
+                     "Ventana abatible S60"]) {
+    const p = planoDeVentana({ producto_label: lab, measures: "2000x1500" }, { x: 0, y: 0, w: 156, h: 196 });
+    const marco = Math.round(p.marco / p.escala), hoja = Math.round(p.perfilHoja / p.escala);
+    assert.notEqual(marco, hoja, `${lab}: marco ${marco} y hoja ${hoja} no pueden ser iguales`);
+  }
 });

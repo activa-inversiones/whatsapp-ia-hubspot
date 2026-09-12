@@ -286,6 +286,9 @@ function etiquetasDePanos(tipos) {
 // que se vea como lo que es — algo que se agarra con la mano. No alimenta nada que se
 // fabrique ni se cobre. Si algun dia hace falta la medida exacta, se saca del modelo.
 const MANILLA_LARGO_MM = 120;
+// Manilla de EMBUTIR de corredera (FORNAX): barra angosta en el montante. Medida del plano Winart.
+const MANILLA_CORR_LARGO_MM = 160;
+const MANILLA_CORR_ANCHO_MM = 14;
 const MANILLA_ANCHO_MM = 26;
 
 /**
@@ -298,6 +301,14 @@ const MANILLA_ANCHO_MM = 26;
  */
 export function manillaFormas(q) {
   if (!q) return null;
+  // La de CORREDERA es una barra embutida: un solo cuerpo, sin roseta ni palanca.
+  if (q.corredera) {
+    // El piso de ANCHO es bajo a proposito: la manilla de embutir ES angosta (14 mm contra los
+    // 26 de la cremona de abatir). Con el piso de la otra se descartaba sola en las ventanas
+    // chicas y la hoja quedaba sin manilla.
+    if (q.h < 3 || q.w < 0.5) return null;
+    return { corredera: true, barra: { x: q.x, y: q.y, w: q.w, h: q.h, r: Math.min(q.w / 2, q.h / 2) } };
+  }
   const horiz = q.w >= q.h;
   const g = horiz ? q.h : q.w;              // grosor visible
   if (g < 2.4 || Math.max(q.w, q.h) < 7) return null;
@@ -329,6 +340,14 @@ export function manillaFormas(q) {
  */
 export function pintarManilla(doc, f, dx = 0, dy = 0) {
   const R = (r) => doc.roundedRect(r.x + dx, r.y + dy, r.w, r.h, Math.min(r.r, r.w / 2, r.h / 2));
+  if (f.corredera) {
+    // Barra embutida: cuerpo + una hebra de luz al costado para que se lea el relieve.
+    const b = f.barra;
+    R(b).lineWidth(0.3).fillAndStroke("#E3E7EB", "#4A5560");
+    doc.lineWidth(Math.max(0.22, b.w * 0.2)).strokeColor("#FFFFFF")
+      .moveTo(b.x + dx + b.w * 0.3, b.y + dy + b.r).lineTo(b.x + dx + b.w * 0.3, b.y + dy + b.h - b.r).stroke();
+    return;
+  }
   R(f.roseta).lineWidth(0.32).fillAndStroke("#D8DCE1", "#4A5560");
   R(f.palanca).lineWidth(0.32).fillAndStroke("#F1F3F5", "#4A5560");
   R(f.cuello).lineWidth(0.28).fillAndStroke("#B9BFC6", "#4A5560");
@@ -388,12 +407,24 @@ function manillaDe(hoja, escala) {
   const enDerecha = !hoja.manoDerecha;
   const banda = enDerecha ? (hoja.x + hoja.w) - (v.x + v.w) : v.x - hoja.x;
   if (banda <= 0) return null;
-  const largo = Math.max(3, Math.min(MANILLA_LARGO_MM * esc, v.h * 0.7));
-  const grueso = Math.max(1.2, Math.min(MANILLA_ANCHO_MM * esc, banda * 0.75));
+  // 🔴 [2026-09-11, correccion del dueño] LA CORREDERA NO LLEVA CREMONA DE PALANCA.
+  // Textual: *"LA MANILLA IGUAL PORQUE SE VE FALSA LA QUE ESTAMOS ENTREGANDO"*. Y tenia razon:
+  // se dibujaba la manilla de ROSETA + PALANCA, que es la de una ventana que ABATE. Una
+  // corredera lleva una manilla de EMBUTIR: una barra vertical delgada, embutida en el montante
+  // de la hoja. Asi la dibuja Winart en su propio plano (v69118) y asi es la FORNAX que aparece
+  // en el listado de materiales (HI-MLA-FNX). Es mas corta y mucho mas angosta que la de abatir.
+  const esCorredera = hoja.tipo === "CORREDERA";
+  const largo = esCorredera
+    ? Math.max(3, Math.min(MANILLA_CORR_LARGO_MM * esc, v.h * 0.30))
+    : Math.max(3, Math.min(MANILLA_LARGO_MM * esc, v.h * 0.7));
+  const grueso = esCorredera
+    ? Math.max(0.9, Math.min(MANILLA_CORR_ANCHO_MM * esc, banda * 0.55))
+    : Math.max(1.2, Math.min(MANILLA_ANCHO_MM * esc, banda * 0.75));
   return {
     x: enDerecha ? (v.x + v.w) + (banda - grueso) / 2 : hoja.x + (banda - grueso) / 2,
     y: v.y + v.h / 2 - largo / 2,
     w: grueso, h: largo,
+    corredera: esCorredera,
   };
 }
 
@@ -615,7 +646,7 @@ function encajar(ancho, alto, cajaW, cajaH) {
  * @param {boolean} corre  true en una corredera: aplica traslape y asigna riel
  * @param {number}  traslape  ancho del traslape en px (el perfil de encuentro)
  */
-function repartirHojas(x, y, w, h, n, corre = false, traslape = 0) {
+function repartirHojas(x, y, w, h, n, corre = false, traslape = 0, mono = false) {
   const paso = w / n;
   return Array.from({ length: n }, (_, i) => {
     // Cada hoja se estira hacia sus vecinas por medio traslape: la primera y la ultima no se
@@ -634,7 +665,19 @@ function repartirHojas(x, y, w, h, n, corre = false, traslape = 0) {
       // que queda a la vista. riel 1 = INTERIOR = adelante; riel 0 = exterior = atras.
       // Es una convencion declarada, no una medicion: si un modelo invierte los rieles, se
       // cambia aca y en un solo lugar.
-      riel: corre ? (i % 2 === 0 ? 0 : 1) : null,
+      // 🔴 [2026-09-11] EN UN MONORRIEL HAY UNA SOLA VIA. La hoja que corre va ADELANTE y el
+      // paño FIJO no esta sobre ningun riel: va al ras, dentro del marco. Con la regla de la
+      // corredera de dos hojas (par atras / impar adelante) pasaba al reves — el paño FIJO se
+      // dibujaba mas saliente que la hoja movil, y su canto quedaba como un POSTE grueso en
+      // medio de la ventana que no existe en el plano de Winart. Reclamo del dueño mirando el
+      // dibujo al lado del de Winart: *"LA IMAGEN DEBE PARECER MONORRIEL"*.
+      // ⚠️ SUPUESTO DECLARADO: en el monorriel la hoja que CORRE es la IZQUIERDA (i === 0).
+      // Es lo que muestran los dos planos de Winart que tenemos (v69117 y v69118: A2 movil a la
+      // izquierda, A1 fijo a la derecha) y lo mismo que ya asumia la flecha desde antes. NO es
+      // una medicion de que no exista el caso espejo: hoy nada en el pedido dice de que lado
+      // corre, asi que no hay con que decidirlo. Si algun dia llega esa data, se cambia ACA y en
+      // la flecha, que son los dos unicos lugares que lo asumen. (Lo levanto Gemini.)
+      riel: !corre ? null : (mono ? (i === 0 ? 1 : null) : (i % 2 === 0 ? 0 : 1)),
     };
   });
 }
@@ -730,7 +773,25 @@ function planoDeVentana(it, caja) {
   // Los 75,00 confirman el "S75" y los 80,10 la H80: el dibujo devuelve sus propios nominales
   // clavados, que es la mejor señal de que la medida esta bien tomada.
   const MARCO_CORREDERA_FRENTE_MM = 48;
-  const hojaDelItem = Number(it?.hoja_mm ?? it?.hojaMm ?? it?.perfil_hoja_mm);
+  // 🔴 [2026-09-11, correccion del dueño] EL FRENTE DE LA HOJA NO ES SIEMPRE EL MISMO, Y EL
+  // NUMERO VIENE ESCRITO EN LA ETIQUETA. Textual: *"el marco tiene por ejemplo una altura y la
+  // hoja otra y las pusiste a la misma altura, me refiero al PERFIL"*.
+  // El item casi nunca trae `hoja_mm`, asi que TODA corredera caia al default de 80 mm: una
+  // "Corredera ANDES 66 Monorriel" se dibujaba con hoja de 80 y una "SLIDING H98" tambien.
+  // El dato estaba a la vista en el propio label del motor —"ANDES 66", "H98"— y el dibujo no lo
+  // leia. Ahora se lee: primero el campo, y si no viene, la etiqueta.
+  //   "Corredera SLIDING H98 Doble Riel S75" -> 98    "Corredera ANDES 54 Doble Riel" -> 54
+  const hojaDelLabel = () => {
+    const t = `${it?.product || ""} ${it?.producto_label || ""} ${it?.label || ""}`;
+    const mH = t.match(/\bH\s?(80|98)\b/i);                    // SLIDING: H80 / H98
+    if (mH) return Number(mH[1]);
+    const mA = t.match(/\bANDES\s+(54|66)\b/i);                // ANDES: 54 / 66
+    if (mA) return Number(mA[1]);
+    const mJ = t.match(/\bhoja\s+(\d{2,3})\s?mm\b/i);          // "hoja 66 mm"
+    if (mJ) return Number(mJ[1]);
+    return NaN;
+  };
+  const hojaDelItem = Number(it?.hoja_mm ?? it?.hojaMm ?? it?.perfil_hoja_mm ?? hojaDelLabel());
   const anchoHojaMm = tipo === "CORREDERA"
     ? (Number.isFinite(hojaDelItem) && hojaDelItem > 0 ? hojaDelItem : HOJA_CORREDERA_DEFAULT_MM)
     : (Number.isFinite(hojaDelItem) && hojaDelItem > 0 ? hojaDelItem : HOJA_MM);
@@ -854,7 +915,7 @@ function planoDeVentana(it, caja) {
   // En una corredera las hojas arrancan ANTES del borde interior del marco, porque lo pisan.
   const pisa = corre ? Math.min(PISA_MARCO_MM * escala, marco * 0.8) : 0;
   const hojas = repartirHojas(
-    intX - pisa, intY - pisa, intW + 2 * pisa, intH + 2 * pisa, n, corre, TRASLAPE_MM * escala,
+    intX - pisa, intY - pisa, intW + 2 * pisa, intH + 2 * pisa, n, corre, TRASLAPE_MM * escala, esMono,
   ).map((r) => {
     // El perfil de la hoja NO puede ser más grueso que la hoja misma. Con un piso fijo en el
     // ancho del vidrio (max(0.5, …)) pero la posición corrida por el perfil, una hoja angosta
