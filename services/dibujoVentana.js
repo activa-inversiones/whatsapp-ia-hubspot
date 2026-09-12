@@ -196,6 +196,44 @@ function medidas(m) {
 // Las PUERTAS estaban cayendo al default y se dibujaban como paño fijo: una puerta salía en la
 // cotización como un vidrio sin apertura. Van primero porque "PUERTA_DOBLE" no contiene ninguna
 // de las otras palabras, pero el orden importa para no depender de eso.
+/**
+ * Es un MONORRIEL? = una sola via: UNA hoja que corre + UN paño FIJO, en UN marco.
+ *
+ * 🔴 [2026-09-11] Se generalizo desde `esAmericana`, que hacia lo mismo pero atado al nombre de
+ * una sola linea. El dueño pidio que el dibujo se parezca AL MATERIAL QUE LLEVA DE VERDAD, y el
+ * listado de materiales de Winart del monorriel ANDES (v69117, 1080x1500, ANDES-MONORIEL_HOJA_66)
+ * lo dice sin ambiguedad:
+ *     PI-SLA-MMC   MARCO MONORRIEL ....... 1 Pza    <- UN marco, no dos
+ *     PI-SLA-A66   HOJA CORREDERA ........ 1 Pza    <- UNA hoja movil
+ *     PI-SLA-TA66  TRASLAPO .............. 1 Pza
+ *     HI-MLA-FNX   MANILLA ............... 1 Pza
+ * O sea NO es una "ventana compuesta" (dos ventanas completas acopladas, cada una con su marco y
+ * un acople de 2 mm entre medio). Es UNA ventana con dos paños. Dibujarla como compuesta le
+ * muestra al cliente un producto que no es el que se le va a fabricar.
+ */
+function esMonorriel(it) {
+  const t = `${it?.product || ""} ${it?.producto_label || ""} ${it?.label || ""}`;
+  // SEÑAL FUERTE: el texto describe la ventana misma. Manda siempre.
+  //   "monorriel" · "fija + corredera" (en cualquier orden) · "mitad fija ... mitad corredera"
+  const fuerte = /mono\s?-?r?riel/i.test(t)
+    || /fij[ao][^+]{0,14}[+y][^+]{0,14}corred/i.test(t)
+    || /corred[^+]{0,14}[+y][^+]{0,14}fij[ao]/i.test(t)
+    || /mitad\s+fij[ao][\s\S]{0,24}mitad\s+corred/i.test(t)
+    || /mitad\s+corred[\s\S]{0,24}mitad\s+fij[ao]/i.test(t);
+  if (fuerte) return true;
+  // SEÑAL DEBIL: la sola palabra "americana". La linea AMERICANA es monorriel y nada mas, PERO
+  // 🔴 en este repo "americana" TAMBIEN es un ambiente de la casa (cocina americana) — hay tests
+  // que lo distinguen. Sin guardia, "Proyectante S60 cocina americana" se dibujaba como
+  // CORREDERA. El `esAmericana` viejo no tenia el problema porque no decidia el TIPO: solo el
+  // bastidor y la flecha de una ventana que YA era corredera. (Lo cazo Codex.)
+  // ⚠️ La guardia va SOLO sobre la señal debil, no sobre la fuerte: si tapara las dos, un
+  // "Corredera monorriel para salida a puerta de terraza" quedaba descartado por la palabra
+  // "puerta" de una descripcion y se dibujaba con DOS hojas moviles en vez de una. (Lo cazo
+  // Gemini en la segunda pasada.)
+  if (/american[ao]/i.test(t) && !/proyect|oscilo|abat|batiente|puerta/i.test(t)) return true;
+  return false;
+}
+
 function tipoDe(it) {
   // 🔴 [2026-08-26] SE MIRAN LOS DOS CAMPOS, no `product` con precedencia: segun el camino
   // (tool del LLM, pending_quote, pdf determinista) el tipo real puede venir en cualquiera
@@ -205,6 +243,13 @@ function tipoDe(it) {
   // [2026-08-25] COMPUESTA PRIMERO: su label es "Ventana compuesta: Fijo 1200mm +
   // Proyectante 800mm" — contiene las palabras de los otros tipos y cualquier rama de abajo
   // se la robaba (salia dibujada como una proyectante de un solo paño).
+  // 🔴 EL MONORRIEL VA ANTES QUE COMPUESTA. Un "Fija+Corredera" tiene UN marco y UNA hoja
+  // (medido en el listado de materiales de Winart): es una corredera de una via, no dos
+  // ventanas acopladas. Cayendo en COMPUESTA se dibujaba con dos marcos — y peor: como el
+  // buscador de paños no conocia la palabra "corredera", terminaba INVENTANDO una PROYECTANTE
+  // con su triangulo punteado. Reclamo del dueño sobre una propuesta real:
+  // *"PUSISTE LA FORMA DE PROYECTANTE DEBE SER LA FIGURA DE CORREDERA"*.
+  if (esMonorriel(it)) return "CORREDERA";
   if (p.includes("COMPUESTA")) return "COMPUESTA";
   if (p.includes("PUERTA")) return p.includes("DOBLE") || p.includes("2H") ? "PUERTA_DOBLE" : "PUERTA";
   if (p.includes("CORREDERA") || p.includes("SLIDING")) return "CORREDERA";
@@ -399,6 +444,10 @@ function tipoDeParte(t) {
   if (s.includes("OSCILO")) return "OSCILOBATIENTE";
   if (s.includes("PROYECT")) return "PROYECTANTE";
   if (s.includes("ABAT") || s.includes("BATIENTE")) return "BATIENTE";
+  // 🔴 [2026-09-11, correccion del dueño] LA CORREDERA FALTABA y caia al `return "FIJA"`:
+  // el paño que corre se dibujaba como un paño fijo, sin flecha y sin manilla.
+  // Textual: *"PUSISTE LA FORMA DE PROYECTANTE DEBE SER LA FIGURA DE CORREDERA"*.
+  if (s.includes("CORRED") || s.includes("SLIDING")) return "CORREDERA";
   return "FIJA";
 }
 
@@ -440,8 +489,9 @@ export function partesDesdeLabel(it, ancho_mm, alto_mm) {
   const vertical = /vertical|arriba|abajo|superior|inferior/i.test(label);
 
   // 1) El caso rico: el label trae cada paño con su medida — "Proyectante 1100mm (arriba)".
-  const conMedida = [...label.matchAll(/(fij[ao]|proyectante|abatible|oscilobatiente)[^\d+]{0,12}(\d+(?:[.,]\d+)?)\s*mm/gi)]
-    .map((m) => ({ tipo: m[1].toUpperCase().startsWith('FIJ') ? 'FIJA' : m[1].toUpperCase(),
+  const conMedida = [...label.matchAll(/(fij[ao]|proyectante|abatible|oscilobatiente|corredera|corrediza)[^\d+]{0,12}(\d+(?:[.,]\d+)?)\s*mm/gi)]
+    .map((m) => ({ tipo: m[1].toUpperCase().startsWith('FIJ') ? 'FIJA'
+                     : /^CORRED/i.test(m[1]) ? 'CORREDERA' : m[1].toUpperCase(),
                    mm: parseFloat(m[2].replace(',', '.')) }));
   if (conMedida.length >= 2) {
     // 🔴 [2026-08-31] LOS PANOS TIENEN QUE SUMAR LA VENTANA. Es la comprobacion que caza
@@ -475,6 +525,13 @@ export function partesDesdeLabel(it, ancho_mm, alto_mm) {
   if (/proyectante/i.test(label)) tipos.push('PROYECTANTE');
   if (/abatible/i.test(label)) tipos.push('BATIENTE');
   if (/oscilobatiente/i.test(label)) tipos.push('OSCILOBATIENTE');
+  // 🔴 [2026-09-11] LA CORREDERA NO SE BUSCABA ACA, Y ESE ERA EL BUG QUE VIO EL DUEÑO.
+  // Un label "Ventana compuesta Fija+Corredera" solo encontraba 'FIJA' => tipos.length < 2
+  // => se disparaba el default de abajo y la ventana se dibujaba PROYECTANTE + FIJA.
+  // O sea: la corredera desaparecia y en su lugar se INVENTABA una proyectante, con su
+  // triangulo punteado y todo. El precio estaba bien; mentia el dibujo, que es lo que el
+  // cliente mira. Textual: *"PUSISTE LA FORMA DE PROYECTANTE DEBE SER LA FIGURA DE CORREDERA"*.
+  if (/corrediza|corredera/i.test(label)) tipos.push('CORREDERA');
   if (/fij[ao]/i.test(label)) tipos.push('FIJA');
   if (tipos.length < 2) tipos.splice(0, tipos.length, 'PROYECTANTE', 'FIJA');
   const eje = vertical ? alto_mm : ancho_mm;
@@ -516,6 +573,14 @@ function repartirPorPartes(x, y, w, h, partes, montante, vertical = false) {
 }
 
 function hojasDe(it) {
+  // 🔴 El motor manda `hojas: 1` en un monorriel y tiene razon: es UNA hoja MOVIL. Pero el
+  // DIBUJO tiene dos paños — el que corre y el fijo —, que es lo que ve el cliente y lo que
+  // muestra el plano de Winart. Respetar el 1 dibujaria media ventana.
+  // Un monorriel se ve con DOS paños como minimo. Si alguien declara mas (un label raro tipo
+  // "monorriel 4 hojas"), se respeta lo declarado: nunca se dibujan MENOS paños de los que el
+  // cliente escribio, solo se impide dibujar medio monorriel.
+  if (esMonorriel(it)) return Math.max(2, Number(it?.corredera?.hojas) || 0,
+    Number((String(it?.product || it?.producto_label || "").toLowerCase().match(/(\d)\s*hoja/) || [])[1]) || 0);
   if (it?.corredera?.hojas) return Math.max(1, Number(it.corredera.hojas) || 1);
   // 🔴 [2026-08-25] LEIA SOLO `product` Y EL MOTOR EMITE `producto_label`. Una corredera de
   // 3 o 4 hojas caia al default de 2 y se dibujaba con dos: el cliente veia una ventana que
@@ -669,8 +734,10 @@ function planoDeVentana(it, caja) {
   const anchoHojaMm = tipo === "CORREDERA"
     ? (Number.isFinite(hojaDelItem) && hojaDelItem > 0 ? hojaDelItem : HOJA_CORREDERA_DEFAULT_MM)
     : (Number.isFinite(hojaDelItem) && hojaDelItem > 0 ? hojaDelItem : HOJA_MM);
+  // [2026-09-11] Mira tambien el tipo del PAÑO: en una compuesta `tipo` es "COMPUESTA", asi
+  // que un paño corredera se dibujaba con el marco de una hoja que abate y no con el suyo.
   const marcoDe = (t) => Math.max(2, (
-    tipo === "CORREDERA" ? MARCO_CORREDERA_FRENTE_MM
+    (tipo === "CORREDERA" || t === "CORREDERA") ? MARCO_CORREDERA_FRENTE_MM
       : t === "FIJA" ? MARCO_FIJO_MM : MARCO_ABRE_MM) * escala);
   const marco = marcoDe(tipo);
   const perfilHoja = Math.max(1.8, anchoHojaMm * escala);
@@ -734,7 +801,11 @@ function planoDeVentana(it, caja) {
         sinBastidor: tp === "FIJA",
         // Un paño FIJO no lleva símbolo: es justamente lo que lo distingue del que abre.
         simbolo: tp === "FIJA" ? [] : simboloApertura(tp, vidrioRect, true),
-        flecha: 0,
+        // 🔴 [2026-09-11] En una compuesta la flecha estaba clavada en 0, asi que un paño
+        // CORREDERA quedaba sin la unica señal que dice hacia donde corre. `simboloApertura`
+        // ya devuelve [] para CORREDERA (no lleva diagonales): sin flecha no llevaba NADA.
+        // La corredera de una compuesta corre hacia el paño fijo, que es el que tiene al lado.
+        flecha: tp === "CORREDERA" ? (i === 0 ? 1 : -1) : 0,
       };
     });
     const tiposC = partes.map((pt) => tipoDeParte(pt.tipo));
@@ -769,7 +840,9 @@ function planoDeVentana(it, caja) {
   // 🔴 [2026-08-27, correccion del dueño con el plano de Winart] LA AMERICANA MONORRIEL TIENE
   // UN PAÑO FIJO: "un lado no tiene hoja". Una hoja CORRE (bastidor + flecha + manilla) y la
   // otra es vidrio FIJO en el marco (sin bastidor). No es una corredera de dos hojas moviles.
-  const esAmericana = /american[ao]/i.test(`${it?.product || ""} ${it?.producto_label || ""} ${it?.label || ""}`);
+  // [2026-09-11] Era `esAmericana`: el mismo dibujo sirve para CUALQUIER monorriel (ANDES
+  // incluido), no solo para esa linea. Ver esMonorriel().
+  const esMono = esMonorriel(it);
   // 🔴 LA HOJA NO APOYA AL RAS DEL MARCO: LO PISA. Dueño: *"la hoja no queda encima del
   // perfil al tiro, sino traspasa el perfil... como cuatro, cinco, seis o siete milimetros
   // sobre el marco"*. Se toma 6 mm, el medio del rango que dio. Sin esto la hoja queda
@@ -804,9 +877,9 @@ function planoDeVentana(it, caja) {
       manoDerecha,
       // Americana: el paño derecho (idx>=1) es FIJO — no lleva bastidor (manillaDe le devuelve
       // null solo por eso) ni flecha. El izquierdo corre hacia el fijo.
-      sinBastidor: tipo === "FIJA" || (esAmericana && r.idx >= 1),
+      sinBastidor: tipo === "FIJA" || (esMono && r.idx >= 1),
       simbolo: simboloApertura(tipo, vidrioRect, manoDerecha),
-      flecha: esAmericana
+      flecha: esMono
         ? (r.idx === 0 ? 1 : 0)
         : (tipo === "CORREDERA" ? (r.idx % 2 === 0 ? 1 : -1) : 0),
     };

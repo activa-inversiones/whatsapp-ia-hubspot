@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   dibujarVentana, planoDeVentana, medidas, tipoDe, hojasDe, claveColor, claveVidrio,
-  encajar, repartirHojas, simboloApertura, COLORES,
+  encajar, repartirHojas, simboloApertura, COLORES, partesDesdeLabel,
 } from "./dibujoVentana.js";
 
 const CAJA = { x: 0, y: 0, w: 120, h: 100 };
@@ -701,4 +701,95 @@ test('una corredera SLIDING normal NO tiene paño fijo (las dos hojas corren)', 
     { producto_label: 'Corredera SLIDING H80 Doble Riel S75', product: 'CORREDERA', measures: '1500x1200' },
     { x: 0, y: 0, w: 250, h: 250 });
   assert.equal(p.hojas.filter((h) => h.sinBastidor).length, 0, 'ninguna hoja fija en una sliding');
+});
+
+// ── LA CORREDERA DE UNA VENTANA COMPUESTA (2026-09-11) ───────────────────────────────────
+// 🔴 POR QUE EXISTEN (correccion del dueño sobre una propuesta real, textual):
+//   «PUSISTE LA FORMA DE PROYECTANTE DEBE SER LA FIGURA DE CORREDERA»
+// Una "Ventana Fija+Corredera" de 1500x2100 salia dibujada con el TRIANGULO PUNTEADO del
+// proyectante. El precio estaba bien; mentia el dibujo, que es lo primero que mira el cliente.
+// La cadena tenia la corredera caida en TRES lugares a la vez:
+//   1. `partesDesdeLabel` no buscaba "corredera": el label solo encontraba FIJA, quedaba con
+//      un solo tipo y caia al default de ultimo recurso ['PROYECTANTE','FIJA'] — o sea que la
+//      corredera desaparecia y en su lugar se INVENTABA una proyectante.
+//   2. `tipoDeParte` no tenia rama CORREDERA y devolvia "FIJA" para el paño que corre.
+//   3. En la compuesta la flecha estaba clavada en `0`, asi que aun con el tipo correcto el
+//      paño quedaba sin la unica señal que dice hacia donde corre.
+
+test("🔴 compuesta Fija+Corredera: los paños son CORREDERA y FIJA, no una proyectante inventada", () => {
+  const r = partesDesdeLabel({ producto_label: "Ventana compuesta Fija+Corredera" }, 1500, 2100);
+  assert.deepEqual(r.partes.map((p) => p.tipo), ["CORREDERA", "FIJA"]);
+});
+
+test("🔴 compuesta con medidas: 'Corredera 800mm + Fijo 700mm' se lee completa", () => {
+  const r = partesDesdeLabel({ producto_label: "Ventana compuesta Corredera 800mm + Fijo 700mm" }, 1500, 2100);
+  assert.deepEqual(r.partes.map((p) => p.tipo), ["CORREDERA", "FIJA"]);
+  assert.equal(r.derivado_de, "label_con_medidas");
+});
+
+test("🔴 el monorriel se dibuja como UNA ventana: 1 hoja que corre + 1 paño fijo", () => {
+  // Asi lo dice el material (Winart v69117): UN marco monorriel, UNA hoja, UN traslapo.
+  // No son dos ventanas acopladas, que es como se dibujaba al caer en el camino de compuesta.
+  const it = { producto_label: "Ventana Fija+Corredera", measures: "1500x2100" };
+  assert.equal(tipoDe(it), "CORREDERA", "un fija+corredera es una corredera, no una compuesta");
+  const p = planoDeVentana(it, CAJA);
+  assert.equal(p.hojas.length, 2, "el monorriel se ve con dos paños");
+  const [movil, fijo] = p.hojas;
+  assert.notEqual(movil.flecha, 0, "el paño que corre lleva flecha");
+  assert.equal(movil.sinBastidor, false, "el que corre SI tiene hoja (bastidor)");
+  assert.equal(fijo.flecha, 0, "el paño fijo no corre");
+  assert.equal(fijo.sinBastidor, true, "el fijo NO lleva bastidor: va directo al marco");
+});
+
+test("🔴 NINGUN paño de una Fija+Corredera se dibuja como proyectante", () => {
+  // La comprobacion directa del reclamo: el triangulo punteado no puede aparecer en ningun lado.
+  for (const lab of ["Ventana Fija+Corredera", "Ventana compuesta Fija+Corredera",
+                     "Corredera ANDES 66 Monorriel", "Corredera AMERICANA Monorriel"]) {
+    const p = planoDeVentana({ producto_label: lab, measures: "1500x2100" }, CAJA);
+    assert.equal(p.hojas.reduce((n, h) => n + h.simbolo.length, 0), 0,
+      `"${lab}" no debe llevar ni una diagonal de apertura`);
+    assert.ok(p.hojas.some((h) => h.flecha !== 0), `"${lab}" tiene que mostrar hacia donde corre`);
+  }
+});
+
+test("🔴 la flecha apunta HACIA el paño fijo, como en el plano de Winart", () => {
+  // En el plano de Winart (v69117 y v69118) la hoja movil es la IZQUIERDA (A2), la manilla va
+  // en su canto izquierdo y la flecha apunta a la DERECHA, hacia el fijo (A1).
+  const p = planoDeVentana({ producto_label: "Ventana Fija+Corredera", measures: "1500x2100" }, CAJA);
+  assert.equal(p.hojas[0].flecha, 1, "la hoja izquierda corre hacia la derecha");
+});
+
+test("las compuestas que SI son proyectante siguen dibujandose igual", () => {
+  // La red que impide que este arreglo se lleve puesto el caso que ya funcionaba.
+  const r = partesDesdeLabel({ producto_label: "Ventana compuesta Fijo 1100mm + Proyectante 1000mm" }, 2100, 1500);
+  assert.deepEqual(r.partes.map((p) => p.tipo), ["FIJA", "PROYECTANTE"]);
+  const p = planoDeVentana({ producto_label: "Ventana compuesta Fijo 1100mm + Proyectante 1000mm", measures: "2100x1500" }, CAJA);
+  const proy = p.hojas.find((h) => h.tipo === "PROYECTANTE");
+  assert.equal(proy.simbolo.length, 2, "el proyectante conserva sus dos diagonales");
+  assert.equal(proy.flecha, 0, "y NO lleva flecha");
+});
+
+test("🔴 'americana' como AMBIENTE no convierte una ventana en corredera", () => {
+  // En este repo "americana" tambien es un ambiente de la casa (cocina americana), no solo la
+  // linea de ventanas. El `esAmericana` viejo no tenia este riesgo porque no decidia el TIPO:
+  // solo el bastidor y la flecha de una ventana que YA era corredera. Al generalizarlo a
+  // `esMonorriel` y usarlo para clasificar, una proyectante en una cocina americana se dibujaba
+  // como corredera. Lo cazo Codex en la compuerta cruzada.
+  assert.equal(tipoDe({ producto_label: "Proyectante S60 cocina americana" }), "PROYECTANTE");
+  assert.equal(tipoDe({ producto_label: "Puerta abatible cocina americana" }), "PUERTA");
+  assert.equal(tipoDe({ producto_label: "Oscilobatiente cocina americana" }), "OSCILOBATIENTE");
+  // y la linea AMERICANA de verdad sigue siendo el monorriel que es
+  assert.equal(tipoDe({ producto_label: "Corredera AMERICANA Monorriel" }), "CORREDERA");
+});
+
+test("🔴 la guardia NO puede tapar un monorriel que menciona otra apertura de pasada", () => {
+  // La guardia de arriba va SOLO sobre la señal debil (la palabra "americana" suelta). Si tapara
+  // tambien la señal fuerte, un "Corredera monorriel para salida a puerta de terraza" quedaba
+  // descartado por la palabra "puerta" de una DESCRIPCION y se dibujaba con DOS hojas moviles
+  // en vez de una. Lo cazo Gemini en la segunda pasada de la compuerta cruzada.
+  const it = { producto_label: "Corredera monorriel para salida a puerta de terraza", measures: "2000x2100" };
+  assert.equal(tipoDe(it), "CORREDERA");
+  const p = planoDeVentana(it, CAJA);
+  assert.equal(p.hojas.filter((h) => h.flecha !== 0).length, 1, "un monorriel tiene UNA hoja que corre");
+  assert.equal(p.hojas[1].sinBastidor, true, "y la otra es el paño fijo");
 });
