@@ -150,6 +150,29 @@ function poligono(doc, pts, relleno, borde) {
  * @param {object} it    el mismo item que recibe el plano 2D
  * @returns {object} el plano usado (para tests y para reusar sus datos)
  */
+
+/**
+ * Las DIAGONALES DE 45 GRADOS de las esquinas: la union soldada del perfil.
+ *
+ * 🔴 [2026-09-11, correccion del dueño] Nuestro dibujo no las tenia. Comparando nuestra imagen
+ * con su plano de WinPerfil dijo, textual: *"NI SE PARECE"*. Es lo primero que salta a la vista:
+ * en cualquier plano de una ventana de PVC el marco y la hoja muestran la diagonal en las cuatro
+ * esquinas, porque los perfiles se cortan a 45 y se sueldan. Nuestros marcos eran rectangulos
+ * lisos, sin una sola diagonal, y por eso se leian como una caja y no como una ventana.
+ * @param {{x:number,y:number,w:number,h:number}} r rectangulo EXTERIOR del perfil
+ * @param {number} g grueso del frente: la diagonal va de la esquina exterior a la interior
+ */
+function esquinasEnIngle(doc, r, g, color) {
+  const gx = Math.min(g, r.w / 2), gy = Math.min(g, r.h / 2);
+  if (!(gx > 0.4 && gy > 0.4)) return;   // a esta escala la diagonal no se leeria
+  const x2 = r.x + r.w, y2 = r.y + r.h;
+  doc.save().lineWidth(0.3).strokeColor(color);
+  doc.moveTo(r.x, r.y).lineTo(r.x + gx, r.y + gy).stroke();
+  doc.moveTo(x2, r.y).lineTo(x2 - gx, r.y + gy).stroke();
+  doc.moveTo(r.x, y2).lineTo(r.x + gx, y2 - gy).stroke();
+  doc.moveTo(x2, y2).lineTo(x2 - gx, y2 - gy).stroke();
+  doc.restore();
+}
 export function dibujarVentanaIso(doc, caja, it) {
   // La fuga se come espacio arriba y a la derecha: se reserva ANTES de encajar la ventana,
   // si no la profundidad se sale de la caja y pisa lo que esté al lado.
@@ -261,6 +284,7 @@ export function dibujarVentanaIso(doc, caja, it) {
     doc.rect(m.x, m.y, m.w, m.h).lineWidth(0.6).fillAndStroke(p.color.f, p.color.e);
     // La folia de la cara frontal: misma textura y brillo que el plano 2D (muestrario 26-ago).
     pintarTexturaPerfil(doc, m, Math.min(m.marco || p.marco, m.w / 2, m.h / 2), p.color);
+    esquinasEnIngle(doc, m, m.marco || p.marco, p.color.e);
   }
 
   for (const hoja of p.hojas) {
@@ -288,6 +312,7 @@ export function dibujarVentanaIso(doc, caja, it) {
       doc.rect(hoja.x, hoja.y, hoja.w, hoja.h).lineWidth(0.45).fillAndStroke(p.color.f, p.color.e);
       const gB = ((hoja.junquilloRect || hoja.vidrioRect || {}).x ?? hoja.x) - hoja.x;
       pintarTexturaPerfil(doc, hoja, gB, p.color);
+      esquinasEnIngle(doc, hoja, gB, p.color.e);
     }
 
     const j = hoja.junquilloRect;

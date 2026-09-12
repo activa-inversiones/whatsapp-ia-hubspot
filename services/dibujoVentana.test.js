@@ -880,3 +880,69 @@ test("🔴 el marco y la hoja NO miden lo mismo", () => {
     assert.notEqual(marco, hoja, `${lab}: marco ${marco} y hoja ${hoja} no pueden ser iguales`);
   }
 });
+
+test("🎯 ANDES MONORRIEL: marco 50 y hoja 66, de la ficha de HAUSTEK", () => {
+  // 🔴 Correccion del dueño, textual: *"la monorriel la hoja tiene 66mm y el marco 50mm, revisa
+  // la imagen"* — mando el corte acotado de la ficha ANDES MONORRIEL de HAUSTEK. Antes se
+  // dibujaba marco 48 / hoja 80 y el marco se veia *"como si tuviera esteroides"*.
+  //
+  // ⚠️ LA TRAMPA QUE ME COMI, ANOTADA PARA NO REPETIRLA: antes de la ficha saque los numeros del
+  // `webccExport` de Winart (ps.f=36, ps.sa=52). Daban IGUALES en cuatro versiones ANDES, asi que
+  // los di por buenos — pero yo habia supuesto que esos campos eran el frente en elevacion, y no
+  // lo son. Cuatro mediciones consistentes del campo equivocado dan cuatro veces el numero
+  // equivocado: la consistencia no valida la interpretacion.
+  const perfiles = (it) => {
+    const p = planoDeVentana({ measures: "1500x2100", ...it }, { x: 0, y: 0, w: 156, h: 196 });
+    return { marco: Math.round(p.marco / p.escala), hoja: Math.round(p.perfilHoja / p.escala) };
+  };
+  assert.deepEqual(perfiles({ producto_label: "Corredera ANDES 66 Monorriel" }), { marco: 50, hoja: 66 });
+  // "mitad fija mitad corredera" es monorriel y es ANDES (decision del dueño), asi que lleva
+  // los mismos perfiles aunque el label no nombre la linea.
+  assert.deepEqual(perfiles({ producto_label: "Ventana Fija+Corredera" }), { marco: 50, hoja: 66 });
+});
+
+test("🔴 lo que NO tiene ficha conserva sus perfiles", () => {
+  // Solo tenemos la ficha del ANDES MONORRIEL. El doble riel ANDES tiene la suya y no la tenemos;
+  // AMERICANA es otra linea. No se les cambia el dibujo sin el dato. (#719)
+  const marco = (lab) => {
+    const p = planoDeVentana({ producto_label: lab, measures: "1500x2100" }, { x: 0, y: 0, w: 156, h: 196 });
+    return Math.round(p.marco / p.escala);
+  };
+  assert.equal(marco("Corredera ANDES 54 Doble Riel"), 48);
+  assert.equal(marco("Corredera AMERICANA Monorriel"), 48);
+  assert.equal(marco("Corredera SLIDING H98 Doble Riel S75"), 48);
+  assert.equal(marco("Ventana abatible S60"), 40);
+});
+
+test("🎯 ANDES MONORRIEL: el dibujo reproduce las TRES cotas del corte de HAUSTEK", () => {
+  // 🔴 El dueño mando el corte acotado y dijo: *"la imagen es exactamente como queda la hoja
+  // sobre el marco"* y *"la hoja es mas alta, las dejaste del mismo alto"*. Las cotas de la
+  // ficha cierran solas y son la prueba:
+  //     marco 50 · hoja 66 · y del conjunto: 34 y 100
+  //     34 + 66 = 100  =>  del marco quedan 34 A LA VISTA  =>  la hoja PISA 50 - 34 = 16 mm
+  // Usabamos un pisado de 8 mm (medido sobre el DXF de una SLIDING S75, que es OTRA LINEA) y
+  // por eso quedaban 42 de marco visible en vez de 34: el marco se veia mas gordo de lo que es.
+  const p = planoDeVentana({ producto_label: "Corredera ANDES 66 Monorriel", measures: "1500x2100" },
+    { x: 0, y: 0, w: 156, h: 200 });
+  const mm = (v) => Math.round(v / p.escala);
+  const movil = p.hojas.find((h) => !h.sinBastidor);
+  const marcoALaVista = mm(movil.x - p.marcoRect.x);
+  const hoja = mm(movil.vidrioRect.x - movil.x);
+  assert.equal(marcoALaVista, 34, "marco a la vista");
+  assert.equal(hoja, 66, "frente de la hoja");
+  assert.equal(marcoALaVista + hoja, 100, "el conjunto");
+  // y lo que el dueño repitio tres veces: la hoja NO puede verse igual o menor que el marco
+  assert.ok(hoja > marcoALaVista * 1.5, `la hoja (${hoja}) tiene que verse bastante mas que el marco (${marcoALaVista})`);
+});
+
+test("🔴 el paño FIJO lleva marco + junquillo, no el ancho del bastidor", () => {
+  // *"el marco se ve el doble que la hoja vista de elevacion"*. MEDIDO: el lado fijo daba 108 mm
+  // contra los 66 de la hoja. La causa: el calculo miraba el tipo de la VENTANA y no el del PAÑO,
+  // asi que al fijo —que no tiene hoja— le metia el vidrio 66 mm adentro como si la tuviera.
+  const p = planoDeVentana({ producto_label: "Corredera ANDES 66 Monorriel", measures: "1500x2100" },
+    { x: 0, y: 0, w: 156, h: 200 });
+  const mm = (v) => Math.round(v / p.escala);
+  const fijo = p.hojas.find((h) => h.sinBastidor);
+  const banda = mm((p.marcoRect.x + p.marcoRect.w) - (fijo.vidrioRect.x + fijo.vidrioRect.w));
+  assert.ok(banda < 70, `el lado fijo mide ${banda} mm; con el bastidor fantasma daba 108`);
+});
