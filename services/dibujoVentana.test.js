@@ -812,18 +812,22 @@ test("🔴 la guardia NO puede tapar un monorriel que menciona otra apertura de 
 //     de la ventana que en el plano de Winart no existe. En un monorriel hay UNA via: la hoja que
 //     corre va adelante y el fijo va al ras, dentro del marco.
 
-test("🔴 la corredera lleva manilla de EMBUTIR, no la cremona de palanca", () => {
-  const p = planoDeVentana({ producto_label: "Ventana Fija+Corredera", measures: "1500x2100" }, CAJA);
+test("🔴 la corredera lleva manilla QUE GIRA, larga — nunca de embutir", () => {
+  // 🔴 CORRECCION DEL DUEÑO, y me desdice a mi mismo del mismo dia. Textual:
+  //   *"pero SIEMPRE usa manilla que gira LARGA, nunca de embutir"*.
+  // Yo habia cambiado la corredera a una manilla de EMBUTIR (barra angosta hundida) porque
+  // asumi que la FORNAX del listado de materiales (HI-MLA-FNX) era de ese tipo — lo deduje
+  // del CODIGO del herraje, no de haber visto la pieza. Estaba mal y alcanzo a llegar a
+  // produccion antes de que el dueño lo viera.
+  // La leccion es la misma de todo el dia: un codigo de herraje NO dice como se ve la pieza.
+  const p = planoDeVentana({ producto_label: "Corredera ANDES 66 Monorriel", measures: "1500x2100" },
+    { x: 0, y: 0, w: 156, h: 200 });
   const movil = p.hojas.find((h) => !h.sinBastidor);
-  assert.ok(movil.manilla, "la hoja que corre tiene manilla");
-  assert.equal(movil.manilla.corredera, true, "marcada como manilla de corredera");
   const f = manillaFormas(movil.manilla);
-  assert.equal(f.corredera, true);
-  assert.ok(f.barra, "es una barra embutida");
-  assert.equal(f.roseta, undefined, "NO lleva roseta");
-  assert.equal(f.palanca, undefined, "NO lleva palanca");
-  // y es angosta: mas alta que ancha, como la del plano de Winart
-  assert.ok(f.barra.h > f.barra.w * 3, `la barra tiene que ser angosta (${f.barra.w}x${f.barra.h})`);
+  assert.ok(f.roseta && f.palanca, "la corredera lleva roseta + palanca, como la que abate");
+  assert.equal(f.barra, undefined, "NO es una barra de embutir");
+  // y LARGA: 120 mm de la constante, no los 160 angostos que le habia puesto
+  assert.equal(Math.round(movil.manilla.h / p.escala), 120);
 });
 
 test("🔴 una ventana que ABATE conserva su cremona de roseta y palanca", () => {

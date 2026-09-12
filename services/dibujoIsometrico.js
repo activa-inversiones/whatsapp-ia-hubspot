@@ -374,15 +374,7 @@ export function dibujarVentanaIso(doc, caja, it) {
       const saliente = Math.max(1, fuga.dx * 0.5);
       const hacia = { dx: -saliente, dy: saliente };
       const f = manillaFormas(q);
-      if (f && f.corredera) {
-        // 🔴 [2026-09-11] La manilla de CORREDERA es de EMBUTIR: va HUNDIDA en el montante, no
-        // en voladizo como la palanca de una abatible. Por eso no lleva ni cuello ni realce —
-        // solo su sombra propia adentro del hueco. Dibujarla saliente era parte de lo que el
-        // dueño vio como falso: *"LA MANILLA IGUAL PORQUE SE VE FALSA LA QUE ESTAMOS ENTREGANDO"*.
-        const b = f.barra;
-        doc.roundedRect(b.x, b.y, b.w, b.h, b.r).lineWidth(0).fill(tinte(p.color.f, 0.62));
-        pintarManilla(doc, f, 0, 0);
-      } else if (f) {
+      if (f) {
         const sombra = tinte(p.color.f, 0.52);
         const R = (r, ddx, ddy) => doc.roundedRect(r.x + ddx, r.y + ddy, r.w, r.h, Math.min(r.r, r.w / 2, r.h / 2));
         // 1. La sombra que la palanca tira sobre la hoja (corrida al reves del realce).

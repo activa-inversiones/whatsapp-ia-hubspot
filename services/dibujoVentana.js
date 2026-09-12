@@ -286,9 +286,6 @@ function etiquetasDePanos(tipos) {
 // que se vea como lo que es — algo que se agarra con la mano. No alimenta nada que se
 // fabrique ni se cobre. Si algun dia hace falta la medida exacta, se saca del modelo.
 const MANILLA_LARGO_MM = 120;
-// Manilla de EMBUTIR de corredera (FORNAX): barra angosta en el montante. Medida del plano Winart.
-const MANILLA_CORR_LARGO_MM = 160;
-const MANILLA_CORR_ANCHO_MM = 14;
 const MANILLA_ANCHO_MM = 26;
 
 /**
@@ -301,14 +298,6 @@ const MANILLA_ANCHO_MM = 26;
  */
 export function manillaFormas(q) {
   if (!q) return null;
-  // La de CORREDERA es una barra embutida: un solo cuerpo, sin roseta ni palanca.
-  if (q.corredera) {
-    // El piso de ANCHO es bajo a proposito: la manilla de embutir ES angosta (14 mm contra los
-    // 26 de la cremona de abatir). Con el piso de la otra se descartaba sola en las ventanas
-    // chicas y la hoja quedaba sin manilla.
-    if (q.h < 3 || q.w < 0.5) return null;
-    return { corredera: true, barra: { x: q.x, y: q.y, w: q.w, h: q.h, r: Math.min(q.w / 2, q.h / 2) } };
-  }
   const horiz = q.w >= q.h;
   const g = horiz ? q.h : q.w;              // grosor visible
   if (g < 2.4 || Math.max(q.w, q.h) < 7) return null;
@@ -340,14 +329,7 @@ export function manillaFormas(q) {
  */
 export function pintarManilla(doc, f, dx = 0, dy = 0) {
   const R = (r) => doc.roundedRect(r.x + dx, r.y + dy, r.w, r.h, Math.min(r.r, r.w / 2, r.h / 2));
-  if (f.corredera) {
-    // Barra embutida: cuerpo + una hebra de luz al costado para que se lea el relieve.
-    const b = f.barra;
-    R(b).lineWidth(0.3).fillAndStroke("#E3E7EB", "#4A5560");
-    doc.lineWidth(Math.max(0.22, b.w * 0.2)).strokeColor("#FFFFFF")
-      .moveTo(b.x + dx + b.w * 0.3, b.y + dy + b.r).lineTo(b.x + dx + b.w * 0.3, b.y + dy + b.h - b.r).stroke();
-    return;
-  }
+
   R(f.roseta).lineWidth(0.32).fillAndStroke("#D8DCE1", "#4A5560");
   R(f.palanca).lineWidth(0.32).fillAndStroke("#F1F3F5", "#4A5560");
   R(f.cuello).lineWidth(0.28).fillAndStroke("#B9BFC6", "#4A5560");
@@ -407,24 +389,19 @@ function manillaDe(hoja, escala) {
   const enDerecha = !hoja.manoDerecha;
   const banda = enDerecha ? (hoja.x + hoja.w) - (v.x + v.w) : v.x - hoja.x;
   if (banda <= 0) return null;
-  // 🔴 [2026-09-11, correccion del dueño] LA CORREDERA NO LLEVA CREMONA DE PALANCA.
-  // Textual: *"LA MANILLA IGUAL PORQUE SE VE FALSA LA QUE ESTAMOS ENTREGANDO"*. Y tenia razon:
-  // se dibujaba la manilla de ROSETA + PALANCA, que es la de una ventana que ABATE. Una
-  // corredera lleva una manilla de EMBUTIR: una barra vertical delgada, embutida en el montante
-  // de la hoja. Asi la dibuja Winart en su propio plano (v69118) y asi es la FORNAX que aparece
-  // en el listado de materiales (HI-MLA-FNX). Es mas corta y mucho mas angosta que la de abatir.
-  const esCorredera = hoja.tipo === "CORREDERA";
-  const largo = esCorredera
-    ? Math.max(3, Math.min(MANILLA_CORR_LARGO_MM * esc, v.h * 0.30))
-    : Math.max(3, Math.min(MANILLA_LARGO_MM * esc, v.h * 0.7));
-  const grueso = esCorredera
-    ? Math.max(0.9, Math.min(MANILLA_CORR_ANCHO_MM * esc, banda * 0.55))
-    : Math.max(1.2, Math.min(MANILLA_ANCHO_MM * esc, banda * 0.75));
+  // 🔴 [2026-09-11 · CORREGIDO POR EL DUEÑO, 2a vez] LA CORREDERA SI LLEVA MANILLA QUE GIRA.
+  //   Textual: *"pero SIEMPRE usa manilla que gira LARGA, nunca de embutir"*.
+  //   Yo habia puesto una manilla de EMBUTIR (barra angosta hundida) asumiendo que la
+  //   FORNAX del listado (HI-MLA-FNX) era de ese tipo — por el codigo del herraje, no por
+  //   haberlo visto. Estaba mal y alcanzo a llegar a produccion. Vuelve a la de siempre:
+  //   roseta + palanca, LARGA. Es el mismo error de siempre: deducir una pieza fisica del
+  //   nombre de su codigo en vez de preguntar.
+  const largo = Math.max(3, Math.min(MANILLA_LARGO_MM * esc, v.h * 0.7));
+  const grueso = Math.max(1.2, Math.min(MANILLA_ANCHO_MM * esc, banda * 0.75));
   return {
     x: enDerecha ? (v.x + v.w) + (banda - grueso) / 2 : hoja.x + (banda - grueso) / 2,
     y: v.y + v.h / 2 - largo / 2,
     w: grueso, h: largo,
-    corredera: esCorredera,
   };
 }
 
