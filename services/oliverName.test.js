@@ -127,3 +127,28 @@ test('G5: askNameMessage menciona "nombre" o la idea de identificarse', () => {
     'debe pedir el nombre o identificarse'
   );
 });
+
+// ── [2026-09-15] NOSOTROS NO SOMOS EL CLIENTE ────────────────────────────────
+// Casos REALES de la tabla `quotes`: los folios CM-FR-004-2026-0452 y -0452-B
+// salieron a nombre de "Oliver" (el bot) y el 0454 como "Activa Inversiones"
+// (la empresa). Los dos se imprimen en la propuesta que recibe el cliente.
+test('🔴 el propio bot NO puede quedar como cliente (folios 0452 y 0452-B)', () => {
+  assert.equal(needsName({ name: 'Oliver' }), true, '"Oliver" quedó como nombre de cliente');
+  assert.equal(needsName({ name: 'oliver' }), true);
+  assert.equal(needsName({ name: 'OLIVER' }), true);
+});
+
+test('🔴 la propia empresa NO puede quedar como cliente (folio 0454)', () => {
+  assert.equal(needsName({ name: 'Activa Inversiones' }), true);
+  assert.equal(needsName({ name: 'activa' }), true);
+  assert.equal(needsName({ name: 'WinHouse' }), true);
+});
+
+test('🔴 pero un nombre de persona REAL sigue pasando', () => {
+  // La lista crece solo con lo medido. Nada de comunas ni de vocabulario de catálogo:
+  // ahí viven Lautaro, Victoria, Galvarino, Blanca y Marcos, que son nombres de gente.
+  for (const n of ['Juan Pérez', 'Lautaro Huenchumilla', 'Victoria Millaleo',
+                   'Galvarino Curamil', 'Blanca Soto', 'Marcos Freire', 'Dalia']) {
+    assert.equal(needsName({ name: n }), false, `se rechazó un nombre real: ${n}`);
+  }
+});

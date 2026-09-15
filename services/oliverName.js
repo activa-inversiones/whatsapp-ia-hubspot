@@ -30,11 +30,29 @@ const GENERIC_NAMES = [
   'cliente',
   'cliente de ventanas',
   'cliente de pvc',
+  'cliente whatsapp',
   'usuario',
   'desconocido',
   'sin nombre',
   'n/a',
   'na',
+  // 🔴 [2026-09-15] NOSOTROS NO SOMOS EL CLIENTE. Medido en la tabla `quotes`: los folios
+  // CM-FR-004-2026-0452 y -0452-B salieron a nombre de **"Oliver"** —el propio bot— y el
+  // 0454 como **"Activa Inversiones"** —la propia empresa—. Las dos cosas se imprimen en la
+  // Propuesta Técnico Económica que recibe el cliente.
+  // Pasaban porque `resolverNombre` (pdf-intent.js:125) acepta cualquier nombre que
+  // `needsName` no marque como genérico, y esta lista no conocía ni al bot ni a la empresa.
+  // Lo había señalado Codex en la compuerta del 15-sep; la primera respuesta fue construir
+  // un validador nuevo entero —que resultó NO APTO por rechazar apellidos mapuche—. El
+  // arreglo real era esto: ocho palabras en la lista que ya existía.
+  'oliver',
+  'activa',
+  'activa inversiones',
+  'activa spa',
+  'activaspa',
+  'winhouse',
+  'bot',
+  'asistente',
 ];
 
 /**
