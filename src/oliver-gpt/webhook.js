@@ -3717,6 +3717,51 @@ Comuna: ${datos.comuna}`
                 msgId: waDocMsgId, tipo: 'propuesta', folio: quoteNumber, telefono: String(from),
               }, 3 * 24 * 3600);
             } catch { /* solo se pierde el diagnostico */ }
+
+            // 🔴 [2026-09-15 · #778 Fase 0.3] Y AHORA TAMBIÉN DURABLE, NO SOLO EN CACHÉ.
+            // El rastro de arriba vive en `escribirEstado`, que es un Map en memoria + un PUT
+            // en segundo plano que se traga el error (estadoPersistente.js:96-101), sobre una
+            // caché con TTL. O sea: en el escenario que MÁS importa —el proceso muere justo
+            // después de mandar la propuesta, que es el caso Katy— el identificador del
+            // mensaje nunca llega a Postgres y se pierde para siempre.
+            // Sin ese identificador guardado, el acuse de Meta no se puede casar con nada y
+            // el caso queda dudoso: hay que molestar al dueño para algo que el sistema podría
+            // haber resuelto solo.
+            // 🔴 [Kimi, compuerta] CON ESPERA ACOTADA, NO CON EL await PELADO.
+            // La primera versión hacía `await` del registro completo. Medido: el peor caso de
+            // `requestWithRetry` es 10 s + 1,5 s + 10 s ≈ 21,5 s (salesOsBridge.js:32,34,35) —
+            // y todo eso con el MUTEX DEL TELÉFONO tomado. Textual de Kimi: *"para garantizar
+            // la entrega de un documento, arriesgás la entrega del siguiente"*. Tenía razón:
+            // el video de cortesía se atrasa y cualquier mensaje nuevo del cliente queda
+            // encolado detrás del candado.
+            // Se espera un ratito para el caso normal (así el registro queda antes de que el
+            // turno pueda morir) y, si tarda más, el POST sigue solo por detrás. Acá SÍ vale
+            // una carrera —a diferencia del envío a Meta, donde está prohibida—: un evento que
+            // aterriza tarde es inofensivo, porque es idempotente por `wamid`. Lo que nunca
+            // puede quedar en el aire es un mensaje al cliente, no una fila de auditoría.
+            const _bridgeEnv = deps.bridge || realBridge;
+            if (typeof _bridgeEnv.logOliverEvent === 'function') {
+              const _envio = Promise.resolve(
+                _bridgeEnv.logOliverEvent('documento_enviado', {
+                  phone: String(from), wamid: waDocMsgId,
+                  tipo: 'propuesta', folio: quoteNumber,
+                })
+              ).catch((e) => ({ ok: false, error: e?.message || String(e) }));
+              const _r = await Promise.race([
+                _envio,
+                new Promise((res) => setTimeout(() => res({ ok: false, enCurso: true }), 6000)),
+              ]);
+              // Si falló DE VERDAD se grita: ese envío quedó sin evidencia y, si algo se cae
+              // después, va a terminar en revisión manual sin necesidad.
+              // ⚠️ `skipped:true` (ingesta apagada por configuración) NO es un fallo — lo cazó
+              // Kimi: con el guard anterior habría gritado en cada propuesta mientras la
+              // ingesta estuviera off, y alguien terminaría "arreglando" algo que no está roto.
+              // `enCurso:true` tampoco: solo significa que tardó más de 6 s y sigue por detrás.
+              if (!_r || (_r.ok === false && !_r.skipped && !_r.enCurso)) {
+                log('error', 'propuesta.registro_envio',
+                  `folio ${quoteNumber} ENVIADO pero SIN registro durable del wamid — el acuse no se va a poder casar`);
+              }
+            }
           }
 
           // ── 🎥 Paso 3a·ter: UN VIDEO DE LA FABRICA, PARA QUE NOS CONOZCA ─────
