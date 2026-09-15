@@ -34,7 +34,9 @@
 // { texto, bloquear, motivos } lo consumen los tres cerebros.
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const VERSION = '1.0.0';
+import { corregirPromesasImposibles } from './capacidadReal.js';
+
+export const VERSION = '1.1.0';
 
 /** Motivos posibles. Se acumulan en `motivos` para poder loguear y alertar. */
 export const MOTIVO = {
@@ -43,6 +45,7 @@ export const MOTIVO = {
   JSON_INTERNO: 'json_interno',
   URL_LARGA: 'url_larga',
   TOKEN_TECNICO: 'token_tecnico',
+  PROMESA_IMPOSIBLE: 'promesa_imposible',
   VACIO: 'vacio',
   NO_ES_TEXTO: 'no_es_texto',
 };
@@ -171,6 +174,20 @@ export function limpiarParaCliente(texto, opts = {}) {
     const antesTok = out;
     out = out.replace(TOKEN_TECNICO_RE, '');
     if (out !== antesTok) motivos.push(MOTIVO.TOKEN_TECNICO);
+
+    // 4. [2026-09-15] Que no prometa lo que NO PUEDE hacer.
+    // Caso real (Roxana, 14-sep 22:50): Oliver dijo *"le acabo de enviar la propuesta a su
+    // correo"* y NO existe ninguna capacidad de enviar correos en el repo. Seis minutos
+    // después: *"No llego nada pésima atención"*. El prompt ya se lo prohibía dos veces
+    // (system-prompt.js:974, index.js:1577 *"vos NUNCA mandás nada a terceros"*) — y el
+    // modelo lo hizo igual. Misma lección que la fuga del `<tool_call>`: si algo no puede
+    // pasar, lo tiene que impedir el código, no el prompt.
+    // Solo en destino `cliente`/`caption`: en las alertas internas a Marcelo no aplica.
+    const _cap = corregirPromesasImposibles(out);
+    if (_cap.corregido) {
+      out = _cap.texto;
+      motivos.push(MOTIVO.PROMESA_IMPOSIBLE);
+    }
   }
 
   // Normalizar el espacio que dejan los recortes, sin aplastar los párrafos.

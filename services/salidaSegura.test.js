@@ -71,8 +71,12 @@ test('JSON suelto con name/arguments, sin etiquetas, tampoco pasa', () => {
 });
 
 test('no confunde prosa que menciona la palabra arguments', () => {
-  const r = limpiarParaCliente('Le mando los argumentos de la propuesta por correo.');
-  assert.equal(r.texto, 'Le mando los argumentos de la propuesta por correo.');
+  // [2026-09-15] El ejemplo cambió: el original decía "Le mando los argumentos de la
+  // propuesta POR CORREO" y ahora lo corrige —con razón— el guardia de capacidades
+  // (capacidadReal.js): Oliver NO puede mandar correos. Lo que este test prueba es otra
+  // cosa: que la palabra "argumentos" no se confunda con la clave JSON `arguments`.
+  const r = limpiarParaCliente('Le explico los argumentos de la propuesta por acá mismo.');
+  assert.equal(r.texto, 'Le explico los argumentos de la propuesta por acá mismo.');
   assert.equal(r.bloquear, false);
 });
 
