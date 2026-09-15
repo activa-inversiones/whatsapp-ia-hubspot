@@ -74,4 +74,38 @@ export function nombreConLetra(nombre, i, folio) {
   return `${sinExt}${letra}${iso}.pdf`;
 }
 
-export default { letraDeInforme, nombreConLetra, LETRAS_INFORME };
+/**
+ * Agrega el correlativo ISO al nombre SOLO si todavía no lo trae.
+ *
+ * 🔴 BUG QUE RESUELVE (medido 15-sep-2026 en el WorkDrive del dueño, carpeta
+ * ISO ACTIVA / ISO REGISTROS / COTIZACIONES (CM-FR-004)):
+ *   Informe-Termico-Temuco-A-CM-FR-006-2026-0169-CM-FR-006-2026-0169.pdf
+ *   Informe-Vientos-Temuco-A-CM-FR-007-2026-0053-CM-FR-007-2026-0053.pdf
+ * El correlativo aparecía DOS VECES en cada informe archivado.
+ *
+ * Causa: el 04-sep se agregó el folio dentro de `nombreConLetra` (corrección del
+ * dueño: *"debe tener el correlativo de registro ISO o no está dentro del ISO"*),
+ * pero quedaron vivos los dos `replace(/\.pdf$/i, `-${folio}.pdf`)` que ya hacían
+ * lo mismo antes: webhook.js:1956 (térmico) y webhook.js:3381 (vientos). Sus
+ * comentarios siguen diciendo que al cliente le llega el nombre SIN correlativo
+ * — eso dejó de ser cierto ese día, y nadie volvió a mirarlo.
+ *
+ * No es cosmético: el nombre del archivo ES el índice del registro ISO 9001 §7.5.
+ * Un auditor busca `CM-FR-006-2026-0169` y encuentra un nombre que no coincide
+ * con el correlativo impreso en la portada.
+ *
+ * @param {string} nombre  nombre de archivo, con o sin el correlativo ya puesto
+ * @param {string} folio   correlativo ISO (ej. `CM-FR-006-2026-0169`)
+ * @returns {string}
+ */
+export function conCorrelativoUnaVez(nombre, folio) {
+  const base = String(nombre || '');
+  if (!base || !folio) return base;
+  const f = String(folio).replace(/[^\w-]/g, '');
+  if (!f) return base;
+  // Ya lo trae (lo puso `nombreConLetra`): se devuelve tal cual.
+  if (base.includes(f)) return base;
+  return base.replace(/\.pdf$/i, '') + `-${f}.pdf`;
+}
+
+export default { letraDeInforme, nombreConLetra, conCorrelativoUnaVez, LETRAS_INFORME };

@@ -138,7 +138,7 @@ import {
 import * as realBridge from '../../services/salesOsBridge.js';
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
 import { captionTermico, captionVientos } from './captionInforme.js'; // [2026-09-04] el cliente tiene que saber que le mandamos
-import { nombreConLetra } from './informeLetra.js'; // [2026-09-04 · #651] dos informes distintos no se llaman igual
+import { nombreConLetra, conCorrelativoUnaVez } from './informeLetra.js'; // [2026-09-04 · #651] dos informes distintos no se llaman igual · [2026-09-15] y el correlativo va UNA vez
 import { extractName, isLikelyName } from '../../services/oliverName.js'; // [2026-09-03] el nombre que llega TARDE, para reemitir la propuesta
 import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
 // [2026-08-31] LAS TRES PROPUESTAS A/B/C POR COLOR — compartidas con channel-agent.js (IG/FB)
@@ -1951,10 +1951,15 @@ export async function handleWebhook(req, res, deps = {}) {
             // el segundo informe de Temuco quedaria indistinguible del primero, o directamente
             // no entraria. Un registro ISO que no se puede atribuir a un cliente no es registro.
             // Se le agrega el correlativo (CM-FR-006-2026-XXXX), que ya va impreso en la portada.
-            // Lo que recibe el cliente NO cambia.
-            const nombreParaElArchivo = numeroInforme
-              ? nombreArchivo.replace(/\.pdf$/i, `-${numeroInforme}.pdf`)
-              : nombreArchivo;
+            //
+            // 🔴 [2026-09-15] CORREGIDO: este `replace` lo pegaba SIEMPRE, y desde el 04-sep
+            // `nombreConLetra` (línea 1831) ya lo pone ⇒ salía DOS VECES. Medido en el
+            // WorkDrive del dueño:
+            //   Informe-Termico-Temuco-A-CM-FR-006-2026-0169-CM-FR-006-2026-0169.pdf
+            // El comentario de arriba decía que al cliente le llega el nombre sin correlativo:
+            // eso dejó de ser cierto ese día y nadie volvió a mirarlo. `conCorrelativoUnaVez`
+            // es idempotente, así que da igual quién lo haya puesto antes.
+            const nombreParaElArchivo = conCorrelativoUnaVez(nombreArchivo, numeroInforme);
             await (deps.saveMedia || saveMedia)({
               phone:         from,
               direction:     'outbound',
@@ -3378,7 +3383,8 @@ Comuna: ${datos.comuna}`
               safe('generarPdf.vientos.registro', () => (deps.saveMedia || saveMedia)({
                 phone: from, direction: 'outbound', mediaType: 'document',
                 mimeType: 'application/pdf',
-                filename: archivoV.replace(/\.pdf$/i, `-${folioV}.pdf`),
+                // [2026-09-15] Mismo bug que el térmico: duplicaba el correlativo del Drive.
+                filename: conCorrelativoUnaVez(archivoV, folioV),
                 buffer: pdfV, waMediaId: mediaV,
                 aiDescription: `Informe de vientos ${folioV} (${clientComuna || 'proyecto'})`,
               }));
