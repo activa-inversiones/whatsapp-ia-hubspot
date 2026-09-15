@@ -863,7 +863,50 @@ export async function handleWebhook(req, res, deps = {}) {
     const acuses = (deps.parseStatuses || realParseStatuses)(req.body);
     if (acuses.length) {
       for (const ac of acuses) {
-        if (!ac.fallo) continue;
+        // 🔴 [2026-09-15 · #778 Fase 0.2] ACÁ SE TIRABA LA PRUEBA DE ENTREGA.
+        // El `continue` descartaba `sent`/`delivered`/`read` sin mirarlos. Un `delivered`
+        // es la ÚNICA prueba positiva de que el documento llegó al teléfono del cliente, y
+        // es lo que permite resolver un caso dudoso SIN molestar al dueño: si Meta confirma
+        // la entrega, no hay nada que revisar ni riesgo de mandar dos veces lo mismo — que
+        // es la regla del dueño ("2 veces la misma no se puede").
+        // Solo se registra `delivered` y solo de DOCUMENTOS rastreados: los `sent`/`read` y
+        // los textos sueltos serían ruido, y el cockpit no necesita seis eventos por
+        // cotización. No se consume el rastro: el camino de fallo de abajo lo necesita.
+        if (!ac.fallo) {
+          if (ac.estado === 'delivered') {
+            await safe('acuse.entrega', async () => {
+              const rastro = await (deps.leerEstado || leerEstado)(`wamsg:${ac.msgId}`);
+              if (!rastro) return;                      // no era un documento nuestro
+              // Misma guarda de destinatario que el camino de fallo: un acuse cruzado no
+              // puede dar por entregado el documento de otro cliente.
+              const d = (x) => String(x || '').replace(/\D/g, '');
+              if (ac.telefono && rastro.telefono && d(ac.telefono) !== d(rastro.telefono)) return;
+              // ⚠️ [Kimi, compuerta] ESTE EVENTO SE REPITE, A PROPÓSITO. Meta reintrega los
+              // webhooks hasta recibir un 200, así que el mismo `delivered` llega 1-3 veces y
+              // acá NO se consume el rastro (lo necesita el camino de fallo de abajo).
+              // ⇒ La clave de idempotencia es el `wamid`, que viaja en el payload: **quien
+              // consuma estos eventos DEBE deduplicar por `wamid`**, nunca contar filas.
+              // Para "¿este documento se entregó?" alcanza con `EXISTS`, que es inmune a la
+              // repetición. Queda escrito acá porque la Fase 3 (el árbitro que resuelve los
+              // casos dudosos sin molestar al dueño) va a apoyarse en esto.
+              const _b = deps.bridge || realBridge;
+              if (typeof _b.logOliverEvent === 'function') {
+                // Sin await: registrar la entrega no puede demorar el 200 a Meta.
+                // `.catch` mudo a propósito — si el registro falla, el cliente igual tiene
+                // su documento y el log de abajo deja el rastro.
+                Promise.resolve(_b.logOliverEvent('documento_entregado', {
+                  phone: rastro.telefono || ac.telefono || null,
+                  wamid: ac.msgId,
+                  tipo: rastro.tipo || null,
+                  folio: rastro.folio || null,
+                })).catch(() => {});
+              }
+              log('info', 'acuse.entrega',
+                `${rastro.tipo || 'documento'} ${rastro.folio || ac.msgId} ENTREGADO a ${d(rastro.telefono || ac.telefono).slice(-4)}`);
+            });
+          }
+          continue;
+        }
         await safe('acuse.fallo', async () => {
           const rastro = await (deps.leerEstado || leerEstado)(`wamsg:${ac.msgId}`);
           if (!rastro) return;               // no lo rastreabamos: no hay nada que decir

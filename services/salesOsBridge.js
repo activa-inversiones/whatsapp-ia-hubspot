@@ -258,6 +258,46 @@ export async function pushQuoteEvent(payload) {
   });
 }
 
+/**
+ * Registra un evento del bot en `oliver_events` (Postgres, vía sales-os).
+ *
+ * 🔴 [2026-09-15 · #778] POR QUÉ SE AGREGA: el endpoint existe en sales-os desde hace
+ * tiempo (`POST /internal/oliver-event/log`, server.js:1532) y la tabla `oliver_events`
+ * también — pero **el bot nunca le mandó nada**, porque esta función no existía en el
+ * bridge. Por eso `webhook.js:4742` está guardado con `typeof bridge.logOliverEvent ===
+ * 'function'`, que en producción SIEMPRE daba false: el evento `turn_completed` se
+ * calculaba y se tiraba. Medido: en `oliver_events` solo hay filas escritas por los
+ * crons del propio sales-os, ninguna del bot.
+ *
+ * Una función a medio cablear se ve igual que una que no existe — la misma clase de
+ * defecto que el `markLeadResponded` que devolvía 401 durante semanas (index.js:1913).
+ *
+ * Usa el token de INGESTA (el endpoint pide `env.ingestToken`, no el de operador).
+ * Fire-and-forget desde el llamador: registrar un evento JAMÁS puede frenar una respuesta
+ * al cliente.
+ *
+ * @param {string} eventType  máx 80 chars (lo valida el endpoint)
+ * @param {object} [payload]  si trae `phone`, sales-os lo extrae a su propia columna
+ * @param {{botVersion?: string, timestamp?: string}} [opts]
+ */
+export async function logOliverEvent(eventType, payload = {}, opts = {}) {
+  if (!ingestEnabled()) return { ok: false, skipped: true };
+  if (!eventType || typeof eventType !== "string") {
+    return { ok: false, error: "event_type_required" };
+  }
+  return requestWithRetry("/internal/oliver-event/log", {
+    method: "POST",
+    body: {
+      event_type: eventType.slice(0, 80),
+      bot_version: opts.botVersion || process.env.BOT_VERSION || null,
+      timestamp: opts.timestamp || new Date().toISOString(),
+      payload: (payload && typeof payload === "object") ? payload : {},
+    },
+    token: SALES_OS_INGEST_TOKEN,
+    timeoutMs: TIMEOUT_INGEST_MS,
+  });
+}
+
 /* =========================
    EXPORTS — OPERATOR (sin retry, timeout agresivo)
    ========================= */
