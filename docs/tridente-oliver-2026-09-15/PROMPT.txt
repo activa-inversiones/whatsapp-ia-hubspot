@@ -1,0 +1,12 @@
+Lee COMPLETO el archivo docs/tridente-oliver-2026-09-15/BRIEF.md de este repo (whatsapp-ia-hubspot) y ejecuta lo que pide su seccion "Lo que se pide a cada uno de ustedes".
+
+Verifica cada causa raiz abriendo el codigo REAL antes de opinar:
+- index.js lineas 956 (sanitizeForCustomer), 1852 (waSend), 1866 (waSendH), 1934 (waSendMultiH), 6560, 6217-6223 (captura de nombre), 569 (customer_name)
+- services/oliverName.js y services/oliverName.test.js
+- docs/tridente-oliver-2026-09-15/ref-quoteCorrelativo.js  (copia de temp-sales-os/src/services/quoteCorrelativo.js)
+
+REGLAS DURAS: SOLO LECTURA. No edites archivos, no crees archivos, no git add/commit/push, no deploy, no abras .env.
+Español chileno, sin humo, sin adular. Cita siempre archivo:linea.
+Marca cada afirmacion como VERIFICADO / PLAUSIBLE / NO PUEDO SABERLO.
+
+Entrega informe markdown por stdout con veredicto APTO / NO APTO / APTO CON CAMBIOS para cada punto P1..P6, el cambio concreto si corresponde, y una seccion final "LO QUE EL PLAN NO VIO".

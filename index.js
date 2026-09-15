@@ -339,6 +339,7 @@ import { isSessionStuck, sessionStuckAlertMessage } from "./services/stuckLeadMo
 import { isVisionUnreadable, imageUnreadableMessage } from "./services/oliverVision.js"; // [2026-06-10 G2] imagen ilegible → no mentir "recibí tus medidas"
 import { colorChosen, isColorQuestion, colorOptionsMessage, askColorMessage } from "./services/oliverColor.js"; // [2026-06-11 G1] no asumir el color
 import { needsName, extractName, isLikelyName, askNameMessage } from "./services/oliverName.js"; // [2026-06-11 G5] capturar el nombre (no "Hola Cliente")
+import { limpiarParaCliente } from "./services/salidaSegura.js"; // [2026-09-15 tridente] embudo único de salida
 import { isMeasureSuspicious, looksLikeUnitAmbiguous, askUnitsMessage } from "./services/oliverUnits.js"; // [2026-06-11 G6] confirmar unidades cm/mm
 import { itemTypeLabel } from "./services/oliverLabel.js"; // [2026-06-11 G4] label de tipo correcto (Puerta≠Ventana)
 import { detectHumanRequest } from "./services/oliverHumanRequest.js"; // [2026-06-11 G7] pedir humano ("vendedor"/"asesor") → escalar
@@ -953,26 +954,18 @@ function detectNegation(userText) {
 
 // v11.3-4: SANITIZADOR UNIVERSAL. Hook en waSendH para eliminar basura del output.
 // Prohibido al cliente: JSON crudo, URLs largas tipo SharePoint, llaves/corchetes raros.
+//
+// [2026-09-15 tridente] Las 5 reglas que vivían acá se MUDARON a services/salidaSegura.js,
+// sin perder ninguna (hay test por cada una). No fue un refactor de gusto: sus regex de JSON
+// exigían claves acotadas (id|product|measures|…) y el bloque que se filtró el 14-sep usaba
+// `name`/`arguments`; las etiquetas <tool_call>/<tool_response> no las tocaba ninguna, y
+// `**negrita**` llegaba literal al cliente (35 mensajes esa semana). Además había DOS cerebros
+// más (Oliver GPT y el piloto v2) que nunca pasaban por acá: por eso el punto único vive en
+// un módulo que los tres importan, y no en esta función.
+// Se conserva la firma string→string porque la llaman varios sitios de este archivo.
 function sanitizeForCustomer(text) {
   if (!text || typeof text !== "string") return text;
-  let out = text;
-
-  // 1. Eliminar bloques JSON crudos como [{"id":1,"product":...}]
-  out = out.replace(/\[\s*\{[^\[\]]*"(?:id|product|measures|qty|color|unit_price|total_price|source|confidence)"[^\[\]]*\}(?:\s*,\s*\{[^\[\]]*\})*\s*\]/gs, "[detalles en PDF]");
-
-  // 2. Eliminar JSON objeto suelto con campos internos
-  out = out.replace(/\{\s*"(?:id|product|measures|unit_price|source|confidence)"[^\{\}]*\}/gs, "[detalles en PDF]");
-
-  // 3. URLs SharePoint / Drive / Dropbox largas (>80 chars o con tokens)
-  out = out.replace(/https?:\/\/[^\s]*(?:sharepoint\.com|activaspacl-my\.sharepoint|dropbox|drive\.google)[^\s]*/g, "[video disponible — te lo envío en un momento]");
-
-  // 4. URLs absurdamente largas genéricas (>150 chars de URL)
-  out = out.replace(/https?:\/\/[^\s]{150,}/g, "[link disponible — te lo paso aparte]");
-
-  // 5. Tokens / IDs técnicos expuestos
-  out = out.replace(/\b(?:wamid|estimate_id|deal_id|session_id)\s*[:=]\s*[A-Za-z0-9_\-]{10,}/gi, "");
-
-  return out.trim();
+  return limpiarParaCliente(text).texto;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1930,8 +1923,17 @@ async function waSendMultiH(to, msgs, skipTyping = false, meta = {}) {
   try {
     for (const m of msgs) {
       if (!m?.trim()) continue;
-      await sleep(humanMs(m));
-      await waSend(to, m);
+      // [2026-09-15 tridente · Codex] Acá iba `waSend(to, m)` CRUDO: esta ruta se saltaba
+      // entero el "sanitizador universal" de waSendH, y además persistía el texto sucio en
+      // el cockpit (el body de abajo era `m`, no el limpio). Ahora pasa por el mismo embudo.
+      const limpio = limpiarParaCliente(m);
+      if (limpio.bloquear) {
+        logErr("waSendMultiH", new Error(`burbuja bloqueada motivos=${limpio.motivos.join(",")}`));
+        continue;
+      }
+      const safeM = limpio.texto;
+      await sleep(humanMs(safeM));
+      await waSend(to, safeM);
       if (meta.track !== false) {
         fireAndForget(
           "trackConversationEvent.outbound_multi",
@@ -1943,7 +1945,7 @@ async function waSendMultiH(to, msgs, skipTyping = false, meta = {}) {
             actor_type: meta.actor_type || "assistant",
             actor_name: meta.actor_name || AGENT_NAME,
             message_type: meta.message_type || "text",
-            body: m,
+            body: safeM,
             metadata: meta.metadata || { source: "whatsapp_ia" },
             quote_status: meta.quote_status,
             unread_count: 0,

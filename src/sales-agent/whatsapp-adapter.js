@@ -9,6 +9,7 @@
 
 import axios from "axios";
 import { textoDeReaccion } from "../../services/reactionText.js";
+import { limpiarParaCliente } from "../../services/salidaSegura.js"; // [2026-09-15 tridente] embudo único
 
 const META = {
   VER: process.env.META_GRAPH_VERSION || "v22.0",
@@ -137,12 +138,28 @@ export async function sendWhatsAppText(to, body) {
   if (!to || !body) {
     return { ok: false, error: "missing_to_or_body" };
   }
+
+  // [2026-09-15 tridente · Codex] EMBUDO ÚNICO. Esta es la salida de Oliver GPT y del piloto
+  // v2: ninguno de los dos pasa por `index.js:waSendH`, así que el "sanitizador universal"
+  // de la v11.3-4 nunca los cubrió. Por acá salió la fuga medida del 14-sep (conv 4d16c6ca):
+  // 2.120 caracteres con el bloque `<tool_call>` crudo, folio temporal y SKU interno.
+  // `bloquear` ⇒ NO se envía: el llamador debe regenerar SOLO el texto final reusando los
+  // tool results ya obtenidos, y una vez sola. Mandar el texto mutilado sería peor.
+  const limpio = limpiarParaCliente(String(body));
+  if (limpio.bloquear) {
+    console.error(`[wa-adapter] ENVIO BLOQUEADO to=${to} motivos=${limpio.motivos.join(",")} — texto sin contenido util tras limpiar`);
+    return { ok: false, error: "salida_bloqueada", motivos: limpio.motivos };
+  }
+  if (limpio.motivos.length) {
+    console.warn(`[wa-adapter] salida saneada to=${to} motivos=${limpio.motivos.join(",")}`);
+  }
+
   try {
     const payload = {
       messaging_product: "whatsapp",
       to: String(to).replace(/^\+/, ""),
       type: "text",
-      text: { body: String(body) },
+      text: { body: limpio.texto },
     };
     const r = await axiosWA.post(`/${META.PHONE_ID}/messages`, payload);
     const msgId = r.data?.messages?.[0]?.id;

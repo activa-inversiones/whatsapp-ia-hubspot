@@ -158,6 +158,7 @@ import { saludoForReferral } from '../../services/ctwaSaludos.js'; // [2026-07-1
 import { parseLandingRef, buildLandingLeadPayload } from '../../services/landingRefParser.js'; // [2026-07-02] atribución orgánica landing→WA
 import { isVisionUnreadable } from '../../services/oliverVision.js'; // [F3b] detector imagen ilegible
 import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from './escalation.js'; // [2026-06-18] escalación determinista compartida
+import { agregarCotizacionDelTurno, tieneMontoUtil } from './cotizacionDelTurno.js'; // [2026-09-15 tridente] contrato total_neto + agrega TODO el turno
 
 /* =========================================================================
  * CONFIG
@@ -681,19 +682,11 @@ function copyAttributionState(target, source) {
   return target;
 }
 
-// Extrae la primera cotización calculada de los toolCalls del turno (si la hay).
-function extractQuote(toolCalls = []) {
-  for (const tc of toolCalls) {
-    if (
-      (tc.name === 'calcular_cotizacion' || tc.name === 'calcular_por_area') &&
-      tc.result &&
-      tc.result.ok !== false
-    ) {
-      return tc.result;
-    }
-  }
-  return null;
-}
+// [2026-09-15 tridente · Codex] `extractQuote` se ELIMINÓ acá. Devolvía solo la PRIMERA
+// cotización del turno, y su único consumidor leía el monto de `total`/`grand_total`, campos
+// que la tool no manda. Reemplazado por `agregarCotizacionDelTurno` (cotizacionDelTurno.js),
+// que agrega todas las cotizaciones del turno y resuelve `total_neto`. Con contract test
+// alimentado por la forma real de `runTool`, no por un fixture inventado.
 
 /* =========================================================================
  * HANDLER PRINCIPAL
@@ -4643,7 +4636,23 @@ Comuna: ${datos.comuna}`
     }
 
     // Cotización en el turno → pushQuoteEvent.
-    const quote = extractQuote(toolCalls);
+    // [2026-09-15 tridente · Codex] Antes acá iba `extractQuote(toolCalls)`, que tomaba SOLO
+    // la primera cotización del turno y cuyo monto se leía como `quote.total || quote.grand_total`
+    // — dos campos que la tool NUNCA devuelve (manda `total_neto`, tools.js:851). Resultado
+    // medido: 90 de 164 filas de `quotes` de la semana del 8-15 sep quedaron con amount_total
+    // NULL. El DTO agrega TODAS las cotizaciones del turno y resuelve el campo correcto.
+    const quoteDto = agregarCotizacionDelTurno(toolCalls);
+    const quote = quoteDto ? quoteDto.items[0] : null;
+    const montoTurno = tieneMontoUtil(quoteDto) ? quoteDto.amount_total : null;
+    // Si cotizó y el monto igual salió nulo, el contrato con la tool se rompió otra vez.
+    // Se GRITA en vez de persistir un draft mudo: un fallo silencioso se ve igual que un
+    // sistema sano (misma lección que markLeadResponded, index.js:1913).
+    if (quoteDto && montoTurno === null) {
+      console.error('[oliver-gpt] cotización del turno SIN monto — revisar contrato con tools.js:' +
+        ` items=${quoteDto.items.length} campos=${JSON.stringify(Object.keys(quoteDto.items[0] || {}))}`);
+    } else if (quoteDto?.parcial) {
+      console.warn(`[oliver-gpt] monto PARCIAL: ${quoteDto.sin_monto} de ${quoteDto.items.length} ítems sin precio`);
+    }
     if (quote) {
       await landingAttributionReady;
       copyAttributionState(newState, state);
@@ -4653,7 +4662,7 @@ Comuna: ${datos.comuna}`
           phone: telefonoCliente,
           channel: 'whatsapp',
           customer_name: atribucion?.name || newState.name || push_name || 'Cliente WhatsApp',
-          amount_total: quote.total || quote.grand_total || null,
+          amount_total: montoTurno,
           currency: 'CLP',
           status: 'draft',
           fbclid:    newState.fbclid    || null,
@@ -4677,7 +4686,7 @@ Comuna: ${datos.comuna}`
             project_type: null,
             product_interest: null,
             windows_qty: null,
-            budget: (quote.total || quote.grand_total) ? String(quote.total || quote.grand_total) : null,
+            budget: montoTurno !== null ? String(montoTurno) : null,
             message: null,
             status: 'draft',
             zoho_deal_id: null,
