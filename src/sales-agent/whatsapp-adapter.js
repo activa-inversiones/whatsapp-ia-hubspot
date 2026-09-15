@@ -164,15 +164,51 @@ export async function sendWhatsAppText(to, body) {
     const r = await axiosWA.post(`/${META.PHONE_ID}/messages`, payload);
     const msgId = r.data?.messages?.[0]?.id;
     console.log(`[wa-adapter] text_sent to=${to} msgId=${msgId || "?"}`);
-    return { ok: true, msgId };
+    return { ok: true, msgId, wamid: msgId };
   } catch (err) {
-    const errBody = err.response?.data || err.message;
-    console.error(
-      "[wa-adapter] text_send_failed:",
-      typeof errBody === "string" ? errBody : JSON.stringify(errBody)
-    );
-    return { ok: false, error: typeof errBody === "string" ? errBody : JSON.stringify(errBody) };
+    // [2026-09-15 · #778 Fase 0.1] Antes acá se aplastaba TODO a un string:
+    // `err.response?.data || err.message`. Con eso, un TIMEOUT y un RECHAZO de Meta salían
+    // idénticos —`{ok:false, error:"<texto>"}`— y era imposible saber si el mensaje llegó.
+    // Eso importa por la regla del dueño ("2 veces la misma no se puede"): reintentar un
+    // timeout puede duplicar; reintentar un rechazo verificado no. La clasificación vive en
+    // errorMeta.js; acá solo se CONSERVA el dato para que exista algo que clasificar.
+    // Se mantienen `ok` y `error` con la misma forma de siempre: ningún llamador se entera.
+    return errorEstructurado("text_send_failed", to, err);
   }
+}
+
+/**
+ * Convierte un error de axios en el contrato que consume `errorMeta.clasificar()`.
+ * NO decide nada: solo preserva lo que hoy se perdía.
+ *
+ * @param {string} etiqueta  para el log
+ * @param {string} to        destinatario (solo para el log)
+ * @param {any} err          el error de axios
+ * @returns {{ok:false, error:string, status?:number, code?:number,
+ *            error_subcode?:number, timedOut:boolean, netCode?:string}}
+ */
+function errorEstructurado(etiqueta, to, err) {
+  const data = err?.response?.data;
+  const metaErr = data?.error || {};
+  // axios marca el timeout como ECONNABORTED; también hay implementaciones que usan ETIMEDOUT.
+  const timedOut = err?.code === "ECONNABORTED" || err?.code === "ETIMEDOUT" ||
+    /timeout/i.test(String(err?.message || ""));
+  const texto = data ? JSON.stringify(data) : String(err?.message || "error_desconocido");
+
+  const out = {
+    ok: false,
+    error: texto,                                  // compatibilidad: forma de siempre
+    status: err?.response?.status,                 // NUNCA se capturaba antes
+    code: Number.isFinite(metaErr.code) ? metaErr.code : undefined,
+    error_subcode: Number.isFinite(metaErr.error_subcode) ? metaErr.error_subcode : undefined,
+    timedOut,
+    netCode: err?.code,
+  };
+  console.error(
+    `[wa-adapter] ${etiqueta}: to=${to} status=${out.status ?? "-"} code=${out.code ?? "-"} ` +
+    `subcode=${out.error_subcode ?? "-"} timeout=${timedOut} net=${out.netCode ?? "-"} :: ${texto.slice(0, 300)}`
+  );
+  return out;
 }
 
 /**
@@ -401,10 +437,11 @@ export async function sendWaDocument(to, mediaId, filename, caption = '') {
     });
     const msgId = r.data?.messages?.[0]?.id;
     console.log(`[wa-adapter] document_sent to=${to} file=${filename} msgId=${msgId || '?'}`);
-    return { ok: true, msgId };
+    return { ok: true, msgId, wamid: msgId };
   } catch (err) {
-    const e = err.response?.data || err.message;
-    console.error('[wa-adapter] document_send_failed:', typeof e === 'string' ? e : JSON.stringify(e));
-    return { ok: false, error: typeof e === 'string' ? e : JSON.stringify(e) };
+    // [2026-09-15 · #778 Fase 0.1] Este es EL envío que importa: la Propuesta Técnico
+    // Económica. Sin el error estructurado no se puede saber si un fallo acá significa
+    // "Meta lo rechazó" (reintentable) o "no sabemos" (jamás reintentar solo).
+    return errorEstructurado('document_send_failed', to, err);
   }
 }
