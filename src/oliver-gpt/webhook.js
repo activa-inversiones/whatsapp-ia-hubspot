@@ -159,6 +159,7 @@ import { parseLandingRef, buildLandingLeadPayload } from '../../services/landing
 import { isVisionUnreadable } from '../../services/oliverVision.js'; // [F3b] detector imagen ilegible
 import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from './escalation.js'; // [2026-06-18] escalación determinista compartida
 import { agregarCotizacionDelTurno, tieneMontoUtil } from './cotizacionDelTurno.js'; // [2026-09-15 tridente] contrato total_neto + agrega TODO el turno
+import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
 
 /* =========================================================================
  * CONFIG
@@ -4495,6 +4496,25 @@ Comuna: ${datos.comuna}`
     // [Ronda 4 2026-07-20] Borrar acciones FALSAS narradas ("[Enlace a la cotización]",
     // "[Calculando...]") — casos reales 16-19 jul: el LLM las escribió pese al ⛔ del prompt.
     reply = stripAccionesFalsas(reply);
+    // [2026-09-15 tridente · Codex] El embudo de salida va ACÁ, no solo en el transporte.
+    // El adaptador (whatsapp-adapter.js:132) ya limpia lo que sale a Meta, pero `reply` crudo
+    // seguía alimentando otras TRES superficies: la nota de voz (línea ~4566, el TTS podía
+    // LEER EN VOZ ALTA el JSON), la historia del LLM, y `pushConversationEvent` (~4631), que
+    // es lo que ve el operador en el cockpit y lo que queda como registro.
+    // MEDIDO el 15-sep 20:12, post-deploy: un mensaje guardado con `**negrita**` de Markdown
+    // — el cliente recibió `*negrita*` porque el adaptador lo corrigió, pero el REGISTRO
+    // guardó la versión sucia. Un registro que no coincide con lo entregado no sirve de
+    // evidencia. Limpiar acá hace que las cuatro superficies digan exactamente lo mismo.
+    // Mismo criterio que la "Ronda 4.1 — Codex" de abajo: la historia persiste lo que el
+    // cliente REALMENTE recibió. `limpiarParaCliente` es idempotente: que el adaptador vuelva
+    // a pasarlo no cambia nada.
+    const _limpio = limpiarParaCliente(reply);
+    if (_limpio.motivos.length) {
+      log('warn', 'salida.saneada', `motivos=${_limpio.motivos.join(',')} bloquear=${_limpio.bloquear}`);
+    }
+    // Si quedó vacío tras limpiar, se conserva el original: que el adaptador decida bloquear.
+    // Vaciar el reply acá dejaría al cliente sin respuesta Y sin rastro de por qué.
+    if (!_limpio.bloquear) reply = _limpio.texto;
     // [Ronda 4.1 — Codex] la HISTORIA persiste lo que el cliente REALMENTE recibió: sin
     // esto el LLM veía su propio "[Enlace...]"/monto sin filtrar en el turno siguiente y
     // daba por enviado un link/precio que jamás llegó. La guarda de identidad protege el
