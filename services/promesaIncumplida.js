@@ -27,12 +27,25 @@
 // justo con los clientes que mejor se portaron.
 //
 // ── POR QUÉ PASA ────────────────────────────────────────────────────────────
-// La promesa la emite el CÓDIGO, de forma determinista (webhook.js:3439,
-// `mensajeValor`, dentro del flujo del informe térmico). La entrega, en cambio,
-// depende de que el LLM decida llamar a `generar_pdf_cotizacion` (webhook.js:4483).
-//   Promesa determinista + cumplimiento probabilístico = esta falla.
-// Si el modelo no llama la tool y el cliente no vuelve a escribir, no hay turno
-// siguiente y la promesa muere en silencio: sin PDF, sin aviso, sin rastro.
+// 🔴 [CORRECCIÓN 2026-09-15, tridente · Codex] La versión anterior de este bloque
+// decía que la entrega "depende de que el LLM decida llamar generar_pdf_cotizacion".
+// ES FALSO y así quedó escrito en producción durante unas horas. Lo desmintió Codex
+// y se verificó: el folio se pide y se marca ANTES de generar el PDF
+// (webhook.js:2897, :2928), el `pdfBuffer` se crea en :3087, y RECIÉN DESPUÉS
+// aparece el copy de la promesa (:3439). O sea la tool YA se ejecutó cuando el
+// cliente lee "se la preparo". En el caso Katy los dos informes quedaron guardados
+// con `quote_number = CM-FR-004-2026-0462`: el folio existía antes que ellos.
+//
+// LO QUE SÍ PASA: la promesa, los informes, el video, el anticipo y la propuesta
+// viven TODOS en una sola continuación async de ~2 minutos dentro del mismo turno.
+// Lo último de esa cola es el precio. Si la continuación no llega viva hasta
+// `sendWaDocument`, se pierde justo eso — y no queda ninguna fila que obligue a
+// nadie a completarlo. En palabras de Codex: **no existe una obligación durable de
+// entrega**. El sistema promete, pero la promesa no se anota como deuda exigible.
+//
+// La causa EXACTA de la muerte en el caso Katy sigue siendo NO PUEDO SABERLO:
+// después del video no hay `return`, ni corte por `turnoVigente`, ni await sin
+// techo que explique dos horas de silencio. Falta el log de Railway de 17:59-18:05.
 //
 // Este módulo NO arregla la causa (que el LLM llame la tool): pone la RED. Nadie
 // se entera hoy; con esto, el dueño se entera en minutos en vez de en dos horas.

@@ -1,0 +1,13 @@
+Lee COMPLETO docs/tridente-oliver-2026-09-15/BRIEF-778-cura.md de este repo y hace lo que pide.
+Sos ABOGADO DEL DIABLO: tu tarea es REFUTAR que la propuesta convenga, no validarla.
+Verifica en el codigo real antes de opinar: src/oliver-gpt/webhook.js lineas 91, 713, 763, 778,
+954, 985, 3107, 3184, 3410, 3439, 3484-3546, 3556; services/stuckLeadMonitor.js:76;
+services/promesaIncumplida.js.
+La pregunta central: que puede matar la COLA de esa secuencia (anticipo + propuesta) sin dejar
+rastro en ninguna tabla y SIN reiniciar el proceso. Busca awaits sin techo, safe() que traga
+errores que deberian gritar, locks que queden tomados, y cualquier return/throw que saltee el paso
+del anticipo.
+SOLO LECTURA. No edites, no crees archivos, no git add/commit/push, no abras .env.
+Español chileno, sin humo, sin adular. Cita archivo:linea. Marca VERIFICADO / PLAUSIBLE /
+NO PUEDO SABERLO. Veredicto APTO / APTO CON CAMBIOS / NO APTO para P-A, P-B y P-C, y una seccion
+final "LO QUE EL PLAN NO VIO".
