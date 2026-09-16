@@ -27,7 +27,7 @@ const acuse = (status, msgId = 'wamid.DOC1', extra = {}) => ({
 });
 
 function makeDeps({ enviado = null, overrides = {} } = {}) {
-  const spy = { convEvents: [], avisos: [], turnos: 0, borrados: [] };
+  const spy = { convEvents: [], avisos: [], turnos: 0, borrados: [], eventos: [] };
   const estado = new Map();
   if (enviado) estado.set(`wamsg:${enviado.msgId}`, { valor: enviado, expira: null });
   estado.set('informe_termico:56940415964', { valor: true, expira: null });
@@ -45,6 +45,8 @@ function makeDeps({ enviado = null, overrides = {} } = {}) {
       pushConversationEvent: async (p) => { spy.convEvents.push(p); return { ok: true }; },
       pushLeadEvent: async () => ({ ok: true }),
       pushQuoteEvent: async () => ({ ok: true }),
+      // El registro DURABLE de acuses: es la fuente con la que se concilia un caso dudoso.
+      logOliverEvent: async (tipo, payload) => { spy.eventos.push({ tipo, payload }); return { ok: true }; },
     },
     _estado: estado,
   };
@@ -194,4 +196,48 @@ test('🔴 [Codex final] un `failed` YA REEMPLAZADO no ordena reenviar', async (
   await new Promise((r) => setTimeout(r, 100));
   assert.equal(spy.avisos.length, 0, 'el envio siguiente ya llego: no hay nada que reenviar');
   assert.equal(spy.convEvents.filter((e) => e.metadata?.source === 'oliver_gpt_acuse').length, 0);
+});
+
+// ─── 🔴 EL ACUSE DE FALLO TAMBIÉN TIENE QUE QUEDAR REGISTRADO ────────────────
+// El vigilante lo tenía escrito como límite conocido (entregaVigilante.js:76): el bot solo
+// registraba las ENTREGAS, así que el veredicto A_FALLIDO del árbitro no podía dispararse.
+//
+// Kimi, compuerta del diseño (16-sep): *"la idempotencia por command_id es decorativa y la
+// conciliación es el mecanismo real"*. Si falta la mitad de los acuses, no hay con qué
+// conciliar, y un caso dudoso solo se puede cerrar adivinando.
+
+test('🔴 un documento que FALLA deja evento DURABLE, no solo un aviso', async () => {
+  const { deps, spy } = makeDeps({
+    enviado: { msgId: 'wamid.DOC9', tipo: 'informe_termico', folio: 'CM-FR-006-2026-0009', telefono: '56940415964' },
+  });
+  await handleWebhook({ body: acuse('failed', 'wamid.DOC9', {
+    errors: [{ code: 131026, title: 'Message undeliverable' }],
+  }) }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 150));
+
+  const ev = spy.eventos.find((e) => e.tipo === 'documento_fallido');
+  assert.ok(ev, `sin este evento no hay con qué conciliar. Eventos: ${JSON.stringify(spy.eventos)}`);
+  assert.equal(ev.payload.wamid, 'wamid.DOC9', 'el wamid es la clave de deduplicación');
+  assert.equal(ev.payload.folio, 'CM-FR-006-2026-0009');
+  assert.equal(ev.payload.tipo, 'informe_termico');
+  assert.equal(ev.payload.codigo, 131026, 'el código dice si el fallo fue verificado o ambiguo');
+});
+
+test('🔴 un acuse de OTRO cliente no genera evento (no se cruza nada)', async () => {
+  const { deps, spy } = makeDeps({
+    enviado: { msgId: 'wamid.DOC8', tipo: 'propuesta', folio: 'CM-FR-004-2026-0008', telefono: '56911111111' },
+  });
+  await handleWebhook({ body: acuse('failed', 'wamid.DOC8', {
+    errors: [{ code: 131047 }],
+  }) }, makeRes(), deps);   // recipient_id del arnés = 56940415964, distinto
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(spy.eventos.filter((e) => e.tipo === 'documento_fallido').length, 0,
+    'un acuse cruzado registraría el fallo del documento de otro cliente');
+});
+
+test('un acuse de un mensaje que no rastreamos no ensucia el registro', async () => {
+  const { deps, spy } = makeDeps();   // sin `enviado`: no hay rastro
+  await handleWebhook({ body: acuse('failed', 'wamid.NADA', { errors: [{ code: 131047 }] }) }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(spy.eventos.length, 0);
 });

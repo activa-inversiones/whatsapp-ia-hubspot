@@ -982,6 +982,36 @@ export async function handleWebhook(req, res, deps = {}) {
           const que = rastro.tipo === 'informe_termico' ? 'Informe térmico' : 'Propuesta';
           const detalle = ac.motivo || `código ${ac.codigo ?? 'desconocido'}`;
 
+          // 🔴 [2026-09-16] EL FALLO TAMBIÉN DEJA EVENTO. Hasta hoy solo lo dejaba la
+          // ENTREGA, y el propio vigilante lo tenía escrito como límite conocido
+          // (`entregaVigilante.js:76`): *"el bot solo registra los acuses de ENTREGA… así
+          // que el veredicto A_FALLIDO del árbitro todavía no puede dispararse"*.
+          //
+          // POR QUÉ IMPORTA MÁS DE LO QUE PARECE. Kimi, compuerta del diseño (16-sep):
+          // *"la idempotencia por command_id es decorativa y la conciliación es el
+          // mecanismo real"*. Y tiene razón: el bot no tiene base propia, un redeploy le
+          // borra la memoria, y hay una ventana que ninguna idempotencia cubre (postea a
+          // Meta, Meta acepta, el bot se cae antes de registrar). Lo ÚNICO que cierra un
+          // caso dudoso sin adivinar es cruzarlo contra lo que dice Meta. Con la mitad de
+          // los acuses sin registrar, esa conciliación no se puede hacer.
+          //
+          // Sin `await`: registrar no puede demorar el 200 a Meta, que si no reintrega.
+          // El rastro ya se consumió arriba, así que las reentregas del mismo `failed` no
+          // vuelven a pasar por acá; aun así el consumidor debe deduplicar por `wamid`.
+          {
+            const _bf = deps.bridge || realBridge;
+            if (typeof _bf.logOliverEvent === 'function') {
+              Promise.resolve(_bf.logOliverEvent('documento_fallido', {
+                phone: rastro.telefono || ac.telefono || null,
+                wamid: ac.msgId,
+                tipo: rastro.tipo || null,
+                folio: rastro.folio || null,
+                codigo: ac.codigo ?? null,
+                motivo: ac.motivo || null,
+              })).catch(() => {});
+            }
+          }
+
           // 1. Que se vea en la conversacion, al lado del "enviado" que quedo mintiendo.
           await safe('acuse.espejo', () => bridge.pushConversationEvent({
             channel: 'whatsapp', external_id: rastro.telefono || ac.telefono,
