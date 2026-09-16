@@ -71,6 +71,14 @@ function makeDeps({ modoOn = true, informeEnvioOk = true, informeCuelga = false,
 
     leerEstado: async (k) => (vigente(estado.get(k)) ? estado.get(k).valor : null),
     escribirEstado: (k, v, ttl = 300) => { estado.set(k, { valor: v, expira: Date.now() + ttl * 1000 }); },
+    // 🔴 El arnés TIENE que espejar las dos formas de escribir. Cuando el candado dudoso
+    // pasó a `escribirDurable`, este arnés seguía inyectando solo `escribirEstado`: el
+    // código caía a la implementación REAL, escribía en otra memoria, y el test dejó de
+    // ver el candado. Un arnés incompleto no falla por lo que mide — falla por lo que no.
+    escribirEstadoDurable: async (k, v, ttl = 300) => {
+      estado.set(k, { valor: v, expira: Date.now() + ttl * 1000 });
+      return { ok: true, enMemoria: true };
+    },
     fusionarEstado: (k, calcular, ttl = 300) => {
       const e = estado.get(k);
       const actual = vigente(e) ? e.valor : null;
