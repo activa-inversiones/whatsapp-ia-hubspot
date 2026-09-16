@@ -3180,7 +3180,11 @@ Comuna: ${datos.comuna}`
               // el dedup de 2 min de siempre. Una reserva que sobreviva a la emisión bloquea
               // emisiones legítimas posteriores — pasó: dejó en rojo el test del RUT, donde
               // el cliente agrega una ventana en el turno siguiente.
-              _tokenEmision = (deps.reservarEstado || reservarEstado)(_claveEmision, 120) || null;
+              // TTL 45 s, no 120: esta reserva solo tiene que cubrir hasta la MARCA, y en el
+              // medio hay un solo viaje HTTP (el correlativo). Un TTL largo alarga el bloqueo
+              // cuando algo se cae; uno más corto que el tramo reabriría el duplicado, que es
+              // el riesgo inverso que levantó Kimi.
+              _tokenEmision = (deps.reservarEstado || reservarEstado)(_claveEmision, 45) || null;
             } catch { /* si no se puede reservar, manda el guard de abajo (comportamiento viejo) */ }
             if (_tokenEmision === null) {
               // Hay una emisión IDENTICA en vuelo. Si ya terminó, `RECENT_QUOTES` tiene el
@@ -3201,6 +3205,7 @@ Comuna: ${datos.comuna}`
               && _prevQuote && (Date.now() - _prevQuote.at) < QUOTE_DEDUP_MS && _prevQuote.sig === _quoteSig) {
             log('info', 'generarPdf.dedup',
               `Cotización IDÉNTICA duplicada evitada para ${from}; reusando ${_prevQuote.quote_number}`);
+            _soltarEmision();   // no se emitió nada: la reserva no tiene nada que proteger
             return { ok: true, quote_number: _prevQuote.quote_number, pdf_sent: false, deduped: true };
           }
 
@@ -3274,6 +3279,13 @@ Comuna: ${datos.comuna}`
             await safe('generarPdf.correlativo.escalate', () =>
               notifyHighValue(enviarSinPausa, from, { data: { ...state }, history },
                 '[whatsapp] cliente pidió su Propuesta Técnica Económica pero el correlativo ISO no respondió — emitirla desde el inbox (ops.activalabs.ai)'));
+            // 🔴 [Kimi, compuerta 16-sep] SIN ESTO, EL CANDADO SE VUELVE EL PROBLEMA.
+            // Textual: *"si el HTTP del correlativo falla, la reserva queda tomada 120 s…
+            // el mecanismo de protección se convierte en mecanismo de bloqueo del cliente"*.
+            // Acá NO se emitió nada, así que no hay duplicado posible: la reserva se suelta y
+            // el próximo intento del cliente puede pasar. Bloquear de más le niega su precio
+            // a alguien, y eso cuesta la venta — no la vergüenza.
+            _soltarEmision();
             return { ok: false, requiere_revision: true, reason: 'correlativo_no_disponible',
               message: 'Dame un momentito para emitir tu Propuesta Técnica Económica con su folio; si se demora, Marcelo te la hace llegar enseguida.' };
           }

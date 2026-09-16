@@ -706,3 +706,41 @@ test('🔴 pero dos cotizaciones DISTINTAS sí emiten las dos (no se bloquea de 
   assert.ok(n >= 2,
     `salieron ${n}: dos proyectos distintos tienen que producir dos propuestas — bloquear de más deja al cliente sin su precio`);
 });
+
+test('🔴 [Kimi] si el CORRELATIVO falla, la reserva se suelta: el cliente puede reintentar', async () => {
+  // Kimi, compuerta 16-sep, textual: *"si el HTTP del correlativo falla, la reserva queda
+  // tomada 120 s… el mecanismo de protección se convierte en mecanismo de bloqueo del
+  // cliente"*. Tenía razón: el candado nuevo tenía dos `return` que se iban sin soltarla.
+  // Acá no se emitió NADA, así que no hay duplicado posible y bloquear es puro daño.
+  const fetchOriginal = global.fetch;
+  let correlativoCae = true;
+  global.fetch = async (url, opts) => {
+    if (String(url).includes('/internal/quotes/next-number') && correlativoCae) {
+      return { ok: false, status: 503, json: async () => ({}) };
+    }
+    return fetchOriginal(url, opts);
+  };
+  try {
+    const { deps, spy } = makeDeps({ modoOn: false });
+    deps.handleTurn = async ({ state, toolCtx }) => {
+      const items = [ITEM(200000, '1500x1200mm')];
+      const r = await toolCtx.generarPdf({ items, comuna: 'Temuco', name: 'Ana', grand_total: 200000 });
+      spy.pdfResults.push(r);
+      return { reply: 'listo', history: [], toolCalls: [], state };
+    };
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    await esperar(() => spy.pdfResults.length > 0);
+    assert.equal(spy.pdfResults[0]?.reason, 'correlativo_no_disponible', 'el primer intento falla como se espera');
+
+    // Se arregla el correlativo y el cliente lo pide de nuevo: TIENE que poder salir.
+    correlativoCae = false;
+    deps.seen = new Set();
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    await esperar(() => spy.linea.some((x) => x.tipo === 'propuesta'), 4000);
+
+    assert.ok(spy.linea.some((x) => x.tipo === 'propuesta'),
+      'la reserva quedó colgada: el cliente no puede recibir su propuesta aunque ya no falle nada');
+  } finally {
+    global.fetch = fetchOriginal;
+  }
+});
