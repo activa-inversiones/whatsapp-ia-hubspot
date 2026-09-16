@@ -1731,7 +1731,25 @@ export async function handleWebhook(req, res, deps = {}) {
           // (`reservar`), no alargando el TTL.
           const claveEnCurso = `${clave}:en_curso`;
           let tokenReserva = null;
-          if (!forzar) {
+          {
+            // 🔴 [Codex, compuerta 16-sep] ACÁ DECÍA `if (!forzar)`, Y ESE ERA EL AGUJERO.
+            // Codex lo listó como fuga: *"la tool térmica siempre manda {forzar:true},
+            // saltándose tanto el candado largo como la reserva corta"*.
+            //
+            // Saltar el candado LARGO con `forzar` es legítimo y se mantiene: si el cliente
+            // PIDE el informe, se le manda aunque ya lo tenga — *"el candado existe para no
+            // spamear, no para negarle algo a alguien que lo pide"*.
+            //
+            // Saltar la RESERVA CORTA no es legítimo nunca. Esa reserva no dice "ya se lo
+            // mandamos": dice **"hay un envío idéntico ocurriendo AHORA MISMO"**, en este
+            // proceso o en la otra instancia durante un deploy. Mandar encima de eso es
+            // literalmente el defecto medido el 24-ago: dos informes al mismo cliente con
+            // 90 ms de diferencia, folios 0001 y 0002 del mismo segundo. Un pedido del
+            // cliente no puede autorizar un envío en paralelo consigo mismo — como mucho
+            // autoriza uno DESPUÉS, y para eso la reserva vence sola en 5 min.
+            //
+            // Con esto, un cliente que pide el informe mientras el suyo está saliendo recibe
+            // `en_curso` (el flujo sigue y no se le niega nada) en vez de un segundo PDF.
             // 🔴 [Codex · 5a pasada] DOS NIVELES, porque `reservar` solo es atomico DENTRO
             // del proceso (su Map local). Durante un deploy conviven dos instancias y las
             // dos podian pasar el candado largo antes de que ninguna entregara.

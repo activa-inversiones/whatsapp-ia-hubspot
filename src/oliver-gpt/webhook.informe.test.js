@@ -161,7 +161,10 @@ function makeDeps({ disparos = 1, envioOk = true, ventanas = null, overrides = {
     notifyHighValue: async () => ({ sent: true }),
   };
   Object.assign(deps, overrides);
-  return { deps, spy };
+  // `estado` sale afuera: hay tests que necesitan vencer una reserva a mano para medir
+  // qué pasa DESPUÉS, sin esperar los 5 minutos reales.
+  deps._estado = estado;
+  return { deps, spy, estado };
 }
 
 /**
@@ -565,4 +568,53 @@ test('📁 si sales-os se cuelga (no responde nunca), el informe ya salio igual'
     'el informe se entrega aunque el registro quede colgado');
   assert.ok(spy.convEvents.some((e) => e?.metadata?.informe_number),
     'y queda visible en la conversacion');
+});
+
+// ─── 🔴 `forzar` NO PUEDE SALTARSE LA RESERVA CORTA (Codex, 16-sep) ──────────
+// Codex lo listó como fuga: *"la tool térmica siempre manda {forzar:true}, saltándose
+// tanto el candado largo como la reserva corta"*.
+//
+// Son dos cosas distintas y sólo una es legítima:
+//   · candado de 30 días = "ya se lo mandamos". Si el cliente lo PIDE, se le manda igual.
+//   · reserva corta      = "hay un envío idéntico ocurriendo AHORA MISMO".
+// Mandar encima de la segunda es el defecto medido el 24-ago: dos informes al mismo
+// cliente con 90 ms de diferencia, folios 0001 y 0002 del mismo segundo.
+
+test('🔴 con `forzar`, dos pedidos simultáneos NO producen dos informes', async () => {
+  const { deps, spy } = makeDeps();
+  const enviados = () => spy.docsEnviados.filter((d) => /^Informe-Termico/.test(d.filename || '')).length;
+
+  // El cliente pide el informe DOS veces en el mismo turno (o dos ventanas del proyecto
+  // disparan la tool). Es exactamente el caso del 24-ago.
+  deps.handleTurn = async ({ state, toolCtx }) => {
+    toolCtx.enviarInformeTermico('Temuco', { forzar: true, glassLabel: 'DVH 4/12/4', uw: 2.7, producto: 'Ventana PVC' });
+    toolCtx.enviarInformeTermico('Temuco', { forzar: true, glassLabel: 'DVH 4/12/4', uw: 2.7, producto: 'Ventana PVC' });
+    return { reply: 'listo', history: [], toolCalls: [], state };
+  };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 1200));
+
+  assert.equal(enviados(), 1,
+    `salieron ${enviados()} informes: un pedido del cliente no puede autorizar un envío en paralelo consigo mismo`);
+});
+
+test('🔴 pero `forzar` SÍ le manda el informe al cliente que lo pide de nuevo', async () => {
+  // La otra mitad: si esto se rompiera, el arreglo de arriba le estaría negando el informe
+  // a alguien que lo pide, que es justo lo que `forzar` vino a permitir.
+  const { deps, spy } = makeDeps();
+  const enviados = () => spy.docsEnviados.filter((d) => /^Informe-Termico/.test(d.filename || '')).length;
+  deps.handleTurn = async ({ state, toolCtx }) => {
+    toolCtx.enviarInformeTermico('Temuco', { forzar: true, glassLabel: 'DVH 4/12/4', uw: 2.7, producto: 'Ventana PVC' });
+    return { reply: 'listo', history: [], toolCalls: [], state };
+  };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 1200));
+  assert.equal(enviados(), 1, 'el cliente que pide su informe tiene que recibirlo');
+
+  // Y si lo vuelve a pedir MÁS TARDE (la reserva ya venció), se le manda otra vez.
+  for (const k of [...deps._estado?.keys?.() || []]) { if (/:en_curso$/.test(k)) deps._estado.delete(k); }
+  deps.seen = new Set();
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 1200));
+  assert.ok(enviados() >= 1, 'el candado de 30 días no puede negarle el informe a quien lo pide');
 });
