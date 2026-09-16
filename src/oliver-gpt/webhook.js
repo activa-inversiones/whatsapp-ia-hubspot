@@ -3702,12 +3702,28 @@ Comuna: ${datos.comuna}`
           let waDocMediaId = null;
           let waDocMsgId = null;   // id de Meta: con el se interpreta el acuse que llega despues
           let docSent = false;   // ← refleja el ENVÍO REAL (sendWaDocument.ok), no solo el upload
+          // ¿El envío quedó en resultado DESCONOCIDO (timeout, 5xx, sin clasificar)? No es
+          // lo mismo que "no llegó": es "no sabemos". Cambia lo que se le dice al cliente
+          // y lo que se le pide al dueño, nunca el resto del flujo.
+          let propuestaDudosa = false;
+          let propuestaDudosaMotivo = '';
           try {
             waDocMediaId = await uploadWaDocument(pdfBuffer, filename);
             const sendRes = await sendWaDocument(from, waDocMediaId, filename, caption);
             // sendWaDocument NO lanza: devuelve {ok:false} si Meta rechaza → hay que leerlo.
             docSent = !!(sendRes && sendRes.ok);
             waDocMsgId = sendRes?.msgId || null;
+            // 🔴 [Codex, compuerta 16-sep · P0] LA PROPUESTA TENIA EL MISMO DEFECTO QUE EL
+            // INFORME, Y PEOR. Textual: *"si Meta si acepto el POST, seguir esa instruccion
+            // produce un duplicado humano inmediato"*. Ante un timeout no sabemos si llego,
+            // y el codigo le decia al cliente "tuve un problema" y al dueño "enviala desde
+            // el inbox" ⇒ el duplicado lo terminaba cometiendo una persona.
+            // `docSent` NO se toca: de el dependen CRM, conversion, candados y folios.
+            // Esto es una segunda señal, solo para decidir QUE SE DICE cuando no salio.
+            const _clProp = clasificarEnvio(sendRes || {});
+            propuestaDudosa = Boolean(waDocMediaId) && !docSent
+              && _clProp.resultado === RESULTADO_META.DESCONOCIDO;
+            if (propuestaDudosa) propuestaDudosaMotivo = _clProp.motivo;
             if (docSent) {
               // La propuesta formal salió: la atribución ya cumplió su función.
               if (atribucion) atribucionConsumida = true;
@@ -4340,10 +4356,21 @@ Comuna: ${datos.comuna}`
               // documentos distintos bajo el mismo folio.
               alternativas: Math.max(Number((state.last_quote || {}).alternativas || 0), _letrasTerna),
               ..._rastroDeLaTerna() };
-            await safe('generarPdf.escalate', () =>
-              notifyHighValue(enviarSinPausa, from,
-                { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
-                `[whatsapp] PDF ${quoteNumber} no se pudo entregar al cliente — enviarlo desde el inbox (ops.activalabs.ai)`));
+            // 🔴 [Codex, compuerta 16-sep · P0] AQUI NACIA EL DUPLICADO MAS CARO, y lo
+            // cometia una persona. Ante un timeout no sabemos si Meta la entrego, y este
+            // aviso decia "enviarlo desde el inbox": si ya habia llegado, el dueño le
+            // mandaba la MISMA propuesta por segunda vez. La regla del dueño es textual —
+            // *"2 veces la misma no se puede"*— y una instruccion nuestra no puede ser la
+            // que se la haga romper.
+            if (propuestaDudosa) {
+              avisarEntregaDudosa({ tipo: 'Propuesta Técnico Económica', folio: quoteNumber,
+                motivo: propuestaDudosaMotivo || 'desconocido', nombre: clientName || '' });
+            } else {
+              await safe('generarPdf.escalate', () =>
+                notifyHighValue(enviarSinPausa, from,
+                  { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
+                  `[whatsapp] PDF ${quoteNumber} no se pudo entregar al cliente — enviarlo desde el inbox (ops.activalabs.ai)`));
+            }
             return {
               ok: true, quote_number: quoteNumber, pdf_sent: false, media_id: waDocMediaId,
               // [2026-07-01 Bug#2 paridad] explícito y honesto: Marcelo la envía (no "si no la ves" vago).
@@ -4353,7 +4380,16 @@ Comuna: ${datos.comuna}`
               // el cliente tiene dos PDF en la mano mientras le decimos que no pudimos
               // mandarle nada. Se le nombran las que si recibio. `_avisoColor` ya trae solo lo
               // entregado (la A no entra en la lista cuando docSent es false).
-              message: `Su Propuesta Técnica Económica N° ${quoteNumber} está lista ✅ Tuve un problema para adjuntarle el archivo: el Ing. Marcelo Cifuentes se la enviará directamente en un momento. 📲 +56 9 5729 6035`
+              // 🔴 [Codex, compuerta 16-sep] DOS TEXTOS, PORQUE SON DOS SITUACIONES.
+              // Si Meta la RECHAZO, sabemos que no llego y se dice tal cual (texto de
+              // siempre). Si el resultado es DESCONOCIDO, decirle "tuve un problema" a
+              // alguien que YA tiene el PDF en el chat es mentirle y, peor, dispara un
+              // reenvio que le llega dos veces. El texto dudoso es verdadero en los dos
+              // mundos y ademas resuelve la duda: si no la ve, la pide — y ahi el reenvio
+              // lo pide el cliente, que es el unico que sabe si le llego.
+              message: (propuestaDudosa
+                ? `Su Propuesta Técnica Económica N° ${quoteNumber} está lista ✅ Si no la ve acá en el chat, dígame y se la reenvío enseguida.`
+                : `Su Propuesta Técnica Económica N° ${quoteNumber} está lista ✅ Tuve un problema para adjuntarle el archivo: el Ing. Marcelo Cifuentes se la enviará directamente en un momento. 📲 +56 9 5729 6035`)
                 + (_opcionesEntregadas.length >= 2 ? _avisoColor : ''),
             };
           }

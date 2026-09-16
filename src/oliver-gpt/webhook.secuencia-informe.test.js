@@ -50,9 +50,12 @@ function makeRes() {
  * Arnés con LÍNEA DE TIEMPO: cada envío al cliente (texto, documento, video) se anota en
  * `spy.linea` en el orden REAL en que salió. El orden es el objeto de estos tests.
  */
-function makeDeps({ modoOn = true, informeEnvioOk = true, informeCuelga = false, informeEnvioResultado = null, overrides = {} } = {}) {
+function makeDeps({ modoOn = true, informeEnvioOk = true, informeCuelga = false, informeEnvioResultado = null, propuestaEnvioResultado = null, overrides = {} } = {}) {
   const telefono = `5698${String(++SECUENCIA).padStart(7, '0')}`;
-  const spy = { linea: [], textos: [], pdfArgs: [], convEvents: [] };
+  // `pdfResults` = lo que DEVUELVE la herramienta generarPdf. El texto que ve el cliente
+  // viaja ahí (el LLM lo usa para responder), no por sendWhatsAppText: sin capturarlo no se
+  // puede medir qué se le dice cuando un envío queda en duda.
+  const spy = { linea: [], textos: [], pdfArgs: [], convEvents: [], pdfResults: [] };
   const estado = new Map();
   let tokenSeq = 0;
   const vigente = (e) => e && (!e.expira || e.expira > Date.now());
@@ -114,7 +117,7 @@ function makeDeps({ modoOn = true, informeEnvioOk = true, informeCuelga = false,
       const esVientos = /^Informe-Vientos/.test(filename || '');
       spy.linea.push({ tipo: esVientos ? 'vientos' : (esInforme ? 'informe' : 'propuesta'), detalle: filename });
       if (esVientos) return { ok: true, msgId: 'vien.1' };
-      if (!esInforme) return { ok: true, msgId: 'prop.1' };
+      if (!esInforme) return propuestaEnvioResultado || { ok: true, msgId: 'prop.1' };
       if (informeEnvioResultado) return informeEnvioResultado;
       // 🔴 [2026-09-16] EL RECHAZO SE SIMULA COMO LO DICE META, CON CÓDIGO.
       // Antes era `{ok:false, error:'Meta rechazo'}` a secas — una forma que en
@@ -149,7 +152,7 @@ function makeDeps({ modoOn = true, informeEnvioOk = true, informeCuelga = false,
     generarInformeVientosPdf: async () => Buffer.alloc(512, 9),
 
     handleTurn: async ({ state, toolCtx }) => {
-      await toolCtx.generarPdf({
+      spy.pdfResults.push(await toolCtx.generarPdf({
         items: VENTANAS.map((v) => ({
           product: v.producto, producto_label: v.producto, measures: v.medidas,
           measures_original: v.medidas, glass_label: v.vidrio, ambiente: v.ambiente,
@@ -158,7 +161,7 @@ function makeDeps({ modoOn = true, informeEnvioOk = true, informeCuelga = false,
           termico: v.uw === null ? null : { uw: v.uw },
         })),
         comuna: 'Temuco', name: 'Dady',
-      });
+      }));
       return { reply: 'Listo', history: [], toolCalls: [], state: { ...state, name: 'Dady' } };
     },
 
@@ -559,4 +562,52 @@ test('🔴 [Codex, re-pase] el piso queda ACOTADO por el techo: jamás empuja el
     `el piso debía suprimirse por el tope; esperas: ${esperas.join(',')}`);
   assert.ok(pos(spy, 'informe') < pos(spy, 'propuesta'),
     'y el orden térmico antes que propuesta se conserva');
+});
+
+// ─── 🔴 LA PROPUESTA (Codex, compuerta 16-sep · P0) ──────────────────────────
+// Textual: *"la propuesta conserva exactamente el defecto que motivó estos commits… se le
+// dice al dueño que la envíe desde el inbox… si Meta sí aceptó el POST, seguir esa
+// instrucción produce un duplicado humano inmediato"*. Es el documento del precio: el que
+// más duele recibir dos veces.
+
+test('🔴 TIMEOUT de la PROPUESTA ⇒ NO se le dice al cliente que falló, y se le ofrece reenviarla', async () => {
+  const { deps, spy } = makeDeps({
+    modoOn: false,
+    propuestaEnvioResultado: { ok: false, error: 'timeout of 15000ms exceeded', timedOut: true },
+  });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await esperar(() => spy.pdfResults.length > 0);
+  const alCliente = String(spy.pdfResults[0]?.message || '');
+
+  assert.ok(!/Tuve un problema para adjuntarle/.test(alCliente),
+    `se le afirma un fallo al cliente que quizá SÍ tiene el PDF: ${alCliente}`);
+  assert.match(alCliente, /Si no la ve acá en el chat/,
+    'el texto dudoso tiene que ser verdadero llegue o no llegue, y dejar que el cliente pida el reenvío');
+});
+
+test('🔴 TIMEOUT de la PROPUESTA ⇒ al dueño NO se le pide enviarla desde el inbox', async () => {
+  // Esa instrucción es la que le hace romper su propia regla ("2 veces la misma no se puede").
+  const { deps, spy } = makeDeps({
+    modoOn: false,
+    propuestaEnvioResultado: { ok: false, error: 'timeout of 15000ms exceeded', timedOut: true },
+  });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await esperar(() => spy.textos.some((t) => /sin confirmar/.test(String(t))));
+
+  assert.ok(!spy.textos.some((t) => /enviarlo desde el inbox/.test(String(t))),
+    'se le pidió al dueño que reenviara algo que quizá ya llegó');
+  const aviso = spy.textos.find((t) => /sin confirmar/.test(String(t)));
+  assert.match(String(aviso), /Propuesta Técnico Económica/, 'el aviso tiene que nombrar el documento');
+  assert.match(String(aviso), /NO se reenvía solo/);
+});
+
+test('🔴 y el contraste: un RECHAZO verificado de la propuesta SÍ avisa como antes', async () => {
+  const { deps, spy } = makeDeps({
+    modoOn: false,
+    propuestaEnvioResultado: { ok: false, error: 'fuera de ventana', status: 400, code: 131047 },
+  });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await esperar(() => spy.pdfResults.length > 0);
+  assert.match(String(spy.pdfResults[0]?.message || ''), /Tuve un problema para adjuntarle/,
+    'cuando SÍ sabemos que no llegó, se le dice al cliente igual que siempre');
 });
