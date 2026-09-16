@@ -160,7 +160,8 @@ import { isVisionUnreadable } from '../../services/oliverVision.js'; // [F3b] de
 import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from './escalation.js'; // [2026-06-18] escalación determinista compartida
 import { agregarCotizacionDelTurno, tieneMontoUtil } from './cotizacionDelTurno.js'; // [2026-09-15 tridente] contrato total_neto + agrega TODO el turno
 import { clasificar as clasificarEnvio, RESULTADO as RESULTADO_META } from '../sales-agent/errorMeta.js';
-import { mensajeEntregaDudosa, tocaAvisar, claveAviso } from '../../services/avisoEntregaDudosa.js'; // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
+import { mensajeEntregaDudosa, tocaAvisar, claveAviso } from '../../services/avisoEntregaDudosa.js';
+import { pidioDeNuevo } from '../../services/pidioDeNuevo.js'; // [2026-09-16, decision del dueño] el cliente destraba lo que no se reenvia solo // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
 
 /* =========================================================================
@@ -1396,6 +1397,40 @@ export async function handleWebhook(req, res, deps = {}) {
       return; // el finally libera el lock
     }
 
+    // ── (5a0) 🔴 "NO ME LLEGÓ" — el destrabe que lo pide el cliente ──────
+    // [Dueño, 16-sep — decisión suya] Cuando un envío queda en resultado DESCONOCIDO, el
+    // sistema NO reenvía solo y deja un candado durable. Eso cumple *"2 veces la misma no
+    // se puede"*, pero choca con su otra regla —*"a todos los clientes que se le cotiza le
+    // llega el informe térmico, informe de vientos y la cotización"*— si de verdad no llegó.
+    // Su salida: que lo destrabe EL CLIENTE, que es el único que sabe si le llegó.
+    //
+    // Se reusa `informe_reset`, el mecanismo que YA existe y que `candadoVigente` respeta:
+    // no se borran claves (las huellas no se pueden enumerar), se deja un marcador con fecha
+    // y todo candado anterior a él deja de valer. Misma pieza que usa el comando "reset".
+    //
+    // ⚠️ VA DETERMINISTA Y NO POR EL LLM, por lo mismo que el RUT de abajo: de 249 sesiones
+    // con actividad en 20 días, solo 6 tenían `data.name`. Lo que depende del modelo se
+    // pierde; esto tiene que funcionar el 100 % de las veces que un cliente reclama.
+    if (userText) {
+      const _pidio = pidioDeNuevo(userText);
+      if (_pidio.pidio) {
+        const _telR = String(from).replace(/\D/g, '');
+        await safe('destrabe.pidioDeNuevo', async () => {
+          await (deps.escribirEstado || escribirEstado)(
+            `informe_reset:${_telR}`, Date.now(), 30 * 24 * 3600);
+          // La propuesta no mira `informe_reset` sino su firma de 15 min: se borra para que
+          // el mismo folio pueda volver a emitirse en este turno.
+          // ⚠️ `borrar` es SINCRÓNICO (estadoPersistente.js:157). Un `.catch()` acá tiraba
+          // "catch is not a function" en producción — `node --check` lo deja pasar, igual
+          // que el `fireAndForget` de septiembre. Por eso va en try/catch, no encadenado.
+          try { (deps.borrarEstado || borrarEstado)(`quotesig:${_telR}`); }
+          catch { /* la firma vence sola a los 15 min */ }
+        });
+        log('info', 'destrabe.pidioDeNuevo',
+          `${from}: ${_pidio.motivo} — se sueltan los candados y el próximo documento sale`);
+      }
+    }
+
     // ── (5a1) [2026-08-30] RUT DEL RECEPTOR — captura DETERMINISTA ───────
     // Pedido del dueño: *"un cliente quiere que le agreguen el rut de la empresa o rut
     // persona; normalmente piden rut empresa con nombre de rut empresa o nombre de la
@@ -1960,6 +1995,17 @@ export async function handleWebhook(req, res, deps = {}) {
               // justo lo que este arreglo dice evitar. Anular el token ANTES de salir
               // deja a `liberar()` sin nada que soltar; es el mismo idioma que ya usa el
               // camino de éxito ("se suelta el token sin liberar la reserva").
+              // 🔴 [Dueño, 16-sep — decisión suya] CANDADO DURABLE: NO SE REENVÍA SOLO NUNCA.
+              // Sus dos reglas chocan justo acá — *"2 veces la misma no se puede"* y *"a
+              // todos los clientes que se le cotiza le llega el informe"*— y eligió que
+              // mande la primera, con el cliente como destrabe. Sin esto, la reserva vencía
+              // a los 5 min y el mismo informe salía de nuevo (lo midió Codex: *"sólo
+              // convirtió el reintento inmediato en uno diferido cinco minutos"*).
+              // `dudoso:true` queda escrito para poder auditar después por qué está trabado.
+              try {
+                await (deps.escribirEstado || escribirEstado)(clave,
+                  { at: Date.now(), dudoso: true, motivo: _cl.motivo }, 30 * 24 * 3600);
+              } catch { /* si no se pudo escribir, vuelve a mandar en 5 min: se avisó igual */ }
               tokenReserva = null;
               return 'fallo';
             }
@@ -3420,6 +3466,13 @@ Comuna: ${datos.comuna}`
                     `informe de vientos ${folioV}: resultado DESCONOCIDO (${_clV.motivo}) — NO se reintenta. Revisar si llegó.`);
                   avisarEntregaDudosa({ tipo: 'Informe de vientos', folio: folioV, motivo: _clV.motivo,
                     nombre: clientName || '' });
+                  // Candado durable, misma decisión del dueño que en el térmico: acá no
+                  // hay `finally`, pero la reserva igual vence a los 5 min y el informe
+                  // volvería a salir solo.
+                  try {
+                    await (deps.escribirEstado || escribirEstado)(claveV,
+                      { at: Date.now(), dudoso: true, motivo: _clV.motivo }, 30 * 24 * 3600);
+                  } catch { /* vuelve a mandar en 5 min; el aviso ya salió */ }
                   return 'fallo';   // sin soltarV(): no se reintenta lo que quizá ya llegó
                 }
                 log('warn', 'generarPdf.vientos', `informe de vientos ${folioV} NO se entrego: el proximo proyecto reintenta`);

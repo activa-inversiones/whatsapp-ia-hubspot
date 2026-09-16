@@ -611,3 +611,46 @@ test('🔴 y el contraste: un RECHAZO verificado de la propuesta SÍ avisa como 
   assert.match(String(spy.pdfResults[0]?.message || ''), /Tuve un problema para adjuntarle/,
     'cuando SÍ sabemos que no llegó, se le dice al cliente igual que siempre');
 });
+
+// ─── 🔴 EL CICLO COMPLETO (decisión del dueño, 16-sep) ───────────────────────
+// Sus dos reglas chocan cuando no sabemos si llegó: *"2 veces la misma no se puede"* vs
+// *"a todos los clientes que se le cotiza le llega el informe"*. Eligió: no se reenvía
+// solo NUNCA, y lo destraba el cliente. Estos tests miden las dos mitades.
+
+test('🔴 informe DUDOSO ⇒ queda candado durable: NO vuelve a salir solo', async () => {
+  const { deps, spy, estado } = makeDeps({
+    modoOn: true,
+    informeEnvioResultado: { ok: false, error: 'timeout of 15000ms exceeded', timedOut: true },
+  });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await esperar(() => spy.textos.some((t) => /sin confirmar/.test(String(t))));
+
+  // Sin este candado, la reserva vence a los 5 min y el mismo informe sale de nuevo.
+  const durable = [...estado.entries()].find(([k, v]) =>
+    /^informe_termico:/.test(k) && !/:en_curso$/.test(k) && v?.valor?.dudoso === true);
+  assert.ok(durable, `no quedó candado durable: ${JSON.stringify([...estado.keys()])}`);
+  assert.equal(durable[1].valor.motivo, 'timeout', 'el candado tiene que decir POR QUÉ está puesto');
+});
+
+test('🔴 y el cliente lo DESTRABA: "no me llegó" suelta los candados', async () => {
+  const { deps, estado } = makeDeps({ modoOn: true });
+  // El cliente reclama.
+  deps.parseInbound = () => ({ ok: true, from: deps._tel || '56980009999', text: 'no me llegó el informe',
+    msgId: `wamid.${Math.random()}`, type: 'text' });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await esperar(() => [...estado.keys()].some((k) => /^informe_reset:/.test(k)));
+
+  const reset = [...estado.entries()].find(([k]) => /^informe_reset:/.test(k));
+  assert.ok(reset, `el reclamo del cliente no soltó nada: ${JSON.stringify([...estado.keys()])}`);
+  assert.ok(Number(reset[1].valor) > 0, 'el marcador de destrabe tiene que llevar fecha');
+});
+
+test('🔴 pero "ya me llegó, gracias" NO destraba nada (ahí está el duplicado)', async () => {
+  const { deps, estado } = makeDeps({ modoOn: true });
+  deps.parseInbound = () => ({ ok: true, from: deps._tel || '56980009998', text: 'ya me llegó, gracias',
+    msgId: `wamid.${Math.random()}`, type: 'text' });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 400));
+  assert.ok(![...estado.keys()].some((k) => /^informe_reset:/.test(k)),
+    'se destrabó con alguien que acaba de confirmar que lo tiene: eso reenvía y duplica');
+});
