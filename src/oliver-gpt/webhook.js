@@ -94,6 +94,12 @@ const SEQ_INFORME_TIMEOUT_MS = msEnv(process.env.SEQUENCE_INFORME_TIMEOUT_MS, 12
 // el mensaje de valor y el informe térmico: si el motor contesta rápido, se espera igual
 // hasta cumplir el piso; si tarda más, no se agrega nada. Regulable sin deploy.
 const SEQ_TERMICO_MS = msEnv(process.env.SEQUENCE_TERMICO_MS, 45_000);
+
+// 🔴 [2026-09-16 · MEDIDO] Ni un pedido del cliente justifica un segundo informe TAN cerca
+// del primero. Los intervalos reales de los duplicados medidos van de 144 s a 22 min; 30
+// minutos los cubre con margen y deja pasar la reemisión legítima de más tarde (cambio de
+// comuna, proyecto nuevo), que en los datos aparece recién pasadas las horas.
+const ENFRIAMIENTO_INFORME_MS = msEnv(process.env.INFORME_ENFRIAMIENTO_MS, 30 * 60_000);
 // Pausa humana entre el informe y el video cuando el video cae ENTRE documentos.
 const SEQ_VIDEO_MS = msEnv(process.env.SEQUENCE_VIDEO_MS, 20_000);
 // [2026-08-28] Pausa humana antes del informe de VIENTOS (2o documento de la secuencia).
@@ -1697,13 +1703,36 @@ export async function handleWebhook(req, res, deps = {}) {
           // manda aunque ya lo tenga. El candado existe para no spamear, no para negarle algo
           // a alguien que lo esta pidiendo.
           let yaSeMando = false;
-          if (!forzar) {
-            try {
-              const _candado = await (deps.leerEstado || leerEstado)(clave);
-              const _resetAt = Number(await (deps.leerEstado || leerEstado)(`informe_reset:${_tel}`)) || 0;
-              yaSeMando = candadoVigente(_candado, _resetAt);
-            } catch { /* si el estado no se puede leer, se sigue */ }
-          }
+          try {
+            const _candado = await (deps.leerEstado || leerEstado)(clave);
+            const _resetAt = Number(await (deps.leerEstado || leerEstado)(`informe_reset:${_tel}`)) || 0;
+            const _vigente = candadoVigente(_candado, _resetAt);
+            if (!forzar) {
+              yaSeMando = _vigente;
+            } else if (_vigente) {
+              // 🔴 [2026-09-16 · MEDIDO] `forzar` YA NO SE SALTA LOS PRIMEROS MINUTOS.
+              // Medición contra la BD viva (30 días, sin el teléfono del dueño): 13 clientes
+              // recibieron un SEGUNDO informe térmico entre 5 y 22 minutos después del
+              // primero, más 13 dentro de los 5 min. El más reciente, el 14-sep.
+              //
+              // Saltar el candado con `forzar` sigue siendo correcto —*"el candado existe
+              // para no spamear, no para negarle algo a alguien que lo pide"*— pero NO
+              // cuando el documento acaba de salir: a los 8 minutos el cliente ya lo tiene o
+              // está llegando, y mandarle otro es exactamente lo que el dueño prohibió.
+              // Si de verdad no le llegó, el camino correcto es decírselo, no mandar dos.
+              //
+              // ⚠️ El enfriamiento cuelga del candado LARGO, que solo se escribe tras una
+              // entrega confirmada. Si el envío falló, no hay candado y el reintento pasa
+              // igual: esto nunca deja a un cliente sin su informe por un envío que no salió.
+              const _puesto = Number(_candado === true ? 0 : (_candado?.at || 0));
+              const _edad = _puesto > 0 ? Date.now() - _puesto : Number.POSITIVE_INFINITY;
+              if (_edad < ENFRIAMIENTO_INFORME_MS) {
+                log('info', 'informeTermico.enfriamiento',
+                  `${_tel.slice(-4)}: se pidió de nuevo a los ${Math.round(_edad / 1000)} s — no se manda un segundo informe`);
+                yaSeMando = true;
+              }
+            }
+          } catch { /* si el estado no se puede leer, se sigue */ }
           if (yaSeMando) return 'ya_enviado';
 
           // 🔴 [2026-08-24] CANDADO CORTO CONTRA EL DUPLICADO. Medido en produccion: el

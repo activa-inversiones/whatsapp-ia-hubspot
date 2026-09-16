@@ -309,7 +309,11 @@ test('🔴 [Codex · compuerta] la MEMORIA se guarda ANTES de todo candado', asy
   // registro.
   const bloque = cuerpoDelHook(await leer('../src/oliver-gpt/webhook.js'));
   const iMemoria = bloque.indexOf(':datos`');
-  const iCandado30 = bloque.indexOf('yaSeMando = candadoVigente(');
+  // ⚠️ El ancla es la LLAMADA, no la asignación. Antes buscaba `yaSeMando = candadoVigente(`
+  // y se rompió el 16-sep al agregar el enfriamiento (el resultado pasó por una variable
+  // intermedia). Un test de FUENTE se cae por el texto, no por la intención: el ancla tiene
+  // que ser lo más estable que exprese lo mismo.
+  const iCandado30 = bloque.indexOf('candadoVigente(');
   const iCandadoCorto = bloque.indexOf(':en_curso`');
   assert.ok(iMemoria > 0, 'no se encontro la memoria de la ultima cotizacion');
   assert.ok(iCandado30 > 0 && iCandadoCorto > 0, 'no se encontraron los dos candados');

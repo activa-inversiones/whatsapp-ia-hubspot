@@ -618,3 +618,49 @@ test('🔴 pero `forzar` SÍ le manda el informe al cliente que lo pide de nuevo
   await new Promise((r) => setTimeout(r, 1200));
   assert.ok(enviados() >= 1, 'el candado de 30 días no puede negarle el informe a quien lo pide');
 });
+
+// ─── 🔴 ENFRIAMIENTO: ni un pedido del cliente manda dos informes seguidos ───
+// MEDIDO el 16-sep contra la BD viva (30 días, sin el teléfono del dueño): 13 clientes
+// recibieron un segundo informe térmico DENTRO de 5 min, y 12 más entre 5 y 22 minutos.
+// El más reciente, el 14-sep. La reserva corta solo tapa los primeros 5 minutos; de ahí en
+// adelante solo queda el candado largo, que `forzar` se saltaba entero.
+
+test('🔴 pedirlo de nuevo a los minutos NO manda un segundo informe', async () => {
+  const { deps, spy, estado } = makeDeps();
+  const enviados = () => spy.docsEnviados.filter((d) => /^Informe-Termico/.test(d.filename || '')).length;
+  deps.handleTurn = async ({ state, toolCtx }) => {
+    toolCtx.enviarInformeTermico('Temuco', { forzar: true, glassLabel: 'DVH 4/12/4', uw: 2.7, producto: 'Ventana PVC' });
+    return { reply: 'listo', history: [], toolCalls: [], state };
+  };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 1200));
+  assert.equal(enviados(), 1, 'el primero tiene que salir');
+
+  // Pasan ~8 minutos: la reserva corta YA VENCIÓ (dura 5), así que lo único que puede
+  // frenar el segundo envío es el enfriamiento. Se vence la reserva a mano.
+  for (const k of [...estado.keys()]) { if (/:en_curso$/.test(k)) estado.delete(k); }
+  deps.seen = new Set();
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 1200));
+
+  assert.equal(enviados(), 1,
+    `salió un segundo informe a los minutos: es el caso medido de los 12 clientes (5 a 22 min)`);
+});
+
+test('🔴 pero si el envío FALLÓ, el reintento pasa igual (nadie queda sin su informe)', async () => {
+  // El enfriamiento cuelga del candado LARGO, que solo se escribe tras una entrega
+  // confirmada. Sin entrega no hay candado, y el cliente no puede quedar castigado por un
+  // envío que nunca salió — que es el bug que dejó a 4 clientes bloqueados 30 días.
+  const { deps, spy, estado } = makeDeps({ envioOk: false });
+  deps.handleTurn = async ({ state, toolCtx }) => {
+    toolCtx.enviarInformeTermico('Temuco', { forzar: true, glassLabel: 'DVH 4/12/4', uw: 2.7, producto: 'Ventana PVC' });
+    return { reply: 'listo', history: [], toolCalls: [], state };
+  };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 1200));
+
+  const conCandado = [...estado.entries()].some(([k, v]) =>
+    /^informe_termico:/.test(k) && !/:en_curso$/.test(k) && !/:datos$/.test(k) && v?.valor?.at);
+  assert.equal(conCandado, false,
+    'un envío fallido NO puede dejar candado: el enfriamiento bloquearía el reintento legítimo');
+});
