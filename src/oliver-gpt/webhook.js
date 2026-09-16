@@ -1951,7 +1951,8 @@ export async function handleWebhook(req, res, deps = {}) {
               // `resultado DESCONOCIDO`.
               log('error', 'informeTermico.envio',
                 `informe ${numeroInforme}: resultado DESCONOCIDO (${_cl.motivo}) — NO se reintenta y NO se le avisa al cliente. Revisar si llegó.`);
-              avisarEntregaDudosa({ tipo: 'Informe térmico', folio: numeroInforme, motivo: _cl.motivo });
+              avisarEntregaDudosa({ tipo: 'Informe térmico', folio: numeroInforme, motivo: _cl.motivo,
+                nombre: nombre || state.name || '' });
               // 🔴 [Codex, compuerta 16-sep] SIN ESTA LÍNEA TODO LO DE ARRIBA NO SIRVE.
               // Textual de su revisión: *"el térmico queda reintentable de inmediato"*.
               // Este bloque termina en un `finally { liberar(); }` (más abajo), así que
@@ -3417,7 +3418,8 @@ Comuna: ${datos.comuna}`
                 if (mediaV && _clV.resultado === RESULTADO_META.DESCONOCIDO) {
                   log('error', 'generarPdf.vientos',
                     `informe de vientos ${folioV}: resultado DESCONOCIDO (${_clV.motivo}) — NO se reintenta. Revisar si llegó.`);
-                  avisarEntregaDudosa({ tipo: 'Informe de vientos', folio: folioV, motivo: _clV.motivo });
+                  avisarEntregaDudosa({ tipo: 'Informe de vientos', folio: folioV, motivo: _clV.motivo,
+                    nombre: clientName || '' });
                   return 'fallo';   // sin soltarV(): no se reintenta lo que quizá ya llegó
                 }
                 log('warn', 'generarPdf.vientos', `informe de vientos ${folioV} NO se entrego: el proximo proyecto reintenta`);
