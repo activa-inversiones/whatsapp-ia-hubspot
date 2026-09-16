@@ -1411,7 +1411,21 @@ export async function handleWebhook(req, res, deps = {}) {
     // ⚠️ VA DETERMINISTA Y NO POR EL LLM, por lo mismo que el RUT de abajo: de 249 sesiones
     // con actividad en 20 días, solo 6 tenían `data.name`. Lo que depende del modelo se
     // pierde; esto tiene que funcionar el 100 % de las veces que un cliente reclama.
-    if (userText) {
+    // 🔴🔴 APAGADO 16-sep POR VEREDICTO DE CODEX — NO PRENDER SIN REDISEÑO.
+    // El detector dispara con frases NORMALES de este negocio, probadas contra el módulo
+    // real: *"la ventana no me abre bien"* · *"no me sale a cuenta ese precio"* · *"no me
+    // aparece la opción color nogal"* · *"reenvíame los datos de transferencia"* · *"no me
+    // llegó el maestro a instalar"*. Todas devolvían `pidio:true`.
+    // Causa: las expresiones piden el VERBO ("no me llega", "no me aparece", "reenviá")
+    // sin exigir que el OBJETO sea un documento nuestro. En una empresa de ventanas,
+    // "la ventana no me abre" es exactamente la frase equivocada para reenviar PDFs.
+    // Y hay un segundo defecto de diseño, no de regex: el destrabe soltaba los TRES
+    // documentos, así que un reclamo por la propuesta reenviaba el térmico y el de vientos
+    // que sí habían llegado. El destrabe tiene que ser POR DOCUMENTO.
+    // El módulo y sus tests se dejan (el trabajo sirve para el rediseño); lo que no puede
+    // quedar vivo es esto decidiendo reenvíos frente a un cliente.
+    const DESTRABE_CLIENTE_ON = false;
+    if (DESTRABE_CLIENTE_ON && userText) {
       const _pidio = pidioDeNuevo(userText);
       if (_pidio.pidio) {
         const _telR = String(from).replace(/\D/g, '');
