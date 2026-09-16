@@ -159,6 +159,8 @@ import { parseLandingRef, buildLandingLeadPayload } from '../../services/landing
 import { isVisionUnreadable } from '../../services/oliverVision.js'; // [F3b] detector imagen ilegible
 import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from './escalation.js'; // [2026-06-18] escalación determinista compartida
 import { agregarCotizacionDelTurno, tieneMontoUtil } from './cotizacionDelTurno.js'; // [2026-09-15 tridente] contrato total_neto + agrega TODO el turno
+import { clasificar as clasificarEnvio, RESULTADO as RESULTADO_META } from '../sales-agent/errorMeta.js';
+import { mensajeEntregaDudosa, tocaAvisar, claveAviso } from '../../services/avisoEntregaDudosa.js'; // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
 
 /* =========================================================================
@@ -841,6 +843,34 @@ export async function handleWebhook(req, res, deps = {}) {
     const handleTurn      = deps.handleTurn      || realHandleTurn;
     const bridge          = deps.bridge          || realBridge;
     const notifyHighValue = deps.notifyHighValue  || realNotifyHighValue;
+    // 🔴 [2026-09-16 · Kimi, compuerta] AVISO DE ENTREGA DUDOSA.
+    // Cuando el clasificador dice DESCONOCIDO no se reintenta (reintentar lo que quizá
+    // llegó es mandarle al cliente el mismo documento dos veces). Pero NO reintentar sin
+    // avisar es el caso Katy otra vez: faltó un documento y nadie lo supo en dos horas.
+    // Entonces se avisa al dueño, con evidencia, para que ÉL decida mirando el chat.
+    //
+    // ⚠️ NO SE HACE `await` DE ESTO. Se corre suelto a propósito: este bloque se ejecuta
+    // con el mutex del teléfono tomado, y un await acá le suma latencia a cada turno del
+    // cliente. Es la lección del 15-sep (commit 43c7af4), donde agregar un `await` en un
+    // camino dormido llegó a retener el mutex 21,5 s por turno.
+    const avisarEntregaDudosa = ({ tipo, folio, motivo }) => {
+      safe('entregaDudosa.aviso', async () => {
+        const destino = String(process.env.OWNER_PHONE || process.env.ADMIN_PHONE || '56957296035');
+        if (!destino) return;
+        const k = claveAviso(tipo, folio);
+        let ultimo = null;
+        try { ultimo = await (deps.leerEstado || leerEstado)(k); } catch { /* ante la duda, avisa */ }
+        if (!tocaAvisar(ultimo?.at ?? null)) return;
+        const enviado = await (deps.sendWhatsAppText || realSendWhatsAppText)(
+          destino, mensajeEntregaDudosa({ tipo, folio, telefono: from, motivo }));
+        // La marca se escribe SOLO si el aviso salió: si no, el próximo intento avisa.
+        if (enviado?.ok === true) {
+          try { await (deps.escribirEstado || escribirEstado)(k, { at: Date.now() }, 7 * 24 * 3600); }
+          catch { /* solo se pierde el throttle, no el aviso */ }
+        }
+      });
+    };
+
     const loadSession     = deps.loadSession     || realLoadSession;
     const persistSessionFn = deps.persistSession  || realPersistSession;
     const conv  = deps.conv  || CONV;
@@ -1901,6 +1931,38 @@ export async function handleWebhook(req, res, deps = {}) {
           if (mediaId) envio = await sendWaDocument(from, mediaId, nombreArchivo, _capT);
           const entregado = Boolean(mediaId && envio && envio.ok === true);
           if (!entregado) {
+            // 🔴 [2026-09-16 · Codex, compuerta final] NO TODO FALLO ES IGUAL, Y ACÁ SE
+            // DUPLICABA. Antes se soltaba la reserva SIEMPRE y "el próximo turno reintenta".
+            // Pero un TIMEOUT no dice que Meta lo haya rechazado: dice que no sabemos. Si
+            // Meta alcanzó a aceptar el POST, el reintento le manda al cliente un SEGUNDO
+            // informe. Es la regla del dueño, textual: *"2 veces la misma no se puede"*.
+            // `clasificar` ya existía (errorMeta.js) pero era código muerto: nadie lo llamaba.
+            // Solo aplica si el POST llegó a salir: sin `mediaId` no se envió nada y
+            // reintentar es seguro (no hay nada que duplicar).
+            const _cl = clasificarEnvio(envio || {});
+            if (Boolean(mediaId) && _cl.resultado === RESULTADO_META.DESCONOCIDO) {
+              // NO se suelta la reserva ⇒ no hay reintento automático de algo que quizá
+              // ya llegó. Y NO se le dice al cliente que falló: no lo sabemos, y avisarle
+              // de un fallo que no ocurrió es tan malo como el silencio.
+              // ⚠️ ALCANCE HONESTO: esto EVITA el duplicado, no avisa a nadie todavía.
+              // El aviso al dueño es tarea del Vigilante (#778 Fase 2), que hoy está
+              // APAGADO y lee el outbox, y este camino no escribe en el outbox. Hasta
+              // que eso se cablee, el único rastro es este log — buscarlo por
+              // `resultado DESCONOCIDO`.
+              log('error', 'informeTermico.envio',
+                `informe ${numeroInforme}: resultado DESCONOCIDO (${_cl.motivo}) — NO se reintenta y NO se le avisa al cliente. Revisar si llegó.`);
+              avisarEntregaDudosa({ tipo: 'Informe térmico', folio: numeroInforme, motivo: _cl.motivo });
+              // 🔴 [Codex, compuerta 16-sep] SIN ESTA LÍNEA TODO LO DE ARRIBA NO SIRVE.
+              // Textual de su revisión: *"el térmico queda reintentable de inmediato"*.
+              // Este bloque termina en un `finally { liberar(); }` (más abajo), así que
+              // un `return` pelado suelta la reserva igual y el próximo turno reenvía —
+              // justo lo que este arreglo dice evitar. Anular el token ANTES de salir
+              // deja a `liberar()` sin nada que soltar; es el mismo idioma que ya usa el
+              // camino de éxito ("se suelta el token sin liberar la reserva").
+              tokenReserva = null;
+              return 'fallo';
+            }
+
             log('warn', 'informeTermico.envio',
               `el informe ${numeroInforme} NO se entrego (${envio?.error || 'sin mediaId'}) — sin candado y sin registro: el proximo turno reintenta`);
             // Se suelta la reserva corta: si no, el reintento que este log promete no
@@ -3348,6 +3410,16 @@ Comuna: ${datos.comuna}`
               });
               if (mediaV) envioV = await sendWaDocument(from, mediaV, archivoV, _capV);
               if (!(mediaV && envioV && envioV.ok === true)) {
+                // 🔴 [2026-09-16] Mismo defecto que el térmico, mismo trato: un timeout no
+                // es un rechazo. Si Meta aceptó el POST y acá se suelta la reserva, el
+                // próximo proyecto le manda al cliente el MISMO informe de vientos otra vez.
+                const _clV = clasificarEnvio(envioV || {});
+                if (mediaV && _clV.resultado === RESULTADO_META.DESCONOCIDO) {
+                  log('error', 'generarPdf.vientos',
+                    `informe de vientos ${folioV}: resultado DESCONOCIDO (${_clV.motivo}) — NO se reintenta. Revisar si llegó.`);
+                  avisarEntregaDudosa({ tipo: 'Informe de vientos', folio: folioV, motivo: _clV.motivo });
+                  return 'fallo';   // sin soltarV(): no se reintenta lo que quizá ya llegó
+                }
                 log('warn', 'generarPdf.vientos', `informe de vientos ${folioV} NO se entrego: el proximo proyecto reintenta`);
                 soltarV(); return 'fallo';
               }

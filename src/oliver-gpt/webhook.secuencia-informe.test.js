@@ -50,7 +50,7 @@ function makeRes() {
  * Arnés con LÍNEA DE TIEMPO: cada envío al cliente (texto, documento, video) se anota en
  * `spy.linea` en el orden REAL en que salió. El orden es el objeto de estos tests.
  */
-function makeDeps({ modoOn = true, informeEnvioOk = true, informeCuelga = false, overrides = {} } = {}) {
+function makeDeps({ modoOn = true, informeEnvioOk = true, informeCuelga = false, informeEnvioResultado = null, overrides = {} } = {}) {
   const telefono = `5698${String(++SECUENCIA).padStart(7, '0')}`;
   const spy = { linea: [], textos: [], pdfArgs: [], convEvents: [] };
   const estado = new Map();
@@ -115,7 +115,17 @@ function makeDeps({ modoOn = true, informeEnvioOk = true, informeCuelga = false,
       spy.linea.push({ tipo: esVientos ? 'vientos' : (esInforme ? 'informe' : 'propuesta'), detalle: filename });
       if (esVientos) return { ok: true, msgId: 'vien.1' };
       if (!esInforme) return { ok: true, msgId: 'prop.1' };
-      return informeEnvioOk ? { ok: true, msgId: 'doc.1' } : { ok: false, error: 'Meta rechazo' };
+      if (informeEnvioResultado) return informeEnvioResultado;
+      // 🔴 [2026-09-16] EL RECHAZO SE SIMULA COMO LO DICE META, CON CÓDIGO.
+      // Antes era `{ok:false, error:'Meta rechazo'}` a secas — una forma que en
+      // producción casi no ocurre (`errorEstructurado` siempre trae status/code o
+      // netCode). Un simulacro más pobre que la realidad hace pasar tests que el
+      // código real no pasaría: acá, el clasificador no puede distinguir un rechazo
+      // de un timeout si no se le da el código, y esa distinción es justo la que
+      // evita mandarle dos veces el mismo informe al cliente.
+      return informeEnvioOk
+        ? { ok: true, msgId: 'doc.1' }
+        : { ok: false, error: 'Meta rechazo', status: 400, code: 131047 };
     },
     // El video de cortesía: un id cargado alcanza para medir DÓNDE cae en la línea.
     mediaIdsDisponibles: async () => ({ presentacion: 'wamedia.video.1' }),
@@ -161,7 +171,7 @@ function makeDeps({ modoOn = true, informeEnvioOk = true, informeCuelga = false,
     notifyHighValue: async () => ({ sent: true }),
   };
   Object.assign(deps, overrides);
-  return { deps, spy, telefono };
+  return { deps, spy, telefono, estado };
 }
 
 async function esperar(cond, ms = 8000) {
@@ -360,6 +370,80 @@ test('🔴 el informe FALLA (Meta rechaza) ⇒ recuperación honesta y la propue
   if (pos(spy, 'video') >= 0) {
     assert.ok(pos(spy, 'propuesta') < pos(spy, 'video'), 'video solo después de la propuesta');
   }
+});
+
+// ─── 🔴 TIMEOUT ≠ RECHAZO (Codex, compuerta final · 2026-09-16) ──────────────
+// Regla del dueño, textual: *"2 veces la misma no se puede es una falta de respeto al
+// cliente por el poco cuidado que le colocamos a él"*.
+//
+// Un timeout NO dice que Meta lo haya rechazado: dice que no sabemos. Si Meta alcanzó a
+// aceptar el POST y el próximo turno lo manda de nuevo, el cliente recibe DOS informes.
+// Estos dos tests fijan el trato distinto según lo que sabemos.
+
+test('🔴 TIMEOUT del informe ⇒ NO se le dice al cliente que falló (no lo sabemos)', async () => {
+  const { deps, spy } = makeDeps({
+    modoOn: true,
+    informeEnvioResultado: { ok: false, error: 'timeout of 15000ms exceeded', timedOut: true },
+  });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0),
+    `el cliente JAMÁS se queda sin su PDF de precio — línea: ${JSON.stringify(tipos(spy))}`);
+  assert.ok(!spy.textos.some((t) => /más de lo esperado/.test(String(t))),
+    'avisar "no llegó" de algo que quizá SÍ llegó es tan malo como el silencio');
+  // 🔴 [Kimi, compuerta] PERO NO REINTENTAR **SIN AVISAR** ES EL CASO KATY OTRA VEZ.
+  // Si acá no sale el aviso al dueño, este arreglo no evita un duplicado: cambia un
+  // duplicado por un documento perdido que nadie mira.
+  assert.ok(await esperar(() => spy.textos.some((t) => /sin confirmar/.test(String(t)))),
+    `el dueño tiene que enterarse — textos: ${JSON.stringify(spy.textos.slice(-4))}`);
+  assert.ok(spy.textos.some((t) => /NO se reenvía solo/.test(String(t))),
+    'el aviso tiene que decir explícitamente que no se reenvía solo');
+});
+
+test('🔴 RECHAZO con código conocido ⇒ sí se avisa: ahí sabemos que no llegó', async () => {
+  const { deps, spy } = makeDeps({
+    modoOn: true,
+    informeEnvioResultado: { ok: false, error: 'fuera de ventana', status: 400, code: 131047 },
+  });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => spy.textos.some((t) => /más de lo esperado/.test(String(t)))),
+    'un rechazo verificado SÍ merece la línea de recuperación');
+});
+
+test('🔴 [Codex] TIMEOUT ⇒ la reserva del informe NO se suelta', async () => {
+  // 🔴 EL TEST QUE FALTABA. Codex, compuerta 16-sep, textual: *"el caso TIMEOUT sólo
+  // inspecciona textos del primer turno. No verifica el estado de la reserva"*. Tenía
+  // razón dos veces: (1) mirar textos no medía nada, y (2) el bloque del térmico termina
+  // en un `finally { liberar() }`, así que la primera versión del arreglo soltaba la
+  // reserva igual y el duplicado seguía vivo — el arreglo no arreglaba.
+  //
+  // La reserva retenida es LO QUE impide que el próximo turno reenvíe. Por eso se mide
+  // acá y no por el texto: el texto pasaba con y sin el arreglo.
+  const { deps, spy, estado } = makeDeps({
+    modoOn: true,
+    informeEnvioResultado: { ok: false, error: 'timeout of 15000ms exceeded', timedOut: true },
+  });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'el turno llegó hasta el final');
+  await esperar(() => spy.textos.some((t) => /sin confirmar/.test(String(t))));
+
+  const enCurso = [...estado.keys()].filter((k) => /informe_termico:.*:en_curso$/.test(k));
+  assert.equal(enCurso.length, 1,
+    `la reserva se soltó: el próximo turno reenvía el mismo informe. Llaves: ${JSON.stringify([...estado.keys()])}`);
+});
+
+test('🔴 y el contraste: un RECHAZO verificado SÍ suelta la reserva (ahí hay que reintentar)', async () => {
+  // La otra mitad del arreglo. Si no se midiera, "no soltar nunca" pasaría el test de
+  // arriba y dejaría clientes sin informe para siempre.
+  const { deps, spy, estado } = makeDeps({
+    modoOn: true,
+    informeEnvioResultado: { ok: false, error: 'fuera de ventana', status: 400, code: 131047 },
+  });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'el turno llegó hasta el final');
+
+  const enCurso = [...estado.keys()].filter((k) => /informe_termico:.*:en_curso$/.test(k));
+  assert.equal(enCurso.length, 0,
+    `un rechazo verificado tiene que dejar libre el reintento. Llaves: ${JSON.stringify([...estado.keys()])}`);
 });
 
 test('🔴 el informe se CUELGA ⇒ el techo lo corta y la propuesta sale igual', async () => {
