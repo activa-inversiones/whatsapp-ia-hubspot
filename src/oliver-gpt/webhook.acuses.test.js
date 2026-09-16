@@ -27,7 +27,7 @@ const acuse = (status, msgId = 'wamid.DOC1', extra = {}) => ({
 });
 
 function makeDeps({ enviado = null, overrides = {} } = {}) {
-  const spy = { convEvents: [], avisos: [], turnos: 0, borrados: [], eventos: [] };
+  const spy = { convEvents: [], avisos: [], turnos: 0, borrados: [], eventos: [], textos: [] };
   const estado = new Map();
   if (enviado) estado.set(`wamsg:${enviado.msgId}`, { valor: enviado, expira: null });
   estado.set('informe_termico:56940415964', { valor: true, expira: null });
@@ -38,7 +38,7 @@ function makeDeps({ enviado = null, overrides = {} } = {}) {
     escribirEstado: (k, v) => estado.set(k, { valor: v, expira: null }),
     borrarEstado: (k) => { spy.borrados.push(k); estado.delete(k); },
     handleTurn: async () => { spy.turnos += 1; return { reply: 'x', history: [], toolCalls: [], state: {} }; },
-    sendWhatsAppText: async () => ({ ok: true, msgId: 'm1' }),
+    sendWhatsAppText: async (to, body) => { spy.textos.push({ to, body }); return { ok: true, msgId: 'm1' }; },
     notifyHighValue: async (...a) => { spy.avisos.push(a); return { sent: true }; },
     bridge: {
       getConversationControl: async () => ({ ai_paused: false, operator_status: 'ai' }),
@@ -240,4 +240,54 @@ test('un acuse de un mensaje que no rastreamos no ensucia el registro', async ()
   await handleWebhook({ body: acuse('failed', 'wamid.NADA', { errors: [{ code: 131047 }] }) }, makeRes(), deps);
   await new Promise((r) => setTimeout(r, 150));
   assert.equal(spy.eventos.length, 0);
+});
+
+// ─── 🔴 CONCILIAR UN CASO DUDOSO SIN ADIVINAR ────────────────────────────────
+// Un timeout NO devuelve wamid, así que el acuse que llega después no se puede cruzar con
+// el envío. Lo único compartido es el teléfono. Kimi, compuerta del diseño (16-sep): *"la
+// idempotencia por command_id es decorativa y la conciliación es el mecanismo real"*.
+
+test('🔴 entrega confirmada a un cliente con caso DUDOSO ⇒ se le avisa al dueño', async () => {
+  const { deps, spy } = makeDeps();
+  deps._estado.set('dudoso_pend:56940415964:Informe térmico',
+    { valor: { at: Date.now() - 60_000, tipo: 'Informe térmico', folio: 'CM-FR-006-2026-0077', nombre: 'Katy Rossel' }, expira: null });
+
+  // wamid que NO rastreamos: es el caso del timeout, donde nunca supimos el id.
+  await handleWebhook({ body: acuse('delivered', 'wamid.DESCONOCIDO') }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 200));
+
+  const av = spy.textos.find((t) => /Actualización de la entrega sin confirmar/.test(String(t.body)));
+  assert.ok(av, `no se concilió nada. Textos: ${JSON.stringify(spy.textos)}`);
+  assert.match(String(av.body), /CM-FR-006-2026-0077/);
+  assert.match(String(av.body), /lo más probable/, 'no puede afirmar que llegó');
+  assert.match(String(av.body), /No se reenvió nada/);
+});
+
+test('🔴 y NO se repite: Meta reentrega el mismo acuse hasta recibir un 200', async () => {
+  const { deps, spy } = makeDeps();
+  deps._estado.set('dudoso_pend:56940415964:Informe térmico',
+    { valor: { at: Date.now() - 60_000, tipo: 'Informe térmico', folio: 'F7' }, expira: null });
+
+  for (let i = 0; i < 3; i++) {
+    await handleWebhook({ body: acuse('delivered', 'wamid.DESCONOCIDO') }, makeRes(), deps);
+    await new Promise((r) => setTimeout(r, 120));
+  }
+  const cuantos = spy.textos.filter((t) => /Actualización de la entrega/.test(String(t.body))).length;
+  assert.equal(cuantos, 1, `el dueño recibiría ${cuantos} mensajes por el mismo acuse`);
+});
+
+test('🔴 sin caso dudoso, un acuse desconocido no molesta a nadie', async () => {
+  const { deps, spy } = makeDeps();
+  await handleWebhook({ body: acuse('delivered', 'wamid.CUALQUIERA') }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(spy.textos.filter((t) => /Actualización de la entrega/.test(String(t.body))).length, 0);
+});
+
+test('🔴 un `sent` NO concilia: Meta lo acepta y puede fallar después', async () => {
+  const { deps, spy } = makeDeps();
+  deps._estado.set('dudoso_pend:56940415964:Informe térmico',
+    { valor: { at: Date.now() - 60_000, tipo: 'Informe térmico', folio: 'F8' }, expira: null });
+  await handleWebhook({ body: acuse('sent', 'wamid.OTRO') }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(spy.textos.filter((t) => /Actualización de la entrega/.test(String(t.body))).length, 0);
 });

@@ -161,7 +161,8 @@ import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from '
 import { agregarCotizacionDelTurno, tieneMontoUtil } from './cotizacionDelTurno.js'; // [2026-09-15 tridente] contrato total_neto + agrega TODO el turno
 import { clasificar as clasificarEnvio, RESULTADO as RESULTADO_META } from '../sales-agent/errorMeta.js';
 import { mensajeEntregaDudosa, tocaAvisar, claveAviso } from '../../services/avisoEntregaDudosa.js';
-import { pidioDeNuevo } from '../../services/pidioDeNuevo.js'; // [2026-09-16, decision del dueño] el cliente destraba lo que no se reenvia solo // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
+import { pidioDeNuevo } from '../../services/pidioDeNuevo.js';
+import { clavePendiente, decidirConciliacion, mensajeConciliado } from '../../services/conciliacionDudosa.js'; // [2026-09-16 Kimi] la conciliacion es el mecanismo real, no la idempotencia // [2026-09-16, decision del dueño] el cliente destraba lo que no se reenvia solo // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
 
 /* =========================================================================
@@ -855,6 +856,14 @@ export async function handleWebhook(req, res, deps = {}) {
     // cliente. Es la lección del 15-sep (commit 43c7af4), donde agregar un `await` en un
     // camino dormido llegó a retener el mutex 21,5 s por turno.
     const avisarEntregaDudosa = ({ tipo, folio, motivo, nombre }) => {
+      // 🔴 ÍNDICE PARA LA CONCILIACIÓN. Un timeout NO devuelve `wamid`, así que el acuse de
+      // Meta que llegue después no se puede cruzar con este envío: lo único compartido es
+      // el TELÉFONO. Y las huellas de candado no se pueden enumerar (por eso el `reset`
+      // usa un marcador con fecha en vez de borrar claves). Entonces se deja una llave
+      // buscable por teléfono, que es lo que el camino del acuse va a poder levantar.
+      safe('entregaDudosa.indice', () => (deps.escribirEstado || escribirEstado)(
+        clavePendiente(from, tipo), { at: Date.now(), tipo, folio, nombre: nombre || '' },
+        3 * 24 * 3600));
       safe('entregaDudosa.aviso', async () => {
         const destino = String(process.env.OWNER_PHONE || process.env.ADMIN_PHONE || '56957296035');
         if (!destino) return;
@@ -870,6 +879,30 @@ export async function handleWebhook(req, res, deps = {}) {
           catch { /* solo se pierde el throttle, no el aviso */ }
         }
       });
+    };
+
+    // Levanta un caso dudoso de ESTE teléfono cuando llega una entrega confirmada que no
+    // podemos atribuir a ningún envío nuestro. Los tipos son tres y no se pueden enumerar
+    // llaves, así que se preguntan los tres: es una lectura barata contra un caso raro.
+    const conciliarDudosoPorTelefono = async (acuse) => {
+      const tel = acuse?.telefono || '';
+      if (!tel) return;
+      for (const tipo of ['Informe térmico', 'Informe de vientos', 'Propuesta Técnico Económica']) {
+        const k = clavePendiente(tel, tipo);
+        let pend = null;
+        try { pend = await (deps.leerEstado || leerEstado)(k); } catch { continue; }
+        if (!pend) continue;
+        if (!decidirConciliacion(pend, acuse).sirve) continue;
+        // Se consume ANTES de avisar: Meta reentrega los webhooks hasta recibir un 200, y
+        // sin consumir, el mismo `delivered` le manda al dueño el mismo mensaje 1-3 veces.
+        try { (deps.borrarEstado || borrarEstado)(k); } catch { /* peor caso: aviso repetido */ }
+        const destino = String(process.env.OWNER_PHONE || process.env.ADMIN_PHONE || '56957296035');
+        await safe('acuse.conciliado', () => (deps.sendWhatsAppText || realSendWhatsAppText)(
+          destino, mensajeConciliado({ tipo, folio: pend.folio, nombre: pend.nombre })));
+        log('info', 'acuse.conciliado',
+          `${tipo} ${pend.folio || ''}: entrega confirmada al mismo cliente — probablemente sí llegó`);
+        return;   // un acuse resuelve UN caso, no barre todos
+      }
     };
 
     const loadSession     = deps.loadSession     || realLoadSession;
@@ -907,7 +940,18 @@ export async function handleWebhook(req, res, deps = {}) {
           if (ac.estado === 'delivered') {
             await safe('acuse.entrega', async () => {
               const rastro = await (deps.leerEstado || leerEstado)(`wamsg:${ac.msgId}`);
-              if (!rastro) return;                      // no era un documento nuestro
+              if (!rastro) {
+                // 🔴 [2026-09-16] UN WAMID DESCONOCIDO NO SIEMPRE ES RUIDO.
+                // Si este cliente tiene un envío que quedó DUDOSO (timeout), justamente no
+                // tenemos su wamid — el timeout no lo devuelve. Una entrega confirmada a
+                // ESE teléfono, poco después, es la mejor evidencia disponible de que el
+                // documento sí llegó, y le ahorra al dueño abrir el chat.
+                // ⚠️ NO cierra el caso ni suelta el candado: es EVIDENCIA, no veredicto.
+                // Mismo criterio que ya está escrito en `entregaArbitro.js` — wamid exacto
+                // cierra, wamid desconocido sólo aporta.
+                await conciliarDudosoPorTelefono(ac);
+                return;
+              }
               // Misma guarda de destinatario que el camino de fallo: un acuse cruzado no
               // puede dar por entregado el documento de otro cliente.
               const d = (x) => String(x || '').replace(/\D/g, '');
