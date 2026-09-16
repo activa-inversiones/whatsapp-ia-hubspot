@@ -664,3 +664,32 @@ test('🔴 pero si el envío FALLÓ, el reintento pasa igual (nadie queda sin su
   assert.equal(conCandado, false,
     'un envío fallido NO puede dejar candado: el enfriamiento bloquearía el reintento legítimo');
 });
+
+test('🔴 el DUEÑO no entra al enfriamiento: trabaja por lotes para varios clientes', async () => {
+  // Instrucción suya, textual: *"si solicito de mi teléfono es para clientes, así que doy el
+  // nombre, teléfono y medidas"*. En ese flujo el candado va contra SU número y la huella es
+  // comuna|producto|vidrio — Temuco + corredera + DVH es la combinación más común, así que
+  // dos clientes distintos comparten huella. Sin esta excepción, el enfriamiento que puse
+  // hoy le bloqueaba el segundo informe del lote y NADIE se habría enterado.
+  process.env.OWNER_PHONE = '56957296035';
+  const { deps, spy, estado } = makeDeps();
+  deps.parseInbound = () => ({ ok: true, from: '56957296035', text: 'informe para cliente',
+    msgId: `wamid.${Math.random()}`, type: 'text' });
+  const enviados = () => spy.docsEnviados.filter((d) => /^Informe-Termico/.test(d.filename || '')).length;
+  deps.handleTurn = async ({ state, toolCtx }) => {
+    toolCtx.enviarInformeTermico('Temuco', { forzar: true, glassLabel: 'DVH 4/12/4', uw: 2.7, producto: 'Ventana PVC' });
+    return { reply: 'listo', history: [], toolCalls: [], state };
+  };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 1200));
+  assert.equal(enviados(), 1, 'el primero del lote sale');
+
+  // Segundo cliente del lote, misma comuna y mismo producto ⇒ MISMA huella, minutos después.
+  for (const k of [...estado.keys()]) { if (/:en_curso$/.test(k)) estado.delete(k); }
+  deps.seen = new Set();
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 1200));
+
+  assert.equal(enviados(), 2,
+    'el enfriamiento le bloqueó el segundo informe del lote: le rompe su forma de trabajar');
+});

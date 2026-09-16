@@ -1726,7 +1726,16 @@ export async function handleWebhook(req, res, deps = {}) {
               // igual: esto nunca deja a un cliente sin su informe por un envío que no salió.
               const _puesto = Number(_candado === true ? 0 : (_candado?.at || 0));
               const _edad = _puesto > 0 ? Date.now() - _puesto : Number.POSITIVE_INFINITY;
-              if (_edad < ENFRIAMIENTO_INFORME_MS) {
+              // 🔴 EL DUEÑO NO ENTRA AL ENFRIAMIENTO, y es por su forma real de trabajar.
+              // Instrucción suya, textual: *"si solicito de mi teléfono es para clientes, así
+              // que doy el nombre, teléfono y medidas"*. En ese flujo el candado va contra SU
+              // número y la huella es `comuna|producto|vidrio` — Temuco + corredera + DVH
+              // 5/12/5 es la combinación más común del negocio, así que dos clientes
+              // distintos comparten huella y el enfriamiento le bloquearía el segundo
+              // informe. Antes eso funcionaba porque `forzar` se saltaba el candado entero;
+              // al cerrarlo se rompía su trabajo por lotes sin que nadie lo notara.
+              // Además él ES la autoridad humana a la que todo este diseño delega el reenvío.
+              if (_edad < ENFRIAMIENTO_INFORME_MS && !esDuenio) {
                 log('info', 'informeTermico.enfriamiento',
                   `${_tel.slice(-4)}: se pidió de nuevo a los ${Math.round(_edad / 1000)} s — no se manda un segundo informe`);
                 yaSeMando = true;
