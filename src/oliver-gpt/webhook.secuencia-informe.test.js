@@ -654,3 +654,55 @@ test('🔴 [APAGADO 16-sep] el destrabe del cliente NO corre: dispara con frases
   assert.ok(![...estado.keys()].some((k) => /^informe_reset:/.test(k)),
     'el destrabe está prendido: con el detector actual eso reenvía documentos que sí llegaron');
 });
+
+// ─── 🔴 LA PROPUESTA: el candado atómico que le faltaba ──────────────────────
+// MEDIDO el 16-sep contra la BD viva (30 días, sin el teléfono del dueño): 24 propuestas
+// duplicadas DENTRO de los 2 minutos que el dedup ya debería cubrir — algunas con 2
+// SEGUNDOS de diferencia, 19 clientes. El guard no fallaba de criterio: fallaba de CARRERA.
+// Entre el chequeo y la marca hay un `await` por el correlativo ISO (viaje HTTP), y dos
+// emisiones del mismo turno leen "libre" antes de que ninguna marque.
+// Es el MISMO defecto que el informe sufrió el 24-ago (folios 0001/0002 con 90 ms), y cuya
+// lección ya estaba escrita en estadoPersistente.js. La propuesta nunca la aplicó.
+
+const ITEM = (precio, medida) => ({
+  product: 'Ventana PVC S60 corredera', producto_label: 'Ventana PVC S60 corredera',
+  measures: medida, measures_original: medida, glass_label: 'DVH 5/12/5', ambiente: 'Living',
+  qty: 1, unit_price: precio, total_price: precio, color: 'Nogal', termico: { uw: 2.71 },
+});
+
+test('🔴 dos cotizaciones IDÉNTICAS del mismo turno emiten UNA sola propuesta', async () => {
+  const { deps, spy } = makeDeps({ modoOn: false });
+  deps.handleTurn = async ({ state, toolCtx }) => {
+    const items = [ITEM(200000, '1500x1200mm')];
+    // Las dos salen SIN await entre medio: es la carrera real, no una simulación amable.
+    await Promise.all([
+      toolCtx.generarPdf({ items, comuna: 'Temuco', name: 'Ana', grand_total: 200000 }),
+      toolCtx.generarPdf({ items, comuna: 'Temuco', name: 'Ana', grand_total: 200000 }),
+    ]);
+    return { reply: 'listo', history: [], toolCalls: [], state };
+  };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await esperar(() => pos(spy, 'propuesta') >= 0);
+  await new Promise((r) => setTimeout(r, 900));
+
+  const n = spy.linea.filter((x) => x.tipo === 'propuesta').length;
+  assert.equal(n, 1,
+    `salieron ${n} propuestas: es el caso medido de los 19 clientes con duplicado en menos de 2 min`);
+});
+
+test('🔴 pero dos cotizaciones DISTINTAS sí emiten las dos (no se bloquea de más)', async () => {
+  // La otra mitad. Un candado que además bloquea lo legítimo le niega su precio a un cliente
+  // que cambió el proyecto — y eso cuesta la venta, no la vergüenza.
+  const { deps, spy } = makeDeps({ modoOn: false });
+  deps.handleTurn = async ({ state, toolCtx }) => {
+    await toolCtx.generarPdf({ items: [ITEM(200000, '1500x1200mm')], comuna: 'Temuco', name: 'Ana', grand_total: 200000 });
+    await toolCtx.generarPdf({ items: [ITEM(350000, '2000x1400mm')], comuna: 'Temuco', name: 'Ana', grand_total: 350000 });
+    return { reply: 'listo', history: [], toolCalls: [], state };
+  };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await esperar(() => spy.linea.filter((x) => x.tipo === 'propuesta').length >= 2);
+
+  const n = spy.linea.filter((x) => x.tipo === 'propuesta').length;
+  assert.ok(n >= 2,
+    `salieron ${n}: dos proyectos distintos tienen que producir dos propuestas — bloquear de más deja al cliente sin su precio`);
+});

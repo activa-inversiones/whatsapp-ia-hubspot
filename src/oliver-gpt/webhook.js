@@ -3139,6 +3139,64 @@ Comuna: ${datos.comuna}`
           // Medido: sin esta excepcion, el test de la reemision entrega 1 documento donde
           // tienen que ser 2. El dedup sigue intacto para todo lo demas — es la defensa contra
           // el doble "confirmo" y los reintentos de Meta, y esa no se toca.
+          // 🔴 [2026-09-16 · MEDIDO] EL CANDADO ATOMICO QUE A LA PROPUESTA LE FALTABA.
+          //
+          // Medición contra la BD viva (30 días, sin el teléfono del dueño): **24 propuestas
+          // duplicadas DENTRO de los 2 minutos** que este mismo guard debería cubrir, algunas
+          // con 2 SEGUNDOS de diferencia. 19 clientes. El guard no fallaba de criterio:
+          // fallaba de CARRERA.
+          //
+          // Entre el chequeo de arriba y la marca (`RECENT_QUOTES.set`, ~90 líneas más abajo)
+          // hay un `await` por el correlativo ISO — un viaje HTTP a sales-os. Dos
+          // `generar_pdf_cotizacion` del mismo turno leen "libre" antes de que ninguna marque,
+          // y las dos emiten. **Es EXACTAMENTE el defecto que el informe térmico ya sufrió el
+          // 24-ago** (folios 0001/0002 con 90 ms), y cuya lección está escrita en
+          // `estadoPersistente.js`: *"cada await cede el event loop… se arregla con un
+          // test-and-set sin await adentro (`reservar`), no alargando el TTL"*.
+          // La propuesta nunca aplicó esa lección. Acá se aplica.
+          //
+          // `reservar` es SINCRONICO y atómico dentro del proceso: sin puntos de suspensión,
+          // nadie se cuela entre el chequeo y la marca. Va sobre la FIRMA, no sobre el
+          // teléfono: dos cotizaciones DISTINTAS del mismo cliente tienen que poder salir.
+          let _tokenEmision = null;
+          let _claveEmisionActiva = null;
+          // Suelta la reserva en vuelo. Idempotente: después de la primera vez no hace nada.
+          const _soltarEmision = () => {
+            if (!_tokenEmision || !_claveEmisionActiva) return;
+            const _mio = _tokenEmision; _tokenEmision = null;
+            try { (deps.liberarReserva || liberarReserva)(_claveEmisionActiva, _mio); } catch { /* vence sola */ }
+          };
+          if (!_esReemisionNombre) {
+            // Hash COMPLETO, no un prefijo: truncar la firma hace que dos proyectos que
+            // empiezan igual (el caso normal — el cliente agrega una ventana) colisionen y
+            // el segundo quede bloqueado sin razón.
+            const { createHash } = await import('node:crypto');
+            const _huellaSig = createHash('sha1').update(String(_quoteSig)).digest('hex').slice(0, 16);
+            const _claveEmision = `quote_emision:${String(from).replace(/\D/g, '')}:${_huellaSig}`;
+            _claveEmisionActiva = _claveEmision;
+            try {
+              // ⚠️ TTL corto: esta reserva cubre SOLO la ventana en vuelo (el viaje HTTP por
+              // el correlativo). Se suelta apenas queda la marca, y de ahí en adelante manda
+              // el dedup de 2 min de siempre. Una reserva que sobreviva a la emisión bloquea
+              // emisiones legítimas posteriores — pasó: dejó en rojo el test del RUT, donde
+              // el cliente agrega una ventana en el turno siguiente.
+              _tokenEmision = (deps.reservarEstado || reservarEstado)(_claveEmision, 120) || null;
+            } catch { /* si no se puede reservar, manda el guard de abajo (comportamiento viejo) */ }
+            if (_tokenEmision === null) {
+              // Hay una emisión IDENTICA en vuelo. Si ya terminó, `RECENT_QUOTES` tiene el
+              // folio y se le devuelve ese; si sigue en curso, se le dice que espere — nunca
+              // se emite un segundo documento.
+              const _yaHecha = RECENT_QUOTES.get(from);
+              log('info', 'generarPdf.dedup',
+                `emisión IDÉNTICA en vuelo para ${from}: no se emite un segundo documento`);
+              if (_yaHecha && _yaHecha.sig === _quoteSig) {
+                return { ok: true, quote_number: _yaHecha.quote_number, pdf_sent: false, deduped: true };
+              }
+              return { ok: true, pdf_sent: false, deduped: true,
+                message: 'Dame un momentito para emitir tu Propuesta Técnica Económica con su folio; si se demora, Marcelo te la hace llegar enseguida.' };
+            }
+          }
+
           if (!_esReemisionNombre
               && _prevQuote && (Date.now() - _prevQuote.at) < QUOTE_DEDUP_MS && _prevQuote.sig === _quoteSig) {
             log('info', 'generarPdf.dedup',
@@ -3223,6 +3281,8 @@ Comuna: ${datos.comuna}`
           // Correlativo quemado → registrar (con firma de contenido) para el guard anti-duplicado.
           const _marcaQuote = { quote_number: quoteNumber, at: Date.now(), sig: _quoteSig };
           RECENT_QUOTES.set(from, _marcaQuote);
+          // La marca ya está: el dedup de 2 min toma la posta y la reserva en vuelo sobra.
+          _soltarEmision();
           // El respaldo sobrevive al redeploy. TTL corto: solo tiene que cubrir la ventana
           // de reintentos, no la vida del trato.
           try { await (deps.escribirEstado || escribirEstado)(_claveQuote, _marcaQuote, 15 * 60); }
