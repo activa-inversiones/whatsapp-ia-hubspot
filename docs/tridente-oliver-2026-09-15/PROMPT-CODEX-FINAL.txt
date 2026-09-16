@@ -1,0 +1,64 @@
+Sos ABOGADO DEL DIABLO en la compuerta cruzada de ACTIVA. Tu tarea es ROMPER, no validar.
+Ya tumbaste DOS VECES en esta misma sesión lo que otros dos revisores habían aprobado, así que
+se te trae esto ANTES de prenderlo en produccion.
+
+CONTEXTO. Bot de WhatsApp de una fabrica de ventanas (Temuco, Chile). Caso real del 15-sep:
+la clienta Katy Rossel pidio presupuesto, se emitio el folio ISO CM-FR-004-2026-0462, salieron el
+informe termico, el de vientos y un video, y LA PROPUESTA NUNCA SALIO. Cero filas de error, cero
+alertas. El dueño la mando a mano dos horas despues, calculada en otra plataforma.
+Tu propio veredicto en esa ronda: "no existe una obligacion durable de entrega — el sistema promete,
+pero ninguna fila queda como deuda exigible que otro proceso deba completar".
+
+REGLA INNEGOCIABLE DEL DUEÑO, textual: "debemos enviarle una sola y si el la modifica otra, o los
+colores que quiera, pero 2 veces la misma no se puede: es una falta de respeto al cliente por el
+poco cuidado que le colocamos a el".
+Semantica elegida: A LO SUMO UNA entrega automatica. Ante la duda NO se reenvia; va a conciliacion
+humana. CUALQUIER escenario que pueda duplicar INVALIDA el diseño.
+
+QUE REVISAR — el codigo esta EN DISCO, leelo, no te quedes en los documentos:
+
+  FASE 0 (YA ESTA EN PRODUCCION, andando):
+   · C:\Users\mcifu\activa\temp-wa\src\sales-agent\errorMeta.js  (+ .test.js)
+   · C:\Users\mcifu\activa\temp-wa\src\sales-agent\whatsapp-adapter.js  (funcion errorEstructurado,
+     sendWhatsAppText, sendWaDocument)
+   · C:\Users\mcifu\activa\temp-wa\services\salesOsBridge.js  (logOliverEvent, nuevo)
+   · C:\Users\mcifu\activa\temp-wa\src\oliver-gpt\webhook.js  — el bloque de acuses (~linea 863-950,
+     la rama `delivered` es nueva) y el registro durable del wamid (~linea 3713-3760)
+
+  FASE 1, 2 y 3 (EN PRODUCCION pero APAGADAS con OUTBOX_ENABLED=false):
+   · C:\Users\mcifu\activa\temp-sales-os\src\services\entregaOutboxEstados.js
+   · C:\Users\mcifu\activa\temp-sales-os\src\services\entregaOutbox.js  (tabla + UNIQUE + TRIGGER)
+   · C:\Users\mcifu\activa\temp-sales-os\src\services\entregaVigilanteReglas.js
+   · C:\Users\mcifu\activa\temp-sales-os\src\services\entregaVigilante.js
+   · C:\Users\mcifu\activa\temp-sales-os\src\services\entregaArbitro.js
+   · y sus .test.js
+
+  El diseño y las rondas previas, para contexto (NO son la fuente de verdad, el codigo si):
+   · docs/tridente-oliver-2026-09-15/DISENO-778-outbox-v5-PLAN.md
+   · docs/tridente-oliver-2026-09-15/diseno-NO-APTO-resumen.md
+
+LO QUE OTROS REVISORES YA LEVANTARON — no lo repitas, decime si quedo MAL RESUELTO:
+Gemini y Kimi K3 hicieron 4 rondas. Ya estan aplicados: la invariante como TRIGGER de Postgres;
+separar `variante` (color) de `version` (correccion del cliente) en la UNIQUE; prohibicion del
+Promise.race alrededor del envio a Meta; whitelist de codigos de error en vez de familia HTTP
+(porque un 5xx de Meta es ambiguo); piso de edad de 150s antes de que el vigilante toque nada;
+throttle de avisos con alertado_at; reloj de la BASE y no del proceso; advisory lock entre
+instancias; y que el arbitro NO cierre un caso dudoso con un wamid desconocido (solo aporta
+evidencia), porque cerrar mal cambia un duplicado por una perdida silenciosa.
+
+PREGUNTAS:
+1. ¿Queda ALGUN camino, en el CODIGO REAL, por el que un cliente reciba DOS VECES el mismo
+   documento? Paso a paso, con archivo:linea.
+2. ¿Queda algun camino donde el cliente no reciba nada y NADIE se entere — o sea, que el sistema
+   reproduzca el bug de Katy con otro nombre?
+3. El TRIGGER de la invariante: ¿lo escribi bien? ¿hay forma de saltarselo? ¿el CREATE TRIGGER
+   idempotente puede quedar sin aplicar en produccion sin que nadie se entere?
+4. La FASE 0 YA ESTA EN PRODUCCION. ¿Rompe algo de lo que ya andaba? Especialmente el cambio de
+   contrato del adapter y la rama nueva del bloque de acuses.
+5. ¿Es seguro prender OUTBOX_ENABLED, o falta algo?
+6. ¿Que no vio ninguno de los tres revisores anteriores?
+
+SOLO LECTURA. No edites, no crees archivos fuera de tu informe, no git add/commit/push, no deploy,
+no abras .env. Español chileno, sin humo, sin adular. Cita archivo:linea.
+Marca VERIFICADO / PLAUSIBLE / NO PUEDO SABERLO.
+Veredicto final: APTO / APTO CON CAMBIOS / NO APTO para prender.

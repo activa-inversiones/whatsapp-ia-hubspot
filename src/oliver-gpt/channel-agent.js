@@ -1216,14 +1216,18 @@ Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el li
     }
 
     // Evento de tracking (si el bridge lo expone).
+    // 🔴 [2026-09-16 · Codex, compuerta final] SIN `await` — misma regresión que en
+    // webhook.js: la rama estaba muerta hasta que se agregó `logOliverEvent` al bridge
+    // el 15-sep, y al activarla el `await` pasó a retener el final de cada turno hasta
+    // ~21,5 s con el mutex tomado. Telemetría pura: nada depende de que se escriba antes.
     if (typeof bridge.logOliverEvent === 'function') {
-      await safe('persist.event', () =>
+      Promise.resolve(
         bridge.logOliverEvent('turn_completed', {
           phone: senderId,
           channel,
           tool_calls: toolCalls.map((t) => t.name),
         })
-      );
+      ).catch(() => {});
     }
 
     // ── Guardar cache actualizado (hot in-memory + Postgres para sobrevivir redeploys) ──

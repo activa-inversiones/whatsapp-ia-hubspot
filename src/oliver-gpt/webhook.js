@@ -4827,14 +4827,24 @@ Comuna: ${datos.comuna}`
     }
 
     // Evento de tracking (oliver_events) si el bridge expone el helper.
+    // 🔴 [2026-09-16 · Codex, compuerta final] SIN `await`, Y ES UNA REGRESIÓN QUE
+    // INTRODUJE YO. Esta rama estaba MUERTA hasta que el 15-sep agregué
+    // `logOliverEvent` al bridge (antes `typeof` daba false siempre). Al activarla,
+    // el `await` pasó a retener el final de CADA turno: `requestWithRetry` puede
+    // tardar hasta ~21,5 s (salesOsBridge.js:32,34,35) y eso ocurre ANTES de
+    // persistir la sesión y de soltar el mutex del teléfono ⇒ el cliente que escribe
+    // de nuevo queda encolado detrás de una fila de auditoría.
+    // `turn_completed` es telemetría pura: nada depende de que se escriba antes.
+    // (Distinto de `documento_enviado`, que sí necesita durabilidad porque es la
+    // evidencia con la que después se cierra un caso dudoso.)
     if (typeof bridge.logOliverEvent === 'function') {
-      await safe('persist.event', () =>
+      Promise.resolve(
         bridge.logOliverEvent('turn_completed', {
           phone: from,
           tool_calls: toolCalls.map((t) => t.name),
           has_quote: !!quote,
         })
-      );
+      ).catch(() => {});
     }
 
     // ── (9) Guardar el cache actualizado + persistir en Postgres ─────────
