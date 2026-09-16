@@ -101,6 +101,40 @@ export function escribir(clave, valor, ttlSegundos = 3600) {
 }
 
 /**
+ * Escribe y ESPERA a Postgres. Devuelve si el dato quedo guardado de verdad.
+ *
+ * 🔴 [Codex, compuerta 16-sep] POR QUE HIZO FALTA UNA SEGUNDA FUNCION.
+ * `escribir()` es fire-and-forget A PROPOSITO: el turno del cliente no puede esperar a la
+ * base. Eso esta bien para lo que se puede perder (un contador de letras, un cache) y esta
+ * MAL para un candado que existe justamente para sobrevivir a un reinicio.
+ *
+ * Codex lo dijo del candado "durable" que se escribio ese mismo dia: *"la persistencia real
+ * es fire-and-forget: `escribir()` actualiza memoria y lanza el PUT sin esperarlo. El
+ * `await escribirEstado(...)` nuevo no espera PostgreSQL. Un fallo del PUT o una caida del
+ * proceso puede perder el supuesto candado durable"*. O sea: parecia durable y no lo era.
+ *
+ * La memoria se escribe IGUAL y PRIMERO, como en `escribir()`: si la base no contesta, la
+ * proteccion dentro de este proceso sigue puesta. Lo que devuelve es si ademas quedo
+ * guardada afuera, para que el llamador pueda decir la verdad en vez de suponerla.
+ *
+ * ⚠️ Esto ESPERA una ida a la red (tope `TIMEOUT_MS`). Usarlo SOLO donde perder el dato
+ * cambie lo que ve un cliente — nunca en un camino caliente.
+ *
+ * @returns {Promise<{ok: boolean, enMemoria: true, motivo?: string}>}
+ */
+export async function escribirDurable(clave, valor, ttlSegundos = 3600) {
+  MEMORIA.set(clave, { valor, expira: Date.now() + ttlSegundos * 1000 });
+  if (!PERSISTENCIA_ACTIVA) {
+    return { ok: false, enMemoria: true, motivo: 'persistencia_apagada' };
+  }
+  const r = await pedir('PUT', clave, { valor, ttl_segundos: ttlSegundos });
+  // `pedir` devuelve null ante timeout, 5xx o sales-os caido. Null = no sabemos que quedo.
+  return r === null
+    ? { ok: false, enMemoria: true, motivo: 'sales_os_no_confirmo' }
+    : { ok: true, enMemoria: true };
+}
+
+/**
  * TEST-AND-SET ATOMICO. Devuelve true si la reserva se otorga, false si ya estaba tomada.
  *
  * 🔴 [2026-08-24] Existe por un duplicado MEDIDO: los dos clientes del 24-ago recibieron
@@ -162,4 +196,4 @@ export function borrar(clave) {
 /** Para tests. */
 export function _reset() { MEMORIA.clear(); }
 
-export default { leer, leerLocal, escribir, reservar, liberarReserva, borrar, PERSISTENCIA_ACTIVA };
+export default { leer, leerLocal, escribir, escribirDurable, reservar, liberarReserva, borrar, PERSISTENCIA_ACTIVA };

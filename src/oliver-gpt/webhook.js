@@ -42,7 +42,7 @@ import {
   normalizar as normalizarTel,
 } from '../../services/atribucionCotizacion.js';
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
-import { leer as leerEstado, escribir as escribirEstado, reservar as reservarEstado, liberarReserva, borrar as borrarEstado } from '../../services/estadoPersistente.js';
+import { leer as leerEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS, datosDelInforme } from '../../services/informeTermico.js';
 import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
@@ -2090,10 +2090,18 @@ export async function handleWebhook(req, res, deps = {}) {
               // a los 5 min y el mismo informe salía de nuevo (lo midió Codex: *"sólo
               // convirtió el reintento inmediato en uno diferido cinco minutos"*).
               // `dudoso:true` queda escrito para poder auditar después por qué está trabado.
+              // 🔴 [Codex, compuerta 16-sep] CON `escribirEstado` ESTE CANDADO NO ERA DURABLE.
+              // Esa función es fire-and-forget: el `await` no espera a Postgres, así que el
+              // candado podía perderse en un reinicio y el informe salir de nuevo. La
+              // variante durable sí espera y DICE si quedó guardado.
               try {
-                await (deps.escribirEstado || escribirEstado)(clave,
+                const _g = await (deps.escribirEstadoDurable || escribirEstadoDurable)(clave,
                   { at: Date.now(), dudoso: true, motivo: _cl.motivo }, 30 * 24 * 3600);
-              } catch { /* si no se pudo escribir, vuelve a mandar en 5 min: se avisó igual */ }
+                if (!_g?.ok) {
+                  log('error', 'informeTermico.envio',
+                    `informe ${numeroInforme}: el candado dudoso NO quedó guardado (${_g?.motivo}) — vale solo mientras el proceso viva`);
+                }
+              } catch { /* la memoria ya quedó marcada; se avisó igual */ }
               tokenReserva = null;
               return 'fallo';
             }
@@ -3558,9 +3566,13 @@ Comuna: ${datos.comuna}`
                   // hay `finally`, pero la reserva igual vence a los 5 min y el informe
                   // volvería a salir solo.
                   try {
-                    await (deps.escribirEstado || escribirEstado)(claveV,
+                    const _gV = await (deps.escribirEstadoDurable || escribirEstadoDurable)(claveV,
                       { at: Date.now(), dudoso: true, motivo: _clV.motivo }, 30 * 24 * 3600);
-                  } catch { /* vuelve a mandar en 5 min; el aviso ya salió */ }
+                    if (!_gV?.ok) {
+                      log('error', 'generarPdf.vientos',
+                        `informe de vientos ${folioV}: el candado dudoso NO quedó guardado (${_gV?.motivo})`);
+                    }
+                  } catch { /* la memoria ya quedó marcada; el aviso ya salió */ }
                   return 'fallo';   // sin soltarV(): no se reintenta lo que quizá ya llegó
                 }
                 log('warn', 'generarPdf.vientos', `informe de vientos ${folioV} NO se entrego: el proximo proyecto reintenta`);
