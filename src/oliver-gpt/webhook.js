@@ -853,7 +853,7 @@ export async function handleWebhook(req, res, deps = {}) {
     // con el mutex del teléfono tomado, y un await acá le suma latencia a cada turno del
     // cliente. Es la lección del 15-sep (commit 43c7af4), donde agregar un `await` en un
     // camino dormido llegó a retener el mutex 21,5 s por turno.
-    const avisarEntregaDudosa = ({ tipo, folio, motivo }) => {
+    const avisarEntregaDudosa = ({ tipo, folio, motivo, nombre }) => {
       safe('entregaDudosa.aviso', async () => {
         const destino = String(process.env.OWNER_PHONE || process.env.ADMIN_PHONE || '56957296035');
         if (!destino) return;
@@ -862,7 +862,7 @@ export async function handleWebhook(req, res, deps = {}) {
         try { ultimo = await (deps.leerEstado || leerEstado)(k); } catch { /* ante la duda, avisa */ }
         if (!tocaAvisar(ultimo?.at ?? null)) return;
         const enviado = await (deps.sendWhatsAppText || realSendWhatsAppText)(
-          destino, mensajeEntregaDudosa({ tipo, folio, telefono: from, motivo }));
+          destino, mensajeEntregaDudosa({ tipo, folio, telefono: from, motivo, nombre }));
         // La marca se escribe SOLO si el aviso salió: si no, el próximo intento avisa.
         if (enviado?.ok === true) {
           try { await (deps.escribirEstado || escribirEstado)(k, { at: Date.now() }, 7 * 24 * 3600); }

@@ -397,6 +397,16 @@ test('🔴 TIMEOUT del informe ⇒ NO se le dice al cliente que falló (no lo sa
     `el dueño tiene que enterarse — textos: ${JSON.stringify(spy.textos.slice(-4))}`);
   assert.ok(spy.textos.some((t) => /NO se reenvía solo/.test(String(t))),
     'el aviso tiene que decir explícitamente que no se reenvía solo');
+  // 🔴 [Codex, compuerta 16-sep] EL AVISO TIENE QUE LLEGAR CON EL NOMBRE, Y ESTO SE MIDE
+  // ACÁ Y NO EN LA FUNCIÓN SUELTA. Se probó `mensajeEntregaDudosa` directo, pasó, y se
+  // deployó igual con el envoltorio `avisarEntregaDudosa` DESCARTANDO `nombre` al
+  // destructurar: en producción el aviso decía siempre "sin nombre registrado". El test
+  // verde medía la función, no el camino. Codex, textual: *"el wrapper descarta nombre…
+  // en producción el aviso seguirá diciendo sin nombre registrado"*.
+  const aviso = spy.textos.find((t) => /sin confirmar/.test(String(t)));
+  assert.ok(!/sin nombre registrado/.test(String(aviso)),
+    `el aviso llegó sin el nombre del cliente: ${JSON.stringify(aviso)}`);
+  assert.match(String(aviso), /Cliente: \*.+\*/, 'el aviso tiene que nombrar al cliente');
 });
 
 test('🔴 RECHAZO con código conocido ⇒ sí se avisa: ahí sabemos que no llegó', async () => {
