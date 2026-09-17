@@ -167,6 +167,9 @@ import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from '
 import { agregarCotizacionDelTurno, tieneMontoUtil } from './cotizacionDelTurno.js'; // [2026-09-15 tridente] contrato total_neto + agrega TODO el turno
 import { clasificar as clasificarEnvio, RESULTADO as RESULTADO_META } from '../sales-agent/errorMeta.js';
 import { mensajeEntregaDudosa, tocaAvisar, claveAviso } from '../../services/avisoEntregaDudosa.js';
+import {
+  mensajeCerebroRespaldo, causaDelRespaldo, claveAvisoRespaldo, RESPALDO_REPETIR_MS,
+} from '../../services/avisoCerebroRespaldo.js';
 import { pidioDeNuevo } from '../../services/pidioDeNuevo.js';
 import { clavePendiente, decidirConciliacion, mensajeConciliado } from '../../services/conciliacionDudosa.js'; // [2026-09-16 Kimi] la conciliacion es el mecanismo real, no la idempotencia // [2026-09-16, decision del dueño] el cliente destraba lo que no se reenvia solo // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
@@ -884,6 +887,61 @@ export async function handleWebhook(req, res, deps = {}) {
           try { await (deps.escribirEstado || escribirEstado)(k, { at: Date.now() }, 7 * 24 * 3600); }
           catch { /* solo se pierde el throttle, no el aviso */ }
         }
+      });
+    };
+
+    // 🧠 Aviso de CEREBRO DE RESPALDO. Mismo molde que `avisarEntregaDudosa`, que
+    // ya está probado: fire-and-forget, throttle en el KV durable (sobrevive al
+    // redeploy) y la marca se escribe SOLO si el WhatsApp salió — si falló, el
+    // próximo turno vuelve a intentar en vez de tragarse el aviso.
+    const avisarCerebroDeRespaldo = (prov) => {
+      if (!prov || prov.cerebro_respaldo !== true) return;
+      if (process.env.OLIVER_ALERTA_RESPALDO === 'false') return;
+      safe('cerebroRespaldo.aviso', async () => {
+        const destino = String(process.env.OWNER_PHONE || process.env.ADMIN_PHONE || '56957296035');
+        if (!destino) return;
+        // 🔴 [compuerta cruzada · Codex #3] EL AVISO NUNCA LE LLEGA AL CLIENTE.
+        // El destino sale de variables de entorno, y un OWNER_PHONE mal pegado con
+        // el numero de un cliente le mandaria a ese cliente un mensaje interno que
+        // dice que el bot esta degradado y con un link de facturacion. No se puede
+        // validar «quien es el dueño», pero SI se puede garantizar que jamas sea
+        // quien acaba de escribir.
+        const soloDigitos = (t) => String(t || '').replace(/\D/g, '');
+        if (soloDigitos(destino) === soloDigitos(from)) {
+          log('error', 'cerebroRespaldo', 'OWNER_PHONE es el mismo numero del cliente que escribio: NO se manda el aviso');
+          return;
+        }
+        const causa = causaDelRespaldo(prov.cerebro_motivo);
+        const k = claveAvisoRespaldo(causa);
+
+        // 🔴 [compuerta cruzada · Codex #1] LA RESERVA VA PRIMERO, Y ES LO QUE
+        // FRENA EL BUCLE. La version anterior hacia leer -> decidir -> enviar, y
+        // «ante la duda, avisa»: con el KV caido eso es UN WHATSAPP POR TURNO. El
+        // 6-sep hubo 31 respaldos en un dia ⇒ 31 avisos por un solo hecho, y el
+        // quinto ya no se lee. `reservar` es atomico y vive en MEMORIA, asi que
+        // corta igual aunque el almacenamiento durable no conteste, y tambien
+        // cierra la carrera entre dos turnos simultaneos.
+        const token = (deps.reservarEstado || reservarEstado)(k, 24 * 3600);
+        if (!token) return;                       // ya hay un aviso de hoy, en vuelo o mandado
+
+        let ultimo = null;
+        try { ultimo = await (deps.leerEstado || leerEstado)(k); } catch { /* sigue: la reserva ya protege */ }
+        // La marca durable cubre lo que la memoria no: un redeploy en medio del
+        // episodio. Si dice que ya se aviso hoy, se corta y la reserva NO se suelta.
+        if (!tocaAvisar(ultimo?.at ?? null, Date.now(), RESPALDO_REPETIR_MS)) return;
+
+        const texto = mensajeCerebroRespaldo({ causa, proveedor: prov.cerebro });
+        const enviado = await (deps.sendWhatsAppText || realSendWhatsAppText)(destino, texto);
+        if (enviado?.ok === true) {
+          try { await (deps.escribirEstado || escribirEstado)(k, { at: Date.now(), causa }, 7 * 24 * 3600); }
+          catch { /* solo se pierde el throttle durable; la reserva en memoria sigue */ }
+          return;
+        }
+        // No salio: se suelta la reserva para que el PROXIMO turno con respaldo lo
+        // reintente. Si el episodio se acabo justo aca, el aviso se pierde — es el
+        // limite conocido (Codex #2) y se acepta: montar un outbox con reintentos
+        // para una alerta operativa es mas maquinaria de la que el problema pide.
+        (deps.liberarReserva || liberarReserva)(k, token);
       });
     };
 
@@ -5171,6 +5229,21 @@ Comuna: ${datos.comuna}`
         })
       );
     }
+
+    // 🔴 [2026-09-17 · pedido del dueño] SI OLIVER CAYÓ AL RESPALDO, QUE SE SEPA.
+    // Medido el 17-sep: 74 mensajes contestados por el cerebro de respaldo en 30
+    // días, en 5 episodios, los 74 por «credit balance is too low» — y el 6-sep
+    // fue el día ENTERO. Nadie se enteró nunca: el dato quedaba en la metadata y
+    // ninguna pantalla lo miraba. Un respaldo que no avisa es una degradación
+    // invisible sobre clientes reales.
+    //
+    // Va DESPUÉS de persistir el mensaje y como fire-and-forget: es una alerta de
+    // sistema, y el turno del cliente no puede esperarla ni romperse por ella.
+    // `deps.proveedorDelTurno` existe SOLO para poder probar este cableado: el
+    // proveedor real vive en un módulo (engine.js) que en un test hermético nunca
+    // corre, y sin poder inyectarlo esta alerta quedaba sin una sola prueba de que
+    // de verdad se dispara. En producción siempre es la función real.
+    avisarCerebroDeRespaldo((deps.proveedorDelTurno || proveedorDelTurno)());
 
     // Cotización en el turno → pushQuoteEvent.
     // [2026-09-15 tridente · Codex] Antes acá iba `extractQuote(toolCalls)`, que tomaba SOLO
