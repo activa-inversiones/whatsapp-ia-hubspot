@@ -4885,6 +4885,32 @@ Comuna: ${datos.comuna}`
     // LLM devuelve reply vacío (fallback de (7a)), el saludo se PIERDE — deliberado:
     // preferimos perderlo a un "primer mensaje" tardío; la alerta respuesta_vacia avisa.
     if (_ctwaSaludoTurn) state.ctwa_saludo_pending = _ctwaSaludoTurn;
+
+    // 🟢 [2026-09-17 · #785-bis] EL DATO YA VENIA; nadie lo miraba.
+    // `/internal/conversation-control/:phone` devuelve `quote_status` en la MISMA
+    // respuesta que `ai_paused` (server.js:1892) y acá se descartaba. Con eso,
+    // un cliente que ya compró volvía a entrar al embudo de venta desde cero.
+    //
+    // Se lee del control REAL (`control`), no del cacheado: el cache existe para
+    // FALLAR CERRADO ante un sales-os caído y solo guarda ai_paused/operator_status.
+    // Si el control no vino, `ya_compro` queda en false y Oliver se comporta
+    // exactamente como hasta hoy — nunca al revés.
+    //
+    // Apagable SIN DEPLOY: OLIVER_POSTVENTA=false.
+    // 🔴 [compuerta cruzada · Codex #1] UN CONTROL QUE FALLO NO DICE NADA.
+    // `_error: true` marca que la lectura se cayo. Hoy el bridge devuelve
+    // {ai_paused:false, operator_status:'ai', _error:true} SIN quote_status, o
+    // sea que en la practica no podria colarse un 'won' — pero depender de eso
+    // es depender de que nadie agregue un campo mas al fallback. Se veta
+    // explicitamente: «no se» NUNCA puede significar «ya compro».
+    const _controlSano = !!control && typeof control === 'object' && control._error !== true;
+    const _postventaOn = process.env.OLIVER_POSTVENTA !== 'false';
+    const _etapa = _controlSano ? String(control.quote_status || '').trim().toLowerCase() : '';
+    state.ya_compro = _postventaOn && _etapa === 'won';
+    if (state.ya_compro) {
+      log('info', 'postventa', `${from} ya compró (quote_status=won): turno en modo POSTVENTA`);
+    }
+
     const turn = await handleTurn({ history, userText, state, toolCtx });
     let reply = turn?.reply || '';
     const newHistory = Array.isArray(turn?.history) ? turn.history : history;
@@ -4894,6 +4920,12 @@ Comuna: ${datos.comuna}`
     // [PDF-RACE 2026-07-01] sin este merge se perdería el last_quote (folio de la sesión, estado
     // real de entrega) que generarPdf escribió DURANTE este turno vía toolCalls del LLM.
     if (state.last_quote) newState.last_quote = state.last_quote;
+    // 🔴 [compuerta cruzada · Codex #3] `ya_compro` ES DEL TURNO, NO DE LA SESION.
+    // Se recalcula del control en CADA turno, asi que guardarla no aporta nada y
+    // si puede confundir: una sesion vieja quedaria con «ya_compro: true» escrito
+    // en la BD despues de que el dueño revierta la venta. Se borra antes de
+    // persistir; el proximo turno la vuelve a pedir donde vive la verdad.
+    delete newState.ya_compro;
     // 🔴 [2026-08-25] LOS RELOJES DE LOS GATES, POR LA MISMA RAZON EXACTA QUE `last_quote`.
     // `agent.handleTurn` saca la foto del estado AL EMPEZAR (`{ ...state }`) y el webhook se
     // queda con esa copia, asi que todo lo que una tool escriba DURANTE el turno queda afuera.

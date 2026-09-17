@@ -1044,6 +1044,22 @@ export function buildSessionContext(state = {}) {
 
   const consolidacion = s.consolidacion || s.consolidation || '';
 
+  // 🟢 [2026-09-17 · #785-bis, pedido del dueño] ESTE CLIENTE YA COMPRÓ.
+  //
+  // EL PROBLEMA MEDIDO (16-09): el endpoint interno de control le manda a Oliver
+  // `ai_paused`, `operator_status` Y `quote_status`, pero el webhook leia los dos
+  // primeros y TIRABA el tercero. Ademas la sesion persistida de un cliente
+  // cerrado guarda telefono y click-ids pero CERO turnos de historial. Resultado:
+  // un cliente que ya compro escribia «icuando me instalan?» y Oliver arrancaba
+  // de cero — saludo, perfilamiento de la REGLA #28 («¿es para su hogar, subsidio
+  // SERVIU, o es arquitecto?») y a cotizar de nuevo. Al cliente que acaba de
+  // pagar se le trata como a un desconocido.
+  //
+  // No hace falta prompt nuevo: la postventa YA esta escrita (REGLA #27: NPS
+  // dia 1/7/30/90; AREA 12: garantias 5 años estructura / 1 año herrajes /
+  // 5 años instalacion y termopanel). Lo que faltaba era que Oliver SUPIERA a
+  // quien le habla. Esto va en el contexto VOLATIL — no en el system — porque
+  // es un dato de ESTE turno: si mañana el cliente vuelve a comprar, cambia.
   const lineas = [
     '═══ CONTEXTO DE LA SESIÓN (volátil — solo para este turno) ═══',
     `Fecha y hora en Chile: ${fechaHoraChile}`,
@@ -1055,6 +1071,47 @@ export function buildSessionContext(state = {}) {
     `  ni reemplazarlos por valores por defecto (ej. si la comuna es Vilcún, jamás la pongas como Temuco): ${lockedStr}`,
   ];
   if (consolidacion) lineas.push(`Resumen consolidado: ${consolidacion}`);
+
+  // Va DESPUÉS de los datos y con el mayor énfasis del bloque: si el cliente ya
+  // compró, esto manda sobre el flujo de venta entero.
+  if (s.ya_compro === true) {
+    lineas.push(
+      '',
+      '🟢 ═══ ESTE CLIENTE YA COMPRÓ. NO ES UN LEAD. ═══',
+      'La venta está CERRADA y registrada. Trate este chat como POSTVENTA, no como una venta nueva.',
+      // [compuerta cruzada · Gemini #2] LA CALIDEZ VA PRIMERO. El bloque es casi
+      // todo prohibiciones, y un modelo al que solo se le dice «no haga esto»
+      // contesta seco. A quien ya pago se le debe MAS calidez, no menos.
+      'TONO: cálido, cercano y agradecido. Este cliente ya confió en usted y le pagó: merece el',
+      'mejor trato de todos, no una respuesta fría ni burocrática.',
+      'PROHIBIDO en este turno:',
+      '  · Saludar como si fuera la primera vez.',
+      '  · Perfilar (REGLA #28): NO pregunte si es para su hogar, subsidio SERVIU o si es arquitecto.',
+      '    Ya lo sabe: le compró a usted.',
+      '  · Ofrecer cotizar, pedir medidas o mandar un PDF de propuesta — salvo que EL CLIENTE',
+      '    pida expresamente algo NUEVO (otra ventana, otra obra). Ahí sí: es una venta nueva y',
+      '    recién entonces vale el flujo normal.',
+      'LO QUE SÍ corresponde (REGLA #27 · ÁREA 12), con los datos REALES que ya tiene:',
+      '  · Plazo: 8 a 10 días hábiles DESDE QUE CONFIRMÓ, o la fecha acordada por escrito.',
+      '  · Garantías: 5 años estructura/perfiles · 1 AÑO herrajes · 5 años instalación y termopanel.',
+      '    ⛔ NUNCA prometa más que eso: es lo que dice el PDF firmado.',
+      '  · Si es un RECLAMO, una falla, una filtración o algo de garantía: ESCALE A MARCELO de',
+      '    inmediato y quédese en modo escucha. No improvise una solución técnica ni una fecha.',
+      '  · Si está conforme, puede pedirle la reseña de Google (REGLA #31), una sola vez.',
+      // [compuerta cruzada · Gemini #1] NO ESCALAR POR CUALQUIER COSA.
+      // Oliver NO tiene el sistema de fabrica ni la agenda de las cuadrillas, asi
+      // que «si no sabe, escale» convertia CADA «¿como va mi ventana?» en un aviso
+      // a Marcelo. Primero se contesta con lo que SI se sabe (el plazo general,
+      // que esta en el PDF); se escala solo cuando piden el dato puntual.
+      'ESCALAR, PERO NO POR TODO — Marcelo es uno solo:',
+      '  · Pregunta GENERAL por plazos → contestele usted: 8 a 10 días hábiles desde que confirmó,',
+      '    o la fecha que se acordó por escrito. Eso ya lo sabe y está en su PDF.',
+      '  · Pide el DATO PUNTUAL (el día exacto, en qué va la fabricación, quién se lo instala):',
+      '    diga con todas las letras que eso no lo tiene a mano, que le avisa a Marcelo, y escale.',
+      '⛔ Nunca invente la fecha ni el estado de un pedido ya pagado. Eso destruye la confianza de',
+      'alguien que ya le entregó su plata, y se nota al día siguiente.',
+    );
+  }
 
   // 🔴 [2026-08-30] A NOMBRE DE QUIEN VA EL DOCUMENTO (REGLA #14.3). El RUT lo captura y lo
   // valida el codigo; aca solo se le AVISA al modelo para que (a) no lo vuelva a preguntar y
