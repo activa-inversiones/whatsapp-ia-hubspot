@@ -1029,6 +1029,10 @@ export async function priceAllEngine(d, customer_id = "") {
         // de un default. Con la central fija son DOS las que cierran (las laterales,
         // contra la del medio): asi lo factura Winart en la version 69621 de referencia.
         riel: _cfgCorr.riel, activos: _cfgCorr.activos,
+        // La hoja del medio FIJA hay que DECLARARLA: el motor no la puede adivinar, y de ella
+        // dependen los carros (van por hoja que corre, no por hoja) y el suple de hoja fija.
+        // Sin declararla el BOM es el de siempre, que es lo que queremos en todo lo demas.
+        hojas_fijas: _cfgCorr.centralFija ? 1 : undefined,
         ancho_mm: m.ancho_mm, alto_mm: m.alto_mm,
         color, glass_id, comuna, cantidad,
         // [2026-08-25 · Codex] El eslabon que faltaba: sin esto los anchos de paño del
