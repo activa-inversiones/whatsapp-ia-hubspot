@@ -286,6 +286,54 @@ export function detectHojas(product) {
 }
 
 /**
+ * CONFIG DE CORREDERA: el lenguaje del cliente -> el modelo REAL de Winart.
+ *
+ * Instruccion del dueno (2026-09-18, textual): *"cualquier lenguaje de cliente que indique que
+ * la central fija es de doble riel; si quiere mover las tres hacia un lado es triple riel y se
+ * mueven las 3 en tres rieles diferentes"*.
+ *
+ * NO es una interpretacion: es la taxonomia de modelos de Winart, leida de su propia API
+ * (GET /models, 2026-09-18). Las dos familias de 3 hojas existen y son productos DISTINTOS:
+ *     S75_DOBLERIEL_TRES_HOJA_98   <- 3 hojas en 2 rieles: la del centro va FIJA
+ *     S75_TRIPLERIEL_TRES_HOJA_98  <- 3 hojas en 3 rieles: las 3 corren y se apilan a un lado
+ * La referencia que dejo el dueno (proyecto 58777 / version 69621, 2710x1995) se exporta desde
+ * Winart con el nombre de modelo "SLIDING-S75_DOBLERIEL_TRES_HOJA_98": o sea el caso "triple
+ * hoja centro fijo" es DOBLE riel, no triple. Cotizarlo como triple riel es otro producto.
+ *
+ * Devuelve { riel, activos, centralFija }. Los campos van undefined cuando el texto no los
+ * define, para que el motor aplique su default calibrado en vez de una adivinanza nuestra.
+ */
+export function detectConfigCorredera(texto, hojas) {
+  const t = String(texto || "").toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  // "central fija" en chileno de verdad: la del medio / del centro / central, fija o que no corre.
+  const centralFija =
+       /\b(?:hoja\s+)?(?:central|centro|del\s+centro|del\s+medio|de\s+al\s+medio)\s+(?:es\s+|va\s+|queda\s+)?fij[ao]\b/.test(t)
+    || /\bfij[ao]\s+(?:la\s+|el\s+)?(?:central|centro|del\s+centro|del\s+medio|de\s+al\s+medio)\b/.test(t)
+    || /\b(?:la\s+)?del\s+(?:centro|medio)\s+(?:no\s+(?:se\s+)?(?:mueve|corre)|fij[ao])\b/.test(t);
+  // "las tres corren": el cliente quiere abrir todo hacia un lado => 3 rieles, 3 hojas moviles.
+  const todasCorren =
+       /\b(?:las\s+)?(?:3|tres)\s+(?:hojas?\s+)?(?:corren|corredizas|se\s+mueven|moviles|deslizan)\b/.test(t)
+    || /\b(?:mover|correr|abrir)\s+(?:las\s+)?(?:3|tres)\b/.test(t)
+    || /\b(?:tres|3)\s+rieles?\b/.test(t)
+    || /\btriple\s+riel\b/.test(t)
+    || /\b(?:todas|las\s+3|las\s+tres)\s+(?:hacia|para|a)\s+un\s+(?:solo\s+)?lado\b/.test(t);
+  // "2 rieles / doble riel" dicho explicito por el cliente.
+  const dosRieles = /\b(?:2|dos)\s+rieles?\b/.test(t) || /\bdoble\s+riel\b/.test(t);
+
+  let riel;
+  // La CENTRAL FIJA manda sobre todo: es el modelo doble riel de Winart, aunque el cliente haya
+  // escrito "triple" (que ahi significa TRES HOJAS, no tres rieles). Ese es exactamente el
+  // pedido que se cotizo mal el 18-sep: "triple hoja ... central fija en 2 rieles".
+  if (centralFija) riel = 'DOBLE';
+  else if (todasCorren) riel = 'TRIPLE';
+  else if (dosRieles) riel = 'DOBLE';
+
+  // Hojas que CIERRAN: con la central fija, cierran las 2 laterales contra ella.
+  const activos = (centralFija && Number(hojas) === 3) ? 2 : undefined;
+  return { riel, activos, centralFija };
+}
+
+/**
  * [Codex/Gemini 4a vuelta] ¿El texto trae ALGÚN indicio de un nº de hojas que detectHojas podría
  * no resolver limpio? Dígito o palabra pegada a "hoja" AUNQUE el separador no sea espacio
  * ("3-hojas", "hojas: 3"), doble/triple/cuádruple, o una corrección ("sino"). Se usa en el envelope
@@ -866,7 +914,24 @@ export async function priceAllEngine(d, customer_id = "") {
         return { escalada: true };
       }
     }
-    const hojas = detectHojas(item.product);  // 3 hojas → triple riel; undefined → motor decide
+    // 🔴 [2026-09-18] EL No DE HOJAS SE LEIA SOLO DE `item.product`, y ahi casi nunca esta.
+    // Caso real CM-FR-004-2026-0477 (Mario Grey, 18-sep): el cliente escribio "1 unidad de
+    // 2710x1995 corredera TRIPLE HOJA en 2 rieles central fija laterales corredera". Salio
+    // cotizada de DOS hojas: $878.714. El real de 3 hojas es $893.149 (medido contra el motor
+    // en vivo, los dos valores) => $14.435 de subcobro, y ademas el dibujo del PDF mostro 2
+    // panos cuando el cliente habia pedido 3. El texto del cliente NUNCA se miraba.
+    // La rama ANDES de mas arriba ya leia TODO el texto por esta misma razon; SLIDING no.
+    //
+    // ⚠️ EL TEXTO DEL CLIENTE SOLO SE USA CON UN UNICO ITEM. Con varias ventanas en un mismo
+    // mensaje (la foto del cuaderno con 17 ventanas es el caso tipico), un "3 hojas" dicho para
+    // UNA se le aplicaria a las 17. El texto libre no dice a cual ventana pertenece.
+    const _unicoItem = Array.isArray(d.items) && d.items.length === 1;
+    const _txtItem = `${item.descripcion || ""} ${item.product || ""} ${item.producto_label || ""} ${item.label || ""} ${item.producto || ""}`;
+    const _txtCfg = _unicoItem ? `${_txtItem} ${d.texto_cliente || ""}` : _txtItem;
+    const hojas = detectHojas(_txtCfg);
+    // Config de corredera segun la regla del dueno, que es la taxonomia de Winart:
+    // central fija = DOBLE riel - las 3 corren a un lado = TRIPLE riel. Ver detectConfigCorredera.
+    const _cfgCorr = tipo === "CORREDERA" ? detectConfigCorredera(_txtCfg, hojas) : {};
 
     // 4) Color / glass_id / comuna / cantidad
     const color = normColorLocal(item.color || d.default_color || "");
@@ -882,6 +947,10 @@ export async function priceAllEngine(d, customer_id = "") {
     try {
       r = await calcularCotizacion({
         tipo, serie, hojas,
+        // [2026-09-18] El riel y las hojas que cierran salen del pedido del cliente, no
+        // de un default. Con la central fija son DOS las que cierran (las laterales,
+        // contra la del medio): asi lo factura Winart en la version 69621 de referencia.
+        riel: _cfgCorr.riel, activos: _cfgCorr.activos,
         ancho_mm: m.ancho_mm, alto_mm: m.alto_mm,
         color, glass_id, comuna, cantidad,
         // [2026-08-25 · Codex] El eslabon que faltaba: sin esto los anchos de paño del
