@@ -378,9 +378,42 @@ export function detectConfigCorredera(texto, hojas) {
     /\b(?:corran|corren|se\s+mueven|se\s+abren|abren|mover|correr|abrir)\s+(?:todas\s+)?(?:las\s+)?(?:3|tres)\b/,
     new RegExp(`\\b(?:corro|corren|corran|mover|mueven|van|se\\s+van)\\s+(?:todas|las\\s+3|las\\s+tres)\\s+${HACIA}\\s+${LADO}\\b`),
     new RegExp(`\\b(?:todas|las\\s+3|las\\s+tres)\\s+(?:se\\s+)?(?:corren|mueven|van)?\\s*${HACIA}\\s+${LADO}\\b`),
-    /\b(?:tres|3)\s+rieles?\b/,
+    /\b(?:tres|3)\s+riel(?:es)?\b/,
+    // 🔴 [2026-09-18] LAS DOS PALABRAS DEL MEDIO NO SON UNA TERCERA DECLARACION.
+    // Un cliente mando "CORREDERA DOBLE RIEL TRIPLE HOJA, LA DEL MEDIO FIJA" y Oliver ESCALO
+    // en vez de cotizar. El texto no tiene nada de ambiguo; lo que pasa es que hay tres
+    // candidatos SUPERPUESTOS, y el del medio roba una palabra a cada lado:
+    //     DOBLE RIEL TRIPLE HOJA
+    //     [doble riel]                 <- lo que el cliente dijo del riel
+    //            [riel triple]         <- CASUALIDAD: no lo dijo nadie
+    //                  [triple hoja]   <- lo que el cliente dijo de las hojas
+    // El candidato del medio se leia como un segundo pedido de riel, chocaba con la central
+    // fija y se declaraba contradiccion. O sea: la guardia anti-adivinanza se disparo con un
+    // texto perfectamente claro — el mismo sintoma que este archivo vino a arreglar, por otra
+    // puerta.
+    //
+    // El dueno confirmo que "riel triple" SI es sinonimo de "triple riel", asi que el patron se
+    // conserva. Lo que se descarta es la COINCIDENCIA QUE PISA a otro atributo ya dicho:
+    // si la palabra "riel" ya venia con su cantidad adelante ("doble riel", "dos rieles"),
+    // entonces ese "riel" ya esta hablado y no puede volver a contar.
+    //
+    // ⚠️ La primera version de este fix miraba al OTRO lado —prohibia "riel triple" cuando le
+    // seguia "hoja"— y Codex la refuto con razon: eso mata al cliente que escribe
+    // "riel triple, hojas al mismo lado", que SI esta pidiendo triple riel. La evidencia que
+    // resuelve el caso esta a la IZQUIERDA, no a la derecha.
+    // El "doble" del cliente viene mal escrito seguido: en la lista real decia "DOBRE RIEL".
+    // Por eso la cantidad del riel se reconoce con tolerancia a esa familia de erratas
+    // (doble/dobre/doble/dobe) en vez de enumerar typos uno por uno — enumerar es volver a
+    // escalar la proxima vez que alguien escriba distinto.
+    /(?<!\b(?:d[oó]b?[lr]?e|dos|2|simple|mono|monorriel)\s)\briel\s+triple\b/,
+    // ⚠️ NO SE LE PONE EL GUARD ESPEJO A "triple riel", y esto es una correccion mia.
+    // Habia agregado /(?<!hojas?)triple riel(?! doble)/ por simetria, para el caso
+    // "HOJA TRIPLE RIEL DOBLE". Codex lo refuto y lo MEDI: ese guard deja en undefined a
+    // "corredera tres hojas triple riel" y "ventana 3 hojas triple riel", que es como habla
+    // un cliente normal. O sea arreglaba un caso que NADIE mando nunca y rompia uno que si
+    // llega. El caso real medido es UNO SOLO —"doble riel" + "triple hoja"— y solo ese se
+    // parchea. Simetria no es evidencia.
     /\btriple\s+riel\b/,
-    /\briel\s+triple\b/,
   ];
   // "la central NO es fija, TODAS corren": el cliente describe el triple riel sin decir el
   // numero. "todas" solo se lee asi cuando YA sabemos que son 3 hojas; en una de 2 seria un

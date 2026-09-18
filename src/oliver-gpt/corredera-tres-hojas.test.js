@@ -197,3 +197,69 @@ test('🔒 el pedido original de Mario Grey, solo, sigue dando DOBLE', () => {
   assert.equal(r.riel, 'DOBLE');
   assert.equal(r.ambiguo, false);
 });
+
+/* =========================================================================
+ * 🔴 CUARTA VUELTA — LA LISTA REAL DE 17 VENTANAS (2026-09-18)
+ *
+ * El dueno probo con una lista de verdad y Oliver volvio a escalar las triple hoja:
+ * *"Las triple hoja (1 y 4) las revisa Marcelo directamente"*. Textual suyo: "volvimos a lo
+ * mismo".
+ *
+ * CAUSA: el modelo venia escrito "CORREDERA DOBLE RIEL TRIPLE HOJA, LA DEL MEDIO FIJA", y ahi
+ * las palabras "RIEL TRIPLE" quedan pegadas POR CASUALIDAD —"doble riel" seguido de "triple
+ * hoja"—. El patron sinonimo `riel triple` lo leia como pedido de TRIPLE riel, chocaba con la
+ * central fija, se declaraba contradiccion y la ventana ESCALABA.
+ * O sea: mi guardia anti-adivinanza se disparo con un texto perfectamente claro. El mismo
+ * sintoma que este archivo vino a arreglar, entrando por otra puerta.
+ *
+ * El dueno confirmo que "riel triple" y "triple riel" SI son sinonimos, asi que el patron se
+ * conserva — solo deja de valer cuando le sigue "hoja".
+ * ========================================================================= */
+
+test('🔴 "DOBLE RIEL TRIPLE HOJA, LA DEL MEDIO FIJA" se cotiza, no escala', () => {
+  for (const t of [
+    'CORREDERA DOBLE RIEL TRIPLE HOJA, LA DEL MEDIO FIJA',
+    'CORREDERA DOBRE RIEL TRIPLE HOJA, LA DEL MEDIO FIJA',   // el typo real de la lista
+    'corredera doble riel triple hoja',
+  ]) {
+    const r = detectConfigCorredera(t, detectHojas(t));
+    assert.equal(r.ambiguo, false, `"${t}" no tiene NADA de ambiguo`);
+    assert.equal(r.riel, 'DOBLE', t);
+    assert.equal(detectHojas(t), 3, t);
+  }
+});
+
+test('🔒 pero "riel triple" SIGUE siendo sinonimo de "triple riel" (lo confirmo el dueno)', () => {
+  for (const t of [
+    'corredera riel triple',
+    'quiero riel triple',
+    'corredera riel triple, las tres corren',
+    // 🔴 ESTE lo cazo Codex refutando la PRIMERA version del fix, que prohibia "riel
+    // triple" cada vez que le seguia "hoja". Este cliente esta pidiendo triple riel de verdad.
+    'corredera riel triple hojas al mismo lado',
+    'riel triple, 3 hojas corredizas',
+  ]) {
+    assert.equal(detectConfigCorredera(t, 3).riel, 'TRIPLE', t);
+  }
+});
+
+test('🔒 "tres hojas triple riel" NO se puede perder (la regresion que me cazo Codex)', () => {
+  // Habia agregado un guard "espejo" por simetria, para "HOJA TRIPLE RIEL DOBLE". Nadie mando
+  // nunca ese texto; en cambio ESTOS son como habla un cliente de verdad, y el guard los
+  // dejaba en undefined. Se saco. El caso real medido es uno solo y solo ese se parchea.
+  for (const t of ['corredera tres hojas triple riel', 'ventana 3 hojas triple riel']) {
+    assert.equal(detectConfigCorredera(t, 3).riel, 'TRIPLE', t);
+  }
+});
+test('🔒 "tres riel" en singular tambien cuenta (lo midio Codex: rieles? no matchea "riel")', () => {
+  assert.equal(detectConfigCorredera('corredera de tres riel', 3).riel, 'TRIPLE');
+  assert.equal(detectConfigCorredera('corredera de tres rieles', 3).riel, 'TRIPLE');
+});
+test('🔒 las demas partidas de esa lista no cambian de comportamiento', () => {
+  // Una lista real trae de todo; nada de esto debe inventar un riel.
+  for (const t of ['CORREDERA', 'corredera', 'PROYECTANTE BAÑO', 'proyectante oficina', 'proyectante baño']) {
+    const r = detectConfigCorredera(t, detectHojas(t));
+    assert.equal(r.riel, undefined, t);
+    assert.equal(r.ambiguo, false, `${t} tampoco puede escalar`);
+  }
+});
