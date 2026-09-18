@@ -252,7 +252,11 @@ export const TOOL_DEFS = [
             enum: [...APERTURAS], // enum cerrado SIN TERMOPANEL
             description:
               'Apertura. Ventanas: CORREDERA, PROYECTANTE, FIJA, BATIENTE, OSCILOBATIENTE. ' +
-              'COMPUESTA = "mitad fija + mitad proyectante unidas" (UNA ventana; el ancho es el VANO ' +
+              'CORREDERA incluye las de 3 hojas: la de 3 hojas con la del medio FIJA (doble riel) y la de 3 hojas ' +
+              'que corren todas a un lado (triple riel). ESAS NO SON COMPUESTAS: si algun pano CORRE, es CORREDERA. ' +
+              'Copia el pedido tal cual en descripcion_producto ("corredera doble riel triple hoja, la del medio fija") ' +
+              'y el sistema arma el riel y la hoja fija solo. ' +
+              'COMPUESTA = SOLO panos que NO corren ("mitad fija + mitad proyectante unidas"; UNA ventana; el ancho es el VANO ' +
               'completo y el sistema lo reparte 50/50 — si el cliente da los anchos de cada paño, usa `partes`). ' +
               'Puertas abatibles: PUERTA (1 hoja exterior), PUERTA_DOBLE (2 hojas), PUERTA_INTERIOR. ' +
               'La puerta corredera de patio va como CORREDERA. NUNCA TERMOPANEL (es vidrio).',

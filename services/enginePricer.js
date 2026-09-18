@@ -75,7 +75,7 @@ function detectarAperturaLocal(text) {
   const MODS = '(?:\\s+(?:abatibles?|dobles?|simples?|interior(?:es)?|exterior(?:es)?|correderas?|corredizas?|deslizantes?|fij[ao]s?|batientes?|oscilobatientes?|proyectantes?|compuestas?|basculantes?|plegables?|de\\s+(?:una|dos|1|2)\\s+hojas?))*';
   const tl = t
     .replace(
-      new RegExp(`\\b(?:no\\s+(?:quiero|necesito|busco)|no|sin|que\\s+no\\s+sea)\\s+(?:(?:una?|la|el)\\s+)?(?:puertas?|ventanas?|ventanal(?:es)?|compuestas?)${MODS}\\b`, 'g'),
+      new RegExp(`\\b(?:no\\s+(?:quiero|necesito|busco)|no|sin|que\\s+no\\s+sea)\\s+(?:(?:una?|la|el)\\s+)?(?:puertas?|ventanas?|ventanal(?:es)?|compuestas?|correderas?|corredizas?)${MODS}\\b`, 'g'),
       " "
     )
     .replace(
@@ -105,6 +105,50 @@ function detectarAperturaLocal(text) {
   if (tl.includes("abatible") || tl.includes("abatir")) return "ABATIBLE";
   if (tl.includes("oscilobatiente") || tl.includes("oscilo")) return "OSCILOBATIENTE";
   if (tl.includes("proyectante") || tl.includes("proy")) return "PROYECTANTE";
+  // 🔴 [2026-09-18] "FIJA" PUEDE SER UNA HOJA, NO LA VENTANA. Va ANTES de la rama FIJO.
+  // El dueno mando una lista real y las triple hoja salieron en el PDF como "Ventana
+  // Compuesta: Fijo 1383,5 mm + Proyectante". Textual: "error tras error".
+  // La causa estaba ACA: "CORREDERA DOBLE RIEL TRIPLE HOJA, LA DEL MEDIO FIJA" contiene la
+  // palabra "FIJA", la rama de abajo la agarraba primero y devolvia FIJA -> un pano fijo
+  // serie S60. Toda la deteccion de riel y central fija que vive mas abajo en este archivo
+  // funcionaba perfecto y NUNCA SE EJECUTABA, porque el tipo ya venia decidido mal.
+  //
+  // ⚠️ NO se invierte el orden a lo bruto: la rama FIJO esta antes a proposito desde el
+  // 2026-06-24, porque "FIJA"/"BATIENTE" caian al fallback CORREDERA y se cotizaban al DOBLE
+  // (casos 0064/0065/0066). Por eso esta regla es ANGOSTA: la corredera gana solo si el texto
+  // NOMBRA la corredera Y la fija esta descrita como UNA HOJA de ella —"hoja fija", o la
+  // central/del medio—. Un "pano fijo" suelto NO alcanza: eso sigue siendo una ventana fija.
+  // ⚠️ [Codex, compuerta, 2 vueltas] TRES DEFECTOS MIOS, TODOS MEDIDOS:
+  //  1. AUTOGOL: el ejemplo que yo mismo escribi en el prompt —"pano central fijo y los
+  //     laterales CORREN"— caia en FIJA, porque no dice la palabra "corredera". El cliente
+  //     nombra la corredera por el VERBO tanto como por el sustantivo.
+  //  2. SEGUNDO AUTOGOL, peor: "doble riel triple hoja la del medio fija" —la frase textual
+  //     de la lista del cliente, que tambien puse en el prompt— NO tiene sustantivo NI verbo.
+  //     Lo que la delata es la ESTRUCTURA: hablar de RIELES y de N HOJAS ya es hablar de una
+  //     corredera; ninguna otra apertura tiene rieles.
+  //  3. NEGACION: "no quiero corredera, quiero hoja fija" devolvia CORREDERA (regresion que
+  //     introduje yo). Y sin \b, "inmoviles" activaba el verbo "moviles" y "recorren" el
+  //     verbo "corren".
+  const _corredoraNombrada =
+    /corredera|corrediz|sliding|deslizan/.test(tl)
+    // el verbo, con limites de palabra y sin el "no corren" del cliente que aclara que son fijas
+    || (/\b(?:corren|corran|m[oó]viles|moviles)\b|\bse\s+mueven\b/.test(tl)
+        && !/\bno\s+(?:corren|corran|se\s+mueven)\b/.test(tl))
+    // la estructura: rieles y conteo de hojas. Solo la corredera tiene rieles.
+    || /\b(?:doble|triple|dos|tres|2|3)\s+riel(?:es)?\b|\briel(?:es)?\s+(?:doble|triple)\b/.test(tl);
+  // Un REEMPLAZO explicito hacia lo fijo desactiva la guardia ("cambiar la corredera POR una
+  // hoja fija"), igual que ya se hacia con "por una puerta". Se exige el VERBO de sustitucion:
+  // un "por" suelto no alcanza (lo pidio Codex, y tiene razon: "por" aparece por todos lados).
+  const _cambioAFija =
+    /\b(?:cambiar|cambio|reemplaz|sustitu|convertir|convierta|dejar|pasar)\w*\b[^.]{0,40}\b(?:por|a|en)\s+(?:una?\s+|la\s+|el\s+)?(?:hojas?\s+|pa[ñn]os?\s+)?fij[ao]s?\b/.test(tl);
+  // La fija tiene que estar descrita como UNA HOJA de la corredera —"hoja fija", o la
+  // central/del medio—. Un "pano fijo" suelto NO alcanza: eso sigue siendo una ventana fija.
+  if (_corredoraNombrada && !_cambioAFija
+      && (/\bhojas?\s+fij[ao]s?\b/.test(tl)
+        || /\b(?:central(?:es)?|del\s+medio|del\s+centro)\b[^.]{0,25}\bfij[ao]s?\b/.test(tl)
+        || /\bfij[ao]s?\b[^.]{0,20}\b(?:central(?:es)?|del\s+medio|del\s+centro)\b/.test(tl))) {
+    return "CORREDERA";
+  }
   // [FIX 2026-06-24 — BUG RAÍZ COTIZADOR] El enum real del bot es "FIJA"/"BATIENTE", pero antes
   // solo se matcheaba "fijo"/"abatible" → "FIJA" y "BATIENTE" caían al fallback CORREDERA y se
   // cotizaban (y rotulaban serie SLIDING) como CORREDERA: precio ~2x. Explica el caso 0064/0065/0066.

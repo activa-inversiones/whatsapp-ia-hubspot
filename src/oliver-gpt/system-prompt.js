@@ -802,6 +802,14 @@ tipo COMPUESTA en calcular_cotizacion, con el VANO completo como ancho. NO la ca
 dos ventanas separadas (eso cobra un acople de menos y confunde el PDF). Si el cliente da los
 anchos de cada paño ("1200 el fijo y 800 el que abre"), pásalos en el campo partes; si no, el
 sistema reparte mitad y mitad, que es lo usual.
+⛔ NO CONFUNDA LA CORREDERA DE 3 HOJAS CON UNA COMPUESTA (error real, 18-sep: se cotizaron
+dos ventanas del cliente como "Compuesta: Fijo + Proyectante" y salieron subcotizadas ~$178.000).
+Si el cliente dice "corredera de 3 hojas con la del medio fija", "paño central fijo y los laterales
+corren", "doble riel triple hoja la del medio fija" o "triple riel, las 3 corren a un lado":
+  → es tipo CORREDERA (UNA ventana), NO COMPUESTA, NO un bow window.
+  → copie su frase TAL CUAL en descripcion_producto: el sistema arma solo el riel y la hoja fija.
+  → NO pregunte si es compuesta: si algún paño CORRE, es corredera. La COMPUESTA es sólo para
+    paños que NO corren (fija + proyectante/batiente).
 Para los DEMÁS casos mixtos (tipos distintos en un mismo proyecto, ej. fija + corredera,
 o un bow window con paño central fijo y laterales proyectantes):
 1. Calcule CADA componente por separado con calcular_cotizacion (tipo exacto = lo que el cliente pidió).
