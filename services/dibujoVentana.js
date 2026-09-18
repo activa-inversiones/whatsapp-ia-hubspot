@@ -371,6 +371,10 @@ export function pintarManilla(doc, f, dx = 0, dy = 0) {
  */
 function manillaDe(hoja, escala) {
   if (hoja.sinBastidor) return null;
+  // [2026-09-18] La hoja corredera FIJADA (la del medio en el doble riel de 3 hojas) tiene su
+  // bastidor como cualquier otra, pero no se abre: no lleva manilla. Cierran contra ella las
+  // dos laterales, que son las que la llevan.
+  if (hoja.fijaEnSitio) return null;
   const v = hoja.vidrioRect;
   if (!(v.w > 0 && v.h > 0)) return null;
   const esc = Number(escala) > 0 ? Number(escala) : 0.05;
@@ -607,7 +611,14 @@ function hojasDe(it) {
   //   Y aunque lo hubiera mirado, decia "Triple hoja" EN PALABRA y el regex pedia un DIGITO.
   // El precio salio bien ($759.729, el de 3 hojas): lo unico equivocado era la figura, que es
   // justo lo que el cliente mira. Textual del dueño: *"la figura deberia tener 3 hojas reales"*.
-  const txt = String(it?.product || it?.producto_label || it?.producto || it?.label || it?.descripcion || "")
+  // 🔴 SE CONCATENAN TODOS LOS CAMPOS, NO SE ELIGE UNO. Con `a || b` gana el PRIMERO que no
+  // este vacio, y en la propuesta real `product` vale "CORREDERA" (el tipo, sin el nº de hojas)
+  // mientras el nº vive en `producto_label`. Con la cadena de OR, "CORREDERA" tapaba el label y
+  // la de 3 hojas seguia saliendo con 2 — MEDIDO generando el PDF, no leyendo el codigo.
+  // Es el MISMO error que este archivo ya tenia anotado en `tipoDe` ("SE MIRAN LOS DOS CAMPOS,
+  // no `product` con precedencia"), repetido acá.
+  const txt = [it?.product, it?.producto_label, it?.producto, it?.label, it?.descripcion]
+    .filter(Boolean).join(' ')
     .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   const md = txt.match(/(\d)\s*hoja/);
   if (md) return Math.max(1, Number(md[1]));
@@ -630,7 +641,9 @@ function hojasDe(it) {
  * que no es la que se le va a fabricar — es el mismo error que el paño fijo del monorriel.
  */
 function centralFijaDe(it) {
-  const t = String(it?.product || it?.producto_label || it?.producto || it?.label || it?.descripcion || "")
+  // Mismo criterio que hojasDe: se concatena, no se elige. Ver el comentario de alla.
+  const t = [it?.product, it?.producto_label, it?.producto, it?.label, it?.descripcion]
+    .filter(Boolean).join(' ')
     .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   return /\bcentral\s+fij[ao]\b/.test(t)
     || /\bcentro\s+fij[ao]\b/.test(t)
@@ -994,9 +1007,19 @@ function planoDeVentana(it, caja) {
     // fijo no tiene bastidor (`sinBastidor`), pero este calculo no lo consultaba.
     // [2026-09-18] LA HOJA DEL MEDIO, CUANDO VA FIJA. En la corredera de 3 hojas en doble riel
     // (modelo S75_DOBLERIEL_TRES_HOJA_98 de Winart) la del centro NO corre: va fija, y las dos
-    // laterales cierran contra ella. El motor ya lo cobra asi desde hoy (4 carros, no 6). El
-    // dibujo tiene que decir lo mismo, o el cliente aprueba una figura que no es su ventana.
-    const tipoPano = r.idx === idxFija ? "FIJA" : tipo;
+    // laterales cierran contra ella. El motor ya lo cobra asi desde hoy (4 carros, no 6).
+    //
+    // 🔴 PERO SIGUE SIENDO UNA HOJA CORREDERA, CON SU BASTIDOR. Correccion del dueño sobre el
+    // primer intento, textual: *"debe quedar con hoja corredera, quedo solo termopanel"*. Y el
+    // BOM real de Winart (v69621) le da la razon sin ambiguedad: factura `PI-SLD-H98` x3 —tres
+    // perfiles de hoja, uno por pano, incluido el fijo— y la pieza que lo inmoviliza se llama
+    // literalmente `HL-SUP-HCF-MA` = "SUPLE HOJA CORREDERA A FIJA". Es una hoja corredera
+    // FIJADA, no un vidrio pegado al marco. Dibujarla sin bastidor mostraba un producto que no
+    // se fabrica y, de paso, contradecia el listado de materiales que ya se cobra.
+    // Por eso NO se le cambia el tipo (seguiria el camino del pano fijo, que no lleva hoja):
+    // se marca `fijaEnSitio`, que quita SOLO la flecha y la manilla.
+    const fijaEnSitio = r.idx === idxFija;
+    const tipoPano = tipo;
     const sinB = tipoPano === "FIJA" || (esMono && r.idx >= 1);
     const perfil = sinB ? junquillo : perfilHoja;
     const insetX = Math.min(perfil, r.w / 3);
@@ -1015,12 +1038,20 @@ function planoDeVentana(it, caja) {
       // null solo por eso) ni flecha. El izquierdo corre hacia el fijo.
       sinBastidor: sinB,
       tipo: tipoPano,
+      fijaEnSitio,
+      // 🔴 [2026-09-18, 2a correccion del dueño] LA HOJA FIJADA VA EN EL OTRO RIEL, POR FUERA.
+      // Textual: *"me gustaria que quedara en el otro riel o sea por fuera"*. Ademas de como se
+      // ve, es lo que hace que la ventana FUNCIONE: las dos laterales tienen que poder correr
+      // POR DELANTE de la fija, y para eso la fija no puede compartir su via. Por defecto
+      // `repartirHojas` alterna par/impar y le tocaba el riel interior (adelante), justo el que
+      // necesitan las que se mueven. Convencion de la casa: riel 1 = interior = adelante.
+      ...(idxFija >= 0 ? { riel: fijaEnSitio ? 0 : 1 } : null),
       simbolo: simboloApertura(tipoPano, vidrioRect, manoDerecha),
-      // La central fija no lleva flecha, y las laterales corren HACIA ella: la de la izquierda
+      // La hoja fijada no lleva flecha, y las laterales corren HACIA ella: la de la izquierda
       // hacia la derecha y la de la derecha hacia la izquierda, como en el dibujo de Winart.
       flecha: esMono
         ? (r.idx === 0 ? 1 : 0)
-        : (tipoPano !== "CORREDERA" ? 0
+        : (tipoPano !== "CORREDERA" || fijaEnSitio ? 0
           : (idxFija >= 0 ? (r.idx < idxFija ? 1 : -1) : (r.idx % 2 === 0 ? 1 : -1))),
     };
   });

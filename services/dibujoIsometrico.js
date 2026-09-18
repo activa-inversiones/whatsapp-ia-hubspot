@@ -399,6 +399,21 @@ export function dibujarVentanaIso(doc, caja, it) {
     }
   }
 
+  // 🔴 [2026-09-18, correccion del dueño] LA HOJA FIJADA SE ROTULA "FIJA", ESCRITO.
+  // Textual: *"y diga fija escrita, asi se ve como encima solamente"*. Sin la palabra, la unica
+  // pista de que esa hoja no se abre es que le falta la flecha — y eso el cliente no lo lee.
+  // Va sobre el vidrio de esa hoja, que a esta altura ya tiene las coordenadas finales (si esta
+  // en el riel exterior, el encogido de perspectiva de mas arriba ya la movio).
+  const fijada = p.hojas.find((h) => h.fijaEnSitio && h.vidrioRect);
+  if (fijada) {
+    const v = fijada.vidrioRect;
+    const alto = 7;
+    if (v.w > 16 && v.h > alto) {
+      doc.fillColor('#5A6672').fontSize(6).font('Helvetica-Bold')
+         .text('FIJA', v.x, v.y + v.h / 2 - alto / 2, { width: v.w, align: 'center' });
+    }
+  }
+
   doc.fillColor('#6B7B8D').fontSize(6.5).font('Helvetica')
      .text(p.etiqueta, caja.x, caja.y + caja.h - 2, { width: caja.w, align: 'center' });
 

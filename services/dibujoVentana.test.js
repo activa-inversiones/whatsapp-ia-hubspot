@@ -993,7 +993,11 @@ test('🔴 el campo `producto` tambien se lee (asi se llama en el item guardado)
   assert.equal(tipoDe(it), 'CORREDERA', 'sin esto una corredera se dibujaba como pano FIJO');
 });
 
-test('🔴 la hoja del MEDIO va fija: sin flecha, sin manilla, rotulada F1', () => {
+test('🔴 la hoja del MEDIO es una HOJA CORREDERA FIJADA, no un termopanel pegado al marco', () => {
+  // Correccion del dueno sobre el primer intento, textual: *"debe quedar con hoja corredera,
+  // quedo solo termopanel"*. Y el BOM real de Winart (v69621) le da la razon: factura
+  // `PI-SLD-H98` x3 —un perfil de hoja por pano, incluido el fijo— y la pieza que lo inmoviliza
+  // se llama `HL-SUP-HCF-MA` = "SUPLE HOJA CORREDERA A FIJA". Es una hoja fijada, con bastidor.
   const it = {
     measures: '2710x1995mm', color: 'Blanco',
     producto_label: 'Corredera SLIDING H98 Doble Riel S75 — Triple hoja (central fija, laterales correderas)',
@@ -1001,10 +1005,11 @@ test('🔴 la hoja del MEDIO va fija: sin flecha, sin manilla, rotulada F1', () 
   const p = planoDeVentana(it, { x: 0, y: 0, w: 400, h: 300 });
   assert.equal(p.hojas.length, 3);
   const medio = p.hojas.find((h) => h.idx === 1);
-  assert.equal(medio.tipo, 'FIJA', 'en el doble riel de 3 hojas la del centro NO corre');
-  assert.equal(medio.flecha, 0, 'una hoja fija no lleva flecha de deslizamiento');
-  assert.equal(medio.manilla, null, 'ni manilla: no se abre');
-  assert.equal(medio.rotulo, 'F1', 'nomenclatura Winart: los fijos son F, los que abren A');
+  assert.equal(medio.sinBastidor, false, 'LLEVA bastidor: es una hoja, no un vidrio suelto');
+  assert.equal(medio.tipo, 'CORREDERA', 'el perfil que se fabrica es hoja corredera');
+  assert.equal(medio.fijaEnSitio, true, 'pero no corre');
+  assert.equal(medio.flecha, 0, 'por eso no lleva flecha de deslizamiento');
+  assert.equal(medio.manilla, null, 'ni manilla: cierran contra ella las dos laterales');
 });
 
 test('🔴 las dos laterales corren HACIA la fija, como en el dibujo de Winart', () => {
@@ -1021,7 +1026,7 @@ test('🔒 una corredera de 3 hojas SIN central fija se dibuja con las tres corr
   const it = { measures: '2710x1995mm', producto_label: 'Corredera SLIDING H98 Triple Riel S75 — 3 hojas' };
   const p = planoDeVentana(it, { x: 0, y: 0, w: 400, h: 300 });
   assert.equal(p.hojas.length, 3);
-  assert.ok(p.hojas.every((h) => h.tipo === 'CORREDERA'), 'si las 3 corren, ninguna va fija');
+  assert.ok(p.hojas.every((h) => !h.fijaEnSitio), 'si las 3 corren, ninguna va fijada');
   assert.ok(p.hojas.every((h) => h.flecha !== 0), 'las tres llevan flecha');
 });
 
@@ -1031,4 +1036,21 @@ test('🔒 la corredera de 2 hojas de siempre no se movio', () => {
   assert.equal(p.hojas.length, 2);
   assert.ok(p.hojas.every((h) => h.tipo === 'CORREDERA'));
   assert.deepEqual(p.hojas.map((h) => h.flecha).sort(), [-1, 1]);
+});
+
+test('🔴 EL CASO REAL: `product` generico NO puede tapar el nº de hojas del label', () => {
+  // Asi llega el item en la propuesta de verdad: product="CORREDERA" (el tipo, sin el nº) y el
+  // nº de hojas en producto_label. Con la cadena de OR ganaba "CORREDERA" y salia de 2 hojas.
+  // Mi primer arreglo tenia ese bug y el test no lo cazaba porque solo ponia producto_label.
+  const it = {
+    product: 'CORREDERA',
+    producto_label: 'Corredera SLIDING H98 Doble Riel S75 — Triple hoja (central fija, laterales correderas)',
+    measures: '2710x1995mm', color: 'Blanco',
+  };
+  assert.equal(hojasDe(it), 3, 'el label manda aunque product traiga algo generico');
+  const p = planoDeVentana(it, { x: 0, y: 0, w: 400, h: 300 });
+  assert.equal(p.hojas.length, 3);
+  const medio = p.hojas.find((h) => h.idx === 1);
+  assert.equal(medio.fijaEnSitio, true, 'y la central sigue fijada');
+  assert.equal(medio.sinBastidor, false, 'con su hoja corredera');
 });
