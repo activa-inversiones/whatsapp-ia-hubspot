@@ -239,7 +239,10 @@ function tipoDe(it) {
   // (tool del LLM, pending_quote, pdf determinista) el tipo real puede venir en cualquiera
   // de los dos, y con que UNO diga "compuesta" alcanza. Con precedencia, un product generico
   // tapaba un label correcto y la ventana se dibujaba de otro tipo.
-  const p = `${String(it?.product || "")} ${String(it?.producto_label || "")}`.toUpperCase();
+  // [2026-09-18] Se suma `producto`: asi se llama el campo en el item que se guarda en la tabla
+  // `quotes` (medido en CM-FR-004-2026-0478). Si ese item llega aca, sin esto `tipoDe` no ve la
+  // palabra "Corredera" y devuelve FIJA — una corredera dibujada como pano fijo.
+  const p = `${String(it?.product || "")} ${String(it?.producto_label || "")} ${String(it?.producto || "")}`.toUpperCase();
   // [2026-08-25] COMPUESTA PRIMERO: su label es "Ventana compuesta: Fijo 1200mm +
   // Proyectante 800mm" — contiene las palabras de los otros tipos y cualquier rama de abajo
   // se la robaba (salia dibujada como una proyectante de un solo paño).
@@ -593,11 +596,45 @@ function hojasDe(it) {
   // 🔴 [2026-08-25] LEIA SOLO `product` Y EL MOTOR EMITE `producto_label`. Una corredera de
   // 3 o 4 hojas caia al default de 2 y se dibujaba con dos: el cliente veia una ventana que
   // no era la suya. `tipoDe` ya miraba los dos campos; esto se habia quedado atras.
-  const m = String(it?.product || it?.producto_label || "").toLowerCase().match(/(\d)\s*hoja/);
-  if (m) return Math.max(1, Number(m[1]));
+  // 🔴 [2026-09-18] SE DIBUJABAN DOS HOJAS EN UNA VENTANA DE TRES, OTRA VEZ, POR DOS MOTIVOS
+  // ENCADENADOS. Medido contra la propuesta REAL CM-FR-004-2026-0478 (Mario Grey), leyendo el
+  // item tal como quedo guardado en la tabla `quotes`:
+  //     { uw, color, vidrio, medidas, ambiente, cantidad, producto, unitario, referencial }
+  //   1. NO viene `corredera` — el bloque que trae el nº de hojas del motor se pierde antes del
+  //      PDF. Asi que la unica fuente que queda es el texto.
+  //   2. El texto vive en `producto` (asi se llama el campo ahi), y esta funcion miraba
+  //      `product` y `producto_label`. Dos nombres parecidos, ninguno el correcto.
+  //   Y aunque lo hubiera mirado, decia "Triple hoja" EN PALABRA y el regex pedia un DIGITO.
+  // El precio salio bien ($759.729, el de 3 hojas): lo unico equivocado era la figura, que es
+  // justo lo que el cliente mira. Textual del dueño: *"la figura deberia tener 3 hojas reales"*.
+  const txt = String(it?.product || it?.producto_label || it?.producto || it?.label || it?.descripcion || "")
+    .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const md = txt.match(/(\d)\s*hoja/);
+  if (md) return Math.max(1, Number(md[1]));
+  const PAL = { una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6 };
+  const mp = txt.match(/\b(una|dos|tres|cuatro|cinco|seis)\s+hojas?\b/);
+  if (mp) return PAL[mp[1]];
+  if (/\btriple\s+hoja/.test(txt)) return 3;
+  if (/\bcuadruple\s+hoja/.test(txt)) return 4;
   const t = tipoDe(it);
   if (t === "PUERTA_DOBLE") return 2;
   return t === "CORREDERA" ? 2 : 1;
+}
+
+/**
+ * ¿La hoja del MEDIO va fija? (corredera de 3 hojas en doble riel, modelo
+ * S75_DOBLERIEL_TRES_HOJA_98 de Winart).
+ *
+ * El dibujo tiene que mostrarlo: la del centro SIN flecha y SIN manilla, rotulada F1, y las dos
+ * laterales corriendo hacia ella. Dibujar las tres con flecha le muestra al cliente una ventana
+ * que no es la que se le va a fabricar — es el mismo error que el paño fijo del monorriel.
+ */
+function centralFijaDe(it) {
+  const t = String(it?.product || it?.producto_label || it?.producto || it?.label || it?.descripcion || "")
+    .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  return /\bcentral\s+fij[ao]\b/.test(t)
+    || /\bcentro\s+fij[ao]\b/.test(t)
+    || /\b(?:hoja|pano|panel)\s+(?:central|del\s+centro|del\s+medio)\s+fij[ao]\b/.test(t);
 }
 
 // Encaja el rectángulo ancho×alto dentro de la caja disponible SIN deformarlo.
@@ -935,6 +972,9 @@ function planoDeVentana(it, caja) {
   const PISA_MARCO_MM = P.pisa;
   // En una corredera las hojas arrancan ANTES del borde interior del marco, porque lo pisan.
   const pisa = corre ? Math.min(PISA_MARCO_MM * escala, marco * 0.8) : 0;
+  // Cuál paño va fijo: el del medio, y solo si son impares y el pedido lo dice. Con -1 no hay
+  // ninguno fijo y todo se dibuja exactamente como antes.
+  const idxFija = (corre && !esMono && n >= 3 && n % 2 === 1 && centralFijaDe(it)) ? (n - 1) / 2 : -1;
   const hojas = repartirHojas(
     intX - pisa, intY - pisa, intW + 2 * pisa, intH + 2 * pisa, n, corre, TRASLAPE_MM * escala, esMono,
   ).map((r) => {
@@ -952,7 +992,12 @@ function planoDeVentana(it, caja) {
     // la tuviera. Sumado al marco daba 42 + 66 = 108. Lo correcto es marco + junquillo.
     // Es el mismo descuido que el contorno fantasma de hace un rato: la geometria sabia que el
     // fijo no tiene bastidor (`sinBastidor`), pero este calculo no lo consultaba.
-    const sinB = tipo === "FIJA" || (esMono && r.idx >= 1);
+    // [2026-09-18] LA HOJA DEL MEDIO, CUANDO VA FIJA. En la corredera de 3 hojas en doble riel
+    // (modelo S75_DOBLERIEL_TRES_HOJA_98 de Winart) la del centro NO corre: va fija, y las dos
+    // laterales cierran contra ella. El motor ya lo cobra asi desde hoy (4 carros, no 6). El
+    // dibujo tiene que decir lo mismo, o el cliente aprueba una figura que no es su ventana.
+    const tipoPano = r.idx === idxFija ? "FIJA" : tipo;
+    const sinB = tipoPano === "FIJA" || (esMono && r.idx >= 1);
     const perfil = sinB ? junquillo : perfilHoja;
     const insetX = Math.min(perfil, r.w / 3);
     const insetY = Math.min(perfil, r.h / 3);
@@ -969,10 +1014,14 @@ function planoDeVentana(it, caja) {
       // Americana: el paño derecho (idx>=1) es FIJO — no lleva bastidor (manillaDe le devuelve
       // null solo por eso) ni flecha. El izquierdo corre hacia el fijo.
       sinBastidor: sinB,
-      simbolo: simboloApertura(tipo, vidrioRect, manoDerecha),
+      tipo: tipoPano,
+      simbolo: simboloApertura(tipoPano, vidrioRect, manoDerecha),
+      // La central fija no lleva flecha, y las laterales corren HACIA ella: la de la izquierda
+      // hacia la derecha y la de la derecha hacia la izquierda, como en el dibujo de Winart.
       flecha: esMono
         ? (r.idx === 0 ? 1 : 0)
-        : (tipo === "CORREDERA" ? (r.idx % 2 === 0 ? 1 : -1) : 0),
+        : (tipoPano !== "CORREDERA" ? 0
+          : (idxFija >= 0 ? (r.idx < idxFija ? 1 : -1) : (r.idx % 2 === 0 ? 1 : -1))),
     };
   });
 
@@ -980,7 +1029,9 @@ function planoDeVentana(it, caja) {
   // corredera se asignaban en orden de PINTADO y no de izquierda a derecha: la hoja A1 podia
   // terminar rotulada A2. En una cotizacion eso manda a fabricar la manilla en la hoja
   // equivocada. El orden visual manda para el rotulo; el de riel, solo para pintar.
-  const rotulos = etiquetasDePanos(hojas.map(() => tipo));
+  // Los rotulos salen del tipo de CADA paño, no del de la ventana: con la central fija, el del
+  // medio es F1 y los laterales A1/A2, igual que los rotula Winart.
+  const rotulos = etiquetasDePanos(hojas.map((hj) => hj.tipo || tipo));
   hojas.forEach((hj, i) => { hj.tipo = hj.tipo || tipo; hj.rotulo = rotulos[i]; hj.manilla = manillaDe(hj, escala); });
   // Recien ahora se ordena para pintar: primero las del riel de ATRAS. Al reves, la de atras
   // taparia a la de adelante justo en el traslape y se veria como no esta armada la ventana.

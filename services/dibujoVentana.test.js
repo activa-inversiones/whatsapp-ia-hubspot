@@ -957,3 +957,78 @@ test("🔴 el paño FIJO lleva marco + junquillo, no el ancho del bastidor", () 
   const banda = mm((p.marcoRect.x + p.marcoRect.w) - (fijo.vidrioRect.x + fijo.vidrioRect.w));
   assert.ok(banda < 70, `el lado fijo mide ${banda} mm; con el bastidor fantasma daba 108`);
 });
+
+/* =========================================================================
+ * 🔴 [2026-09-18] LA FIGURA MOSTRABA DOS HOJAS EN UNA VENTANA DE TRES
+ *
+ * Reclamo del dueño sobre la propuesta REAL CM-FR-004-2026-0478 (Mario Grey), textual:
+ * *"la figura deberia tener 3 hojas reales por medidas"*.
+ * El PRECIO estaba bien ($759.729, el de 3 hojas). Lo unico equivocado era el dibujo — que es
+ * justo lo que el cliente mira y aprueba.
+ *
+ * Dos fallos encadenados, medidos leyendo el item tal como quedo guardado en la tabla `quotes`:
+ *   1. El item NO trae `corredera` (el bloque del motor con el n.o de hojas se pierde antes del
+ *      PDF), asi que la unica fuente es el texto.
+ *   2. El texto decia "Triple hoja" EN PALABRA y el regex pedia un DIGITO: /(\d)\s*hoja/.
+ * Resultado: caia al default de 2.
+ * ========================================================================= */
+
+test('🔴 "Triple hoja" en PALABRA se dibuja con TRES paños', () => {
+  const it = { producto_label: 'Corredera SLIDING H98 Doble Riel S75 — Triple hoja (central fija, laterales correderas)' };
+  assert.equal(hojasDe(it), 3, 'el regex pedia un digito y el label trae la palabra');
+});
+
+test('🔒 las demas palabras-numero tambien (tres/cuatro/cuadruple), y el digito sigue', () => {
+  assert.equal(hojasDe({ producto_label: 'Corredera de tres hojas' }), 3);
+  assert.equal(hojasDe({ producto_label: 'Corredera cuatro hojas' }), 4);
+  assert.equal(hojasDe({ producto_label: 'Corredera cuadruple hoja' }), 4);
+  assert.equal(hojasDe({ producto_label: 'Corredera SLIDING 3 hojas' }), 3, 'el digito no se rompio');
+  assert.equal(hojasDe({ producto_label: 'Corredera SLIDING H98' }), 2, 'sin dato, el default de corredera');
+});
+
+test('🔴 el campo `producto` tambien se lee (asi se llama en el item guardado)', () => {
+  // El item de la tabla `quotes` usa `producto`, no `product` ni `producto_label`.
+  const it = { producto: 'Corredera SLIDING H98 Doble Riel S75 — Triple hoja (central fija, laterales correderas)' };
+  assert.equal(hojasDe(it), 3);
+  assert.equal(tipoDe(it), 'CORREDERA', 'sin esto una corredera se dibujaba como pano FIJO');
+});
+
+test('🔴 la hoja del MEDIO va fija: sin flecha, sin manilla, rotulada F1', () => {
+  const it = {
+    measures: '2710x1995mm', color: 'Blanco',
+    producto_label: 'Corredera SLIDING H98 Doble Riel S75 — Triple hoja (central fija, laterales correderas)',
+  };
+  const p = planoDeVentana(it, { x: 0, y: 0, w: 400, h: 300 });
+  assert.equal(p.hojas.length, 3);
+  const medio = p.hojas.find((h) => h.idx === 1);
+  assert.equal(medio.tipo, 'FIJA', 'en el doble riel de 3 hojas la del centro NO corre');
+  assert.equal(medio.flecha, 0, 'una hoja fija no lleva flecha de deslizamiento');
+  assert.equal(medio.manilla, null, 'ni manilla: no se abre');
+  assert.equal(medio.rotulo, 'F1', 'nomenclatura Winart: los fijos son F, los que abren A');
+});
+
+test('🔴 las dos laterales corren HACIA la fija, como en el dibujo de Winart', () => {
+  const it = {
+    measures: '2710x1995mm', color: 'Blanco',
+    producto_label: 'Corredera SLIDING H98 Doble Riel S75 — Triple hoja (central fija, laterales correderas)',
+  };
+  const p = planoDeVentana(it, { x: 0, y: 0, w: 400, h: 300 });
+  assert.equal(p.hojas.find((h) => h.idx === 0).flecha, 1, 'la izquierda va hacia la derecha');
+  assert.equal(p.hojas.find((h) => h.idx === 2).flecha, -1, 'la derecha va hacia la izquierda');
+});
+
+test('🔒 una corredera de 3 hojas SIN central fija se dibuja con las tres corriendo', () => {
+  const it = { measures: '2710x1995mm', producto_label: 'Corredera SLIDING H98 Triple Riel S75 — 3 hojas' };
+  const p = planoDeVentana(it, { x: 0, y: 0, w: 400, h: 300 });
+  assert.equal(p.hojas.length, 3);
+  assert.ok(p.hojas.every((h) => h.tipo === 'CORREDERA'), 'si las 3 corren, ninguna va fija');
+  assert.ok(p.hojas.every((h) => h.flecha !== 0), 'las tres llevan flecha');
+});
+
+test('🔒 la corredera de 2 hojas de siempre no se movio', () => {
+  const it = { measures: '2000x1450mm', producto_label: 'Corredera SLIDING H80 Doble Riel S75' };
+  const p = planoDeVentana(it, { x: 0, y: 0, w: 400, h: 300 });
+  assert.equal(p.hojas.length, 2);
+  assert.ok(p.hojas.every((h) => h.tipo === 'CORREDERA'));
+  assert.deepEqual(p.hojas.map((h) => h.flecha).sort(), [-1, 1]);
+});
