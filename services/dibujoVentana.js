@@ -380,6 +380,13 @@ function manillaDe(hoja, escala) {
   // bastidor como cualquier otra, pero no se abre: no lleva manilla. Cierran contra ella las
   // dos laterales, que son las que la llevan.
   if (hoja.fijaEnSitio) return null;
+  // 🔴 [2026-09-18, correccion del dueño] LA HOJA DEL CENTRO NO LLEVA MANILLA, aunque corra.
+  // Textual, mirando el triple riel renderizado: *"la del centro es sin manilla"*.
+  // MEDIDO contra los cuatro listados de materiales de 3 hojas: Winart factura `HI-MLA-FNX` x2
+  // en TODOS — v69621 y v69623 (central fija) y tambien v69622 y v69624 (TRIPLE RIEL, donde las
+  // tres corren). Dos manillas, no tres. Es coherente con las cremonas, que tambien son 2.
+  // La razon fisica: la manilla cierra contra la JAMBA, y la del medio no toca ninguna.
+  if (hoja.sinManilla) return null;
   const v = hoja.vidrioRect;
   if (!(v.w > 0 && v.h > 0)) return null;
   const esc = Number(escala) > 0 ? Number(escala) : 0.05;
@@ -697,7 +704,18 @@ function etiquetaVidrioDe(it) {
   const a = Number(p && p.ancho_mm);
   const h = Number(p && p.alto_mm);
   if (!(a > 0 && h > 0)) return null;
-  return `vidrio ${Math.round(a)}×${Math.round(h)} mm`;
+  // 🔴 [2026-09-18, correccion del dueño] DICE "TERMOPANEL", NO "VIDRIO". Textual: *"donde dice
+  // vidrio deberia decir termopanel porque confundiria al cliente: si lee vidrio podria pensar
+  // que no es termopanel"*. Tiene razon — el termopanel es LO QUE SE VENDE, y ponerle al lado la
+  // palabra generica le siembra la duda justo en la figura que esta mirando.
+  // ⚠️ PERO NO SE MIENTE AL REVES: hay 18 vidrios SIMPLES cotizables en el catalogo (monolitico,
+  // laminado, espejo). En esos dice "vidrio", que es lo que son. La palabra sale del vidrio REAL
+  // de la partida, no de un default: un monolitico rotulado "termopanel" seria peor que la duda.
+  const etiquetaVidrio = String((it && (it.glass_label || it.glass_code || it.vidrio)) || '');
+  const esTermopanel = /(\d+(?:\.\d+)?)\s*[+/-]\s*(\d+(?:\.\d+)?)\s*[+/-]\s*(\d+(?:\.\d+)?)/.test(etiquetaVidrio)
+    || /termopanel|dvh/i.test(etiquetaVidrio);
+  const palabra = esTermopanel ? 'termopanel' : 'vidrio';
+  return `${palabra} ${Math.round(a)}×${Math.round(h)} mm`;
 }
 
 function centralFijaDe(it) {
@@ -1109,6 +1127,11 @@ function planoDeVentana(it, caja) {
       sinBastidor: sinB,
       tipo: tipoPano,
       fijaEnSitio,
+      // La del medio no cierra contra ninguna jamba, asi que no lleva manilla — lo factura asi
+      // Winart en las cuatro anclas de 3 hojas (2 manillas, no 3). Solo se aplica con un numero
+      // IMPAR de hojas, que es donde hay un "medio": en 2 y 4 hojas no se toca nada, y ahi la
+      // calibracion dice 2 y 3 manillas respectivamente.
+      sinManilla: corre && n >= 3 && n % 2 === 1 && r.idx === (n - 1) / 2,
       // 🔴 [2026-09-18, 2a correccion del dueño] LA HOJA FIJADA VA EN EL OTRO RIEL, POR FUERA.
       // Textual: *"me gustaria que quedara en el otro riel o sea por fuera"*. Ademas de como se
       // ve, es lo que hace que la ventana FUNCIONE: las dos laterales tienen que poder correr

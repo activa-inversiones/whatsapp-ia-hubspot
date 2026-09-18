@@ -1164,10 +1164,64 @@ test('🔴 la cota del VIDRIO sale en el dibujo, y solo si el motor la calculo',
   };
   const con = planoDeVentana({ ...base, pano_vidrio: { ancho_mm: 770, alto_mm: 1747, panos: 3 } },
     { x: 0, y: 0, w: 156, h: 120 });
-  assert.equal(con.etiquetaVidrio, 'vidrio 770×1747 mm');
+  assert.equal(con.etiquetaVidrio, 'vidrio 770×1747 mm');  // sin glass_label no se afirma termopanel
   assert.equal(con.etiqueta, '2710×1995 mm', 'la de la ventana no se toca');
   // Sin el dato NO se inventa: una medida de vidrio falsa en un plano es peor que ninguna.
   assert.equal(planoDeVentana(base, { x: 0, y: 0, w: 156, h: 120 }).etiquetaVidrio, null);
   assert.equal(planoDeVentana({ ...base, pano_vidrio: { ancho_mm: 0, alto_mm: 1747 } },
     { x: 0, y: 0, w: 156, h: 120 }).etiquetaVidrio, null);
+});
+
+/* =========================================================================
+ * 🔴 [2026-09-18] LA DEL CENTRO NO LLEVA MANILLA, Y LA COTA DICE "TERMOPANEL"
+ *
+ * Dos correcciones del dueno mirando el triple riel renderizado:
+ *   *"la del centro es sin manilla"*
+ *   *"donde dice vidrio deberia decir termopanel porque confundiria al cliente: si lee vidrio
+ *    podria pensar que no es termopanel"*
+ * ========================================================================= */
+
+test('🔴 en las de 3 hojas van DOS manillas, no tres — tambien en el triple riel', () => {
+  // MEDIDO en los cuatro listados de materiales de Winart: `HI-MLA-FNX` x2 en v69621, v69622,
+  // v69623 y v69624. Dos manillas y dos cremonas en todos, corran dos hojas o corran las tres.
+  // La razon fisica: la manilla cierra contra la JAMBA, y la del medio no toca ninguna.
+  for (const lab of [
+    'Corredera SLIDING H98 Triple Riel S75 — Triple hoja, las tres corren',
+    'Corredera SLIDING H98 Doble Riel S75 — Triple hoja (central fija, laterales correderas)',
+  ]) {
+    const p = planoDeVentana({ product: 'CORREDERA', producto_label: lab, measures: '2710x1995mm' },
+      { x: 0, y: 0, w: 156, h: 120 });
+    assert.equal(p.hojas.length, 3, lab);
+    assert.equal(p.hojas.filter((h) => h.manilla).length, 2, `${lab}: Winart factura 2 manillas`);
+    assert.equal(p.hojas.find((h) => h.idx === 1).manilla, null, 'la del medio, ninguna');
+  }
+});
+
+test('🔒 la corredera de 2 hojas conserva sus dos manillas', () => {
+  const p = planoDeVentana(
+    { product: 'CORREDERA', producto_label: 'Corredera SLIDING H80 Doble Riel S75', measures: '2000x1450mm' },
+    { x: 0, y: 0, w: 156, h: 120 });
+  assert.equal(p.hojas.filter((h) => h.manilla).length, 2);
+});
+
+test('🔴 la cota dice TERMOPANEL cuando lo es — no "vidrio", que siembra la duda', () => {
+  const mk = (glass_label) => planoDeVentana({
+    product: 'CORREDERA', producto_label: 'Corredera SLIDING H98 Doble Riel S75',
+    measures: '2710x1995mm', glass_label, pano_vidrio: { ancho_mm: 770, alto_mm: 1747, panos: 3 },
+  }, { x: 0, y: 0, w: 156, h: 120 });
+  for (const g of ['DVH 5+12+5', 'Termopanel 4+12+4', 'TP-M-5+12+5']) {
+    assert.match(mk(g).etiquetaVidrio, /^termopanel /, g);
+  }
+});
+
+test('🔴 pero NO se miente al reves: un vidrio simple dice "vidrio"', () => {
+  // Hay 18 vidrios simples cotizables en el catalogo. Rotular un monolitico como "termopanel"
+  // seria peor que la duda que esto viene a evitar.
+  const mk = (glass_label) => planoDeVentana({
+    product: 'CORREDERA', producto_label: 'Corredera SLIDING H98 Doble Riel S75',
+    measures: '2710x1995mm', glass_label, pano_vidrio: { ancho_mm: 770, alto_mm: 1747, panos: 3 },
+  }, { x: 0, y: 0, w: 156, h: 120 });
+  for (const g of ['Monolitico 4mm', 'LM-8MM', 'espejo 3mm', '']) {
+    assert.match(mk(g).etiquetaVidrio, /^vidrio /, g || '(sin dato)');
+  }
 });
