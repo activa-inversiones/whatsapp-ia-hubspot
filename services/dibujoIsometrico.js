@@ -206,30 +206,41 @@ export function dibujarVentanaIso(doc, caja, it) {
   // mas lejos que la interior (el fondo del riel), y una ventana se mira desde ~1,7 m. La
   // reduccion aparente es 1 - 45/1700 ≈ 0,974. La distancia de observacion es un SUPUESTO
   // DECLARADO, no una medicion: es lo que hace ver la ventana como se ve parado frente a ella.
+  // 🔴 [2026-09-18] ESTO SOLO SABIA DE DOS PROFUNDIDADES, y el triple riel tiene TRES. Reclamo
+  // del dueño mirando la propuesta renderizada, textual: *"te quedo como 2 rieles, las hojas se
+  // desplazan sobre rieles diferentes"*. Antes se encogia SOLO el riel 0 y todo lo demas quedaba
+  // en el mismo plano: con tres hojas, dos de ellas se veian pegadas a la misma profundidad.
+  // Ahora el encogido es por ESCALON de riel: cada via mas exterior encoge una vez mas. Con dos
+  // rieles da exactamente lo de antes (riel 0 → 0,974 · riel 1 → 1), asi que ninguna ventana ya
+  // dibujada se mueve; con tres da 0,974² · 0,974 · 1.
   const ENCOGE_EXTERIOR = 0.974;
-  const hojasExt = p.hojas.filter((h) => h.riel === 0);
+  const rielMax = p.hojas.reduce((a, h) => Math.max(a, Number(h.riel) || 0), 0);
+  const hojasExt = p.hojas.filter((h) => Number(h.riel) >= 0 && Number(h.riel) < rielMax);
   if (hojasExt.length) {
     const marcos = p.marcos || [p.marcoRect];
     const cx = marcos.reduce((a, m) => a + m.x + m.w / 2, 0) / marcos.length;
     const cy = marcos.reduce((a, m) => a + m.y + m.h / 2, 0) / marcos.length;
-    const encoger = (r) => {
+    // `k` = cuantos escalones de riel hacia afuera esta esta hoja. Con dos rieles siempre es 1
+    // (lo de antes); con tres, la mas exterior es 2.
+    const encoger = (r, f) => {
       if (!r) return r;
       return {
         ...r,
-        x: cx + (r.x - cx) * ENCOGE_EXTERIOR, y: cy + (r.y - cy) * ENCOGE_EXTERIOR,
-        w: r.w * ENCOGE_EXTERIOR, h: r.h * ENCOGE_EXTERIOR,
+        x: cx + (r.x - cx) * f, y: cy + (r.y - cy) * f,
+        w: r.w * f, h: r.h * f,
       };
     };
     for (const h of hojasExt) {
+      const f = ENCOGE_EXTERIOR ** (rielMax - (Number(h.riel) || 0));
       const antes = { x: h.x, y: h.y, w: h.w, h: h.h };
-      Object.assign(h, encoger(antes));
-      h.vidrioRect = encoger(h.vidrioRect);
-      h.junquilloRect = encoger(h.junquilloRect);
-      h.manilla = encoger(h.manilla);
+      Object.assign(h, encoger(antes, f));
+      h.vidrioRect = encoger(h.vidrioRect, f);
+      h.junquilloRect = encoger(h.junquilloRect, f);
+      h.manilla = encoger(h.manilla, f);
       if (Array.isArray(h.simbolo)) {
         h.simbolo = h.simbolo.map((sg) => ({
-          x1: cx + (sg.x1 - cx) * ENCOGE_EXTERIOR, y1: cy + (sg.y1 - cy) * ENCOGE_EXTERIOR,
-          x2: cx + (sg.x2 - cx) * ENCOGE_EXTERIOR, y2: cy + (sg.y2 - cy) * ENCOGE_EXTERIOR,
+          x1: cx + (sg.x1 - cx) * f, y1: cy + (sg.y1 - cy) * f,
+          x2: cx + (sg.x2 - cx) * f, y2: cy + (sg.y2 - cy) * f,
         }));
       }
     }

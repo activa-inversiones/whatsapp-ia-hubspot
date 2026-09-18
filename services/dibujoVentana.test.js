@@ -1054,3 +1054,37 @@ test('🔴 EL CASO REAL: `product` generico NO puede tapar el nº de hojas del l
   assert.equal(medio.fijaEnSitio, true, 'y la central sigue fijada');
   assert.equal(medio.sinBastidor, false, 'con su hoja corredera');
 });
+
+test('🔴 TRIPLE RIEL: tres hojas en TRES vias distintas, no dos', () => {
+  // Reclamo del dueno mirando la propuesta renderizada, textual: *"te quedo como 2 rieles, las
+  // hojas se desplazan sobre rieles diferentes"*. `repartirHojas` alterna par/impar porque
+  // asume DOS vias (correcto para el doble riel, lo unico que existia hasta hoy).
+  const it = {
+    product: 'CORREDERA', measures: '2710x1995mm', color: 'Blanco',
+    producto_label: 'Corredera SLIDING H98 Triple Riel S75 — Triple hoja, las tres corren',
+  };
+  const p = planoDeVentana(it, { x: 0, y: 0, w: 400, h: 300 });
+  assert.equal(p.hojas.length, 3);
+  assert.deepEqual(p.hojas.map((h) => h.riel).sort(), [0, 1, 2], 'una via por hoja');
+});
+
+test('🔴 TRIPLE RIEL: TODAS las flechas al mismo lado (se apilan contra un costado)', () => {
+  const it = {
+    product: 'CORREDERA', measures: '2710x1995mm', color: 'Blanco',
+    producto_label: 'Corredera SLIDING H98 Triple Riel S75 — Triple hoja, las tres corren',
+  };
+  const p = planoDeVentana(it, { x: 0, y: 0, w: 400, h: 300 });
+  const dirs = new Set(p.hojas.map((h) => h.flecha));
+  assert.equal(dirs.size, 1, 'en el triple riel no se alternan: van todas al mismo lado');
+  assert.ok(!p.hojas.some((h) => h.fijaEnSitio), 'y ninguna va fijada: las tres corren');
+});
+
+test('🔒 el doble riel de 2 hojas conserva sus DOS vias y sus flechas enfrentadas', () => {
+  // La generalizacion del riel no puede tocar lo que ya se vende todos los dias.
+  const p = planoDeVentana(
+    { product: 'CORREDERA', producto_label: 'Corredera SLIDING H80 Doble Riel S75', measures: '2000x1450mm' },
+    { x: 0, y: 0, w: 400, h: 300 });
+  assert.equal(p.hojas.length, 2);
+  assert.deepEqual(p.hojas.map((h) => h.riel).sort(), [0, 1]);
+  assert.deepEqual(p.hojas.map((h) => h.flecha).sort(), [-1, 1]);
+});

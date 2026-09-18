@@ -640,6 +640,19 @@ function hojasDe(it) {
  * laterales corriendo hacia ella. Dibujar las tres con flecha le muestra al cliente una ventana
  * que no es la que se le va a fabricar — es el mismo error que el paño fijo del monorriel.
  */
+/**
+ * ¿Es un TRIPLE RIEL? Tres vias, una hoja por via, todas corriendo hacia el mismo lado.
+ * Es el otro modelo de 3 hojas de Winart (S75_TRIPLERIEL_TRES_HOJA_98) y cuesta $99.364 mas de
+ * material que el de central fija: no son dos dibujos del mismo producto, son dos productos.
+ */
+function tripleRielDe(it) {
+  const t = [it?.product, it?.producto_label, it?.producto, it?.label, it?.descripcion]
+    .filter(Boolean).join(' ')
+    .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  return /\btriple\s+riel\b/.test(t) || /\briel\s+triple\b/.test(t)
+    || /\b(?:3|tres)\s+rieles?\b/.test(t);
+}
+
 function centralFijaDe(it) {
   // Mismo criterio que hojasDe: se concatena, no se elige. Ver el comentario de alla.
   const t = [it?.product, it?.producto_label, it?.producto, it?.label, it?.descripcion]
@@ -988,6 +1001,15 @@ function planoDeVentana(it, caja) {
   // Cuál paño va fijo: el del medio, y solo si son impares y el pedido lo dice. Con -1 no hay
   // ninguno fijo y todo se dibuja exactamente como antes.
   const idxFija = (corre && !esMono && n >= 3 && n % 2 === 1 && centralFijaDe(it)) ? (n - 1) / 2 : -1;
+  // 🔴 [2026-09-18, correccion del dueño] EL TRIPLE RIEL TIENE TRES VIAS, NO DOS. Textual:
+  // *"te quedo como 2 rieles, las hojas se desplazan sobre rieles diferentes, todas las flechas
+  // ademas hacia el mismo lado"*. Es su propia regla de negocio del 18-sep: *"si quiere mover
+  // las tres hacia un lado es triple riel y se mueven las 3 en tres rieles diferentes"*, y es el
+  // modelo S75_TRIPLERIEL_TRES_HOJA_98 de Winart (version de referencia 69622).
+  // `repartirHojas` alterna par/impar porque asume DOS vias — correcto para el doble riel, que
+  // es lo unico que existia hasta hoy. Con tres hojas sobre tres rieles cada una va a su propia
+  // profundidad y TODAS corren hacia el mismo lado: se apilan juntas contra un costado.
+  const esTripleRiel = corre && !esMono && n >= 3 && idxFija < 0 && tripleRielDe(it);
   const hojas = repartirHojas(
     intX - pisa, intY - pisa, intW + 2 * pisa, intH + 2 * pisa, n, corre, TRASLAPE_MM * escala, esMono,
   ).map((r) => {
@@ -1046,13 +1068,18 @@ function planoDeVentana(it, caja) {
       // `repartirHojas` alterna par/impar y le tocaba el riel interior (adelante), justo el que
       // necesitan las que se mueven. Convencion de la casa: riel 1 = interior = adelante.
       ...(idxFija >= 0 ? { riel: fijaEnSitio ? 0 : 1 } : null),
+      // Triple riel: cada hoja en SU via. riel 0 = la mas exterior (atras), riel n-1 = interior
+      // (adelante). El pintado ordena por riel, asi que quedan escalonadas de verdad.
+      ...(esTripleRiel ? { riel: r.idx } : null),
       simbolo: simboloApertura(tipoPano, vidrioRect, manoDerecha),
       // La hoja fijada no lleva flecha, y las laterales corren HACIA ella: la de la izquierda
       // hacia la derecha y la de la derecha hacia la izquierda, como en el dibujo de Winart.
       flecha: esMono
         ? (r.idx === 0 ? 1 : 0)
         : (tipoPano !== "CORREDERA" || fijaEnSitio ? 0
-          : (idxFija >= 0 ? (r.idx < idxFija ? 1 : -1) : (r.idx % 2 === 0 ? 1 : -1))),
+          // Triple riel: TODAS al mismo lado — se apilan juntas contra un costado.
+          : esTripleRiel ? 1
+            : (idxFija >= 0 ? (r.idx < idxFija ? 1 : -1) : (r.idx % 2 === 0 ? 1 : -1))),
     };
   });
 
