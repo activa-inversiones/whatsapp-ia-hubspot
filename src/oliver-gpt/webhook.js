@@ -135,7 +135,7 @@ import {
 } from '../sales-agent/whatsapp-adapter.js';
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
 import { priceAllEngine, detectHojas } from '../../services/enginePricer.js'; // [2026-06-24] blindaje label↔precio en generarPdf
-import { saveMedia } from '../../mediaStore.js'; // [#5] persistir media ENTRANTE (foto/audio/plano) para el cockpit
+import { saveMedia, notifyQuoteSent } from '../../mediaStore.js'; // [#5] media entrante + aviso de cotizacion enviada
 import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal, attachInboundToDeal } from '../../services/zohoCommercial.js';
 import {
   shouldSendVoice as realShouldSendVoice,
@@ -4539,6 +4539,59 @@ Comuna: ${datos.comuna}`
             ? Math.min(..._opcionesEntregadas.map((o) => Number(o.total) || Infinity).filter(Number.isFinite))
             : _totalDocA;
           const grandTotal = Number.isFinite(_montoReportado) && _montoReportado > 0 ? _montoReportado : _totalDocA;
+
+          // ── 🔔 AVISO A MARCELO: SE ENVIO UNA COTIZACION ──────────────────────
+          // 🔴 [2026-09-18] ESTO NUNCA SE HABIA DISPARADO. `notifyQuoteSent` existia en
+          // mediaStore.js, exportada y correcta, y NO LA LLAMABA NADIE — cero llamadas en todo
+          // el repo. MEDIDO contra la BD viva: `quote_alerts` tenia CERO filas desde que existe.
+          // El aviso con el guion de venta, que deberia llegar en los primeros 30 min de cada
+          // cotizacion, no salio nunca. (Y aunque hubiera salido, el endpoint mandaba por la
+          // Graph API de Meta y sales-os no tiene esas credenciales: dos fallos encadenados.)
+          // Se prende por pedido del dueno: *"ENCENDIDO PARA VER COMO FUNCIONA"*.
+          //
+          // 🔴 VA ACA Y NO ANTES, y las dos razones las levanto Kimi en la compuerta:
+          //  1. `docSent` — solo se avisa si el documento SE ENVIO DE VERDAD (refleja el ok del
+          //     envio, no el upload). Un "LLAMAR AHORA" por algo que el cliente nunca recibio
+          //     hace que Marcelo llame y el cliente no sepa de que le hablan.
+          //  2. `grandTotal` — es EL MISMO monto que ya se le reporta a Zoho, al CXM y a las
+          //     plataformas. Mi primera version sumaba `unit_price x qty` en el paso anterior:
+          //     eso IGNORA el descuento del PDF (hasta 50%) y, cuando salen las tres opciones de
+          //     color, no es ninguno de los tres precios. El numero del telefono tiene que ser
+          //     el mismo que el cliente tiene en la mano, o la llamada empieza con un error.
+          // Fire-and-forget dentro de `safe`: si el aviso falla, la cotizacion NO se toca.
+          if (docSent) {
+            safe('generarPdf.avisoCotizacion', async () => {
+              // 🔒 UN AVISO POR PROPUESTA. Los dos revisores marcaron el mismo riesgo: si el
+              // bloque se reintenta (un fallo temporal aguas arriba), el aviso sale de nuevo y
+              // Marcelo recibe dos "LLAMAR AHORA" por la misma cotizacion. `reservarEstado` es
+              // atomico — el mismo candado que se uso hoy para los PDF duplicados — y la clave
+              // es el FOLIO, que es unico por documento.
+              const _kAviso = `aviso_cotiz:${quoteNumber}`;
+              if (!(deps.reservarEstado || reservarEstado)(_kAviso, 7 * 24 * 3600)) return;
+
+              // 💰 EL MISMO NUMERO QUE VE EL CLIENTE EN SU PDF. Mi primera version mandaba el
+              // NETO PELADO, y el PDF muestra neto − descuento + IVA (quotePdf.js): podian
+              // diferir hasta un 50% por el descuento, mas un 19%. Lo cazo Gemini, textual:
+              // *"El dueno vera un monto NETO, mientras el cliente ve un monto BRUTO"*. Un aviso
+              // con una cifra que no cuadra con el documento arranca la llamada con un error.
+              // Se replica la formula del PDF, no se inventa otra.
+              const _descPct = Math.max(0, Math.min(50, Number(input.descuento_pct) || 0));
+              const _neto = Number(grandTotal) || 0;
+              const _netoFinal = _neto - Math.round(_neto * _descPct / 100);
+              const _conIva = _netoFinal + Math.round(_netoFinal * 0.19);
+
+              const _resumen = (input.items || [])
+                .map((it) => `${Number(it.qty) || 1}x ${(it.producto_label || it.product || 'Ventana')} ${it.measures || ''}`.trim())
+                .join(' · ').slice(0, 300);
+              await notifyQuoteSent({
+                phone: from,
+                clientName,
+                quoteValue: _conIva,
+                itemsSummary: _resumen || `Propuesta ${quoteNumber}`,
+                comuna: clientComuna,
+              });
+            });
+          }
           safe('generarPdf.zoho', async () => {
             const dealId = await upsertZohoDeal({
               phone:      clientPhone,

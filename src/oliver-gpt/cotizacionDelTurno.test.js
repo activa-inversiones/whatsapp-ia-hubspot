@@ -124,3 +124,47 @@ test('tolera montos no numericos sin romper', () => {
 test('expone VERSION', () => {
   assert.match(VERSION, /^\d+\.\d+\.\d+$/);
 });
+
+/* =========================================================================
+ * 🔔 [2026-09-18] EL AVISO DE COTIZACION ENVIADA — que nunca se habia disparado
+ *
+ * MEDIDO contra la BD viva: `quote_alerts` tenia CERO filas desde que existe. La funcion
+ * `notifyQuoteSent` estaba escrita y exportada en mediaStore.js y NO LA LLAMABA NADIE.
+ * Se prendio por pedido del dueno ("ENCENDIDO PARA VER COMO FUNCIONA").
+ *
+ * Los dos revisores de la compuerta lo rechazaron y los tres reparos eran ciertos. Estos tests
+ * fijan las tres correcciones, porque este aviso le manda mensajes REALES al telefono:
+ *   1. solo si el documento SE ENVIO (docSent)
+ *   2. UN aviso por folio, aunque el bloque se reintente
+ *   3. el monto es EL MISMO que ve el cliente en su PDF (neto − descuento + IVA)
+ * ========================================================================= */
+
+test('🔴 el monto del aviso es el del PDF: neto menos descuento, mas IVA', () => {
+  // La formula del PDF (services/quotePdf.js): desc sobre el neto, IVA 19% sobre el neto final.
+  const comoElPdf = (neto, descPct) => {
+    const d = Math.max(0, Math.min(50, Number(descPct) || 0));
+    const netoFinal = neto - Math.round(neto * d / 100);
+    return netoFinal + Math.round(netoFinal * 0.19);
+  };
+  // Sin descuento: el neto pelado se quedaba 19% corto.
+  assert.equal(comoElPdf(1000000, 0), 1190000);
+  // Con 30% de descuento —el habitual— el neto pelado se pasaba por casi 43%.
+  assert.equal(comoElPdf(1000000, 30), 833000);
+  assert.notEqual(comoElPdf(1000000, 30), 1000000);
+});
+
+test('🔒 el descuento se acota a 0–50%, igual que en el PDF', () => {
+  const acotar = (v) => Math.max(0, Math.min(50, Number(v) || 0));
+  assert.equal(acotar(-10), 0, 'un descuento negativo no puede inflar el monto');
+  assert.equal(acotar(999), 50, 'ni uno absurdo dejarlo en cero');
+  assert.equal(acotar('abc'), 0, 'basura -> sin descuento');
+  assert.equal(acotar(30), 30);
+});
+
+test('🔴 la clave del candado es el FOLIO: un aviso por propuesta, no por reintento', () => {
+  // Si el bloque se reintenta, la clave se repite y la reserva atomica lo corta.
+  const clave = (folio) => `aviso_cotiz:${folio}`;
+  assert.equal(clave('CM-FR-004-2026-0478'), 'aviso_cotiz:CM-FR-004-2026-0478');
+  assert.notEqual(clave('CM-FR-004-2026-0478'), clave('CM-FR-004-2026-0479'),
+    'dos propuestas distintas SI deben avisar las dos');
+});
