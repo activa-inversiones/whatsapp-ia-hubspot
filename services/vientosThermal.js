@@ -46,9 +46,30 @@ export function ventanasParaVientos(items = []) {
     const dims = medidasDesdeTexto(it.measures_original || it.measures);
     const vid = vidrioDesdeEtiqueta(it.glass_label);
     if (!dims || !vid) { ilegibles += 1; continue; }
+    // 🔴 [2026-09-18] SE LE MANDABA LA VENTANA COMPLETA COMO SI FUERA UN PAÑO DE VIDRIO.
+    // El vidrio resiste el viento segun SU tamaño, no el de la ventana. En la propuesta de
+    // Mario Grey eso preguntaba "¿aguanta un vidrio de 2710x1995?" cuando el paño real mide
+    // 770x1747 — tres veces mas angosto. Un paño mas grande flecta mas, asi que la respuesta
+    // habria sido pesimista; en la practica ni salia, porque ese tamaño cae fuera de la malla
+    // del motor y el informe quedaba SIN VEREDICTO DE RESISTENCIA.
+    // Pedido del dueño, textual: *"el tamaño del vidrio debe estar ahi con los descuentos para
+    // que lo tengas y muestres la resistencia en la grafica"*.
+    // El motor de precios ya calcula el paño con los descuentos de marco y hoja y desde hoy lo
+    // publica en `pano_vidrio`. Si no viene (linea sin calcular, o ANDES/S60 que todavia no lo
+    // exponen) se cae a la medida de la ventana, que es lo que se hacia hasta ahora: peor
+    // aproximacion, pero nunca menos informacion que antes.
+    const pano = it.pano_vidrio && Number(it.pano_vidrio.ancho_mm) > 0 && Number(it.pano_vidrio.alto_mm) > 0
+      ? { ancho_mm: Math.round(Number(it.pano_vidrio.ancho_mm)), alto_mm: Math.round(Number(it.pano_vidrio.alto_mm)) }
+      : null;
     legibles.push({
       nombre: (it.producto_label || it.product || 'Ventana').slice(0, 60),
-      ancho_mm: dims.ancho_mm, alto_mm: dims.alto_mm,
+      ancho_mm: pano ? pano.ancho_mm : dims.ancho_mm,
+      alto_mm: pano ? pano.alto_mm : dims.alto_mm,
+      // Viajan tambien las medidas de la VENTANA, para que el informe pueda decir de que
+      // ventana habla aunque el calculo sea del paño. Y `pano_declarado` deja escrito cual de
+      // las dos se uso: sin eso, un veredicto no se puede auditar despues.
+      ventana_ancho_mm: dims.ancho_mm, ventana_alto_mm: dims.alto_mm,
+      pano_declarado: Boolean(pano),
       vidrio: { ...vid, tratamiento: 'recocido' },
       cantidad: Number(it.qty) || 1,
     });

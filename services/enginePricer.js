@@ -1131,6 +1131,10 @@ export async function priceAllEngine(d, customer_id = "") {
     item.serie = serie;
     if (r.producto_label) item.producto_label = r.producto_label;
     if (r.corredera) item.corredera = r.corredera;
+    // [2026-09-18] El PAÑO de vidrio con los descuentos de marco y hoja ya aplicados. Lo usa el
+    // informe de vientos: el vidrio resiste segun SU tamaño, no el de la ventana. Antes se le
+    // mandaba la ventana completa y el veredicto de resistencia no salia.
+    if (r.pano_vidrio) item.pano_vidrio = r.pano_vidrio;
     // [2026-08-25 · Codex #4] La composicion de la compuesta se descartaba y el PDF la
     // dibujaba como UN paño solo. Con esto viaja: cada paño con su tipo y su ancho real,
     // que es lo que el dibujo necesita para poner el travesaño donde va y marcar cual abre.

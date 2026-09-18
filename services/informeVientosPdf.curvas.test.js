@@ -239,3 +239,48 @@ test('[Codex, compuerta] la exclusion QC de la racha se declara al cliente en el
   assert.match(SRC_PDF, /quedó en revisión de calidad y se excluyó por prudencia/,
     'esconder el dato excluido seria la mentira chica que el informe prohibe');
 });
+
+/* =========================================================================
+ * 🔴 [2026-09-18] SE LE MANDABA LA VENTANA COMPLETA COMO SI FUERA UN PAÑO DE VIDRIO
+ *
+ * Pedido del dueno, textual: *"el tamaño del vidrio debe estar ahi con los descuentos para que
+ * lo tengas y muestres la resistencia en la grafica"*.
+ *
+ * El vidrio resiste el viento segun SU tamaño, no el de la ventana. En la propuesta de Mario
+ * Grey (2710x1995, 3 hojas) el paño real mide 770x1747 — tres veces mas angosto — y se le
+ * preguntaba al motor por uno de 2710x1995. MEDIDO contra el motor de vientos el 18-sep: con la
+ * ventana completa devuelve "el caso cae FUERA de la malla" y el informe sale SIN VEREDICTO de
+ * resistencia. Un paño mas grande ademas flecta mas: la respuesta habria sido pesimista.
+ * ========================================================================= */
+
+import { ventanasParaVientos as _vpv } from './vientosThermal.js';
+
+test('🔴 con el paño declarado, al motor de vientos va el VIDRIO, no la ventana', () => {
+  const { legibles } = _vpv([{
+    producto_label: 'Corredera SLIDING H98 Doble Riel S75', measures: '2710x1995mm',
+    glass_label: 'DVH 5+12+5', qty: 1,
+    pano_vidrio: { ancho_mm: 770, alto_mm: 1747, panos: 3 },
+  }]);
+  assert.equal(legibles[0].ancho_mm, 770, 'el paño, con los descuentos de marco y hoja');
+  assert.equal(legibles[0].alto_mm, 1747);
+  assert.equal(legibles[0].ventana_ancho_mm, 2710, 'la ventana viaja aparte, para poder nombrarla');
+  assert.equal(legibles[0].pano_declarado, true, 'queda escrito cual de las dos medidas se uso');
+});
+
+test('🔒 sin paño declarado se cae a la ventana — nunca menos informacion que antes', () => {
+  const { legibles } = _vpv([{
+    producto_label: 'Corredera ANDES', measures: '2000x1500mm', glass_label: 'DVH 4+12+4', qty: 1,
+  }]);
+  assert.equal(legibles[0].ancho_mm, 2000);
+  assert.equal(legibles[0].pano_declarado, false, 'y se declara que es la ventana, no el paño');
+});
+
+test('🔒 un paño con medidas basura NO reemplaza a la ventana', () => {
+  for (const malo of [{ ancho_mm: 0, alto_mm: 1747 }, { ancho_mm: -5, alto_mm: 100 }, { ancho_mm: 'x', alto_mm: 'y' }]) {
+    const { legibles } = _vpv([{
+      producto_label: 'C', measures: '2710x1995mm', glass_label: 'DVH 5+12+5', qty: 1, pano_vidrio: malo,
+    }]);
+    assert.equal(legibles[0].ancho_mm, 2710, `paño invalido ${JSON.stringify(malo)} no puede pasar`);
+    assert.equal(legibles[0].pano_declarado, false);
+  }
+});
