@@ -51,7 +51,7 @@ function dec(x, n = 2) {
  */
 export async function generarInformeVientosPdf(datos, {
   nombre = '', rut = '', razonSocial = '', clienteTipo = '',
-  comuna = '', numeroInforme = '', ilegibles = 0, firma = {},
+  comuna = '', numeroInforme = '', ilegibles = 0, simples = [], firma = {},
 } = {}) {
   if (!datos || !Array.isArray(datos.ventanas) || !datos.ventanas.length) return null;
   // [Codex, compuerta] El titulo dice CLIMA solo si la pagina de clima VA de verdad:
@@ -163,6 +163,26 @@ export async function generarInformeVientosPdf(datos, {
       }
     }
     y += 20;
+    if (y > 700) { doc.addPage(); y = 60; }
+  }
+  // [2026-09-18] LAS DE VIDRIO SIMPLE SE NOMBRAN, NO SE ESCONDEN NI SE CULPA AL CLIENTE.
+  // Antes caian en el mismo saco que las ilegibles y el informe decia que "no declaran medidas
+  // o vidrio legibles" — falso: se leen perfecto. Lo que pasa es que el calculo de resistencia
+  // de este informe es para termopanel. Decir cual de las dos cosas es le sirve al cliente
+  // (sabe que su dato estaba bien) y a Marcelo (sabe que tiene que calcular esas).
+  if (Array.isArray(simples) && simples.length > 0) {
+    const n = simples.reduce((a, s2) => a + (Number(s2.cantidad) || 1), 0);
+    doc.fillColor('#8A6D1C').fontSize(8)
+      .text(`${n} ventana(s) de este proyecto llevan vidrio simple (monolitico o laminado), no termopanel: `
+        + 'el calculo de resistencia de este informe es para termopanel, asi que esas las calcula '
+        + 'el especialista. Sus medidas y espesores estan correctamente declarados.', 52, y, { width: W - 104 });
+    y += 30;
+    for (const s2 of simples.slice(0, 8)) {
+      doc.fillColor('#6B7B8D').fontSize(7.5)
+        .text(`· ${s2.nombre}: ${s2.ancho_mm}x${s2.alto_mm} mm, ${s2.laminado ? 'laminado' : 'monolitico'} ${s2.espesor_mm} mm`, 60, y, { width: W - 120 });
+      y += 11;
+    }
+    y += 10;
     if (y > 700) { doc.addPage(); y = 60; }
   }
   if (ilegibles > 0) {

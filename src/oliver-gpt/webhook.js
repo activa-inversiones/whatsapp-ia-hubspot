@@ -3652,7 +3652,7 @@ Comuna: ${datos.comuna}`
               try { (deps.liberarReserva || liberarReserva)(`${claveV}:en_curso`, mio); } catch { /* nada */ }
             };
             try {
-              const { legibles, ilegibles } = (deps.ventanasParaVientos || ventanasParaVientos)(input.items || []);
+              const { legibles, ilegibles, simples } = (deps.ventanasParaVientos || ventanasParaVientos)(input.items || []);
               if (!legibles.length) { soltarV(); return 'sin_datos'; }
               const datosV = await (deps.pedirVientos || pedirVientos)({
                 comuna: clientComuna, cliente: clientName, ventanas: legibles,
@@ -3719,7 +3719,7 @@ Comuna: ${datos.comuna}`
                 // `{}` y el informe queda identico a como salia antes.
                 ...(receptorDoc || {}),
                 comuna: clientComuna, numeroInforme: folioV,
-                ilegibles, firma: FIRMA,
+                ilegibles, simples, firma: FIRMA,
               });
               if (!pdfV) { soltarV(); return 'fallo'; }
               await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: SEQ_VIENTOS_MS });
@@ -3834,7 +3834,7 @@ Comuna: ${datos.comuna}`
                     // reusada — amarrando el informe a la cotizacion equivocada.
                     quote_number: quoteNumber || state?.last_quote?.quote_number || null,
                     // La fidelidad vive en el JSON; las columnas planas son para el cockpit.
-                    payload: { ventanas: legibles.length, ilegibles,
+                    payload: { ventanas: legibles.length, ilegibles, vidrio_simple: (simples || []).length,
                                clima: Boolean(datosV.clima && !datosV.clima._hueco) },
                   }),
                   signal: AbortSignal.timeout(6000),

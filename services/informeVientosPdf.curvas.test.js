@@ -284,3 +284,57 @@ test('🔒 un paño con medidas basura NO reemplaza a la ventana', () => {
     assert.equal(legibles[0].pano_declarado, false);
   }
 });
+
+/* =========================================================================
+ * 🔴 [2026-09-18] LAS VENTANAS CON VIDRIO SIMPLE SE CONTABAN COMO "ILEGIBLES"
+ *
+ * Pregunta del dueno, textual: *"que pasa cuando tiene vidrios que ahora debe cotizar y
+ * termopaneles, deberia tener ambos"*. El catalogo tiene 18 vidrios simples cotizables
+ * (VS-3MM a VS-6MM, laminados LM-5 a LM-12, espejos, moriscos, reflect float) y NINGUNO
+ * llegaba al informe: caian en el mismo saco que las partidas ilegibles.
+ *
+ * MEDIDO el 18-sep contra el motor de vientos: solo acepta termopanel (exige ext_mm, int_mm y
+ * camara_mm > 0; rechaza cualquier otra forma). O sea el limite es NUESTRO alcance, no el dato
+ * del cliente — y el informe le decia lo contrario.
+ * ========================================================================= */
+
+import { vidrioSimpleDesdeEtiqueta as _vsimple } from './vientosThermal.js';
+
+test('🔴 los 18 vidrios simples del catalogo se leen, ya no son "ilegibles"', () => {
+  const casos = [
+    ['Monolitico 4mm', 4, false], ['VS-4MM', 4, false], ['VS-6MM', 6, false],
+    ['Monolitico 5mm bronce', 5, false], ['espejo 3mm', 3, false], ['ES-3MM', 3, false],
+    ['reflect float 4mm', 4, false], ['Cristal 6 mm', 6, false],
+    ['Laminado 5mm', 5, true], ['LM-8MM', 8, true], ['Laminado 3+3', 6, true],
+  ];
+  for (const [etiqueta, mm, lam] of casos) {
+    const r = _vsimple(etiqueta);
+    assert.ok(r, `"${etiqueta}" tiene que leerse`);
+    assert.equal(r.simple_mm, mm, etiqueta);
+    assert.equal(r.laminado, lam, etiqueta);
+  }
+});
+
+test('🔒 un TERMOPANEL no se confunde con vidrio simple (lo resuelve la otra funcion)', () => {
+  for (const e of ['DVH 5+12+5', 'TP-M-5+12+5', 'Termopanel 4+12+4', '4-12-4']) {
+    assert.equal(_vsimple(e), null, e);
+  }
+});
+
+test('🔴 lo que NO se entiende sigue siendo null: no se inventa un espesor', () => {
+  for (const e of ['', null, 'basura sin numero', '999mm', '0mm']) {
+    assert.equal(_vsimple(e), null, String(e));
+  }
+});
+
+test('🔴 el informe separa las tres cosas: termopanel, vidrio simple e ilegible', () => {
+  const r = _vpv([
+    { producto_label: 'Corredera termopanel', measures: '2710x1995mm', glass_label: 'DVH 5+12+5', qty: 1 },
+    { producto_label: 'Fija vidrio simple', measures: '1200x1000mm', glass_label: 'Monolitico 4mm', qty: 2 },
+    { producto_label: 'Sin datos', measures: '', glass_label: '', qty: 1 },
+  ]);
+  assert.equal(r.legibles.length, 1, 'solo el termopanel va al motor de vientos');
+  assert.equal(r.simples.length, 1, 'el vidrio simple se cuenta APARTE, no como ilegible');
+  assert.equal(r.simples[0].espesor_mm, 4);
+  assert.equal(r.ilegibles, 1, 'ilegible es solo lo que de verdad no se puede leer');
+});
