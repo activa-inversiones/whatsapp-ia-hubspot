@@ -425,8 +425,19 @@ export function dibujarVentanaIso(doc, caja, it) {
     }
   }
 
+  // [2026-09-18] LA COTA DEL VIDRIO, debajo de la de la ventana. Pedido del dueño: *"a seria
+  // prudente para que cliente asocie eso"*. El informe de resistencia al viento habla del PAÑO,
+  // no de la ventana; sin este numero en la figura el cliente no puede atar las dos cosas.
+  // Solo sale si el motor la calculo: una medida de vidrio inventada en un plano es peor que
+  // ninguna. Si no cabe debajo, se omite antes que pisar el borde de la caja.
+  const hayVidrio = Boolean(p.etiquetaVidrio);
+  const yEtiqueta = caja.y + caja.h - (hayVidrio ? 10 : 2);
   doc.fillColor('#6B7B8D').fontSize(6.5).font('Helvetica')
-     .text(p.etiqueta, caja.x, caja.y + caja.h - 2, { width: caja.w, align: 'center' });
+     .text(p.etiqueta, caja.x, yEtiqueta, { width: caja.w, align: 'center' });
+  if (hayVidrio) {
+    doc.fillColor('#8A96A6').fontSize(5.8).font('Helvetica')
+       .text(p.etiquetaVidrio, caja.x, yEtiqueta + 8, { width: caja.w, align: 'center' });
+  }
 
   doc.restore();
   return p;

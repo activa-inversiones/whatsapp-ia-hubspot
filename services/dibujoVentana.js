@@ -290,6 +290,11 @@ function etiquetasDePanos(tipos) {
 // fabrique ni se cobre. Si algun dia hace falta la medida exacta, se saca del modelo.
 const MANILLA_LARGO_MM = 120;
 const MANILLA_ANCHO_MM = 26;
+// Piso en PIXELES, no en mm: a la escala de la propuesta los 120 mm reales daban ~7 px y la
+// manilla no se leia. No toca el tamaño real ni nada que se fabrique o se cobre — es lo mismo
+// que ya declaraba el comentario de arriba: la manilla esta para que se vea como lo que es.
+const MANILLA_MIN_LARGO_PX = 13;
+const MANILLA_MIN_GRUESO_PX = 3.2;
 
 /**
  * 🔩 [2026-08-26, 2ª correccion del dueño: "una manilla mas real, la otra se ve muy falsa"]
@@ -392,8 +397,18 @@ function manillaDe(hoja, escala) {
     };
   }
 
-  // Montante vertical del lado que se abre.
-  const enDerecha = !hoja.manoDerecha;
+  // 🔴 [2026-09-18, correccion del dueño] LA MANILLA VA EN EL LADO DEL MARCO.
+  // Textual: *"las manillas van en el lado del marco"*, con la figura al lado: flecha hacia la
+  // derecha, manilla a la IZQUIERDA. Y es lo fisico: la manilla vive en el montante que cierra
+  // contra la jamba, no en el traslapo donde se encuentran dos hojas — ahi no habria como
+  // agarrarla ni donde poner el cerradero. Es tambien lo que muestran los planos de Winart
+  // (v69621/69622: las manillas en los dos bordes exteriores de la ventana).
+  // El lado sale de la FLECHA: si la hoja corre hacia la derecha, cerrada queda a la izquierda,
+  // asi que la manilla va a la izquierda. `manoDerecha` (par/impar) queda solo para lo que no
+  // es corredera, donde no hay flecha que consultar.
+  const enDerecha = Number.isFinite(hoja.flecha) && hoja.flecha !== 0
+    ? hoja.flecha < 0
+    : !hoja.manoDerecha;
   const banda = enDerecha ? (hoja.x + hoja.w) - (v.x + v.w) : v.x - hoja.x;
   if (banda <= 0) return null;
   // 🔴 [2026-09-11 · CORREGIDO POR EL DUEÑO, 2a vez] LA CORREDERA SI LLEVA MANILLA QUE GIRA.
@@ -403,8 +418,19 @@ function manillaDe(hoja, escala) {
   //   haberlo visto. Estaba mal y alcanzo a llegar a produccion. Vuelve a la de siempre:
   //   roseta + palanca, LARGA. Es el mismo error de siempre: deducir una pieza fisica del
   //   nombre de su codigo en vez de preguntar.
-  const largo = Math.max(3, Math.min(MANILLA_LARGO_MM * esc, v.h * 0.7));
-  const grueso = Math.max(1.2, Math.min(MANILLA_ANCHO_MM * esc, banda * 0.75));
+  // [2026-09-18] MANILLA MAS GRANDE. Pedido del dueño: *"ademas poner manilla grande para que
+  // se vea mejor"*. A la escala de la propuesta (una ventana de 2,7 m en una caja de 156 px) los
+  // 120 mm reales daban ~7 px: la manilla existia pero no se leia, y es lo que le dice al cliente
+  // por donde se abre su ventana. Se sube el PISO en pixeles, no el tamaño en mm: a escala
+  // grande (el plano 2D) sigue saliendo del tamaño real y nada cambia; solo crece donde era
+  // invisible. El largo se sigue acotando al paño para que nunca se salga de su hoja.
+  const largo = Math.min(Math.max(MANILLA_MIN_LARGO_PX, MANILLA_LARGO_MM * esc), v.h * 0.7);
+  // El grueso puede pasarse de la banda del perfil: una manilla de verdad SOBRESALE del montante.
+  // Lo que no puede es taparle el vidrio a la hoja, asi que se acota a un quinto del paño.
+  const grueso = Math.min(
+    Math.max(MANILLA_MIN_GRUESO_PX, MANILLA_ANCHO_MM * esc, banda * 0.75),
+    Math.max(banda, v.w / 5),
+  );
   return {
     x: enDerecha ? (v.x + v.w) + (banda - grueso) / 2 : hoja.x + (banda - grueso) / 2,
     y: v.y + v.h / 2 - largo / 2,
@@ -651,6 +677,27 @@ function tripleRielDe(it) {
     .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   return /\btriple\s+riel\b/.test(t) || /\briel\s+triple\b/.test(t)
     || /\b(?:3|tres)\s+rieles?\b/.test(t);
+}
+
+/**
+ * 📐 LA COTA DEL VIDRIO, para el dibujo.
+ *
+ * Pedido del dueño (18-sep). Le pregunte si queria la medida del paño en la figura y contesto,
+ * textual: *"a seria prudente para que cliente asocie eso"*. El punto es ese: el informe de
+ * resistencia al viento habla del PAÑO (770x1747), no de la ventana (2710x1995). Si el cliente
+ * no ve ese numero en el dibujo, no tiene como atar una cosa con la otra.
+ *
+ * Sale de `pano_vidrio`, que es lo que calcula el motor con los descuentos reales de marco y
+ * hoja — el MISMO dato que se le manda al motor de vientos. Si no viene (ANDES/S60, que todavia
+ * no lo exponen, o una linea sin calcular) NO se dibuja nada: una medida de vidrio inventada en
+ * un plano es peor que ninguna.
+ */
+function etiquetaVidrioDe(it) {
+  const p = it && it.pano_vidrio;
+  const a = Number(p && p.ancho_mm);
+  const h = Number(p && p.alto_mm);
+  if (!(a > 0 && h > 0)) return null;
+  return `vidrio ${Math.round(a)}×${Math.round(h)} mm`;
 }
 
 function centralFijaDe(it) {
@@ -966,6 +1013,7 @@ function planoDeVentana(it, caja) {
         ...(_cmp && _cmp.derivado_de ? { derivado_de: _cmp.derivado_de } : {}),
       },
       etiqueta: `${ancho}×${alto} mm`,
+      etiquetaVidrio: etiquetaVidrioDe(it),
     };
   }
 
@@ -1100,6 +1148,7 @@ function planoDeVentana(it, caja) {
     marcoRect: { x, y, w, h },
     marco, perfilHoja, junquillo, hojas,
     etiqueta: `${ancho}×${alto} mm`,
+    etiquetaVidrio: etiquetaVidrioDe(it),
   };
 }
 

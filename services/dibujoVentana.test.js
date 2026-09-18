@@ -826,8 +826,14 @@ test("🔴 la corredera lleva manilla QUE GIRA, larga — nunca de embutir", () 
   const f = manillaFormas(movil.manilla);
   assert.ok(f.roseta && f.palanca, "la corredera lleva roseta + palanca, como la que abate");
   assert.equal(f.barra, undefined, "NO es una barra de embutir");
-  // y LARGA: 120 mm de la constante, no los 160 angostos que le habia puesto
-  assert.equal(Math.round(movil.manilla.h / p.escala), 120);
+  // y LARGA: al menos los 120 mm de la constante, no los 160 angostos que le habia puesto.
+  // [2026-09-18] ERA `=== 120`. Ahora puede salir MAS grande, a pedido del dueño: *"ademas
+  // poner manilla grande para que se vea mejor"*. A la escala de la propuesta los 120 mm reales
+  // daban ~7 px y la manilla no se leia. Se le puso un piso en PIXELES, asi que en cajas chicas
+  // la manilla equivale a mas milimetros de los reales. Lo que este test protege sigue igual:
+  // que sea LARGA y de roseta+palanca. Por eso pasa a ">=" en vez de aflojarse a cualquier cosa.
+  assert.ok(Math.round(movil.manilla.h / p.escala) >= 120,
+    `la manilla tiene que ser larga; salio ${Math.round(movil.manilla.h / p.escala)} mm equivalentes`);
 });
 
 test("🔴 una ventana que ABATE conserva su cremona de roseta y palanca", () => {
@@ -1087,4 +1093,81 @@ test('🔒 el doble riel de 2 hojas conserva sus DOS vias y sus flechas enfrenta
   assert.equal(p.hojas.length, 2);
   assert.deepEqual(p.hojas.map((h) => h.riel).sort(), [0, 1]);
   assert.deepEqual(p.hojas.map((h) => h.flecha).sort(), [-1, 1]);
+});
+
+/* =========================================================================
+ * 🔴 [2026-09-18] LA MANILLA VA EN EL LADO DEL MARCO, Y SE TIENE QUE VER
+ *
+ * Dos correcciones del dueno sobre la figura renderizada:
+ *   *"las manillas van en el lado del marco"* (con la figura al lado: flecha a la derecha,
+ *   manilla a la izquierda) y *"ademas poner manilla grande para que se vea mejor"*.
+ *
+ * Lo primero es fisico: la manilla vive en el montante que cierra contra la jamba, no en el
+ * traslapo donde se encuentran dos hojas — ahi no habria donde poner el cerradero. Es tambien
+ * lo que muestran los planos de Winart (v69621/69622: manillas en los bordes exteriores).
+ * ========================================================================= */
+
+test('🔴 la manilla va del lado contrario a la flecha (el lado del marco)', () => {
+  const p = planoDeVentana(
+    { product: 'CORREDERA', producto_label: 'Corredera SLIDING H98 Doble Riel S75', measures: '2000x1450mm' },
+    { x: 0, y: 0, w: 156, h: 120 });
+  for (const h of p.hojas) {
+    if (!h.manilla) continue;
+    const alaIzquierda = h.manilla.x < h.x + h.w / 2;
+    assert.equal(alaIzquierda, h.flecha > 0,
+      `la hoja que corre hacia ${h.flecha > 0 ? 'la derecha' : 'la izquierda'} cierra del lado contrario: ahi va la manilla`);
+  }
+});
+
+test('🔒 con la central fija, las dos manillas quedan en los bordes de la ventana', () => {
+  // Es la figura de Winart: la del medio sin manilla, y las laterales con la suya contra la jamba.
+  const p = planoDeVentana({
+    product: 'CORREDERA', measures: '2710x1995mm',
+    producto_label: 'Corredera SLIDING H98 Doble Riel S75 — Triple hoja (central fija, laterales correderas)',
+  }, { x: 0, y: 0, w: 156, h: 120 });
+  assert.equal(p.hojas.find((h) => h.idx === 1).manilla, null, 'la fijada no lleva manilla');
+  const izq = p.hojas.find((h) => h.idx === 0);
+  const der = p.hojas.find((h) => h.idx === 2);
+  assert.ok(izq.manilla.x < izq.x + izq.w / 2, 'la izquierda, a la izquierda');
+  assert.ok(der.manilla.x > der.x + der.w / 2, 'la derecha, a la derecha');
+});
+
+test('🔴 a la escala de la propuesta la manilla SE VE (no 7 px invisibles)', () => {
+  // Caja de 156x120 px, que es la de la fila de la propuesta.
+  const p = planoDeVentana(
+    { product: 'CORREDERA', producto_label: 'Corredera SLIDING H98 Doble Riel S75', measures: '2710x1995mm' },
+    { x: 0, y: 0, w: 156, h: 120 });
+  const m = p.hojas.find((h) => h.manilla).manilla;
+  assert.ok(m.h >= 12, `la manilla tiene que leerse; salio de ${m.h.toFixed(1)} px de largo`);
+  assert.ok(m.w >= 3, `y tener cuerpo; salio de ${m.w.toFixed(1)} px de grueso`);
+});
+
+test('🔒 pero nunca se sale de su hoja ni le tapa el vidrio', () => {
+  for (const med of ['2710x1995mm', '800x2400mm', '600x600mm', '5000x1200mm']) {
+    const p = planoDeVentana(
+      { product: 'CORREDERA', producto_label: 'Corredera SLIDING H98 Doble Riel S75', measures: med },
+      { x: 0, y: 0, w: 156, h: 120 });
+    for (const h of p.hojas) {
+      if (!h.manilla) continue;
+      assert.ok(h.manilla.h <= h.h, `${med}: la manilla no puede ser mas alta que su hoja`);
+      assert.ok(h.manilla.w <= h.w, `${med}: ni mas ancha`);
+    }
+  }
+});
+
+test('🔴 la cota del VIDRIO sale en el dibujo, y solo si el motor la calculo', () => {
+  // Pedido del dueno: *"a seria prudente para que cliente asocie eso"* — el informe de
+  // resistencia habla del pano, no de la ventana.
+  const base = {
+    product: 'CORREDERA', measures: '2710x1995mm',
+    producto_label: 'Corredera SLIDING H98 Doble Riel S75 — Triple hoja (central fija, laterales correderas)',
+  };
+  const con = planoDeVentana({ ...base, pano_vidrio: { ancho_mm: 770, alto_mm: 1747, panos: 3 } },
+    { x: 0, y: 0, w: 156, h: 120 });
+  assert.equal(con.etiquetaVidrio, 'vidrio 770×1747 mm');
+  assert.equal(con.etiqueta, '2710×1995 mm', 'la de la ventana no se toca');
+  // Sin el dato NO se inventa: una medida de vidrio falsa en un plano es peor que ninguna.
+  assert.equal(planoDeVentana(base, { x: 0, y: 0, w: 156, h: 120 }).etiquetaVidrio, null);
+  assert.equal(planoDeVentana({ ...base, pano_vidrio: { ancho_mm: 0, alto_mm: 1747 } },
+    { x: 0, y: 0, w: 156, h: 120 }).etiquetaVidrio, null);
 });
