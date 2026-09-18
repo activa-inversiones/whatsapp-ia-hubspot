@@ -154,3 +154,46 @@ test('🔒 la corredera normal sigue sin definir riel (el motor usa su default c
   assert.equal(riel('corredera doble vidrio 2 hojas'), undefined,
     '"doble vidrio" es el termopanel, no el riel');
 });
+
+/* =========================================================================
+ * 🔴 TERCERA VUELTA — LO PROBO EL DUENO EN EL CHAT REAL Y NO ENTREGABA NADA (18-sep)
+ *
+ * La 2a version leia `texto_cliente` como si fuera UN pedido. Pero `textoDelCliente`
+ * (normalizers.js) pega TODOS los mensajes del cliente en orden. En una conversacion de verdad
+ * el cliente CAMBIA DE IDEA, y ahi los dos indicios conviven en el texto acumulado:
+ *     4:20  "...corredera triple hoja en 2 rieles central fija laterales corredera"
+ *     4:22  "si quiero triple riel"
+ * La guardia de contradiccion se disparaba con el acumulado y escalaba PARA SIEMPRE: el cliente
+ * pedia el triple riel y no recibia ninguna propuesta. Textual del dueno: "tampoco me la entrego".
+ *
+ * La distincion que faltaba: CONTRADECIRSE no es CAMBIAR DE IDEA. Gana el indicio que aparece
+ * mas tarde; solo se escala cuando los dos vienen en la MISMA frase.
+ * ========================================================================= */
+
+test('🔴 el cliente CAMBIA DE IDEA a triple riel y se le entrega el triple riel', () => {
+  // Exactamente el chat del dueno: los mensajes llegan pegados, el ultimo manda.
+  const conversacion = '1 unidad de 2710x1995 corredera triple hoja en 2 rieles central fija '
+    + 'laterales corredera  si quiero triple riel';
+  const r = detectConfigCorredera(conversacion, 3);
+  assert.equal(r.ambiguo, false, 'cambiar de idea no es contradecirse: no se escala');
+  assert.equal(r.riel, 'TRIPLE', 'lo ultimo que dijo el cliente manda');
+});
+
+test('🔒 y al reves: si despues se arrepiente y pide la central fija, gana la central fija', () => {
+  const r = detectConfigCorredera('quiero triple riel  no, mejor la del medio fija', 3);
+  assert.equal(r.riel, 'DOBLE');
+  assert.equal(r.activos, 2, 'y vuelven a cerrar las 2 laterales');
+});
+
+test('🔒 la contradiccion DE VERDAD (misma frase) sigue escalando', () => {
+  const r = detectConfigCorredera('quiero la del medio fija pero que corran las tres', 3);
+  assert.equal(r.ambiguo, true,
+    'en una sola frase pidiendo las dos cosas no hay "ultimo": son dos ventanas distintas');
+});
+
+test('🔒 el pedido original de Mario Grey, solo, sigue dando DOBLE', () => {
+  // No se puede romper lo que se arreglo en la 1a vuelta: sin cambio de idea, manda la fija.
+  const r = detectConfigCorredera(PEDIDO_REAL, 3);
+  assert.equal(r.riel, 'DOBLE');
+  assert.equal(r.ambiguo, false);
+});

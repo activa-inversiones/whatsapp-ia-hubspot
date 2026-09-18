@@ -328,32 +328,72 @@ export function detectConfigCorredera(texto, hojas) {
   // "no se abre" es sinonimo de fija tanto como "no se mueve": lo cazo Gemini.
   const NO_ABRE = '(?:no\\s+(?:se\\s+)?(?:mueve|corre|abre|desliza))';
 
-  const centralFija =
-       new RegExp(`\\b(?:${PIEZA}\\s+)?${MEDIO}\\s+(?:es\\s+|va\\s+|queda\\s+|sale\\s+)?fij[ao]\\b`).test(t)
-    || new RegExp(`\\bfij[ao]\\s+(?:la\\s+|el\\s+)?(?:${PIEZA}\\s+)?${MEDIO}\\b`).test(t)
-    || new RegExp(`\\b(?:la\\s+|el\\s+)?(?:${PIEZA}\\s+)?${MEDIO}\\s+${NO_ABRE}\\b`).test(t)
+  // 🔴 [3a VUELTA, 18-sep, PROBADO POR EL DUENO EN EL CHAT REAL] LO ULTIMO QUE DICE EL CLIENTE
+  // MANDA SOBRE LO ANTERIOR.
+  //
+  // La 2a version leia el texto como si fuera UN pedido, y `texto_cliente` es en realidad TODOS
+  // los mensajes del cliente pegados en orden (ver textoDelCliente en normalizers.js). En una
+  // conversacion de verdad el cliente CAMBIA DE IDEA, y ahi los dos indicios conviven:
+  //     "...corredera triple hoja en 2 rieles central fija laterales corredera"   (4:20)
+  //     "si quiero triple riel"                                                    (4:22)
+  // La guardia de contradiccion se disparaba con el texto acumulado y escalaba PARA SIEMPRE:
+  // el cliente pedia el triple riel y no recibia nada. Medido en el chat del dueno.
+  //
+  // La diferencia que hay que hacer, y que la 2a version no hacia: CONTRADECIRSE no es lo mismo
+  // que CAMBIAR DE IDEA. Se resuelve por POSICION — gana el indicio que aparece mas tarde — y
+  // solo se declara ambiguo cuando los dos vienen en la MISMA frase ("la del medio fija pero que
+  // corran las tres"), que ahi si es una contradiccion de verdad.
+  const ultimoIndice = (patrones) => {
+    let max = -1;
+    for (const re of patrones) {
+      const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+      let m;
+      while ((m = g.exec(t)) !== null) {
+        if (m.index > max) max = m.index;
+        if (m.index === g.lastIndex) g.lastIndex++;   // guarda contra match vacio
+      }
+    }
+    return max;
+  };
+  // Un "segmento" es una frase o un mensaje distinto. textoDelCliente pega los mensajes con dos
+  // espacios; dentro de un mensaje separan el punto, el punto y coma y el salto de linea.
+  const segmentoDe = (idx) => (idx < 0 ? -1
+    : (t.slice(0, idx).match(/(?:\s{2,}|[.;\n!?])/g) || []).length);
+
+  const RE_FIJA = [
+    new RegExp(`\\b(?:${PIEZA}\\s+)?${MEDIO}\\s+(?:es\\s+|va\\s+|queda\\s+|sale\\s+)?fij[ao]\\b`),
+    new RegExp(`\\bfij[ao]\\s+(?:la\\s+|el\\s+)?(?:${PIEZA}\\s+)?${MEDIO}\\b`),
+    new RegExp(`\\b(?:la\\s+|el\\s+)?(?:${PIEZA}\\s+)?${MEDIO}\\s+${NO_ABRE}\\b`),
     // "solo se mueven las de los lados" = la del medio es fija, dicho al reves (Gemini).
-    || /\bsolo\s+(?:se\s+)?(?:mueven|corren|abren)\s+(?:las\s+)?(?:de\s+)?(?:los\s+)?(?:lados|laterales|extremos|costados)\b/.test(t)
-    || /\b(?:laterales|de\s+los\s+lados)\s+corred(?:eras?|izas?)\b/.test(t);
+    /\bsolo\s+(?:se\s+)?(?:mueven|corren|abren)\s+(?:las\s+)?(?:de\s+)?(?:los\s+)?(?:lados|laterales|extremos|costados)\b/,
+    /\b(?:laterales|de\s+los\s+lados)\s+corred(?:eras?|izas?)\b/,
+  ];
 
   // "las 3 corren". Se aceptan las conjugaciones que usa el cliente (corran/corren/se abren/se
   // mueven), el "pa" chileno, y "para la derecha/izquierda" ademas de "a un lado".
   const LADO = '(?:un\\s+(?:solo\\s+)?lado|el\\s+mismo\\s+lado|la\\s+derecha|la\\s+izquierda|un\\s+costado)';
   const HACIA = '(?:hacia|para|pa|a)';
-  const todasCorren =
-       /\b(?:las\s+)?(?:3|tres)\s+(?:hojas?\s+)?(?:corren|corran|corredizas|se\s+mueven|se\s+abren|moviles|deslizan)\b/.test(t)
-    || /\b(?:corran|corren|se\s+mueven|se\s+abren|abren|mover|correr|abrir)\s+(?:todas\s+)?(?:las\s+)?(?:3|tres)\b/.test(t)
-    || new RegExp(`\\b(?:corro|corren|corran|mover|mueven|van|se\\s+van)\\s+(?:todas|las\\s+3|las\\s+tres)\\s+${HACIA}\\s+${LADO}\\b`).test(t)
-    || new RegExp(`\\b(?:todas|las\\s+3|las\\s+tres)\\s+(?:se\\s+)?(?:corren|mueven|van)?\\s*${HACIA}\\s+${LADO}\\b`).test(t)
-    || /\b(?:tres|3)\s+rieles?\b/.test(t)
-    || /\btriple\s+riel\b|\briel\s+triple\b/.test(t);
-
+  const RE_TRIPLE = [
+    /\b(?:las\s+)?(?:3|tres)\s+(?:hojas?\s+)?(?:corren|corran|corredizas|se\s+mueven|se\s+abren|moviles|deslizan)\b/,
+    /\b(?:corran|corren|se\s+mueven|se\s+abren|abren|mover|correr|abrir)\s+(?:todas\s+)?(?:las\s+)?(?:3|tres)\b/,
+    new RegExp(`\\b(?:corro|corren|corran|mover|mueven|van|se\\s+van)\\s+(?:todas|las\\s+3|las\\s+tres)\\s+${HACIA}\\s+${LADO}\\b`),
+    new RegExp(`\\b(?:todas|las\\s+3|las\\s+tres)\\s+(?:se\\s+)?(?:corren|mueven|van)?\\s*${HACIA}\\s+${LADO}\\b`),
+    /\b(?:tres|3)\s+rieles?\b/,
+    /\btriple\s+riel\b/,
+    /\briel\s+triple\b/,
+  ];
   // "la central NO es fija, TODAS corren": el cliente describe el triple riel sin decir el
   // numero. "todas" solo se lee asi cuando YA sabemos que son 3 hojas; en una de 2 seria un
   // TRIPLE inventado, o sea sobrecobro. (Gemini + Kimi, 2a vuelta.)
-  const todasSinNumero = Number(hojas) === 3
-    && (/\btodas\s+(?:se\s+)?(?:corren|corran|mueven|abren|deslizan)\b/.test(t)
-        || /\btodas\s+(?:son\s+)?corred(?:eras?|izas?)\b/.test(t));
+  const RE_TRIPLE_SIN_NUMERO = Number(hojas) === 3 ? [
+    /\btodas\s+(?:se\s+)?(?:corren|corran|mueven|abren|deslizan)\b/,
+    /\btodas\s+(?:son\s+)?corred(?:eras?|izas?)\b/,
+  ] : [];
+
+  const posFija = ultimoIndice(RE_FIJA);
+  const posTriple = ultimoIndice([...RE_TRIPLE, ...RE_TRIPLE_SIN_NUMERO]);
+  const centralFija = posFija >= 0;
+  const todasCorren = posTriple >= 0;
 
   const dosRielesLiteral = /\b(?:2|dos)\s+rieles?\b/.test(t) || /\bdoble\s+riel\b/.test(t) || /\briel\s+doble\b/.test(t);
 
@@ -372,33 +412,45 @@ export function detectConfigCorredera(texto, hojas) {
 
   // Una senal NEGADA no cuenta como pedido.
   const quiereFija = centralFija && !niegaFija;
-  const quiereTriple = (todasCorren || todasSinNumero) && !niegaTriple;
+  const quiereTriple = todasCorren && !niegaTriple;
 
-  // ⚖️ CONTRADICCION => NO SE COTIZA A CIEGAS.
-  const ambiguo = (quiereFija && quiereTriple)
-    || (niegaTriple && (todasCorren || todasSinNumero) && !quiereFija && !dosRieles)
+  // ⚖️ AMBIGUO SOLO SI SE CONTRADICE EN LA MISMA FRASE. Si los dos indicios estan en frases o
+  // mensajes distintos, no hay contradiccion: el cliente cambio de idea y manda el ultimo.
+  const mismaFrase = quiereFija && quiereTriple
+    && segmentoDe(posFija) === segmentoDe(posTriple);
+  if (mismaFrase) {
+    return {
+      riel: undefined, activos: undefined, centralFija: true, ambiguo: true,
+      motivo: 'el pedido dice a la vez que la hoja del medio va fija y que las tres corren: son dos ventanas distintas',
+    };
+  }
+  // El otro caso que sigue escalando: descarta una configuracion y no deja claro cual quiere.
+  const descartaSinReemplazo = (niegaTriple && todasCorren && !quiereFija && !dosRieles)
     || (niegaFija && centralFija && !quiereTriple && !dosRieles);
-  if (ambiguo) {
-    const motivo = (quiereFija && quiereTriple)
-      ? 'el pedido dice a la vez que la hoja del medio va fija y que las tres corren: son dos ventanas distintas'
-      : 'el pedido descarta una configuracion pero no deja claro cual quiere';
-    return { riel: undefined, activos: undefined, centralFija: quiereFija, ambiguo: true, motivo };
+  if (descartaSinReemplazo) {
+    return {
+      riel: undefined, activos: undefined, centralFija: quiereFija, ambiguo: true,
+      motivo: 'el pedido descarta una configuracion pero no deja claro cual quiere',
+    };
   }
 
+  // GANA EL ULTIMO. Con un solo indicio, ese; con los dos en frases distintas, el mas tardio.
+  const mandaFija = quiereFija && (!quiereTriple || posFija > posTriple);
+  const mandaTriple = quiereTriple && (!quiereFija || posTriple > posFija);
+
   let riel;
-  // La CENTRAL FIJA manda sobre el resto: es el modelo doble riel de Winart, aunque el cliente
-  // haya escrito "triple" (que ahi significa TRES HOJAS, no tres rieles). Ese es exactamente el
-  // pedido que se cotizo mal el 18-sep: "triple hoja ... central fija en 2 rieles".
-  // Pero un "doble" DICHO EXPLICITO gana sobre un "tres" suelto cuando ademas se nego el triple:
-  // el dato explicito vale mas que la inferencia. (Lo pidio Kimi, y es correcto.)
-  if (quiereFija) riel = 'DOBLE';
+  // La CENTRAL FIJA es el modelo doble riel de Winart, aunque el cliente haya escrito "triple"
+  // (que ahi significa TRES HOJAS, no tres rieles). Ese es exactamente el pedido que se cotizo
+  // mal el 18-sep: "triple hoja ... central fija en 2 rieles".
+  // Un "doble" DICHO EXPLICITO gana sobre un "tres" suelto cuando ademas se nego el triple.
+  if (mandaFija) riel = 'DOBLE';
   else if (dosRieles && niegaTriple) riel = 'DOBLE';
-  else if (quiereTriple) riel = 'TRIPLE';
+  else if (mandaTriple) riel = 'TRIPLE';
   else if (dosRieles) riel = 'DOBLE';
 
   // Hojas que CIERRAN: con la central fija, cierran las 2 laterales contra ella.
-  const activos = (quiereFija && Number(hojas) === 3) ? 2 : undefined;
-  return { riel, activos, centralFija: quiereFija, ambiguo: false, motivo: undefined };
+  const activos = (mandaFija && Number(hojas) === 3) ? 2 : undefined;
+  return { riel, activos, centralFija: mandaFija, ambiguo: false, motivo: undefined };
 }
 
 /**
