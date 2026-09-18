@@ -4532,6 +4532,17 @@ app.get("/health", async (_req, res) => {
     ok: true,
     v: "10.2.2-prod",
     build: "ceo-assistant-2026-06-26",
+    // 🔴 [2026-09-18] QUE COMMIT ESTA CORRIENDO. `v` y `build` son constantes del codigo: la
+    // de `build` dice junio y estamos en septiembre. Con eso no hay forma de saber si un push
+    // llego a produccion.
+    // Nacio de un caso REAL: el build de ACTIVA THERMAL estuvo roto 20 DIAS sin que nadie lo
+    // notara, porque el servicio viejo seguia respondiendo sano. Nueve commits se quedaron
+    // afuera y se descubrio de casualidad. Medido el 18-sep: de los cinco servicios de
+    // IMPERIUM, NINGUNO declaraba su commit.
+    // `RAILWAY_GIT_COMMIT_SHA` lo inyecta Railway en cada deploy; sin esa variable se declara
+    // "desconocido" en vez de inventar un valor, que daria confianza falsa.
+    commit: (process.env.RAILWAY_GIT_COMMIT_SHA || "").slice(0, 12) || "desconocido",
+    rama: process.env.RAILWAY_GIT_BRANCH || "desconocida",
     agent: AGENT_NAME,
     pricer_mode: PRICER_MODE,
     engine_pricer: "activa_engine",
