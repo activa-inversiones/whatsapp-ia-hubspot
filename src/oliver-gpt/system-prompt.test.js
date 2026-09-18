@@ -145,3 +145,34 @@ test('[FIX 07-jul] agenda: el prompt entrega el link CORTO, nunca la URL larga d
   assert.ok(!sys.includes('bookwithme'),
     'la URL larga de Bookings (con @ que WhatsApp parte) no puede volver al prompt');
 });
+
+/* =========================================================================
+ * [2026-09-18] LA LISTA DEL CLIENTE VA UNA POR FILA
+ *
+ * Reclamo del dueno, textual: *"los clientes si entregan una lista, la lista debe estar
+ * ordenada por columnas indicando posicion de ventana, nombre del lugar si es que lo tiene,
+ * ancho, alto y cantidad y modelo de ventana a cotizar, una sola en fila, porque cuando las
+ * envias todas juntas el cliente se enreda y esta toda la informacion pegada"*.
+ * El caso: la foto del cuaderno de Mario Grey con 17 ventanas, devuelta como un parrafo corrido.
+ * ========================================================================= */
+
+test('🔴 la Regla #32 exige UNA VENTANA POR LINEA con las 5 columnas del dueno', () => {
+  const sys = buildSystemBlocks();
+  assert.ok(/UNA VENTANA POR LINEA/i.test(sys),
+    'sin esto vuelve el parrafo corrido que el cliente no puede revisar');
+  assert.ok(/N° · lugar · ancho × alto mm · cantidad · modelo/.test(sys),
+    'el orden de columnas es el que pidio el dueno: posicion, lugar, ancho, alto, cantidad, modelo');
+});
+
+test('🔴 la Regla #32 PROHIBE el parrafo corrido y los backticks', () => {
+  const sys = buildSystemBlocks();
+  assert.ok(/PROHIBIDO mandar la lista como un parrafo corrido/i.test(sys));
+  assert.ok(/Sin backticks/i.test(sys),
+    'un backtick desbalanceado rompe el markup de todo el mensaje en WhatsApp');
+});
+
+test('🔒 la Regla #32 sigue prohibiendo inventar una medida', () => {
+  const sys = buildSystemBlocks();
+  assert.ok(/NUNCA invente una medida/i.test(sys),
+    'el cliente confirma esta lista: una medida inventada se confirma sin mirar y se fabrica mal');
+});

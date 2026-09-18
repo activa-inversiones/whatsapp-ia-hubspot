@@ -95,3 +95,62 @@ test('🔒 activos solo se fija con central fija Y 3 hojas (no se extrapola)', (
   assert.equal(detectConfigCorredera('las 3 corren', 3).activos, undefined,
     'si las tres corren, las tres cierran: no se baja a 2');
 });
+
+/* =========================================================================
+ * 🔴 SEGUNDA VUELTA — LO QUE CAZO LA COMPUERTA CRUZADA (2026-09-18)
+ *
+ * La v1 de detectConfigCorredera fallaba 9 de 15 frases chilenas reales. Kimi (NVIDIA NIM,
+ * linaje Moonshot) y Gemini 2.5 Pro dijeron NO APTO por separado, y los dos tenian razon:
+ * se midio caso por caso antes de tocar nada. Cada test de abajo es una frase que FALLABA.
+ * ========================================================================= */
+
+const riel = (txt, hojas = 3) => detectConfigCorredera(txt, hojas).riel;
+
+test('🔴 [Gemini] sinonimos de "fija" que el cliente usa de verdad', () => {
+  assert.equal(riel('la de al medio no se abre'), 'DOBLE', '"no se abre" es tan fija como "no se mueve"');
+  assert.equal(riel('solo se mueven las de los lados'), 'DOBLE', 'la central fija, dicha al reves');
+  assert.equal(riel('fija al centro'), 'DOBLE');
+});
+
+test('🔴 [Kimi] "pano/panel/cuerpo central fijo" — media clientela no dice "hoja"', () => {
+  assert.equal(riel('el pano central es fijo'), 'DOBLE');
+  assert.equal(riel('ventanal con pano central fijo'), 'DOBLE');
+});
+
+test('🔴 [Gemini] las 3 corren, con las conjugaciones y el "pa" chilenos', () => {
+  assert.equal(riel('que corran las tres'), 'TRIPLE');
+  assert.equal(riel('se abren las 3'), 'TRIPLE');
+  assert.equal(riel('corren todas pa un lado'), 'TRIPLE');
+  assert.equal(riel('las corro todas para la derecha'), 'TRIPLE');
+  assert.equal(riel('riel triple'), 'TRIPLE', '"riel triple" es lo mismo que "triple riel"');
+});
+
+test('🔴 [Kimi, el peor] LA NEGACION: negar un producto lo estaba PIDIENDO', () => {
+  assert.equal(riel('no quiero triple riel, quiero doble'), 'DOBLE',
+    'la v1 devolvia TRIPLE: se le cotizaba al cliente justo lo que acababa de descartar');
+  assert.equal(riel('tres rieles no, dos rieles'), 'DOBLE');
+  assert.equal(riel('la hoja central no es fija, todas corren'), 'TRIPLE',
+    'negar la fija + "todas corren" es el triple riel: $99.364 de material de diferencia');
+});
+
+test('⚖️ ANTE CONTRADICCION SE ESCALA, NO SE ADIVINA', () => {
+  const a = detectConfigCorredera('quiero la del medio fija pero que corran las tres', 3);
+  assert.equal(a.ambiguo, true, 'son dos ventanas distintas: decide Marcelo, no una regex');
+  assert.equal(a.riel, undefined, 'y NO se elige una de las dos a la suerte');
+  assert.ok(a.motivo, 'con el motivo escrito, para que se pueda explicar');
+
+  const b = detectConfigCorredera('triple riel no', 3);
+  assert.equal(b.ambiguo, true, 'descarta el triple pero no dice que quiere');
+});
+
+test('🔒 "todas corren" en una de 2 HOJAS no puede inventar un triple riel', () => {
+  // Al reves del subcobro: esto seria SOBREcobro, y ademas otro producto.
+  assert.equal(riel('corredera 2 hojas, todas corren', 2), undefined);
+});
+
+test('🔒 la corredera normal sigue sin definir riel (el motor usa su default calibrado)', () => {
+  assert.equal(riel('quiero una corredera para el living'), undefined);
+  assert.equal(riel('corredera 1500x1200 blanca'), undefined);
+  assert.equal(riel('corredera doble vidrio 2 hojas'), undefined,
+    '"doble vidrio" es el termopanel, no el riel');
+});

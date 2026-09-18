@@ -296,41 +296,109 @@ export function detectHojas(product) {
  * (GET /models, 2026-09-18). Las dos familias de 3 hojas existen y son productos DISTINTOS:
  *     S75_DOBLERIEL_TRES_HOJA_98   <- 3 hojas en 2 rieles: la del centro va FIJA
  *     S75_TRIPLERIEL_TRES_HOJA_98  <- 3 hojas en 3 rieles: las 3 corren y se apilan a un lado
- * La referencia que dejo el dueno (proyecto 58777 / version 69621, 2710x1995) se exporta desde
- * Winart con el nombre de modelo "SLIDING-S75_DOBLERIEL_TRES_HOJA_98": o sea el caso "triple
- * hoja centro fijo" es DOBLE riel, no triple. Cotizarlo como triple riel es otro producto.
+ * Las dos versiones de referencia que dejo el dueno (2710x1995): v69621 doble / v69622 triple.
+ * Estan separadas por $99.364 de MATERIAL. Equivocarse de familia no es un detalle de nombre.
  *
- * Devuelve { riel, activos, centralFija }. Los campos van undefined cuando el texto no los
- * define, para que el motor aplique su default calibrado en vez de una adivinanza nuestra.
+ * 🔴 SEGUNDA VUELTA — LA COMPUERTA CRUZADA LA RECHAZO, Y TENIA RAZON (2026-09-18).
+ * La v1 fallaba 9 de 15 frases chilenas reales. Kimi (NIM) y Gemini, por separado, cazaron:
+ *   · NO cazaba: "la de al medio no se abre" - "solo se mueven las de los lados" -
+ *     "el pano central es fijo" - "que corran las tres" - "se abren las 3" -
+ *     "las corro todas para la derecha" - "corren todas pa un lado" - "riel triple" -
+ *     "fija al centro".
+ *   · Y peor: NO MIRABA LA NEGACION. "no quiero triple riel, quiero doble" devolvia TRIPLE,
+ *     y "tres rieles no, dos" tambien: el cliente pedia una cosa y se le cotizaba la otra.
+ *
+ * ⚖️ POR ESO ACA NO SE ADIVINA. Cuando las senales se contradicen, o cuando el cliente descarta
+ * una configuracion sin dejar claro cual quiere, se devuelve `ambiguo: true` y NINGUN riel: el
+ * pedido escala a Marcelo en vez de salir cotizado a ciegas. Es el mismo criterio que ya usa la
+ * rama ANDES en este archivo ("si hay mencion pero no se confirma, se escala"), y es lo correcto
+ * cuando el error vale $99.364: entre cotizar mal y preguntar, se pregunta. Adivinar es lo que
+ * produjo el incidente que esto viene a cerrar.
+ *
+ * Devuelve { riel, activos, centralFija, ambiguo, motivo }. Los campos van undefined cuando el
+ * texto no los define, para que el motor aplique su default calibrado y no una adivinanza.
  */
 export function detectConfigCorredera(texto, hojas) {
-  const t = String(texto || "").toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  // "central fija" en chileno de verdad: la del medio / del centro / central, fija o que no corre.
+  const t = String(texto || "").toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+  // Vocabulario chileno de "la hoja del medio". Incluye pano/panel/cuerpo/seccion, que es como
+  // le dice buena parte de los clientes, y el typo "ojas". (Gemini + Kimi, 18-sep.)
+  const MEDIO = '(?:central|centro|del\\s+centro|del\\s+medio|de\\s+al\\s+medio|al\\s+medio|en\\s+el\\s+medio|al\\s+centro|en\\s+el\\s+centro)';
+  const PIEZA = '(?:hoja|oja|pano|panel|cuerpo|seccion|tramo|vidrio|ventana)';
+  // "no se abre" es sinonimo de fija tanto como "no se mueve": lo cazo Gemini.
+  const NO_ABRE = '(?:no\\s+(?:se\\s+)?(?:mueve|corre|abre|desliza))';
+
   const centralFija =
-       /\b(?:hoja\s+)?(?:central|centro|del\s+centro|del\s+medio|de\s+al\s+medio)\s+(?:es\s+|va\s+|queda\s+)?fij[ao]\b/.test(t)
-    || /\bfij[ao]\s+(?:la\s+|el\s+)?(?:central|centro|del\s+centro|del\s+medio|de\s+al\s+medio)\b/.test(t)
-    || /\b(?:la\s+)?del\s+(?:centro|medio)\s+(?:no\s+(?:se\s+)?(?:mueve|corre)|fij[ao])\b/.test(t);
-  // "las tres corren": el cliente quiere abrir todo hacia un lado => 3 rieles, 3 hojas moviles.
+       new RegExp(`\\b(?:${PIEZA}\\s+)?${MEDIO}\\s+(?:es\\s+|va\\s+|queda\\s+|sale\\s+)?fij[ao]\\b`).test(t)
+    || new RegExp(`\\bfij[ao]\\s+(?:la\\s+|el\\s+)?(?:${PIEZA}\\s+)?${MEDIO}\\b`).test(t)
+    || new RegExp(`\\b(?:la\\s+|el\\s+)?(?:${PIEZA}\\s+)?${MEDIO}\\s+${NO_ABRE}\\b`).test(t)
+    // "solo se mueven las de los lados" = la del medio es fija, dicho al reves (Gemini).
+    || /\bsolo\s+(?:se\s+)?(?:mueven|corren|abren)\s+(?:las\s+)?(?:de\s+)?(?:los\s+)?(?:lados|laterales|extremos|costados)\b/.test(t)
+    || /\b(?:laterales|de\s+los\s+lados)\s+corred(?:eras?|izas?)\b/.test(t);
+
+  // "las 3 corren". Se aceptan las conjugaciones que usa el cliente (corran/corren/se abren/se
+  // mueven), el "pa" chileno, y "para la derecha/izquierda" ademas de "a un lado".
+  const LADO = '(?:un\\s+(?:solo\\s+)?lado|el\\s+mismo\\s+lado|la\\s+derecha|la\\s+izquierda|un\\s+costado)';
+  const HACIA = '(?:hacia|para|pa|a)';
   const todasCorren =
-       /\b(?:las\s+)?(?:3|tres)\s+(?:hojas?\s+)?(?:corren|corredizas|se\s+mueven|moviles|deslizan)\b/.test(t)
-    || /\b(?:mover|correr|abrir)\s+(?:las\s+)?(?:3|tres)\b/.test(t)
+       /\b(?:las\s+)?(?:3|tres)\s+(?:hojas?\s+)?(?:corren|corran|corredizas|se\s+mueven|se\s+abren|moviles|deslizan)\b/.test(t)
+    || /\b(?:corran|corren|se\s+mueven|se\s+abren|abren|mover|correr|abrir)\s+(?:todas\s+)?(?:las\s+)?(?:3|tres)\b/.test(t)
+    || new RegExp(`\\b(?:corro|corren|corran|mover|mueven|van|se\\s+van)\\s+(?:todas|las\\s+3|las\\s+tres)\\s+${HACIA}\\s+${LADO}\\b`).test(t)
+    || new RegExp(`\\b(?:todas|las\\s+3|las\\s+tres)\\s+(?:se\\s+)?(?:corren|mueven|van)?\\s*${HACIA}\\s+${LADO}\\b`).test(t)
     || /\b(?:tres|3)\s+rieles?\b/.test(t)
-    || /\btriple\s+riel\b/.test(t)
-    || /\b(?:todas|las\s+3|las\s+tres)\s+(?:hacia|para|a)\s+un\s+(?:solo\s+)?lado\b/.test(t);
-  // "2 rieles / doble riel" dicho explicito por el cliente.
-  const dosRieles = /\b(?:2|dos)\s+rieles?\b/.test(t) || /\bdoble\s+riel\b/.test(t);
+    || /\btriple\s+riel\b|\briel\s+triple\b/.test(t);
+
+  // "la central NO es fija, TODAS corren": el cliente describe el triple riel sin decir el
+  // numero. "todas" solo se lee asi cuando YA sabemos que son 3 hojas; en una de 2 seria un
+  // TRIPLE inventado, o sea sobrecobro. (Gemini + Kimi, 2a vuelta.)
+  const todasSinNumero = Number(hojas) === 3
+    && (/\btodas\s+(?:se\s+)?(?:corren|corran|mueven|abren|deslizan)\b/.test(t)
+        || /\btodas\s+(?:son\s+)?corred(?:eras?|izas?)\b/.test(t));
+
+  const dosRielesLiteral = /\b(?:2|dos)\s+rieles?\b/.test(t) || /\bdoble\s+riel\b/.test(t) || /\briel\s+doble\b/.test(t);
+
+  // 🔴 NEGACION. "no quiero triple riel", "tres rieles no", "en vez de triple", "nada de".
+  // Sin esto, la frase que NIEGA un producto lo terminaba PIDIENDO. (Kimi, 18-sep.)
+  const NEG = '(?:no\\s+(?:quiero\\s+|es\\s+|sea\\s+|son\\s+|va\\s+|vaya\\s+|me\\s+sirve\\s+)?(?:de\\s+|con\\s+)?|sin\\s+|nada\\s+de\\s+|en\\s+vez\\s+de\\s+|en\\s+lugar\\s+de\\s+)';
+  const niegaTriple = new RegExp(`\\b${NEG}(?:triple|tres\\s+rieles?|3\\s+rieles?)`).test(t)
+    || /\b(?:triple\s+riel|tres\s+rieles?|3\s+rieles?)\s*,?\s+no\b/.test(t);
+  const niegaFija = new RegExp(`\\b${MEDIO}\\s+no\\s+(?:es\\s+|va\\s+|sea\\s+)?fij[ao]\\b`).test(t)
+    || new RegExp(`\\b${NEG}(?:${PIEZA}\\s+)?${MEDIO}\\s+fij[ao]`).test(t);
+
+  // [Kimi 2a vuelta] "no quiero triple riel, quiero DOBLE": el cliente dice "doble" a secas, sin
+  // repetir "riel". Esa palabra sola solo cuenta como riel cuando viene JUNTO al descarte del
+  // triple; suelta no significa nada ("doble vidrio", "doble ventana" son otra cosa).
+  const dosRieles = dosRielesLiteral || (niegaTriple && /\bdoble\b/.test(t));
+
+  // Una senal NEGADA no cuenta como pedido.
+  const quiereFija = centralFija && !niegaFija;
+  const quiereTriple = (todasCorren || todasSinNumero) && !niegaTriple;
+
+  // ⚖️ CONTRADICCION => NO SE COTIZA A CIEGAS.
+  const ambiguo = (quiereFija && quiereTriple)
+    || (niegaTriple && (todasCorren || todasSinNumero) && !quiereFija && !dosRieles)
+    || (niegaFija && centralFija && !quiereTriple && !dosRieles);
+  if (ambiguo) {
+    const motivo = (quiereFija && quiereTriple)
+      ? 'el pedido dice a la vez que la hoja del medio va fija y que las tres corren: son dos ventanas distintas'
+      : 'el pedido descarta una configuracion pero no deja claro cual quiere';
+    return { riel: undefined, activos: undefined, centralFija: quiereFija, ambiguo: true, motivo };
+  }
 
   let riel;
-  // La CENTRAL FIJA manda sobre todo: es el modelo doble riel de Winart, aunque el cliente haya
-  // escrito "triple" (que ahi significa TRES HOJAS, no tres rieles). Ese es exactamente el
+  // La CENTRAL FIJA manda sobre el resto: es el modelo doble riel de Winart, aunque el cliente
+  // haya escrito "triple" (que ahi significa TRES HOJAS, no tres rieles). Ese es exactamente el
   // pedido que se cotizo mal el 18-sep: "triple hoja ... central fija en 2 rieles".
-  if (centralFija) riel = 'DOBLE';
-  else if (todasCorren) riel = 'TRIPLE';
+  // Pero un "doble" DICHO EXPLICITO gana sobre un "tres" suelto cuando ademas se nego el triple:
+  // el dato explicito vale mas que la inferencia. (Lo pidio Kimi, y es correcto.)
+  if (quiereFija) riel = 'DOBLE';
+  else if (dosRieles && niegaTriple) riel = 'DOBLE';
+  else if (quiereTriple) riel = 'TRIPLE';
   else if (dosRieles) riel = 'DOBLE';
 
   // Hojas que CIERRAN: con la central fija, cierran las 2 laterales contra ella.
-  const activos = (centralFija && Number(hojas) === 3) ? 2 : undefined;
-  return { riel, activos, centralFija };
+  const activos = (quiereFija && Number(hojas) === 3) ? 2 : undefined;
+  return { riel, activos, centralFija: quiereFija, ambiguo: false, motivo: undefined };
 }
 
 /**
@@ -932,6 +1000,16 @@ export async function priceAllEngine(d, customer_id = "") {
     // Config de corredera segun la regla del dueno, que es la taxonomia de Winart:
     // central fija = DOBLE riel - las 3 corren a un lado = TRIPLE riel. Ver detectConfigCorredera.
     const _cfgCorr = tipo === "CORREDERA" ? detectConfigCorredera(_txtCfg, hojas) : {};
+
+    // Si el pedido se contradice (pide la central fija Y que las tres corran), son dos
+    // ventanas distintas separadas por $99.364 de material: NO se elige una a la suerte.
+    // Escala a Marcelo, igual que hace la rama ANDES cuando el config no se confirma.
+    if (_cfgCorr.ambiguo) {
+      item.price_warning = `No me quedo claro como quiere las hojas (${_cfgCorr.motivo}). `
+        + `Lo reviso con Marcelo para darle el precio exacto.`;
+      item.source = "activa_engine"; item.confidence = "manual"; item.fuera_de_alcance = true;
+      return { escalada: true };
+    }
 
     // 4) Color / glass_id / comuna / cantidad
     const color = normColorLocal(item.color || d.default_color || "");

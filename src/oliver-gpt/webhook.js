@@ -509,10 +509,14 @@ async function describeImage(buffer, mime, deps) {
             type: 'text',
             text:
               'Eres un lector experto de planos y listados de ventanas/puertas. Extrae TODAS las filas, sin omitir ninguna. ' +
-              'Para CADA ventana/puerta lista una línea con: identificador (V1, V2… si aparece), tipo de apertura ' +
+              'Para CADA ventana/puerta lista una línea con: identificador (V1, V2… si aparece), NOMBRE DEL ' +
+              'RECINTO tal cual aparezca (living, cocina, dormitorio 2, baño…), tipo de apertura ' +
               '(corredera/fija/proyectante/abatir/oscilobatiente), medidas ancho x alto TAL CUAL aparezcan (mm o cm), ' +
               'cantidad y color. Si un dato no aparece, escribe "NO ESPECIFICADO" pero NO borres la fila. ' +
-              'Formato por ítem: <id> | <tipo> | <ancho>x<alto> | cant <n> | <color>. ' +
+              // [2026-09-18] El RECINTO se agrego porque el dueno pidio que la lista que ve el cliente
+              // lleve el nombre del lugar. Ademas no es solo presentacion: los baños llevan vidrio saten,
+              // y ese dato ya lo usa pickGlassId. index.js ya lo extraia; este camino no.
+              'Formato por ítem: <id> | <recinto> | <tipo> | <ancho>x<alto> | cant <n> | <color>. ' +
               'NO resumas ni agrupes: lista cada ítem por separado. Responde solo con las filas, en español.',
           },
           { type: 'image_url', image_url: { url: `data:${mime};base64,${b64}`, detail: 'high' } },
