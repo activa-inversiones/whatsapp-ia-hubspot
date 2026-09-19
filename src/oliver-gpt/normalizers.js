@@ -239,6 +239,109 @@ export function extraerColor(texto) {
   return null;
 }
 
+/**
+ * 🔴 [2026-09-19] EL NOMBRE VIENE PEGADO AL PEDIDO, Y ASI NADIE LO SACABA.
+ *
+ * Tercera vez que el dueño reclama lo mismo. Textual: *"Oliver me volvió a pedir nombre, color,
+ * comuna cuando yo ya la había entregado"*. El color y la comuna se arreglaron antes; el NOMBRE
+ * fallaba por otro motivo.
+ *
+ * `extractName()` (services/oliverName.js) DESCARTA el mensaje entero si contiene una palabra de
+ * pedido —'necesito', 'color', 'blanco', 'ventana'—. Esta hecha para contestar la pregunta
+ * "¿cual es su nombre?", donde el mensaje trae SOLO el nombre, y ahi funciona bien. Pero el
+ * cliente de verdad se presenta PEGADO al pedido, en el mismo mensaje:
+ *
+ *     "soy a nombre de MARIO GREY comuna de vilcul y color blanco necesito lo siguiente"
+ *
+ * MEDIDO: `extractName(...)` de ese texto devuelve null. Y `agent.js` ni siquiera la llamaba.
+ *
+ * ⚠️ [Codex, compuerta] LA PRIMERA VERSION CAMBIABA UN PROBLEMA POR OTRO PEOR. Textual:
+ * *"intercambia repeticion molesta por corrupcion silenciosa de identidad"*. Y tenia razon en
+ * los ONCE casos que levanto, todos medidos:
+ *   · "soy arquitecto" -> "Arquitecto" · "soy vecino" -> "Vecino" · "soy constructor",
+ *     "soy maestro", "soy cliente nuevo" -> el OFICIO quedaba de nombre.
+ *   · "habla con Marcelo" -> "Con Marcelo". El cliente pedia hablar con alguien, no se presentaba.
+ *   · y se perdian "soy Juan Perez, de Temuco", "mi nombre es: Juan", "somos Constructora Andes"
+ *     y cualquier mensaje de varias lineas.
+ * Un PDF formal emitido a nombre de "Arquitecto" o "Con Marcelo" es peor que volver a preguntar.
+ * Por eso ahora: lista de oficios/roles que NO son nombres, "habla" no cuenta si sigue "con",
+ * corte por puntuacion pegada, y las razones sociales conservan sus mayusculas (SpA, Ltda).
+ *
+ * @param {string} texto
+ * @returns {string|null} el nombre, o null si el mensaje no trae ninguno.
+ */
+export function nombreDelMensaje(texto) {
+  const crudo = String(texto || '').trim();
+  if (!crudo) return null;
+  // Se mira LINEA POR LINEA: el cliente escribe "mi nombre es Juan\nnecesito ventanas".
+  for (const linea of crudo.split(/\n+/)) {
+    const n = _nombreDeUnaLinea(linea.trim());
+    if (n) return n;
+  }
+  return null;
+}
+
+// Lo que la gente contesta cuando dice QUE ES, no QUIEN ES. Nada de esto va en una propuesta.
+const _PALABRA_GENERICA = new RegExp(
+  '^(?:el|la|los|las|un|una|de|del|mi|su|casa|'
+  + 'arquitect[oa]|constructor[a]?|constructora|maestr[oa]|vecin[oa]|'
+  + 'client[ea]|dueñ[oa]|dueni[oa]|propietari[oa]|contratista|ingenier[oa]|jef[ea]|encargad[oa]|'
+  + 'administrador[a]?|inmobiliaria|empresa|particular|vendedor[a]?|'
+  + 'herman[oa]|espos[oa]|pap[aá]|mam[aá]|hij[oa]|t[ií][oa]|abuel[oa]|amig[oa]|'
+  + 'nuev[oa]|interesad[oa])$', 'i',
+);
+
+/**
+ * ¿Lo que quedó es un OFICIO o un ROL, y no el nombre de nadie?
+ * ⚠️ Se exige que TODAS las palabras sean genéricas. Si aparece una sola propia, es un nombre:
+ * "soy constructor" NO es nombre, pero "a nombre de Constructora Andes SpA" SÍ —es la razón
+ * social que va en la factura— y descartarla por la palabra "constructora" sería peor.
+ */
+function _soloGenericas(cand) {
+  const ps = String(cand).split(/\s+/).filter(Boolean);
+  return ps.length > 0 && ps.every((p) => _PALABRA_GENERICA.test(p));
+}
+
+function _nombreDeUnaLinea(t) {
+  if (!t) return null;
+  // Donde DEJA de ser el nombre: cuando el cliente pasa al pedido, al lugar o al color.
+  const CORTE_PALABRA = new RegExp(
+    '\\s+(?:comuna|ciudad|localidad|sector|direccion|direcci\u00f3n|calle|color|colores|'
+    + 'necesito|necesitamos|quiero|queremos|busco|buscamos|quisiera|requiero|para|porque|'
+    + 'ventanas?|ventanal(?:es)?|puertas?|termopanel|pvc|cotiz\\w*|presupuesto|medidas?|'
+    + 'vivo|vivimos|estoy|estamos|de\\s|del\\s|y\\s).*$', 'i',
+  );
+  const FORMULAS = [
+    /\b(?:a|al)\s+nombre\s+de\s*:?\s*(.+)$/i,
+    /\bmi\s+nombre\s+(?:es)?\s*:?\s*(.+)$/i,
+    /\bme\s+llamo\s*:?\s*(.+)$/i,
+    // "habla X" SOLO si no sigue "con": "habla con Marcelo" es pedir hablar con alguien.
+    /\b(?:les\s+)?habla\s+(?!con\b)(.+)$/i,
+    // "soy/somos X" al final: "soy de Temuco" es procedencia y ya se excluye con el articulo.
+    /\b(?:soy|somos)\s+(?!de\b|el\b|la\b|los\b|las\b|un\b|una\b)(.+)$/i,
+  ];
+  for (const re of FORMULAS) {
+    const m = t.match(re);
+    if (!m) continue;
+    // Primero la puntuacion PEGADA (", de Temuco"), despues las palabras de corte.
+    let cand = m[1].split(/[,.;:!?\u2022]/)[0].replace(CORTE_PALABRA, '').trim();
+    if (!cand) continue;
+    if (_soloGenericas(cand)) continue;              // es un oficio o un rol, no un nombre
+    const palabras = cand.split(/\s+/).slice(0, 5);
+    cand = palabras.join(' ').replace(/[.,!?;:]+$/, '').trim();
+    // Tiene que parecer un nombre: solo letras, apostrofes y puntos de inicial ("Juan P. Perez").
+    if (!/^[a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00fc\u00f1A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00dc\u00d1'\-.\s]{2,}$/.test(cand)) continue;
+    if (!/[a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00d1]{2,}/.test(cand)) continue;
+    // Una razon social conserva sus mayusculas tal cual (SpA, SA, Ltda, EIRL): normalizarlas
+    // la deforma —"SpA" se volvia "Spa"— y esa es la razon social que va en la factura.
+    if (/[a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1][A-Z]|\b(?:SpA|SA|S\.A|Ltda|EIRL|E\.I\.R\.L)\b/.test(cand)) return cand;
+    return cand.toLowerCase().split(/\s+/)
+      .map((w) => (w.length > 2 ? w[0].toUpperCase() + w.slice(1) : w))
+      .join(' ');
+  }
+  return null;
+}
+
 function escapeRegExp(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

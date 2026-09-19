@@ -28,7 +28,7 @@
 
 import { buildSystemBlocks, buildSessionContext } from './system-prompt.js';
 import { TOOL_DEFS, toolDefsConMcp, runTool } from './tools.js';
-import { extractComuna, extraerColor, detectConfirmation, sanitizeChilean } from './normalizers.js';
+import { extractComuna, extraerColor, nombreDelMensaje, detectConfirmation, sanitizeChilean } from './normalizers.js';
 import * as realEngine from './engine.js';
 
 const MAX_TOOL_ITERATIONS = 6;   // [FIX 2026-06-19 CLI-04] 3 no alcanzaba para cotizar N≥2 ventanas + generar el PDF en el MISMO turno (Regla #13)
@@ -66,6 +66,26 @@ export async function handleTurn({ history = [], userText, state = {}, toolCtx =
   if (color) {
     nextState.color = color;
     nextState.lockedData = { ...(nextState.lockedData || {}), color };
+  }
+  // 🔴 [2026-09-19] Y EL NOMBRE TAMPOCO. Tercera vez que el dueño reclama lo mismo: *"Oliver me
+  // volvió a pedir nombre, color, comuna cuando yo ya la había entregado"*.
+  // `extractName()` existia hace meses y no se llamaba desde aca; ademas DESCARTA el mensaje
+  // entero si trae palabras de pedido ('necesito', 'color', 'ventana'), asi que el texto real
+  // del cliente —"soy a nombre de MARIO GREY comuna de vilcul y color blanco necesito lo
+  // siguiente"— devolvia null. `nombreDelMensaje` busca la formula de presentacion y se queda
+  // solo con el nombre. El nombre NO se pisa si ya estaba: el primero que dio el cliente manda.
+  // ⚠️ [Codex, compuerta] EL NOMBRE NO SE BLOQUEA EN `lockedData`, A DIFERENCIA DE LA COMUNA Y
+  // EL COLOR. Textual: *"el error decisivo es bloquear como definitivo el resultado de un regex
+  // de baja precision... un falso positivo bloqueado puede generar un PDF formal a nombre de
+  // 'Arquitecto' o 'Con Marcelo'"*. Tenia razon, y esos dos casos estaban MEDIDOS.
+  // La comuna y el color salen de catalogos cerrados —o es Vilcun o no lo es—; un nombre es
+  // texto libre y el detector puede errarle. Asi que va al contexto de la sesion, que el prompt
+  // muestra como "Nombre del cliente" (con eso alcanza para que Oliver NO lo pregunte), pero
+  // NO a lockedData, que el prompt declara DEFINITIVO e incambiable. Si salio mal, se corrige.
+  const _nom = nombreDelMensaje(userText);
+  if (_nom && !nextState.nombre && !nextState.name) {
+    nextState.nombre = _nom;
+    nextState.name = _nom;
   }
   const confirmed = detectConfirmation(userText);
   if (confirmed) nextState.confirmacion = true;
