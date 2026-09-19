@@ -1147,7 +1147,15 @@ export async function priceAllEngine(d, customer_id = "") {
     // esta advertida arriba para `_textoParaEje`, y aca costaria el flujo completo. La copia
     // literal del pedido vive en `descripcion_producto` (asi lo exige el schema), que es de este
     // item y de ningun otro.
-    if (tipo === "CORREDERA" && !ANDES_AUTO_COTIZA && esMonorrielPorForma(
+    // 🔴 [dueño, 2026-09-18, en produccion] LA AMERICANA ES LA EXCEPCION Y SE COTIZA.
+    // Textual: *"conoce corredera una de las hojas fija, con eso es monorriel, A NO SER QUE
+    // PIDA DIRECTAMENTE AMERICANA"*. La linea AMERICANA tambien es monorriel —es lo unico que
+    // tiene— pero esa SI la cotiza el motor hasta 2,5 m por lado (calibrada contra Winart
+    // v67152). Sin este `serie !== "AMERICANA"`, una americana descrita con su hoja fija
+    // —que es como se describe NATURALMENTE— se escalaba a Marcelo pudiendo cotizarse sola.
+    // Defecto que introduje yo el mismo dia y que llego a produccion.
+    // Si la americana estaba FUERA del tope, el bloque de arriba ya retorno escalando.
+    if (tipo === "CORREDERA" && serie !== "AMERICANA" && !ANDES_AUTO_COTIZA && esMonorrielPorForma(
       `${item.descripcion || ""} ${item.product || ""} ${item.label || ""} ${item.producto || ""}`)) {
       item.price_warning = "La corredera de una hoja con paño fijo (monorriel) la cotiza "
         + "Marcelo directamente para darte el precio exacto.";

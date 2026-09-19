@@ -84,3 +84,37 @@ test('🔒 el cliente tambien lo dice con VERBOS, no solo con sustantivos', () =
     assert.equal(esMonorrielPorForma(t), true, t);
   }
 });
+
+/* =========================================================================
+ * 🔴 LA EXCEPCION QUE CAZO EL DUEÑO (2026-09-18, mismo dia, en produccion)
+ *
+ * Textual: *"el cliente no conoce el modelo andes es imposible que lo pida, conoce corredera
+ * una de las hojas fija, con eso es monorriel, A NO SER QUE PIDA DIRECTAMENTE AMERICANA"*.
+ *
+ * O sea son dos reglas, no una:
+ *   1. monorriel se reconoce por la FORMA, nunca por la palabra "andes" -> eso ya estaba.
+ *   2. PERO la linea AMERICANA tambien ES monorriel, y esa SI se cotiza (hasta 2,5 m por lado,
+ *      calibrada contra Winart v67152). Mi escalada se la estaba comiendo.
+ *
+ * MEDIDO: `esLineaAmericana` y `esMonorrielPorForma` daban las DOS true para
+ * "corredera linea americana con una hoja fija", asi que una americana perfectamente
+ * cotizable terminaba en manos de Marcelo. Es un defecto que introduje hoy y llego a
+ * produccion.
+ * ========================================================================= */
+
+// ⚠️ [Codex] Este test prueba que las DOS señales chocan, que es la causa del defecto.
+// Que la americana efectivamente NO se escala se prueba de punta a punta, con el motor
+// mockeado, en services/americana-routing.test.js. El titulo dice lo que este test hace.
+test('🔴 americana y monorriel se activan A LA VEZ: por eso la americana tiene que ganar', async () => {
+  const { esLineaAmericana } = await import('../../services/enginePricer.js');
+  for (const t of [
+    'corredera linea americana con una hoja fija',
+    'corredera americana, una hoja fija y una corre',
+    'ventana americana mitad fija mitad corredera',
+  ]) {
+    const item = { descripcion: t, product: 'CORREDERA' };
+    // Las dos señales se activan a la vez: por eso la americana tiene que ganar explicitamente.
+    assert.equal(esLineaAmericana(item), true, `${t} -> es americana`);
+    assert.equal(esMonorrielPorForma(t), true, `${t} -> tambien es monorriel (por eso chocaban)`);
+  }
+});

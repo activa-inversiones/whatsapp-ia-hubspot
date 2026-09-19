@@ -5,7 +5,7 @@
 //   · una corredera SIN "americana" → sigue yendo como SLIDING (no se contamina).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { priceAllEngine, esLineaAmericana, AMERICANA_MAX_MM } from './enginePricer.js';
+import { priceAllEngine, esLineaAmericana, esMonorrielPorForma, AMERICANA_MAX_MM } from './enginePricer.js';
 
 test('esLineaAmericana detecta la línea por el texto, sin confundir con Andes/Venau', () => {
   assert.equal(esLineaAmericana({ descripcion: 'línea americana 1000x1000' }), true);
@@ -217,4 +217,91 @@ test('mencionaConteoHojas reconoce sinónimos, pero NO "doble riel" ni el vidrio
   assert.equal(mencionaConteoHojas('3 cuerpos'), true);
   assert.equal(mencionaConteoHojas('doble riel'), false);
   assert.equal(mencionaConteoHojas('corredera termopanel 4+12+4'), false);
+});
+
+/* =========================================================================
+ * 🔴 [2026-09-18] LA AMERICANA ES MONORRIEL, Y ESA SI SE COTIZA.
+ *
+ * El dueño, textual, sobre el detector de monorriel que se agrego ese mismo dia:
+ *   *"el cliente no conoce el modelo andes, es imposible que lo pida; conoce corredera una de
+ *    las hojas fija, con eso es monorriel, A NO SER QUE PIDA DIRECTAMENTE AMERICANA"*.
+ *
+ * El monorriel (1 hoja movil + 1 paño fijo) es linea ANDES y ANDES lo cotiza Marcelo. Pero la
+ * linea AMERICANA tambien es monorriel —es lo unico que tiene— y esa SI la cotiza el motor
+ * hasta 2,5 m por lado. La escalada de monorriel se la estaba comiendo: como la americana se
+ * describe NATURALMENTE por su forma ("americana con una hoja fija"), las dos señales se
+ * activaban juntas y ganaba la escalada. Defecto introducido el mismo dia, en produccion.
+ * ========================================================================= */
+
+test('🔴 una AMERICANA descrita con su hoja fija SE COTIZA (no la escala el monorriel)', async () => {
+  for (const desc of [
+    'corredera línea americana con una hoja fija',
+    'corredera americana, una hoja fija y una corre',
+    'ventana americana mitad fija mitad corredera',
+  ]) {
+    await conMotorStub(async (enviados) => {
+      // ⚠️ priceAllEngine MUTA los items que recibe; no los devuelve. Se guarda la referencia.
+      const items = [{ measures: '1500x1200mm', product: 'CORREDERA', descripcion: desc, qty: 1 }];
+      await priceAllEngine({ comuna: 'Temuco', items });
+      const am = enviados.find((b) => b.serie === 'AMERICANA');
+      assert.ok(am, `"${desc}" tenia que llegar al motor como AMERICANA y no llego; series: ${JSON.stringify(enviados.map((e) => e.serie))}`);
+      // ⚠️ [Codex] `!fuera_de_alcance` tambien pasa cuando es undefined, asi que NO demuestra
+      // "se cotiza". Lo que SI demuestra que no la freno el monorriel es que el pedido llego al
+      // motor (arriba) y que el aviso, si lo hay, no es el de la escalada. El stub no modela el
+      // contrato completo del motor, asi que el precio no se asevera aca a proposito.
+      assert.ok(!items[0].fuera_de_alcance, `"${desc}" no puede quedar fuera de alcance: la americana se cotiza`);
+      assert.doesNotMatch(items[0].price_warning || '', /monorriel/i,
+        `"${desc}" no puede llevar el aviso de escalada del monorriel`);
+    });
+  }
+});
+
+test('🔒 pero una corredera con paño fijo SIN "americana" SI escala (es monorriel ANDES)', async () => {
+  await conMotorStub(async (enviados) => {
+    const items = [{ measures: '1500x1200mm', product: 'CORREDERA', descripcion: 'corredera con un paño fijo', qty: 1 }];
+    await priceAllEngine({ comuna: 'Temuco', items });
+    assert.equal(enviados.length, 0, 'no se llama al motor: el monorriel Andes lo cotiza Marcelo');
+    assert.equal(items[0].fuera_de_alcance, true);
+    assert.match(items[0].price_warning || '', /monorriel/i);
+    // Y el mensaje NO le nombra al cliente una linea de catalogo que no pidio.
+    assert.doesNotMatch(items[0].price_warning || '', /andes/i);
+  });
+});
+
+test('🔒 LA PRECEDENCIA COMPLETA, en orden (la pidio Codex en la compuerta)', () => {
+  // 1) tres hojas con la central fija = DOS moviles -> SLIDING, se cotiza sola (Winart v69621)
+  // 2) si no, AMERICANA explicita -> se cotiza hasta 2,5 m/lado
+  // 3) si no, una movil + una fija -> monorriel ANDES -> escala a Marcelo
+  const casos = [
+    { t: 'corredera 3 hojas, la del medio fija',            mono: false, ame: false },
+    { t: 'CORREDERA DOBLE RIEL TRIPLE HOJA, LA DEL MEDIO FIJA', mono: false, ame: false },
+    { t: 'corredera de tres hojas, una fija al centro y dos moviles', mono: false, ame: false },
+    { t: 'corredera linea americana con una hoja fija',     mono: true,  ame: true  },
+    { t: 'corredera con un paño fijo',                      mono: true,  ame: false },
+    { t: 'corredera de dos hojas, una fija',                mono: true,  ame: false },
+    { t: 'corredera de 2 hojas',                            mono: false, ame: false },
+  ];
+  for (const c of casos) {
+    assert.equal(esMonorrielPorForma(c.t), c.mono, `monorriel? ${c.t}`);
+    assert.equal(esLineaAmericana({ descripcion: c.t }), c.ame, `americana? ${c.t}`);
+    // La regla de arriba, escrita como se ejecuta: solo escala el monorriel que NO es americana.
+    assert.equal(c.mono && !c.ame, ['corredera con un paño fijo', 'corredera de dos hojas, una fija'].includes(c.t),
+      `deberia escalar? ${c.t}`);
+  }
+});
+
+/* 🔴 LIMITE DECLARADO, NO TAPADO (Codex, misma revision): un pedido que trae 3+ paños descritos
+ * como "2 hojas MAS un fijo", o dos ventanas en una linea ("una corredera y una fija"), se lee
+ * como monorriel y ESCALA. Medido. No se parcheo porque sobre-escalar manda el caso a Marcelo,
+ * que es el lado seguro — la doctrina de este archivo es textual: "Sobre-escalar aca no cuesta
+ * plata; cotizar la linea equivocada si". El arreglo de fondo es segmentar el pedido por
+ * ventana antes de clasificar: tablero #797. */
+test('🔴 limite conocido: 3+ paños o dos ventanas en una linea sobre-escalan (a Marcelo)', () => {
+  for (const t of [
+    'ventana corredera de dos hojas mas un paño fijo superior',
+    'corredera de dos hojas mas fijo lateral',
+    'dos ventanas: una corredera y una fija',
+  ]) {
+    assert.equal(esMonorrielPorForma(t), true, `${t} — hoy sobre-escala, y esta asumido`);
+  }
 });
