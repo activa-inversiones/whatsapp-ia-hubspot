@@ -861,6 +861,19 @@ export async function runTool(name, input = {}, ctx = {}) {
         producto_label: it.producto_label,
         serie: it.serie,
         referencial: it.referencial || false,
+        // 🔴 [2026-09-19] LA INSTRUCCION VA DONDE SE TOMA LA DECISION, NO 500 LINEAS ARRIBA.
+        // Oliver recibia `referencial: true` a secas y lo leia como "esto hay que escalar":
+        // en la propuesta 0485 saco la ventana N°13 (proyectante baño 575x375) del PDF con
+        // aviso de PROPUESTA PARCIAL, cuando el motor la cotiza sin problema en $146.400
+        // (verificado en vivo). El cliente recibio 16 de 17 ventanas. El prompt ya decia
+        // "cotice igual", pero el flag viajaba solo y mudo hasta el punto de decision.
+        // AUTORIZACION EXPLICITA DEL DUEÑO (19-sep, textual): *"autorizo cotizarla igual para
+        // todos los clientes que estan bajo medida y sobre medidas"*.
+        ...(it.referencial ? { _nota_referencial:
+          'ESTA VENTANA SE COTIZA Y VA EN EL PDF como cualquier otra, con este mismo precio. '
+          + 'NO uses is_partial, NO la saques de la lista, NO la mandes a Marcelo y NO se lo '
+          + 'menciones al cliente: el dueño autorizo cotizar bajo y sobre medida para todos. '
+          + 'Marcelo ya queda avisado por dentro, automaticamente.' } : {}),
         // [2026-07-06 LOTE2] Medidas RESUELTAS con sufijo mm: pending_quote/PDF re-cotizan con ESTO
         // (no con el texto crudo del cliente) → la confirmación de unidad sobrevive hasta el PDF.
         medidas_resueltas: `${med.ancho_mm}x${med.alto_mm}mm`,

@@ -591,7 +591,26 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
           y += 68;
         } else {
           // Tabla. Columnas en x fijos para que Uw y veredicto queden alineados a la vista.
-          const X = { id: 58, prod: 86, med: 300, vid: 370, uw: 440, ver: W - 145 };
+          // 🔴 [2026-09-19] SE COMIA LAS PALABRAS. Reclamo del dueño: *"le falta a este informe,
+          // se come palabras"*. MEDIDO renderizando el PDF y leyendo su texto:
+          //     "Corredera SLIDING H98 Doble Riel S75 - triple"   <- cortado en 46 caracteres
+          //     "Termopanel 5+"                                   <- cortado en 13
+          // Eran dos recortes DUROS por nº de caracteres (`slice(0,46)` y `slice(0,13)`) sobre
+          // columnas angostas, mientras entre Uw y NORMA quedaban ~210 px sin usar. Se reparte
+          // ese espacio y se recorta por ANCHO REAL con `widthOfString`, no contando letras: una
+          // "i" y una "W" no ocupan lo mismo, y cortar por letras siempre corta de mas o de menos.
+          // Si aun asi no entra, termina en "…" — que avisa que sigue, en vez de mentir un final.
+          const X = { id: 58, prod: 86, med: 344, vid: 422, uw: 556, ver: W - 145 };
+          const ANCHO = { prod: 250, med: 74, vid: 128 };
+          /** Recorta por ancho real de pintura; agrega "…" solo si hubo que cortar. */
+          const recorta = (txt, ancho, size) => {
+            const s = String(txt || '');
+            doc.fontSize(size);
+            if (doc.widthOfString(s) <= ancho) return s;
+            let corte = s.length;
+            while (corte > 1 && doc.widthOfString(`${s.slice(0, corte)}…`) > ancho) corte -= 1;
+            return `${s.slice(0, corte).trimEnd()}…`;
+          };
           doc.fillColor(GRAY).fontSize(7).font('Helvetica-Bold');
           doc.text('N°', X.id, y); doc.text('VENTANA', X.prod, y);
           doc.text('MEDIDAS', X.med, y); doc.text('VIDRIO', X.vid, y);
@@ -608,15 +627,15 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
 
             doc.fillColor(GRAY).fontSize(8).font('Helvetica-Bold').text(f.id, X.id, y);
             const rotulo = f.cantidad > 1 ? `${f.producto}  (×${f.cantidad})` : f.producto;
-            doc.fillColor(DARK).fontSize(8).font('Helvetica')
-              .text(rotulo.slice(0, 46), X.prod, y, { width: 210, lineBreak: false });
+            doc.fillColor(DARK).font('Helvetica')
+              .text(recorta(rotulo, ANCHO.prod, 8), X.prod, y, { width: ANCHO.prod, lineBreak: false });
             if (f.ambiente) {
-              doc.fillColor(GRAY).fontSize(6.5)
-                .text(f.ambiente.slice(0, 30), X.prod, y + 9, { width: 210, lineBreak: false });
+              doc.fillColor(GRAY)
+                .text(recorta(f.ambiente, ANCHO.prod, 6.5), X.prod, y + 9, { width: ANCHO.prod, lineBreak: false });
             }
-            doc.fillColor(GRAY).fontSize(8).font('Helvetica')
-              .text(f.medidas.slice(0, 13) || '-', X.med, y, { width: 66, lineBreak: false });
-            doc.text(f.vidrio.slice(0, 13) || '-', X.vid, y, { width: 66, lineBreak: false });
+            doc.fillColor(GRAY).font('Helvetica')
+              .text(recorta(f.medidas, ANCHO.med, 8) || '-', X.med, y, { width: ANCHO.med, lineBreak: false });
+            doc.text(recorta(f.vidrio, ANCHO.vid, 8) || '-', X.vid, y, { width: ANCHO.vid, lineBreak: false });
 
             if (f.uw !== null) {
               doc.fillColor(f.cumple === false ? '#b91c1c' : DARK).fontSize(9).font('Helvetica-Bold')
