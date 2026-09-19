@@ -3502,27 +3502,19 @@ Comuna: ${datos.comuna}`
             address: state.address || '',
             descuento_pct: Number(input.descuento_pct) || 0,   // descuento MANUAL adicional en la propuesta (0 = sin descuento)
             descuento_mercado_pct: descuentoMercadoPct,         // descuento de mercado YA aplicado a los precios (se MUESTRA al cliente)
-            // 🔴 [2026-09-19] UNA MEDIDA FUERA DE ESTANDAR NO HACE PARCIAL A LA PROPUESTA.
-            // En la 0485 el cliente recibio 16 de 17 ventanas con el aviso "PROPUESTA PARCIAL:
-            // no incluye la N°13 (proyectante baño 575x375) por salir fuera de rango del sistema
-            // automatico". El motor la cotiza sin problema en $146.400 (verificado en vivo).
-            // AUTORIZACION DEL DUEÑO (19-sep, textual): *"autorizo cotizarla igual para todos los
-            // clientes que estan bajo medida y sobre medidas"*. Asi que ese motivo ya no existe:
-            // si la nota solo habla de medidas/rango/minimo/maximo, el aviso se cae.
-            // ⚠️ Esto NO recupera la ventana —incluirla es decision de Oliver, y por eso la
-            // instruccion vive tambien en el resultado de calcular_cotizacion (`_nota_referencial`)
-            // y en el prompt—. Lo que evita es que al cliente le llegue un aviso de propuesta
-            // incompleta por un motivo que el dueño ya autorizo. Queda el log para medirlo.
-            ...(() => {
-              const _nota = String(input.partial_note || '').slice(0, 200);
-              const _soloMedidas = /fuera\s+de\s+rango|fuera\s+de\s+est[aá]ndar|bajo\s+(?:el\s+)?m[ií]nimo|sobre\s+(?:el\s+)?m[aá]ximo|medidas?\b/i.test(_nota)
-                && !/aluminio|plegable|mosquitero|andes|zenia|venau|volumen|irregular|curv|monorriel/i.test(_nota);
-              if (input.is_partial && _soloMedidas) {
-                try { console.warn('[parcial-anulado] motivo solo de medidas, el dueño autorizo cotizarlas:', _nota); } catch { /* log best-effort */ }
-                return { is_partial: false, partial_note: '' };
-              }
-              return { is_partial: Boolean(input.is_partial), partial_note: _nota };
-            })(),
+            // 🔴 [2026-09-19] ACA HUBO UNA GUARDIA QUE ANULABA EL AVISO DE PROPUESTA PARCIAL
+            // cuando el motivo hablaba solo de medidas. La saco, y la razon es de Codex en la
+            // compuerta: *"puede enviar menos productos, menos precio y ninguna advertencia; eso
+            // no es una mejora incompleta: es ocultar al cliente el mismo error que se pretendia
+            // corregir"*. Tenia razon. Si Oliver igual deja una ventana afuera, callar el aviso
+            // hace que el cliente reciba 16 de 17 SIN ENTERARSE — peor que el defecto original.
+            // El aviso se queda: dice la verdad. El problema real es que la ventana NO debe
+            // quedar afuera, y eso se ataca donde se decide: `_nota_referencial` en el resultado
+            // de calcular_cotizacion + la prohibicion explicita en el prompt.
+            // ⚠️ Si vuelve a pasar, la forma correcta NO es callar el aviso sino comparar los
+            // items pedidos contra los que van al PDF y no dejar que falte ninguno cotizable.
+            is_partial:   Boolean(input.is_partial),            // [2026-07-02 BUG parcial] parte del pedido escaló a Marcelo
+            partial_note: String(input.partial_note || '').slice(0, 200),
             // 🎨 [2026-08-31] QUE OPCION ES ESTA — el PDF se identifica SOLO. El cliente abre
             // el archivo y ve "OPCIÓN A · COLOR BLANCO" arriba, sin tener que volver al chat.
             // `undefined` cuando no hay terna ⇒ el documento sale exactamente como siempre.

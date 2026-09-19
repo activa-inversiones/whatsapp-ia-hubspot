@@ -591,64 +591,104 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
           y += 68;
         } else {
           // Tabla. Columnas en x fijos para que Uw y veredicto queden alineados a la vista.
+          //
           // 🔴 [2026-09-19] SE COMIA LAS PALABRAS. Reclamo del dueño: *"le falta a este informe,
           // se come palabras"*. MEDIDO renderizando el PDF y leyendo su texto:
           //     "Corredera SLIDING H98 Doble Riel S75 - triple"   <- cortado en 46 caracteres
           //     "Termopanel 5+"                                   <- cortado en 13
-          // Eran dos recortes DUROS por nº de caracteres (`slice(0,46)` y `slice(0,13)`) sobre
-          // columnas angostas, mientras entre Uw y NORMA quedaban ~210 px sin usar. Se reparte
-          // ese espacio y se recorta por ANCHO REAL con `widthOfString`, no contando letras: una
-          // "i" y una "W" no ocupan lo mismo, y cortar por letras siempre corta de mas o de menos.
-          // Si aun asi no entra, termina en "…" — que avisa que sigue, en vez de mentir un final.
-          const X = { id: 58, prod: 86, med: 344, vid: 422, uw: 556, ver: W - 145 };
-          const ANCHO = { prod: 250, med: 74, vid: 128 };
+          // Eran recortes DUROS por nº de caracteres. Ahora se recorta por ANCHO REAL: una "i" y
+          // una "W" no ocupan lo mismo, y contar letras siempre corta de mas o de menos.
+          //
+          // ⚠️ [Codex, compuerta] Y EL PRIMER ARREGLO ROMPIO LA TABLA, EN PRODUCCION. Ensanche
+          // las columnas suponiendo una pagina apaisada. Este informe es **A4 RETRATO**: W=595,
+          // area util 50..545. Con aquel layout la columna Uw caia en 556..602 —FUERA de la
+          // pagina— y VIDRIO (422..550) se cruzaba con NORMA (450..535). Codex lo cazo sin ver
+          // el valor de W: *"no existe una invariante ni prueba que impida el cruce"*. Tenia
+          // razon en las dos cosas. Ahora los tramos se calculan para que NO se toquen, y hay un
+          // test que lo verifica (informeTermicoPdf.layout.test.js).
+          //
+          // En retrato no hay ancho para un rotulo como "Corredera SLIDING H98 Doble Riel S75 -
+          // triple hoja central fija" en UNA linea: se le dan DOS, y la fila crece si hace falta.
+          const X = { id: 58, prod: 86, med: 240, vid: 300, uw: 400, ver: W - 145 };
+          const ANCHO = { prod: 150, med: 56, vid: 96, uw: 46, ver: 85 };
           /** Recorta por ancho real de pintura; agrega "…" solo si hubo que cortar. */
           const recorta = (txt, ancho, size) => {
             const s = String(txt || '');
             doc.fontSize(size);
-            if (doc.widthOfString(s) <= ancho) return s;
+            if (!s || doc.widthOfString(s) <= ancho) return s;
             let corte = s.length;
-            while (corte > 1 && doc.widthOfString(`${s.slice(0, corte)}…`) > ancho) corte -= 1;
-            return `${s.slice(0, corte).trimEnd()}…`;
+            while (corte > 0 && doc.widthOfString(`${s.slice(0, corte)}…`) > ancho) corte -= 1;
+            return corte > 0 ? `${s.slice(0, corte).trimEnd()}…` : '…';
+          };
+          /**
+           * Parte el texto en a lo sumo `maxLineas` lineas que entren en `ancho`, cortando por
+           * PALABRA. La ultima linea se recorta con "…" si todavia sobra texto.
+           */
+          const enLineas = (txt, ancho, size, maxLineas) => {
+            const s = String(txt || '').trim();
+            if (!s) return [];
+            doc.fontSize(size);
+            if (doc.widthOfString(s) <= ancho) return [s];
+            const palabras = s.split(/\s+/);
+            const lineas = [];
+            let actual = '';
+            for (const p of palabras) {
+              const tent = actual ? `${actual} ${p}` : p;
+              if (doc.widthOfString(tent) <= ancho) { actual = tent; continue; }
+              if (actual) lineas.push(actual);
+              actual = p;
+              if (lineas.length === maxLineas - 1) break;
+            }
+            const resto = palabras.slice(lineas.join(' ').split(/\s+/).filter(Boolean).length).join(' ');
+            lineas.push(lineas.length === maxLineas - 1 ? recorta(resto || actual, ancho, size) : actual);
+            return lineas.filter(Boolean).slice(0, maxLineas);
           };
           doc.fillColor(GRAY).fontSize(7).font('Helvetica-Bold');
           doc.text('N°', X.id, y); doc.text('VENTANA', X.prod, y);
           doc.text('MEDIDAS', X.med, y); doc.text('VIDRIO', X.vid, y);
-          doc.text('Uw', X.uw, y, { width: 46, align: 'right' });
-          doc.text('NORMA', X.ver, y, { width: 85, align: 'right' });
+          doc.text('Uw', X.uw, y, { width: ANCHO.uw, align: 'right' });
+          doc.text('NORMA', X.ver, y, { width: ANCHO.ver, align: 'right' });
           y += 11;
           doc.strokeColor('#d7dee7').lineWidth(0.5).moveTo(50, y).lineTo(W - 50, y).stroke();
           y += 5;
 
           for (const f of proyecto.filas) {
-            saltoSiNoCabe(26);
-            const alto = 20;
+            const rotulo = f.cantidad > 1 ? `${f.producto}  (×${f.cantidad})` : f.producto;
+            const lineasRot = enLineas(rotulo, ANCHO.prod, 7.5, 2);
+            // La fila crece si el rotulo ocupo dos lineas: antes se pisaba con el ambiente.
+            // 🔴 [Gemini, compuerta] LA LINEA DIVISORIA TACHABA EL AMBIENTE. Con el rotulo
+            // en 2 lineas el ambiente cae en y+17 (6,5 pt => hasta ~y+25) y la linea se dibuja
+            // en y+alto-4: con alto=26 quedaba en y+22, cruzando el texto. Se le da aire.
+            const alto = lineasRot.length > 1 ? (f.ambiente ? 32 : 28) : 20;
+            saltoSiNoCabe(alto + 6);
             if (f.cumple === false) doc.rect(50, y - 3, W - 100, alto).fill('#fdf0ef');
 
             doc.fillColor(GRAY).fontSize(8).font('Helvetica-Bold').text(f.id, X.id, y);
-            const rotulo = f.cantidad > 1 ? `${f.producto}  (×${f.cantidad})` : f.producto;
-            doc.fillColor(DARK).font('Helvetica')
-              .text(recorta(rotulo, ANCHO.prod, 8), X.prod, y, { width: ANCHO.prod, lineBreak: false });
+            doc.fillColor(DARK).font('Helvetica');
+            lineasRot.forEach((ln, i) => {
+              doc.fontSize(7.5).text(ln, X.prod, y + i * 8, { width: ANCHO.prod, lineBreak: false });
+            });
             if (f.ambiente) {
               doc.fillColor(GRAY)
-                .text(recorta(f.ambiente, ANCHO.prod, 6.5), X.prod, y + 9, { width: ANCHO.prod, lineBreak: false });
+                .text(recorta(f.ambiente, ANCHO.prod, 6.5), X.prod, y + lineasRot.length * 8 + 1,
+                  { width: ANCHO.prod, lineBreak: false });
             }
             doc.fillColor(GRAY).font('Helvetica')
-              .text(recorta(f.medidas, ANCHO.med, 8) || '-', X.med, y, { width: ANCHO.med, lineBreak: false });
-            doc.text(recorta(f.vidrio, ANCHO.vid, 8) || '-', X.vid, y, { width: ANCHO.vid, lineBreak: false });
+              .text(recorta(f.medidas, ANCHO.med, 7.5) || '-', X.med, y, { width: ANCHO.med, lineBreak: false });
+            doc.text(recorta(f.vidrio, ANCHO.vid, 7) || '-', X.vid, y, { width: ANCHO.vid, lineBreak: false });
 
             if (f.uw !== null) {
               doc.fillColor(f.cumple === false ? '#b91c1c' : DARK).fontSize(9).font('Helvetica-Bold')
-                .text(dec(f.uw, 2), X.uw, y - 1, { width: 46, align: 'right' });
+                .text(dec(f.uw, 2), X.uw, y - 1, { width: ANCHO.uw, align: 'right' });
             } else {
               // No es un hueco: es una explicación. El cliente tiene que entender que la
               // ventana existe y que el número está pendiente de NUESTRO lado.
               doc.fillColor(GRAY).fontSize(6.5).font('Helvetica-Oblique')
-                .text(f.motivo, X.uw - 20, y + 1, { width: 150, lineBreak: false });
+                .text(recorta(f.motivo, ANCHO.uw + ANCHO.ver, 6.5), X.uw, y + 1, { width: ANCHO.uw + ANCHO.ver, lineBreak: false });
             }
             if (f.cumple !== null) {
               doc.fillColor(f.cumple ? '#0a7d33' : '#b91c1c').fontSize(8).font('Helvetica-Bold')
-                .text(f.cumple ? 'cumple' : 'NO cumple', X.ver, y, { width: 85, align: 'right' });
+                .text(f.cumple ? 'cumple' : 'NO cumple', X.ver, y, { width: ANCHO.ver, align: 'right' });
             }
             y += alto;
             doc.strokeColor('#eef2f6').lineWidth(0.5).moveTo(50, y - 4).lineTo(W - 50, y - 4).stroke();

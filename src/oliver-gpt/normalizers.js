@@ -144,7 +144,17 @@ export function extractComuna(texto) {
   // 6 letras o mas: con nombres cortos, una letra de distancia confunde comunas de verdad.
   // Ademas se exige que NINGUNA otra comuna quede a la misma distancia — si dos empatan, no se
   // adivina: se devuelve null y Oliver pregunta, que es lo correcto ahi.
-  const palabras = t.split(/[^a-z0-9]+/).filter((p) => p.length >= 6);
+  // 🔴 [Codex, compuerta] LA PASADA APROXIMADA EXIGE CONTEXTO DE LUGAR.
+  // Sin esto, "para no freirse con el sol" devolvia FREIRE (medido), y un despacho a la
+  // comuna equivocada cuesta plata. Un nombre EXACTO es señal suficiente por si solo —esa
+  // pasada no cambia—, pero uno aproximado necesita que el cliente este hablando de un lugar:
+  // "comuna DE vilcul", "vivo EN lautarl", "despacho A victorias".
+  const MARCA = '(?:comuna|ciudad|localidad|sector|vivo|vivimos|soy|somos|estoy|estamos|ubicad[oa]s?|despacho|despachar|instalaci[oó]n|instalar|obra|proyecto|en|de|del|a|al|desde|para|hacia|hasta)';
+  const conContexto = new Set(
+    (t.match(new RegExp(`\\b${MARCA}\\s+([a-z0-9]{6,})`, 'g')) || [])
+      .map((frag) => frag.split(/\s+/).pop()),
+  );
+  const palabras = t.split(/[^a-z0-9]+/).filter((p) => p.length >= 6 && conContexto.has(p));
   let mejor = null;
   let empate = false;
   for (const clave of claves) {
@@ -203,16 +213,29 @@ export function extraerColor(texto) {
   // Se exige que el cliente lo haya dicho como color, no que la palabra aparezca de cualquier
   // forma: "ventana negra de la casa del frente" no es un pedido de color negro.
   if (!colorFueExplicito(texto)) return null;
+  // 🔴 [Gemini, compuerta] UNA DIRECCION NO ES UN COLOR. En Chile "Blanco" esta en media
+  // guia de calles: Blanco Encalada, Rio Blanco, Valle Blanco. MEDIDO: "soy de Temuco, calle
+  // Blanco Encalada 623" devolvia BLANCO y lo BLOQUEABA en lockedData — o sea el cliente que
+  // queria grafito ya no podia cambiarlo, porque el sistema le fijo un color sacado de su
+  // domicilio. Si el color viene pegado a una palabra de direccion, no cuenta.
+  const DIR = '(?:calle|avenida|avda?|pasaje|psje|camino|ruta|villa|poblacion|sector|barrio|'
+    + 'rio|valle|cerro|fundo|parcela|lote|manzana|condominio|loteo|km)';
+  const limpio = t.replace(new RegExp(`\\b${DIR}\\s+\\S+(?:\\s+\\S+)?`, 'g'), ' ');
+
   // Del catalogo real, el mas largo primero: "roble dorado" antes que "roble" suelto.
   const cands = COLORES_CATALOGO
     .map((c) => ({ c, k: strip(c).toLowerCase() }))
     .sort((a, b) => b.k.length - a.k.length);
   for (const { c, k } of cands) {
-    if (new RegExp(`\\b${k.replace(/\s+/g, "\\s+")}\\b`).test(t)) return normColor(c);
+    if (new RegExp(`\\b${k.replace(/\s+/g, "\\s+")}\\b`).test(limpio)) return normColor(c);
   }
-  // Femeninos y variantes que el catalogo no trae tal cual ("blanca", "negra").
-  if (/\bblanc[ao]s?\b/.test(t)) return normColor("Blanco");
-  if (/\bnegr[ao]s?\b/.test(t)) return normColor("Negro");
+  // Como los nombra el cliente de verdad: femeninos ("blanca", "negra") y el nombre corto
+  // —nadie dice "grafito antracita" ni "roble dorado" completo, dicen "grafito" y "roble"—.
+  if (/\bblanc[ao]s?\b/.test(limpio)) return normColor("Blanco");
+  if (/\bnegr[ao]s?\b/.test(limpio)) return normColor("Negro");
+  if (/\bgrafitos?\b|\bantracitas?\b/.test(limpio)) return normColor("Grafito Antracita");
+  if (/\brobles?\b/.test(limpio)) return normColor("Roble Dorado");
+  if (/\bnogal(?:es)?\b/.test(limpio)) return normColor("Nogal");
   return null;
 }
 

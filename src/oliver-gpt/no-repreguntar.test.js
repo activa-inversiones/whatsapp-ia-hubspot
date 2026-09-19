@@ -46,3 +46,81 @@ test('🔒 el color solo cuenta si el cliente lo dijo como color', () => {
   assert.equal(extraerColor(''), null);
   assert.equal(extraerColor(null), null);
 });
+
+/* =========================================================================
+ * 🔱 LO QUE CAZO LA COMPUERTA (Codex) SOBRE LA PASADA APROXIMADA
+ * Textual: *"`freirse` está a una inserción de `freire`. Una frase como `para no freírse con el
+ * sol` podría inferir Freire"*. MEDIDO: era cierto. Un despacho a la comuna equivocada cuesta
+ * plata, asi que la pasada aproximada ahora exige CONTEXTO DE LUGAR.
+ * Un nombre EXACTO sigue valiendo por si solo; uno aproximado necesita que el cliente este
+ * hablando de un lugar ("comuna DE vilcul", "vivo EN lautarl", "despacho A victorias").
+ * ========================================================================= */
+
+test('🔴 una palabra cualquiera parecida a una comuna NO es una comuna', () => {
+  for (const t of [
+    'para no freirse con el sol',
+    'freirse',
+    'quiero cortinas',
+    'la ventana del living',
+    'necesito termopanel',
+  ]) assert.equal(extractComuna(t), null, t);
+});
+
+test('🔒 con contexto de lugar, el typo si se resuelve', () => {
+  assert.equal(extractComuna('comuna de vilcul'), 'Vilcún');
+  assert.equal(extractComuna('vivo en lautarl'), 'Lautaro');
+  assert.equal(extractComuna('despacho a victorias'), 'Victoria');
+});
+
+test('🔒 no hay DOS comunas nuestras a una letra de distancia (medido sobre la lista real)', async () => {
+  // Si mañana se agrega una comuna que colisione con otra, esto se pone rojo: ahi la tolerancia
+  // deja de ser segura para ese par y hay que confirmarla con el cliente.
+  const { ZONA_COMUNAS } = await import('./normalizers.js');
+  const claves = Object.keys(ZONA_COMUNAS).filter((k) => k.length >= 6 && !k.includes(' '));
+  const aUnaLetra = (a, b) => {
+    if (Math.abs(a.length - b.length) > 1) return false;
+    let d = 0; let x = 0; let y = 0;
+    while (x < a.length && y < b.length) {
+      if (a[x] === b[y]) { x += 1; y += 1; continue; }
+      d += 1;
+      if (d > 1) return false;
+      if (a.length === b.length) { x += 1; y += 1; } else if (a.length < b.length) { y += 1; } else { x += 1; }
+    }
+    return d + (a.length - x) + (b.length - y) <= 1;
+  };
+  const choques = [];
+  for (let i = 0; i < claves.length; i += 1) {
+    for (let j = i + 1; j < claves.length; j += 1) {
+      if (aUnaLetra(claves[i], claves[j])) choques.push(`${claves[i]}/${claves[j]}`);
+    }
+  }
+  assert.deepEqual(choques, [], `comunas a una letra de distancia: ${choques.join(', ')}`);
+});
+
+/* =========================================================================
+ * 🔱 LO QUE CAZO GEMINI: UNA DIRECCION NO ES UN COLOR
+ * Textual: *"En Chile 'Blanco' es un nombre extremadamente común en calles y comunas (calle
+ * Blanco Encalada, Río Blanco, Valle Blanco)... el sistema le bloqueó el color Blanco usando un
+ * dato de la dirección"*. MEDIDO: era cierto, y el cliente que queria grafito ya no podia
+ * cambiarlo porque `lockedData` es DEFINITIVO por diseño.
+ * ========================================================================= */
+
+test('🔴 el color NO se saca de la direccion del cliente', () => {
+  for (const t of [
+    'soy de Temuco, calle Blanco Encalada 623',
+    'despacho en Rio Blanco',
+    'vivo en Valle Blanco 120',
+  ]) assert.equal(extraerColor(t), null, t);
+});
+
+test('🔒 pero si la direccion trae "Blanco" Y el cliente pide otro color, gana el color pedido', () => {
+  assert.equal(extraerColor('calle Blanco Encalada 623, color grafito'), 'GRAFITO');
+});
+
+test('🔒 el cliente usa el nombre CORTO del color, no el del catalogo', () => {
+  // Nadie dice "grafito antracita" ni "roble dorado" completo.
+  assert.equal(extraerColor('color grafito'), 'GRAFITO');
+  assert.equal(extraerColor('lo quiero en roble'), 'NOGAL');
+  assert.equal(extraerColor('nogal'), 'NOGAL');
+  assert.equal(extraerColor('grafito antracita'), 'GRAFITO');
+});
