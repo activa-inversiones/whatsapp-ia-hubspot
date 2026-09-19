@@ -86,3 +86,24 @@ test('🔒 lista vacia o sin numerar: como siempre', async () => {
   assert.deepEqual(rotulosDeVentanas(null), []);
   assert.deepEqual(rotulosDeVentanas([{}, {}, {}]), ['V1', 'V2', 'V3']);
 });
+
+/* =========================================================================
+ * 🔱 LA REGRESION QUE CAZO CODEX, y la habia metido yo al unificar los rotulos.
+ * Textual: *"etiquetaVentana({id:'Living-A'}) devuelve Living-A, pero rotulosDeVentanas
+ * devuelve V1... en el informe termico esto es una regresion directa: antes se imprimia v.id"*.
+ * Y al reves: *"un ID interno numerico como 812 se puede imprimir como V812, fingiendo que fue
+ * numeracion del cliente"*. Las dos eran ciertas.
+ * ========================================================================= */
+
+test('🔴 una etiqueta de TEXTO no se pierde (el informe termico la imprimia desde siempre)', async () => {
+  const { rotulosDeVentanas } = await import('./etiquetaVentana.js');
+  assert.deepEqual(rotulosDeVentanas([{ id: 'Living-A' }]), ['Living-A']);
+  assert.deepEqual(rotulosDeVentanas([{ pos: 'P-07' }]), ['P-07']);
+  assert.deepEqual(rotulosDeVentanas([{ id: 'Living-A' }, {}]), ['Living-A', 'V2']);
+});
+
+test('🔴 un ID INTERNO numerico no se disfraza de numero del cliente', async () => {
+  const { rotulosDeVentanas } = await import('./etiquetaVentana.js');
+  // `id` puede ser un id interno; el numero del cliente vive en pos/posicion/id_ventana.
+  assert.deepEqual(rotulosDeVentanas([{ id: 812 }, { id: 813 }]), ['V1', 'V2']);
+});

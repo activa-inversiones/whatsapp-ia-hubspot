@@ -65,13 +65,32 @@ export function etiquetaVentana(v, i) {
  */
 export function rotulosDeVentanas(lista) {
   const arr = Array.isArray(lista) ? lista : [];
-  const crudos = arr.map((v) => v?.pos ?? v?.id_ventana ?? v?.posicion ?? v?.id);
-  const nums = crudos.map((x) => {
+  // 🔴 [Codex, compuerta] `id` NO cuenta como numero del cliente. Puede ser un id INTERNO, y
+  // entonces un 812 se imprimia "V812" fingiendo que el cliente numero asi. El numero del
+  // cliente vive en `pos` / `posicion` / `id_ventana`, que son los campos que se llenan con SU
+  // lista. `id` solo sirve como ETIQUETA DE TEXTO, que es como lo usaba el informe termico.
+  const num = arr.map((v) => {
+    const x = v?.pos ?? v?.posicion ?? v?.id_ventana;
     const n = Number(String(x ?? '').trim().replace(/^v/i, ''));
     return Number.isInteger(n) && n > 0 && n < 1000 ? n : null;
   });
-  const todos = nums.length > 0 && nums.every((n) => n !== null);
-  const sinRepetir = new Set(nums).size === nums.length;
-  if (todos && sinRepetir) return nums.map((n) => `V${n}`);
-  return arr.map((_, i) => `V${i + 1}`);
+  const todos = num.length > 0 && num.every((n) => n !== null);
+  const sinRepetir = new Set(num).size === num.length;
+  if (todos && sinRepetir) return num.map((n) => `V${n}`);
+  // 🔴 [Codex, compuerta] Y SI NO HAY NUMERACION DEL CLIENTE, NO SE PIERDEN LAS ETIQUETAS DE
+  // TEXTO. Esto era una REGRESION que introduje: el informe termico imprimia `v.id` desde
+  // siempre, asi que un rotulo como "Living-A" o "P-07" salia en el documento; al unificar todo
+  // en esta funcion empezaron a salir como "V1". Se restaura el comportamiento de antes.
+  return arr.map((v, i) => {
+    const txt = String(v?.id_ventana ?? v?.id ?? v?.posicion ?? v?.pos ?? '').trim();
+    // Una etiqueta tiene que PARECER una etiqueta de codigo: una letra Y un digito o un guion
+    // ("Living-A", "P-07", "Dormitorio 1"). Asi un `pos: -3` no sale rotulado "-3", y un
+    // `pos: "trece"` —el LLM poniendo cualquier cosa— tampoco se imprime tal cual: los dos
+    // caen a la numeracion por posicion, que es lo seguro. Lo cazo el test de basura.
+    const pareceEtiqueta = /[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]/.test(txt)
+      && /[\d-]/.test(txt)
+      && !/^(?:nan|null|undefined)$/i.test(txt);
+    if (pareceEtiqueta) return /^v\s*\d+$/i.test(txt) ? txt.toUpperCase().replace(/\s+/g, '') : txt;
+    return `V${i + 1}`;
+  });
 }

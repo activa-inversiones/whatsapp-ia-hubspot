@@ -309,7 +309,16 @@ function _nombreDeUnaLinea(t) {
     '\\s+(?:comuna|ciudad|localidad|sector|direccion|direcci\u00f3n|calle|color|colores|'
     + 'necesito|necesitamos|quiero|queremos|busco|buscamos|quisiera|requiero|para|porque|'
     + 'ventanas?|ventanal(?:es)?|puertas?|termopanel|pvc|cotiz\\w*|presupuesto|medidas?|'
-    + 'vivo|vivimos|estoy|estamos|de\\s|del\\s|y\\s).*$', 'i',
+    + 'vivo|vivimos|estoy|estamos).*$', 'i',
+  );
+  // 🔴 [Gemini, compuerta] "de", "del" y "y" YA NO CORTAN A SECAS: mutilaban apellidos chilenos.
+  // MEDIDO: "soy Juan de la Fuente" -> "Juan" · "soy Sofía del Campo" -> "Sofía" ·
+  // "a nombre de Constructora Gómez y Compañía" -> "Constructora Gómez". Emitir una propuesta
+  // de millones con la razon social mutilada es impresentable.
+  // Cortan SOLO cuando lo que sigue es un lugar ("soy Juan de Temuco"), que es el caso que
+  // motivo el corte. El limite de 5 palabras y la puntuacion hacen el resto.
+  const CORTE_LUGAR = new RegExp(
+    `\\s+(?:de|del|en)\\s+(?:${Object.keys(ZONA_COMUNAS).join('|')})\\b.*$`, 'i',
   );
   const FORMULAS = [
     /\b(?:a|al)\s+nombre\s+de\s*:?\s*(.+)$/i,
@@ -324,9 +333,20 @@ function _nombreDeUnaLinea(t) {
     const m = t.match(re);
     if (!m) continue;
     // Primero la puntuacion PEGADA (", de Temuco"), despues las palabras de corte.
-    let cand = m[1].split(/[,.;:!?\u2022]/)[0].replace(CORTE_PALABRA, '').trim();
+    // \ud83d\udd34 [Gemini] El punto de una INICIAL no corta el nombre. MEDIDO: "me llamo Ma. Jose
+    // Catrileo" devolvia "ma" \u2014 el nombre del cliente destruido en un documento formal.
+    // Se corta por punto solo cuando NO es una inicial (una o dos letras antes del punto).
+    let cand = m[1]
+      .replace(/(?<![A-Za-z\u00c1\u00c9\u00cd\u00d3\u00da\u00dc\u00d1\u00e1\u00e9\u00ed\u00f3\u00fa\u00fc\u00f1]{1,2})\.(?=\s|$).*$/, '')
+      .split(/[,;:!?\u2022]/)[0]
+      .replace(CORTE_LUGAR, '')
+      .replace(CORTE_PALABRA, '')
+      .trim();
     if (!cand) continue;
     if (_soloGenericas(cand)) continue;              // es un oficio o un rol, no un nombre
+    // Una particula suelta al final es basura de la frase, no parte del nombre:
+    // "mi nombre es Ana Maria Soto Y quiero cotizar" -> el corte deja "... Soto y".
+    cand = cand.replace(/\s+(?:de|del|la|las|los|y|e)$/i, '').trim();
     const palabras = cand.split(/\s+/).slice(0, 5);
     cand = palabras.join(' ').replace(/[.,!?;:]+$/, '').trim();
     // Tiene que parecer un nombre: solo letras, apostrofes y puntos de inicial ("Juan P. Perez").
@@ -335,8 +355,13 @@ function _nombreDeUnaLinea(t) {
     // Una razon social conserva sus mayusculas tal cual (SpA, SA, Ltda, EIRL): normalizarlas
     // la deforma —"SpA" se volvia "Spa"— y esa es la razon social que va en la factura.
     if (/[a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1][A-Z]|\b(?:SpA|SA|S\.A|Ltda|EIRL|E\.I\.R\.L)\b/.test(cand)) return cand;
+    // 🔴 [Gemini] NO se decide por LARGO. La regla de dejar en minuscula lo de 2 letras o menos
+    // era para "de"/"la", pero arruinaba los nombres cortos: MEDIDO, "soy Ed Wu" salia "ed wu" y
+    // "me llamo Max Fu" salia "Max fu", en un PDF formal. Se decide por PALABRA: solo las
+    // particulas de apellido van en minuscula.
+    const PARTICULA = /^(?:de|del|la|las|los|y|e|da|do|dos|van|von)$/i;
     return cand.toLowerCase().split(/\s+/)
-      .map((w) => (w.length > 2 ? w[0].toUpperCase() + w.slice(1) : w))
+      .map((w, i) => (i > 0 && PARTICULA.test(w) ? w : w.charAt(0).toUpperCase() + w.slice(1)))
       .join(' ');
   }
   return null;

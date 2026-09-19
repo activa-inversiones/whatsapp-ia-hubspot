@@ -112,3 +112,47 @@ test('🔴 una RAZON SOCIAL se conserva tal cual: es la que va en la factura', (
   assert.equal(nombreDelMensaje('a nombre de Constructora Andes SpA'), 'Constructora Andes SpA');
   assert.equal(nombreDelMensaje('la factura va a nombre de Constructora Andes'), 'Constructora Andes');
 });
+
+/* =========================================================================
+ * 🔱 LO QUE CAZO GEMINI: nombres chilenos REALES, en un documento formal.
+ * Textual: *"es impresentable emitir una propuesta tecnico-economica de $5.000.000 CLP
+ * mutilando la razon social de la factura"*. Cinco de sus seis casos fallaban, medidos.
+ * ========================================================================= */
+
+test('🔴 los apellidos con particula NO se mutilan', () => {
+  // "de", "del" y "y" cortaban a secas: el apellido quedaba a la mitad en el PDF.
+  assert.equal(nombreDelMensaje('hola soy Juan de la Fuente'), 'Juan de la Fuente');
+  assert.equal(nombreDelMensaje('soy Sofía del Campo'), 'Sofía del Campo');
+  assert.equal(nombreDelMensaje('me llamo Pedro San Martín'), 'Pedro San Martín');
+});
+
+test('🔴 la RAZON SOCIAL completa: es la que va en la factura', () => {
+  assert.equal(nombreDelMensaje('a nombre de Constructora Gómez y Compañía'), 'Constructora Gómez y Compañía');
+  assert.equal(nombreDelMensaje('a nombre de Constructora Andes SpA'), 'Constructora Andes SpA');
+});
+
+test('🔴 un nombre CORTO no se escribe en minuscula', () => {
+  // La regla vieja dejaba en minuscula todo lo de 2 letras o menos (para "de"/"la").
+  assert.equal(nombreDelMensaje('soy Ed Wu'), 'Ed Wu');
+  assert.equal(nombreDelMensaje('me llamo Max Fu'), 'Max Fu');
+});
+
+test('🔴 una INICIAL con punto no parte el nombre en dos', () => {
+  // "me llamo Ma. Jose Catrileo" devolvia "ma".
+  assert.equal(nombreDelMensaje('me llamo Ma. Jose Catrileo'), 'Ma. Jose Catrileo');
+});
+
+test('🔒 los apellidos mapuche salen enteros', () => {
+  assert.equal(nombreDelMensaje('soy José Huenchullán'), 'José Huenchullán');
+  assert.equal(nombreDelMensaje('a nombre de Ana Millapán'), 'Ana Millapán');
+});
+
+test('🔒 un apellido que tambien es un color del catalogo sigue siendo un apellido', () => {
+  assert.equal(nombreDelMensaje('soy Claudio Blanco'), 'Claudio Blanco');
+  assert.equal(nombreDelMensaje('me llamo Andrés Roble'), 'Andrés Roble');
+});
+
+test('🔒 pero "de" SI corta cuando lo que sigue es una comuna', () => {
+  assert.equal(nombreDelMensaje('soy Juan de Temuco'), 'Juan');
+  assert.equal(nombreDelMensaje('mi nombre es Ana María Soto y quiero cotizar'), 'Ana María Soto');
+});
