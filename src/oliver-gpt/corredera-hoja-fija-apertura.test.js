@@ -152,3 +152,37 @@ test('🔗 CADENA COMPLETA: las 2 ventanas reales arman el pedido correcto al mo
     assert.equal(cfg.ambiguo, false, `${t} -> no escala`);
   }
 });
+
+/* =========================================================================
+ * 🔱 LOS QUE CAZO GEMINI (ojo semantico: como habla un cliente chileno)
+ * 6 de sus 9 ejemplos fallaban de verdad. Todos medidos.
+ * ========================================================================= */
+
+test('🔴 SUBCOBRO: "paño" y las comas rompian la guardia (el habla real del cliente)', () => {
+  // Todas estas son CORREDERAS y devolvian FIJA -> se cotizaba un pano fijo: ~50% de menos.
+  // La guardia solo miraba "hoja fija" PEGADO; basta una coma o un "una" para romperlo, y el
+  // cliente escribe asi siempre. "pano" ademas es la palabra mas usada en Chile.
+  for (const t of [
+    'corredera con un paño fijo',
+    'corredera de dos paños, un paño fijo',
+    'corredera de dos hojas, una fija',
+    'corredera de dos hojas, la derecha fija',
+    'corredera 3 hojas, lateral fijo',
+    'corredera de 3 hojas, 1 fija',
+  ]) {
+    assert.equal(mapAperturaToEngine(t), 'CORREDERA', t);
+  }
+});
+
+test('🔴 SOBRECOBRO: hablar de una fija Y de una corredera no es una corredera con hoja fija', () => {
+  // Lo que separa las dos puntas es el ORDEN: cuando pide una corredera y despues describe sus
+  // hojas, la corredera va primero; cuando habla de una fija y despues menciona otra ventana,
+  // la fija va primero.
+  assert.equal(mapAperturaToEngine('necesito el precio de la hoja fija, de la corredera ya lo tengo'), 'FIJA');
+  assert.equal(mapAperturaToEngine('necesito una ventana fija al medio de dos correderas'), 'FIJA');
+});
+
+test('🔒 la central se exceptua del orden: es inequivocamente una hoja de una corredera de 3', () => {
+  assert.equal(mapAperturaToEngine('paño central fijo y los laterales corren'), 'CORREDERA');
+  assert.equal(mapAperturaToEngine('doble riel triple hoja la del medio fija'), 'CORREDERA');
+});

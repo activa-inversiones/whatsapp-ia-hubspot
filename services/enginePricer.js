@@ -141,12 +141,46 @@ function detectarAperturaLocal(text) {
   // un "por" suelto no alcanza (lo pidio Codex, y tiene razon: "por" aparece por todos lados).
   const _cambioAFija =
     /\b(?:cambiar|cambio|reemplaz|sustitu|convertir|convierta|dejar|pasar)\w*\b[^.]{0,40}\b(?:por|a|en)\s+(?:una?\s+|la\s+|el\s+)?(?:hojas?\s+|pa[ñn]os?\s+)?fij[ao]s?\b/.test(tl);
-  // La fija tiene que estar descrita como UNA HOJA de la corredera —"hoja fija", o la
-  // central/del medio—. Un "pano fijo" suelto NO alcanza: eso sigue siendo una ventana fija.
+  // ⚠️ [Gemini, compuerta semantica] LA GUARDIA ERA DEMASIADO ANGOSTA Y SEGUIA SUBCOBRANDO.
+  // Gemini la ataco desde el lenguaje real del cliente chileno y 6 de sus 9 ejemplos fallaban
+  // de verdad (medidos). TODAS estas eran correderas y devolvian FIJA —o sea, se cotizaba un
+  // pano fijo en vez de una corredera: subcobro de ~50%—:
+  //     "corredera con un pano fijo"          <- "pano" es la palabra mas usada en Chile
+  //     "corredera de dos hojas, una fija"    <- el caso mas tipico de todos
+  //     "corredera 3 hojas, lateral fijo"
+  //     "corredera de dos hojas, la derecha fija"
+  //     "corredera de 3 hojas, 1 fija"
+  // La guardia solo miraba "hoja fija" PEGADO, o la central. Basta una coma o un "una" para
+  // romper la contiguidad, y el cliente escribe asi siempre.
+  //
+  // Y al reves, un SOBRECOBRO que tambien cazo:
+  //     "necesito el precio de la hoja fija, de la corredera ya lo tengo"  -> daba CORREDERA
+  //
+  // LO QUE RESUELVE LAS DOS PUNTAS ES EL ORDEN. Cuando el cliente pide una corredera y despues
+  // describe sus hojas, la corredera va PRIMERO; cuando habla de una fija y despues menciona
+  // otra ventana, la fija va primero. Asi que la fija-como-parte solo cuenta si la senal de
+  // corredera viene ANTES. La central/del medio se exceptua: esa es inequivocamente una hoja
+  // de una corredera de 3, venga donde venga ("pano central fijo y los laterales corren").
+  //
+  // 🔴 LIMITE DECLARADO, NO TAPADO: esto sigue siendo un clasificador de UNA apertura sobre un
+  // texto que puede traer VARIAS ventanas. "3 fijas y 2 correderas" o "pano fijo y una
+  // corredera" son DOS productos y aca se devuelve uno solo (hoy: FIJA, por el orden). No se
+  // resuelve con otra regex —lo dijeron Codex y Gemini por separado— sino segmentando el
+  // pedido por ventana. Tablero #797.
+  const _iCorr = tl.search(/corredera|corrediz|sliding|deslizan|\b(?:doble|triple|dos|tres|2|3)\s+riel(?:es)?\b|\briel(?:es)?\s+(?:doble|triple)\b|\b(?:corren|corran|m[oó]viles|moviles)\b|\bse\s+mueven\b/);
+  const _iFija = tl.search(/\bfij[ao]s?\b/);
+  // La fija descrita como UNA PARTE de la ventana: una hoja, un pano, "una", "1", un lateral,
+  // la derecha/izquierda. Un "pano fijo" suelto SIN corredera delante sigue siendo una ventana
+  // fija: el orden de la rama FIJO existe desde 2026-06-24 porque FIJA/BATIENTE caian al
+  // fallback CORREDERA y cotizaban al DOBLE (casos 0064/0065/0066).
+  const _fijaEsParte =
+    /\b(?:hojas?|pa[ñn]os?|una|uno|1|dos|2|tres|3|lateral(?:es)?|derech[ao]|izquierd[ao])\b[^.]{0,14}\bfij[ao]s?\b/.test(tl)
+    || /\bfij[ao]s?\b[^.]{0,14}\b(?:hojas?|pa[ñn]os?|lateral(?:es)?)\b/.test(tl);
+  const _fijaEsLaCentral =
+    /\b(?:central(?:es)?|del\s+medio|del\s+centro)\b[^.]{0,25}\bfij[ao]s?\b/.test(tl)
+    || /\bfij[ao]s?\b[^.]{0,20}\b(?:central(?:es)?|del\s+medio|del\s+centro)\b/.test(tl);
   if (_corredoraNombrada && !_cambioAFija
-      && (/\bhojas?\s+fij[ao]s?\b/.test(tl)
-        || /\b(?:central(?:es)?|del\s+medio|del\s+centro)\b[^.]{0,25}\bfij[ao]s?\b/.test(tl)
-        || /\bfij[ao]s?\b[^.]{0,20}\b(?:central(?:es)?|del\s+medio|del\s+centro)\b/.test(tl))) {
+      && (_fijaEsLaCentral || (_fijaEsParte && _iCorr >= 0 && _iFija >= 0 && _iCorr < _iFija))) {
     return "CORREDERA";
   }
   // [FIX 2026-06-24 — BUG RAÍZ COTIZADOR] El enum real del bot es "FIJA"/"BATIENTE", pero antes
