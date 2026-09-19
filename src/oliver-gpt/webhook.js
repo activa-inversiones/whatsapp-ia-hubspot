@@ -4406,6 +4406,15 @@ Comuna: ${datos.comuna}`
                       termico:        _p.termico || null,
                       compuesta:      _p.compuesta || it.compuesta || undefined,
                       hoja_mm:        Number(it.hoja_mm) || undefined,
+                      // 🔴 [Codex, compuerta] LAS PROPUESTAS POR COLOR SE ARMABAN SIN EL NUMERO
+                      // DE VENTANA. Este camino (opciones A/B/C, una por color) construye sus
+                      // propios items y no copiaba `pos` ni `corredera`: la opcion A salia con
+                      // los numeros del cliente y la B/C renumeradas desde 1, sobre el MISMO
+                      // pedido. El cliente compara las tres y no cuadran.
+                      // `numerarVentanas` ya corrio sobre `input.items` al entrar, asi que el
+                      // numero ya esta ahi: solo habia que copiarlo.
+                      pos:            it.pos ?? undefined,
+                      corredera:      _p.corredera || it.corredera || undefined,
                     };
                   }),
                 };

@@ -63,17 +63,35 @@ export function etiquetaVentana(v, i) {
  * @param {Array<object>} lista - las ventanas tal como van a salir en el documento
  * @returns {string[]} un rotulo por ventana, en el mismo orden
  */
+/**
+ * El numero que el CLIENTE le dio a esta ventana, o null.
+ *
+ * ⚠️ [Codex, compuerta] DOS DEFECTOS QUE ARREGLA, los dos medidos:
+ *  1. Se tomaba el primer valor NO NULO, no el primer valor VALIDO: `{pos:'', posicion:12}`
+ *     ignoraba el 12 —que es del cliente— y forzaba renumerar TODO el documento.
+ *  2. `id_ventana` numerico se volvia numero visible: un id INTERNO 637 salia impreso "V637",
+ *     como si el cliente hubiera numerado asi. Es el mismo defecto que ya se habia arreglado
+ *     para `id`, y habia quedado vivo en el campo hermano.
+ * Un `id_ventana` con forma de ETIQUETA ("V14") SI cuenta: ahi el numero es explicito.
+ */
+function numeroDelCliente(v) {
+  const candidatos = [v?.pos, v?.posicion];
+  const etq = String(v?.id_ventana ?? '').trim();
+  if (/^v\s*\d+$/i.test(etq)) candidatos.push(etq);   // "V14" es explicito; un 637 pelado no
+  for (const c of candidatos) {
+    const n = Number(String(c ?? '').trim().replace(/^v/i, ''));
+    if (Number.isInteger(n) && n > 0 && n < 1000) return n;   // el primero VALIDO, no el primero presente
+  }
+  return null;
+}
+
 export function rotulosDeVentanas(lista) {
   const arr = Array.isArray(lista) ? lista : [];
   // 🔴 [Codex, compuerta] `id` NO cuenta como numero del cliente. Puede ser un id INTERNO, y
   // entonces un 812 se imprimia "V812" fingiendo que el cliente numero asi. El numero del
   // cliente vive en `pos` / `posicion` / `id_ventana`, que son los campos que se llenan con SU
   // lista. `id` solo sirve como ETIQUETA DE TEXTO, que es como lo usaba el informe termico.
-  const num = arr.map((v) => {
-    const x = v?.pos ?? v?.posicion ?? v?.id_ventana;
-    const n = Number(String(x ?? '').trim().replace(/^v/i, ''));
-    return Number.isInteger(n) && n > 0 && n < 1000 ? n : null;
-  });
+  const num = arr.map(numeroDelCliente);
   const todos = num.length > 0 && num.every((n) => n !== null);
   const sinRepetir = new Set(num).size === num.length;
   if (todos && sinRepetir) return num.map((n) => `V${n}`);
@@ -124,13 +142,15 @@ export function rotulosDeVentanas(lista) {
 export function numerarVentanas(items) {
   const arr = Array.isArray(items) ? items : [];
   if (!arr.length) return arr;
-  const nums = arr.map((v) => {
-    const n = Number(String(v?.pos ?? v?.posicion ?? v?.id_ventana ?? '').trim().replace(/^v/i, ''));
-    return Number.isInteger(n) && n > 0 && n < 1000 ? n : null;
-  });
+  const nums = arr.map(numeroDelCliente);
   const delCliente = nums.every((n) => n !== null) && new Set(nums).size === nums.length;
   arr.forEach((v, i) => {
-    if (v && typeof v === 'object') v.pos = delCliente ? nums[i] : i + 1;
+    // [Codex] `pos` es la UNICA fuente de verdad despues de esto. `posicion` se sincroniza
+    // para que no queden dos campos diciendo cosas distintas si algun documento mira el otro.
+    if (v && typeof v === 'object') {
+      v.pos = delCliente ? nums[i] : i + 1;
+      if (v.posicion !== undefined) v.posicion = v.pos;
+    }
   });
   return arr;
 }

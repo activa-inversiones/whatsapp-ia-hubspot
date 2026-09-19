@@ -163,3 +163,38 @@ test('🔒 lista vacia o rara no explota', async () => {
   assert.deepEqual(numerarVentanas(null), []);
   assert.deepEqual(numerarVentanas(undefined), []);
 });
+
+/* =========================================================================
+ * 🔱 LOS QUE CAZO CODEX EN LA ULTIMA VUELTA. Todos medidos.
+ * ========================================================================= */
+
+test('🔴 se toma el primer valor VALIDO, no el primero que exista', async () => {
+  const { numerarVentanas } = await import('./etiquetaVentana.js');
+  // `{pos:'', posicion:12}` ignoraba el 12 —que es del cliente— y renumeraba TODO.
+  const a = [{ pos: '', posicion: 12 }, { pos: '', posicion: 14 }];
+  numerarVentanas(a);
+  assert.deepEqual(a.map((v) => v.pos), [12, 14]);
+});
+
+test('🔴 un id_ventana INTERNO no se disfraza de numero del cliente', async () => {
+  const { numerarVentanas, rotulosDeVentanas } = await import('./etiquetaVentana.js');
+  // Un id interno 637 salia impreso "V637". Es el mismo defecto que ya se arreglo para `id`,
+  // y habia quedado vivo en el campo hermano.
+  const b = [{ id_ventana: 637 }, { id_ventana: 638 }];
+  numerarVentanas(b);
+  assert.deepEqual(rotulosDeVentanas(b), ['V1', 'V2']);
+});
+
+test('🔒 pero un id_ventana con forma de ETIQUETA si cuenta ("V14")', async () => {
+  const { numerarVentanas, rotulosDeVentanas } = await import('./etiquetaVentana.js');
+  const c = [{ id_ventana: 'V14' }, { id_ventana: 'V15' }];
+  numerarVentanas(c);
+  assert.deepEqual(rotulosDeVentanas(c), ['V14', 'V15']);
+});
+
+test('🔒 tras numerar, `posicion` no puede contradecir a `pos`', async () => {
+  const { numerarVentanas } = await import('./etiquetaVentana.js');
+  const d = [{ posicion: 5 }, { posicion: 9 }];
+  numerarVentanas(d);
+  assert.deepEqual(d.map((v) => [v.pos, v.posicion]), [[5, 5], [9, 9]]);
+});
