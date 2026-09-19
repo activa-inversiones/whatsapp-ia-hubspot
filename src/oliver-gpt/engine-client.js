@@ -174,7 +174,8 @@ function normalizeColor(c) {
  * @returns {Promise<{ok:boolean,total?:number,...}>}
  */
 export async function calcularCotizacion(params = {}) {
-  const { tipo, ancho_mm, alto_mm, glass_id, serie, color, comuna, cantidad, hojas, partes, orientacion } = params;
+  const { tipo, ancho_mm, alto_mm, glass_id, serie, color, comuna, cantidad, hojas, partes, orientacion,
+    riel, activos, hojas_fijas } = params;
   const fueraDeAlcance = detectarProductoFueraDeAlcance('', { tipo, serie });
   if (fueraDeAlcance.fueraDeAlcance) {
     throw new EngineError(fueraDeAlcance.razon, { body: fueraDeAlcance });
@@ -208,6 +209,19 @@ export async function calcularCotizacion(params = {}) {
   // blanca que alguien extiende de un lado y olvida del otro. El costo real fue la propuesta
   // de Paula, donde las 3 compuestas terminaron escaladas con aviso de PROPUESTA PARCIAL.
   if (orientacion !== undefined) payload.orientacion = orientacion;
+  // 🔴 [2026-09-18] Y VOLVIO A PASAR, POR TERCERA VEZ, EN ESTA MISMA FUNCION.
+  // El riel, las hojas que cierran y la hoja FIJA se calculaban bien en el pricer, se pasaban
+  // bien... y se caian aca, porque no estaban en la lista blanca de arriba.
+  // COSTO MEDIDO: la propuesta CM-FR-004-2026-0483 cobro las dos correderas de 3 hojas como si
+  // NINGUNA hoja fuera fija — $759.729 netos en la V1, que es exactamente el precio de 3 hojas
+  // doble riel SIN hoja fija ($904.077 con IVA). Con la hoja fija declarada son $896.122. O sea
+  // se cobraron herrajes que la ventana no lleva, y el BOM que sale a fabrica es otro.
+  // El dueño lo venia diciendo: *"te la he enviado varias veces y aun no podemos avanzar"*.
+  // ⚠️ Abajo hay un test que compara TODO lo que el pricer manda contra lo que sale por HTTP,
+  // para que la cuarta vez no exista.
+  if (riel !== undefined) payload.riel = riel;
+  if (activos !== undefined) payload.activos = Number(activos);
+  if (hojas_fijas !== undefined) payload.hojas_fijas = Number(hojas_fijas);
   if (color !== undefined) payload.color = normalizeColor(color);
   if (comuna !== undefined) payload.comuna = comuna;
   if (cantidad !== undefined) payload.cantidad = Number(cantidad);
