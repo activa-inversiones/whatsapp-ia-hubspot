@@ -176,7 +176,7 @@ function normalizeColor(c) {
 export async function calcularCotizacion(params = {}) {
   const { tipo, ancho_mm, alto_mm, glass_id, serie, color, comuna, cantidad, hojas, partes, orientacion,
     riel, activos, hojas_fijas } = params;
-  const fueraDeAlcance = detectarProductoFueraDeAlcance('', { tipo, serie });
+  const fueraDeAlcance = detectarProductoFueraDeAlcance('', { tipo, serie, riel });  // [2026-09-19] el riel decide si un ANDES es el monorriel calibrado
   if (fueraDeAlcance.fueraDeAlcance) {
     throw new EngineError(fueraDeAlcance.razon, { body: fueraDeAlcance });
   }

@@ -4511,6 +4511,7 @@ Comuna: ${datos.comuna}`
                     // la central fija salieron dibujadas con 2. Es lo que DESCRIBE LA VENTA (cuantas
                     // hojas y que riel), no desglose de materiales: por eso entra en la version flaca.
                     pos:      it.pos ?? null,          // [2026-09-19] SU numero de ventana
+                    nota_linea: it.nota_linea || null,
                     corredera: it.corredera || null,
                     uw:       it.termico?.uw ?? null,
                   })),
@@ -4752,6 +4753,7 @@ Comuna: ${datos.comuna}`
                 // la central fija salieron dibujadas con 2. Es lo que DESCRIBE LA VENTA (cuantas
                 // hojas y que riel), no desglose de materiales: por eso entra en la version flaca.
                 pos:         it.pos ?? null,       // [2026-09-19] SU numero de ventana, no el del array
+                nota_linea:  it.nota_linea || null,   // [2026-09-19] "cotizada en la linea mas economica"
                 corredera: it.corredera || null,
                 uw:          it.termico?.uw ?? null,
               })),

@@ -866,6 +866,14 @@ export async function runTool(name, input = {}, ctx = {}) {
         producto_label: it.producto_label,
         serie: it.serie,
         pos: input.pos !== undefined ? Number(input.pos) : undefined,  // [2026-09-19] SU numero, no el del array
+        // 🔴 [dueño, 2026-09-19] *"podemos dejarla solo como cotizacion mas economica"* +
+        // *"pero indicandole a cliente eso"*. Un monorriel (una hoja que corre + un paño fijo)
+        // se cotiza en la linea MAS ECONOMICA que lo tenga, y el cliente tiene que saberlo.
+        ...(it.nota_linea ? { nota_linea: it.nota_linea,
+          _decir_al_cliente: 'DECILE ESTO al cliente cuando le pases el precio de esa ventana, '
+            + 'con tus palabras: que se la cotizaste en la linea mas economica que existe para '
+            + 'ese tipo, y que si la quiere en otra se la ajustas. No es un problema ni una '
+            + 'advertencia: es que sepa que le diste el mejor precio.' } : {}),
         referencial: it.referencial || false,
         // 🔴 [2026-09-19] LA INSTRUCCION VA DONDE SE TOMA LA DECISION, NO 500 LINEAS ARRIBA.
         // Oliver recibia `referencial: true` a secas y lo leia como "esto hay que escalar":
@@ -954,6 +962,14 @@ export async function runTool(name, input = {}, ctx = {}) {
         producto_label: it.producto_label,
         serie: it.serie,
         pos: input.pos !== undefined ? Number(input.pos) : undefined,  // [2026-09-19] SU numero, no el del array
+        // 🔴 [dueño, 2026-09-19] *"podemos dejarla solo como cotizacion mas economica"* +
+        // *"pero indicandole a cliente eso"*. Un monorriel (una hoja que corre + un paño fijo)
+        // se cotiza en la linea MAS ECONOMICA que lo tenga, y el cliente tiene que saberlo.
+        ...(it.nota_linea ? { nota_linea: it.nota_linea,
+          _decir_al_cliente: 'DECILE ESTO al cliente cuando le pases el precio de esa ventana, '
+            + 'con tus palabras: que se la cotizaste en la linea mas economica que existe para '
+            + 'ese tipo, y que si la quiere en otra se la ajustas. No es un problema ni una '
+            + 'advertencia: es que sepa que le diste el mejor precio.' } : {}),
         referencial: it.referencial || false,
         _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses precio_por_m2 ni otro campo.',
       };

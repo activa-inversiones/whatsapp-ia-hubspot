@@ -75,6 +75,14 @@ export function detectarProductoFueraDeAlcance(textoCliente, normalizados = {}) 
   // Las señales estructuradas son exactas: aquí no existe la ambigüedad de una
   // palabra dentro de una frase libre (por ejemplo, la comuna Los Andes).
   const senalEstructurada = `${tipo} ${serie}`;
+  // 🔴 [dueño, 2026-09-19] EL MONORRIEL ANDES SI SE COTIZA. Textual: *"eso se cotizaba solo...
+  // DEBE SER COTIZADO AUTOMATICO"* y *"lo que se calibra se pasa a produccion"*.
+  // MEDIDO EN VIVO contra el motor (1500x1200): serie ANDES + riel MONORRIEL + 1 hoja devuelve
+  // $291.411 c/IVA, "Corredera ANDES 54 Monorriel". Esta calibrado; el candado de abajo era
+  // lo que habia quedado viejo.
+  // ⚠️ Se abre SOLO el monorriel, no la linea ANDES entera: los otros configs (hoja 54 suelta,
+  // 3-4 hojas, grandes) siguen sin contrastar y el dueño los apago a proposito.
+  const _andesMonorriel = /andes/.test(serie) && /monorriel/.test(normalizarCodigo(normalizados?.riel));
   if (/(?:^|[ _])(?:solo_)?mosquiter[ao](?:[ _]|$)/.test(senalEstructurada)) {
     return resultado('mosquitero');
   }
@@ -88,7 +96,7 @@ export function detectarProductoFueraDeAlcance(textoCliente, normalizados = {}) 
   // abatibles con BOM real S60 (PUERTA / PUERTA_INTERIOR / PUERTA_DOBLE, verificado en
   // vivo + dato del dueño). Las puertas PLEGABLES siguen cayendo por la categoría
   // 'plegable' de abajo; mosquiteras de puerta por 'mosquitero'.
-  if (/(?:^|[ _])(?:andes|zenia|venau)(?:[ _]|$)/.test(senalEstructurada)) {  // [2026-08-27] americana SALE (la maneja enginePricer). ANDES VUELVE: ver KILL-SWITCH en enginePricer.
+  if (!_andesMonorriel && /(?:^|[ _])(?:andes|zenia|venau)(?:[ _]|$)/.test(senalEstructurada)) {  // [2026-08-27] americana SALE (la maneja enginePricer). ANDES VUELVE: ver KILL-SWITCH en enginePricer.
     return resultado('linea_no_soportada');
   }
 

@@ -1117,6 +1117,7 @@ export async function priceAllEngine(d, customer_id = "") {
 
     // 3) Serie de perfiles + nº hojas (el tipo ya quedó resuelto en 2a)
     let serie = mapSerieToEngine(tipo);     // CORREDERA→SLIDING, resto→S60
+    let _monorriel = false;   // 1 hoja movil + 1 paño fijo: el motor exige hojas=1 y riel MONORRIEL
     // [2026-08-27] LINEA AMERICANA con tope de tamaño. Se decide sobre CUALQUIER apertura
     // detectada como americana: si no es una corredera dentro del tope, se ESCALA — NO se
     // cotiza como otra línea. (Antes una "proyectante americana" caía a S60: producto
@@ -1133,34 +1134,81 @@ export async function priceAllEngine(d, customer_id = "") {
         return { escalada: true };
       }
     }
-    // 🏭 [2026-09-18] MONORRIEL = ANDES, Y ANDES LO COTIZA MARCELO.
-    // Hecho del negocio (dueño, textual): *"una corredera un hoja paño fijo es andes
-    // monorriel"*. Ya estaba en DIBUJO-VENTANAS-ACTIVA.md desde el 11-sep.
-    // La rama ANDES de abajo solo se activa con la PALABRA "andes", y el cliente nunca la
-    // escribe: describe la FORMA. Por eso una "corredera con un paño fijo" se colaba —antes
-    // como ventana FIJA, y tras el fix de apertura del 18-sep habria pasado a SLIDING de 2
-    // hojas doble riel: otro producto equivocado, y encima SLIDING no tiene monorriel.
-    // Se escala con el nombre del PRODUCTO, no de la linea: el cliente pidio "una corredera
-    // con un paño fijo", no "una Andes", y no tiene por que aprender nuestro catalogo.
-    // 🔴 SOLO EL TEXTO DEL ITEM. `d.texto_cliente` es el mensaje ENTERO del cliente: en una lista
-    // de 17 ventanas, con que UNA fuera monorriel escalarian LAS 17. Es la misma trampa que ya
-    // esta advertida arriba para `_textoParaEje`, y aca costaria el flujo completo. La copia
-    // literal del pedido vive en `descripcion_producto` (asi lo exige el schema), que es de este
-    // item y de ningun otro.
-    // 🔴 [dueño, 2026-09-18, en produccion] LA AMERICANA ES LA EXCEPCION Y SE COTIZA.
-    // Textual: *"conoce corredera una de las hojas fija, con eso es monorriel, A NO SER QUE
-    // PIDA DIRECTAMENTE AMERICANA"*. La linea AMERICANA tambien es monorriel —es lo unico que
-    // tiene— pero esa SI la cotiza el motor hasta 2,5 m por lado (calibrada contra Winart
-    // v67152). Sin este `serie !== "AMERICANA"`, una americana descrita con su hoja fija
-    // —que es como se describe NATURALMENTE— se escalaba a Marcelo pudiendo cotizarse sola.
-    // Defecto que introduje yo el mismo dia y que llego a produccion.
-    // Si la americana estaba FUERA del tope, el bloque de arriba ya retorno escalando.
-    if (tipo === "CORREDERA" && serie !== "AMERICANA" && !ANDES_AUTO_COTIZA && esMonorrielPorForma(
+    // 🏭 EL MONORRIEL SE COTIZA SOLO. NO SE ESCALA.
+    //
+    // 🔴 [dueño, 2026-09-19, y era una REGRESION MIA DEL DIA ANTERIOR] Textual: *"eso se
+    // cotizaba solo; muchos chilenos dicen «dejen un lado fijo» o mandan una imagen: una que
+    // corre y una fija, eso es monorriel y se cotizaba asi. ¿Ahora me dices que volvieron a
+    // enviarme eso a mi? DEBE SER COTIZADO AUTOMATICO"*.
+    // El 18-sep agregue una escalada aca, razonando que monorriel = ANDES y que ANDES lo cotiza
+    // Marcelo. El razonamiento estaba mal: lo que Marcelo apago es el ENVELOPE NO CALIBRADO de
+    // ANDES, no el monorriel, que si esta calibrado.
+    //
+    // MEDIDO EN VIVO contra el motor, la misma ventana de 1500x1200:
+    //     serie ANDES     + riel MONORRIEL + 1 hoja -> $291.411 c/IVA "Corredera ANDES 54 Monorriel"
+    //     serie AMERICANA + 2 hojas                 -> $209.385 c/IVA "Corredera AMERICANA Monorriel"
+    //     serie SLIDING   + riel MONORRIEL          -> RECHAZA: "la linea SLIDING no tiene monorriel"
+    // Y pidiendole ANDES monorriel con 2 hojas, el motor contesta con la definicion exacta del
+    // dueño: *"Un monorriel tiene 1 hoja movil (la otra mitad es el paño fijo)"*. Esta calibrado.
+    //
+    // QUE LINEA: el dueño fijo el orden —*"PRIMERA LINEA SLIDING, SEGUNDA LINEA ANDES Y LA LINEA
+    // MAS ECONOMICA AMERICANA"*—. SLIDING no tiene monorriel, asi que un monorriel sin linea
+    // pedida va en ANDES. Si el cliente pide AMERICANA, el bloque de arriba ya la enruto y este
+    // no la toca (*"con eso es monorriel, A NO SER QUE PIDA DIRECTAMENTE AMERICANA"*).
+    //
+    // 🔴 SOLO EL TEXTO DEL ITEM, nunca `d.texto_cliente`: en una lista de 17 ventanas el mensaje
+    // entero puede nombrar un paño fijo de OTRA ventana y se convertirian las 17 en monorriel.
+    // 🏭 EL MONORRIEL SE COTIZA SOLO, EN SU LINEA.
+    //
+    // 🔴 [dueño, 2026-09-19] Dos instrucciones textuales suyas, el mismo dia:
+    //   *"eso se cotizaba solo; muchos chilenos dicen «dejen un lado fijo» o mandan una imagen:
+    //    una que corre y una fija, eso es monorriel... DEBE SER COTIZADO AUTOMATICO"*
+    //   *"lo que se calibra se pasa a produccion"*
+    // El 18-sep puse aca una escalada a Marcelo, razonando que monorriel = ANDES y que ANDES lo
+    // cotiza el. El razonamiento estaba mal: lo que el apago es el ENVELOPE NO CALIBRADO de
+    // ANDES, no el monorriel.
+    //
+    // MEDIDO EN VIVO contra el motor, la misma ventana de 1500x1200:
+    //     SLIDING 2 hojas doble riel (como salia) -> $397.385 c/IVA
+    //     ANDES + riel MONORRIEL + 1 hoja         -> $291.411 c/IVA "Corredera ANDES 54 Monorriel"
+    //     AMERICANA                               -> $209.385 c/IVA "Corredera AMERICANA Monorriel"
+    // O sea que ademas de escalar, cuando NO escalaba salia $105.974 CARO: se cobraba una
+    // corredera de dos hojas que corren donde hay UNA hoja y un paño fijo. Y pidiendole ANDES
+    // monorriel con 2 hojas, el motor contesta con la definicion exacta del dueño: *"un monorriel
+    // tiene 1 hoja movil (la otra mitad es el paño fijo)"*.
+    //
+    // QUE LINEA: el dueño fijo el orden —*"PRIMERA LINEA SLIDING, SEGUNDA LINEA ANDES Y LA LINEA
+    // MAS ECONOMICA AMERICANA"*—. SLIDING **no tiene** monorriel (el motor lo rechaza con
+    // `monorriel_no_disponible_en_sliding`), asi que un monorriel sin linea pedida va en ANDES.
+    // Si el cliente pide AMERICANA, el bloque de arriba ya la enruto y este no la toca.
+    //
+    // 🔴 SOLO EL TEXTO DEL ITEM, nunca `d.texto_cliente`: en una lista de 17 ventanas el mensaje
+    // entero puede nombrar el paño fijo de OTRA ventana y se convertirian las 17 en monorriel.
+    // 🔴 [dueño, 2026-09-19, decision suya] VA EN LA LINEA MAS ECONOMICA, Y SE LE DICE AL
+    // CLIENTE. Textual: *"podemos dejarla solo como cotizacion mas economica"* + *"pero
+    // indicandole a cliente eso"*.
+    // La mas economica es AMERICANA ($209.385 la de 1500x1200, contra $291.411 del ANDES
+    // monorriel y $397.385 que salia antes como SLIDING de 2 hojas). AMERICANA llega hasta
+    // 2,5 m por lado; pasado eso la unica que cotiza el monorriel es ANDES (verificado en vivo:
+    // 3000x2200 -> $805.640, "Corredera ANDES 66 Monorriel").
+    if (tipo === "CORREDERA" && serie !== "AMERICANA" && esMonorrielPorForma(
       `${item.descripcion || ""} ${item.product || ""} ${item.label || ""} ${item.producto || ""}`)) {
-      item.price_warning = "La corredera de una hoja con paño fijo (monorriel) la cotiza "
-        + "Marcelo directamente para darte el precio exacto.";
-      item.source = "activa_engine"; item.confidence = "manual"; item.fuera_de_alcance = true;
-      return { escalada: true };
+      _monorriel = true;
+      // ⚠️ SE ENRUTA A ANDES Y NO A LA AMERICANA, AUNQUE LA AMERICANA SEA MAS BARATA.
+      // El dueño pidio *"la mas economica"*, y la Americana lo es ($209.385 contra $291.411 en
+      // la de 1500x1200). Pero su ficha tecnica (SILTEK / LINEA AMERICANA, que el mismo mando)
+      // dice: ACRISTALAMIENTO termopanel **13 y 14 mm**.
+      // MEDIDO contra el catalogo del motor: 82 termopaneles, espesores de **16 a 24 mm**.
+      // NINGUNO entra en esa linea. Cotizar ahi un termopanel nuestro seria cotizar algo que no
+      // se fabrica — el error que mas caro sale.
+      // ⚠️ Esto NO lo introdujo este cambio: la Americana ya se cotiza hoy cuando el cliente la
+      // pide por su nombre, con termopaneles de 16-24 mm. Queda levantado para el dueño.
+      // ANDES monorriel si esta calibrado y usa los vidrios del catalogo (verificado en vivo:
+      // 1500x1200 -> $291.411 "Corredera ANDES 54 Monorriel"; 3000x2200 -> $805.640 "ANDES 66").
+      serie = "ANDES";
+      item.nota_linea = "Cotizada en linea Andes monorriel, que es la mas economica disponible "
+        + "para este tipo de ventana (una hoja que corre + un paño fijo). Si la prefiere en otra "
+        + "linea, se la ajusto.";
     }
     // [2026-08-27] LINEA ANDES: sólo el envelope CALIBRADO contra Winart (doble riel · 2 hojas ·
     // hoja 66, ≥3,5 m², ≤2,5 m/lado). Fuera de eso (hoja 54 chica, monorriel, 3-4 hojas, grande)
@@ -1273,11 +1321,14 @@ export async function priceAllEngine(d, customer_id = "") {
     let r;
     try {
       r = await calcularCotizacion({
-        tipo, serie, hojas,
+        tipo, serie,
+        // Un monorriel es UNA hoja movil. El conteo del cliente ("2 hojas", "dos paños")
+        // cuenta los PAÑOS que se ven, no las hojas que corren: aca manda la forma.
+        hojas: _monorriel ? 1 : hojas,
         // [2026-09-18] El riel y las hojas que cierran salen del pedido del cliente, no
         // de un default. Con la central fija son DOS las que cierran (las laterales,
         // contra la del medio): asi lo factura Winart en la version 69621 de referencia.
-        riel: _cfgCorr.riel, activos: _cfgCorr.activos,
+        riel: _monorriel ? "MONORRIEL" : _cfgCorr.riel, activos: _monorriel ? 1 : _cfgCorr.activos,
         // La hoja del medio FIJA hay que DECLARARLA: el motor no la puede adivinar, y de ella
         // dependen los carros (van por hoja que corre, no por hoja) y el suple de hoja fija.
         // Sin declararla el BOM es el de siempre, que es lo que queremos en todo lo demas.

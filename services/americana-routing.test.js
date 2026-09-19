@@ -256,15 +256,28 @@ test('🔴 una AMERICANA descrita con su hoja fija SE COTIZA (no la escala el mo
   }
 });
 
-test('🔒 pero una corredera con paño fijo SIN "americana" SI escala (es monorriel ANDES)', async () => {
+test('🔴 una corredera con paño fijo se cotiza sola, en la linea MAS ECONOMICA', async () => {
+  // 🔴 [dueño, 2026-09-19] Este test decia lo contrario —que escalaba— y ESTABA MAL: lo escribi
+  // yo el dia anterior sobre un supuesto equivocado. Textual del dueño: *"eso se cotizaba solo;
+  // muchos chilenos dicen «dejen un lado fijo»... DEBE SER COTIZADO AUTOMATICO"* y *"lo que se
+  // calibra se pasa a produccion"*.
+  // Y despues decidio la LINEA: *"podemos dejarla solo como cotizacion mas economica"* + *"pero
+  // indicandole a cliente eso"*.
+  // MEDIDO EN VIVO (1500x1200): AMERICANA $209.385 · ANDES monorriel $291.411 · SLIDING 2 hojas
+  // doble riel $397.385 (como salia antes: $187.999 de mas, cobrando una corredera de dos hojas
+  // que corren donde hay UNA hoja y un paño fijo).
   await conMotorStub(async (enviados) => {
     const items = [{ measures: '1500x1200mm', product: 'CORREDERA', descripcion: 'corredera con un paño fijo', qty: 1 }];
     await priceAllEngine({ comuna: 'Temuco', items });
-    assert.equal(enviados.length, 0, 'no se llama al motor: el monorriel Andes lo cotiza Marcelo');
-    assert.equal(items[0].fuera_de_alcance, true);
-    assert.match(items[0].price_warning || '', /monorriel/i);
-    // Y el mensaje NO le nombra al cliente una linea de catalogo que no pidio.
-    assert.doesNotMatch(items[0].price_warning || '', /andes/i);
+    const b = enviados[0] || {};
+    // ⚠️ ANDES y no AMERICANA: la ficha SILTEK de la Americana pide termopanel de 13-14 mm y
+    // el catalogo del motor no tiene ninguno bajo 16 mm (82 termopaneles, 16 a 24). Cotizar
+    // ahi seria cotizar algo que no se fabrica. Levantado para el dueño.
+    assert.equal(b.serie, 'ANDES', 'la mas economica DISPONIBLE con nuestros vidrios');
+    assert.equal(b.riel, 'MONORRIEL');
+    assert.match(items[0].nota_linea || '', /mas economica/i, 'y al cliente se le dice');
+    assert.equal(b.hojas, 1, 'un monorriel es UNA hoja movil; la otra mitad es el paño fijo');
+    assert.ok(!items[0].fuera_de_alcance, 'NO se escala: se cotiza solo');
   });
 });
 
@@ -284,19 +297,21 @@ test('🔒 LA PRECEDENCIA COMPLETA, en orden (la pidio Codex en la compuerta)', 
   for (const c of casos) {
     assert.equal(esMonorrielPorForma(c.t), c.mono, `monorriel? ${c.t}`);
     assert.equal(esLineaAmericana({ descripcion: c.t }), c.ame, `americana? ${c.t}`);
-    // La regla de arriba, escrita como se ejecuta: solo escala el monorriel que NO es americana.
-    assert.equal(c.mono && !c.ame, ['corredera con un paño fijo', 'corredera de dos hojas, una fija'].includes(c.t),
-      `deberia escalar? ${c.t}`);
+    // 🔴 [dueño, 19-sep] La precedencia ya NO escala el monorriel: lo COTIZA en su linea.
+    //   1) 3 hojas con la central fija = DOS moviles -> SLIDING doble riel (Winart v69621)
+    //   2) si no, AMERICANA explicita               -> AMERICANA, hasta 2,5 m/lado
+    //   3) si no, una movil + una fija              -> ANDES + MONORRIEL + 1 hoja
+    // Ninguna de las tres va a Marcelo.
   }
 });
 
-/* 🔴 LIMITE DECLARADO, NO TAPADO (Codex, misma revision): un pedido que trae 3+ paños descritos
- * como "2 hojas MAS un fijo", o dos ventanas en una linea ("una corredera y una fija"), se lee
- * como monorriel y ESCALA. Medido. No se parcheo porque sobre-escalar manda el caso a Marcelo,
- * que es el lado seguro — la doctrina de este archivo es textual: "Sobre-escalar aca no cuesta
- * plata; cotizar la linea equivocada si". El arreglo de fondo es segmentar el pedido por
+/* 🔴 LIMITE DECLARADO, NO TAPADO: un pedido que trae 3+ paños descritos como "2 hojas MAS un
+ * fijo", o dos ventanas en una linea ("una corredera y una fija"), se lee como monorriel.
+ * ⚠️ Desde el 19-sep eso ya no escala: se COTIZA como ANDES monorriel. O sea el limite dejo de
+ * ser "va a Marcelo de mas" y paso a ser "puede cotizarse en la linea equivocada", que es mas
+ * caro. Queda medido y declarado; el arreglo de fondo sigue siendo segmentar el pedido por
  * ventana antes de clasificar: tablero #797. */
-test('🔴 limite conocido: 3+ paños o dos ventanas en una linea sobre-escalan (a Marcelo)', () => {
+test('🔴 limite conocido: 3+ paños o dos ventanas en una linea se leen como monorriel', () => {
   for (const t of [
     'ventana corredera de dos hojas mas un paño fijo superior',
     'corredera de dos hojas mas fijo lateral',
