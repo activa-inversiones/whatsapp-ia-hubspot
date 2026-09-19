@@ -90,3 +90,25 @@ test('🛡️ GUARDIA: ningun campo que el pricer decide puede caerse en la list
       + 'Revisá la lista blanca de calcularCotizacion en src/oliver-gpt/engine-client.js.');
   });
 });
+
+/* =========================================================================
+ * 🔴 Y EL MISMO PATRON, UN SALTO MAS ADELANTE: del item al PDF.
+ * El item que se guarda (y del que sale el dibujo) es una version FLACA. No llevaba
+ * `corredera`, que es el bloque del motor con el nº de hojas y el riel. MEDIDO con hojasDe():
+ *     con `corredera` -> 3 paños   ·   sin `corredera` -> 2 paños
+ * Por eso las dos correderas de 3 hojas de la propuesta CM-FR-004-2026-0483 salieron
+ * DIBUJADAS CON DOS HOJAS: el texto del label ("Corredera SLIDING H98 Doble Riel S75") no dice
+ * cuantas hojas son, asi que el dibujo caia al default de 2.
+ * ========================================================================= */
+
+test('🔴 el dibujo saca 3 paños solo si el item lleva `corredera` del motor', async () => {
+  const { hojasDe } = await import('../../services/dibujoVentana.js');
+  const label = 'Corredera SLIDING H98 Doble Riel S75';
+  // Como llega hoy desde el motor (con el bloque): bien.
+  assert.equal(hojasDe({ producto_label: label, corredera: { hojas: 3, riel: 'DOBLE' } }), 3);
+  // Como se guardaba ANTES (flaco, sin el bloque): dibujaba 2 hojas en una ventana de 3.
+  assert.equal(hojasDe({ producto: label }), 2,
+    'esto documenta el defecto: sin `corredera`, el label solo no alcanza');
+  // Y con el bloque puesto en el item guardado, vuelve a 3.
+  assert.equal(hojasDe({ producto: label, corredera: { hojas: 3, riel: 'DOBLE' } }), 3);
+});

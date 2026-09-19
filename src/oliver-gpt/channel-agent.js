@@ -877,6 +877,13 @@ export async function handleChannelTurn(
                     producto: it.producto_label || null, medidas: it.measures || null,
                     cantidad: Number(it.qty) || 1, unitario: Number(it.unit_price) || null,
                     color: it.color || null, vidrio: it.glass_label || null,
+                    // 🔴 [2026-09-18] SIN ESTO EL PDF DIBUJA DOS HOJAS EN UNA VENTANA DE TRES.
+                    // MEDIDO: hojasDe() devuelve 3 con este bloque y 2 sin el (el texto del label
+                    // —"Corredera SLIDING H98 Doble Riel S75"— no dice cuantas hojas son). El dueño
+                    // lo vio en la propuesta CM-FR-004-2026-0483: sus dos correderas de 3 hojas con
+                    // la central fija salieron dibujadas con 2. Es lo que DESCRIBE LA VENTA (cuantas
+                    // hojas y que riel), no desglose de materiales: por eso entra en la version flaca.
+                    corredera: it.corredera || null,
                     ambiente: it.ambiente || null, uw: it.termico?.uw ?? null,
                   })),
                   lead: {

@@ -4435,6 +4435,13 @@ Comuna: ${datos.comuna}`
                     color:    it.color || null,
                     vidrio:   it.glass_label || null,
                     ambiente: it.ambiente || null,
+                    // 🔴 [2026-09-18] SIN ESTO EL PDF DIBUJA DOS HOJAS EN UNA VENTANA DE TRES.
+                    // MEDIDO: hojasDe() devuelve 3 con este bloque y 2 sin el (el texto del label
+                    // —"Corredera SLIDING H98 Doble Riel S75"— no dice cuantas hojas son). El dueño
+                    // lo vio en la propuesta CM-FR-004-2026-0483: sus dos correderas de 3 hojas con
+                    // la central fija salieron dibujadas con 2. Es lo que DESCRIBE LA VENTA (cuantas
+                    // hojas y que riel), no desglose de materiales: por eso entra en la version flaca.
+                    corredera: it.corredera || null,
                     uw:       it.termico?.uw ?? null,
                   })),
                   // El MISMO lead que la opcion A: es un solo cliente. Sin `lead`,
@@ -4668,6 +4675,13 @@ Comuna: ${datos.comuna}`
                 vidrio:      it.glass_label || null,
                 ambiente:    it.ambiente || null,
                 referencial: !!it.referencial,     // fuera de estandar: precio a confirmar
+                // 🔴 [2026-09-18] SIN ESTO EL PDF DIBUJA DOS HOJAS EN UNA VENTANA DE TRES.
+                // MEDIDO: hojasDe() devuelve 3 con este bloque y 2 sin el (el texto del label
+                // —"Corredera SLIDING H98 Doble Riel S75"— no dice cuantas hojas son). El dueño
+                // lo vio en la propuesta CM-FR-004-2026-0483: sus dos correderas de 3 hojas con
+                // la central fija salieron dibujadas con 2. Es lo que DESCRIBE LA VENTA (cuantas
+                // hojas y que riel), no desglose de materiales: por eso entra en la version flaca.
+                corredera: it.corredera || null,
                 uw:          it.termico?.uw ?? null,
               })),
               // [ajuste abogado] click-ids a NIVEL RAÍZ: fireConversion (sales-os) los lee de
