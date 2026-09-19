@@ -54,9 +54,13 @@ export function etiquetaVentana(v, i) {
  * rotuladas "V5", o la mitad con numero del cliente y la otra mitad con el del array, dejan el
  * documento PEOR que antes de todo esto.
  *
- * LA REGLA ES TODO O NADA: los numeros del cliente se usan solo si la lista entera los trae,
- * son enteros positivos y no se repiten. Ante cualquier duda se cae a la numeracion por
- * posicion, que es el comportamiento de siempre — nunca queda peor que antes.
+ * LA REGLA (actualizada 2026-09-19, Gemini): los numeros que puso el cliente se RESPETAN, y a
+ * las ventanas que no traen numero se les da uno que no choque, siguiendo desde el mayor. Lo
+ * unico que tira abajo toda la numeracion es un DUPLICADO, porque ahi la reconciliacion se
+ * vuelve ambigua y es preferible 1..n, que es univoco.
+ * Antes se exigia que la trajeran TODAS, y eso tenia un costo peor: faltando una, el cliente
+ * que habia numerado 14,15,16,17 recibia V1..V4 y el papel de fabrica dejaba de coincidir con
+ * lo que el cliente decia por WhatsApp.
  * Los SALTOS si se permiten (el cliente que numera 7, 9, 10 esta diciendo algo); lo que no se
  * permite son los duplicados, que es lo que vuelve ambigua la reconciliacion.
  *
@@ -92,9 +96,25 @@ export function rotulosDeVentanas(lista) {
   // cliente vive en `pos` / `posicion` / `id_ventana`, que son los campos que se llenan con SU
   // lista. `id` solo sirve como ETIQUETA DE TEXTO, que es como lo usaba el informe termico.
   const num = arr.map(numeroDelCliente);
-  const todos = num.length > 0 && num.every((n) => n !== null);
-  const sinRepetir = new Set(num).size === num.length;
-  if (todos && sinRepetir) return num.map((n) => `V${n}`);
+  const puestos = num.filter((n) => n !== null);
+  const sinRepetir = new Set(puestos).size === puestos.length;
+  // 🔴 [Gemini, abogado del diablo · 2026-09-19] SI EL CLIENTE NUMERO ALGUNAS, ESAS SE RESPETAN.
+  // Antes se exigia que estuvieran TODAS y, si faltaba una, se tiraban a la basura las demas: el
+  // cliente numeraba "ventana 14, 15, 16, 17" y agregaba "la del baño" sin numero, y las cuatro
+  // primeras pasaban a llamarse V1..V4. El cliente seguia hablando de su ventana 14 mientras el
+  // papel de fabrica decia otra cosa — el mismo problema que esto vino a cerrar, causado por la
+  // solucion. Lo que NO se puede permitir es que dos ventanas compartan rotulo: esa es la
+  // propiedad que se defiende, y por eso un numero REPETIDO si tira todo abajo.
+  // A las que no traen numero se les da uno que no choque, siguiendo desde el mayor.
+  if (puestos.length && sinRepetir) {
+    let siguiente = Math.max(...puestos) + 1;
+    return num.map((n) => {
+      if (n !== null) return `V${n}`;
+      const libre = siguiente;
+      siguiente += 1;
+      return `V${libre}`;
+    });
+  }
   // 🔴 [Codex, compuerta] Y SI NO HAY NUMERACION DEL CLIENTE, NO SE PIERDEN LAS ETIQUETAS DE
   // TEXTO. Esto era una REGRESION que introduje: el informe termico imprimia `v.id` desde
   // siempre, asi que un rotulo como "Living-A" o "P-07" salia en el documento; al unificar todo
@@ -142,14 +162,27 @@ export function rotulosDeVentanas(lista) {
 export function numerarVentanas(items) {
   const arr = Array.isArray(items) ? items : [];
   if (!arr.length) return arr;
-  const nums = arr.map(numeroDelCliente);
-  const delCliente = nums.every((n) => n !== null) && new Set(nums).size === nums.length;
+  // Se apoya en `rotulosDeVentanas` para no tener DOS reglas de numeracion en el mismo archivo:
+  // el dia que se toque una y no la otra, la propuesta y el informe vuelven a discrepar.
+  const nums = rotulosDeVentanas(arr).map((r) => {
+    const m = /^V(\d+)$/.exec(String(r));
+    return m ? Number(m[1]) : null;
+  });
   arr.forEach((v, i) => {
     // [Codex] `pos` es la UNICA fuente de verdad despues de esto. `posicion` se sincroniza
     // para que no queden dos campos diciendo cosas distintas si algun documento mira el otro.
     if (v && typeof v === 'object') {
-      v.pos = delCliente ? nums[i] : i + 1;
-      if (v.posicion !== undefined) v.posicion = v.pos;
+      // Si el rotulo era de TEXTO ("Living-A", "P-07"), no hay numero que escribir y se cae a
+      // la posicion: `pos` es numerico por contrato con los tres documentos.
+      v.pos = nums[i] === null ? i + 1 : nums[i];
+      // 🔴 [Nemotron, abogado del diablo] `posicion` SOLO se sincroniza si ya tenia un NUMERO.
+      // Antes se pisaba siempre, y en `posicion` puede venir DONDE VA la ventana ("dormitorio",
+      // "A-1"): se destruia el unico dato que le dice al instalador en que vano montarla, para
+      // dejar en su lugar un numero que ya estaba en `pos`. Se sincroniza cuando los dos campos
+      // dicen lo mismo —un numero— y se respeta cuando dice otra cosa.
+      if (v.posicion !== undefined && /^[vV]?\s*\d+$/.test(String(v.posicion).trim())) {
+        v.posicion = v.pos;
+      }
     }
   });
   return arr;
