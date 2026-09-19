@@ -28,7 +28,7 @@
 
 import { buildSystemBlocks, buildSessionContext } from './system-prompt.js';
 import { TOOL_DEFS, toolDefsConMcp, runTool } from './tools.js';
-import { extractComuna, detectConfirmation, sanitizeChilean } from './normalizers.js';
+import { extractComuna, extraerColor, detectConfirmation, sanitizeChilean } from './normalizers.js';
 import * as realEngine from './engine.js';
 
 const MAX_TOOL_ITERATIONS = 6;   // [FIX 2026-06-19 CLI-04] 3 no alcanzaba para cotizar N≥2 ventanas + generar el PDF en el MISMO turno (Regla #13)
@@ -55,6 +55,17 @@ export async function handleTurn({ history = [], userText, state = {}, toolCtx =
   if (comuna) {
     nextState.comuna = comuna;
     nextState.lockedData = { ...(nextState.lockedData || {}), comuna };
+  }
+  // 🔴 [2026-09-18] EL COLOR TAMPOCO SE VOLVIA A PREGUNTAR... porque nunca se guardaba.
+  // Reclamo del dueño, textual: *"le digo color blanco y me pide color"*. Aca solo se extraia la
+  // comuna; la maquinaria del color (`colorFueExplicito` + `normColor`) existia hace meses y no
+  // estaba conectada a `lockedData`, que es lo que el prompt marca como *"DEFINITIVOS: NO volver
+  // a preguntar"*. Medido sobre su mensaje real: "…comuna de vilcul y color blanco" ahora deja
+  // comuna=Vilcún y color=BLANCO antes de que el LLM lea nada.
+  const color = extraerColor(userText);
+  if (color) {
+    nextState.color = color;
+    nextState.lockedData = { ...(nextState.lockedData || {}), color };
   }
   const confirmed = detectConfirmation(userText);
   if (confirmed) nextState.confirmacion = true;

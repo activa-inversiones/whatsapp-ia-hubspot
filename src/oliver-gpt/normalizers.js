@@ -134,6 +134,85 @@ export function extractComuna(texto) {
     const re = new RegExp(`(^|[^a-z0-9])${escapeRegExp(clave)}([^a-z0-9]|$)`, "i");
     if (re.test(t)) return COMUNA_DISPLAY[clave] || clave;
   }
+
+  // 🔴 [2026-09-18] SEGUNDA PASADA, TOLERANTE A UNA LETRA. El cliente escribio "comuna de
+  // vilcuL" (con L) y esto devolvia null: la comuna no se guardaba, Oliver la preguntaba, el
+  // cliente contestaba "ya te dije"... y Oliver la VOLVIA A PREGUNTAR, porque seguia sin
+  // tenerla. Reclamo del dueño: *"me pide comuna y ya se la habían enviado"*.
+  //
+  // Se acepta UNA sola diferencia de letra (sustitucion, falta o sobra), y solo en nombres de
+  // 6 letras o mas: con nombres cortos, una letra de distancia confunde comunas de verdad.
+  // Ademas se exige que NINGUNA otra comuna quede a la misma distancia — si dos empatan, no se
+  // adivina: se devuelve null y Oliver pregunta, que es lo correcto ahi.
+  const palabras = t.split(/[^a-z0-9]+/).filter((p) => p.length >= 6);
+  let mejor = null;
+  let empate = false;
+  for (const clave of claves) {
+    if (clave.length < 6 || clave.includes(" ")) continue;
+    for (const p of palabras) {
+      if (Math.abs(p.length - clave.length) > 1) continue;
+      if (!distanciaUno(p, clave)) continue;
+      if (mejor && mejor !== clave) empate = true;
+      mejor = mejor || clave;
+    }
+  }
+  if (mejor && !empate) return COMUNA_DISPLAY[mejor] || mejor;
+  return null;
+}
+
+/** ¿`a` y `b` difieren en a lo sumo UNA edicion (sustituir, agregar o quitar una letra)? */
+function distanciaUno(a, b) {
+  if (a === b) return true;
+  const [corta, larga] = a.length <= b.length ? [a, b] : [b, a];
+  if (larga.length - corta.length > 1) return false;
+  let i = 0;
+  let j = 0;
+  let fallas = 0;
+  while (i < corta.length && j < larga.length) {
+    if (corta[i] === larga[j]) { i += 1; j += 1; continue; }
+    fallas += 1;
+    if (fallas > 1) return false;
+    if (corta.length === larga.length) { i += 1; j += 1; } else { j += 1; }
+  }
+  return fallas + (larga.length - j) + (corta.length - i) <= 1;
+}
+
+/**
+ * 🔴 [2026-09-18] EL CLIENTE LO DIJO Y OLIVER LO PREGUNTO IGUAL. DOS VECES.
+ *
+ * Reclamo del dueño, textual: *"contesta horrible porque pide 2 veces las mismas cosas; le digo
+ * color blanco y me pide color, me pide comuna y ya se la habían enviado"*.
+ *
+ * Lo que paso, medido sobre el mensaje REAL del cliente:
+ *     "soy a nombre de MARIO GREY comuna de vilcul y color blanco necesito lo siguiente"
+ *   · `extractComuna(...)` -> null, porque escribio "vilcuL" con L. La comuna nunca se guardo,
+ *     asi que Oliver la pidio; el cliente contesto "ya te dije"; Oliver se disculpo... y la
+ *     VOLVIO A PEDIR, porque seguia sin tenerla.
+ *   · el COLOR directamente no se extraia nunca: `agent.js` solo llamaba a extractComuna. La
+ *     maquinaria existia (`colorFueExplicito`, `normColor`) y no estaba conectada.
+ *
+ * Esto resuelve la segunda mitad: saca el color del texto para que entre en `lockedData`, que
+ * el prompt marca como *"DEFINITIVOS: NO volver a preguntar"*.
+ *
+ * @param {string} texto
+ * @returns {string|null} color normalizado del catalogo ("BLANCO", "NOGAL", ...) o null.
+ */
+export function extraerColor(texto) {
+  const t = strip(String(texto || "")).toLowerCase();
+  if (!t) return null;
+  // Se exige que el cliente lo haya dicho como color, no que la palabra aparezca de cualquier
+  // forma: "ventana negra de la casa del frente" no es un pedido de color negro.
+  if (!colorFueExplicito(texto)) return null;
+  // Del catalogo real, el mas largo primero: "roble dorado" antes que "roble" suelto.
+  const cands = COLORES_CATALOGO
+    .map((c) => ({ c, k: strip(c).toLowerCase() }))
+    .sort((a, b) => b.k.length - a.k.length);
+  for (const { c, k } of cands) {
+    if (new RegExp(`\\b${k.replace(/\s+/g, "\\s+")}\\b`).test(t)) return normColor(c);
+  }
+  // Femeninos y variantes que el catalogo no trae tal cual ("blanca", "negra").
+  if (/\bblanc[ao]s?\b/.test(t)) return normColor("Blanco");
+  if (/\bnegr[ao]s?\b/.test(t)) return normColor("Negro");
   return null;
 }
 
