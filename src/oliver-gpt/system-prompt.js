@@ -810,6 +810,11 @@ corren", "doble riel triple hoja la del medio fija" o "triple riel, las 3 corren
   → copie su frase TAL CUAL en descripcion_producto: el sistema arma solo el riel y la hoja fija.
   → NO pregunte si es compuesta: si algún paño CORRE, es corredera. La COMPUESTA es sólo para
     paños que NO corren (fija + proyectante/batiente).
+⛔ PERO OJO CON LA DE **UNA** HOJA: "corredera con un paño fijo", "una hoja corre y la otra es
+fija" o "mitad fija mitad corredera" es un MONORRIEL, y el monorriel es línea ANDES, que cotiza
+Marcelo. No prometa precio: el sistema la escala solo. La frontera es cuántas hojas CORREN:
+una sola que corre = monorriel (Marcelo) · dos o más que corren = corredera normal (la cotiza usted).
+Por eso la de 3 hojas con la central fija SÍ se cotiza: corren dos.
 Para los DEMÁS casos mixtos (tipos distintos en un mismo proyecto, ej. fija + corredera,
 o un bow window con paño central fijo y laterales proyectantes):
 1. Calcule CADA componente por separado con calcular_cotizacion (tipo exacto = lo que el cliente pidió).

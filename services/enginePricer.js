@@ -565,6 +565,63 @@ export function detectConfigCorredera(texto, hojas) {
 }
 
 /**
+ * 🏭 ES UN MONORRIEL? = UNA hoja movil + UN paño FIJO, en UN marco.
+ *
+ * HECHO DEL NEGOCIO (dueño, textual 2026-09-18): *"una corredera un hoja paño fijo es andes
+ * monorriel"*. Ya estaba escrito en el mallado desde el 11-sep y no se consulto:
+ *   DIBUJO-VENTANAS-ACTIVA.md:57  "Monorriel = 1 hoja movil + 1 paño FIJO, en UN marco."
+ *   DIBUJO-VENTANAS-ACTIVA.md:65  "'Mitad fija mitad corredera' = monorriel = ANDES."
+ * Lo dice el listado de materiales de Winart del monorriel ANDES (v69117): UN marco
+ * (PI-SLA-MMC), UNA hoja corredera (PI-SLA-A66), UN traslapo, UNA manilla.
+ *
+ * POR QUE VIVE ACA Y NO SOLO EN EL DIBUJO: el monorriel es linea ANDES, y `ANDES_AUTO_COTIZA`
+ * esta en false ⇒ va a Marcelo. Pero la rama ANDES solo se activaba con la palabra "andes", y
+ * el cliente NUNCA la escribe: describe la FORMA ("corredera con un paño fijo"). Resultado
+ * medido: se cotizaba como ventana FIJA (producto equivocado) y, tras el fix de apertura del
+ * 18-sep, habria pasado a SLIDING 2 hojas doble riel — otro producto equivocado, y encima
+ * SLIDING no tiene monorriel (el motor responde `monorriel_no_disponible_en_sliding`).
+ *
+ * ⚠️ LA FRONTERA, Y ES DE PLATA: monorriel = UNA hoja MOVIL. La corredera de 3 hojas con la
+ * central fija tiene DOS moviles ⇒ NO es monorriel, es SLIDING doble riel, y esa SI esta
+ * calibrada contra Winart (v69621). Mandarla a escalar seria apagar la ventana que el dueño
+ * acaba de pedir que se cotice.
+ *
+ * Hermano de `esMonorriel()` en services/dibujoVentana.js, que resuelve lo mismo para el DIBUJO
+ * pero solo mira el label del item ya cotizado. Este mira el pedido del cliente.
+ */
+export function esMonorrielPorForma(texto) {
+  const t = String(texto || "").normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  // Negacion: "que NO sea monorriel" no es monorriel (mismo criterio que la rama ANDES).
+  if (/\b(?:no|sin|que\s+no)\s+(?:sea\s+|es\s+)?(?:monorriel|mono\s*-?\s*riel|un\s*riel)\b/.test(t)) return false;
+  // La PALABRA es inequivoca: si el cliente dice "monorriel", es monorriel y no hay que contar.
+  if (/\bmono\s*-?\s*r?riel\b/.test(t)) return true;
+  // ⚠️ [Codex, compuerta] ACA ESTABA EL BLOCKER: las señales de forma hacian `return true` ANTES
+  // de contar, asi que un label como "Corredera 3 hojas (1 fija + 2 correderas)" apagaba la
+  // ventana de 3 hojas que el dueño acaba de pedir que se cotice. Textual de Codex: *"el
+  // comentario afirma que la cantidad de hojas decide, pero el flujo ejecutable dice lo
+  // contrario"*. Tenia razon. Ahora el conteo manda sobre TODAS las señales de forma.
+  const _fijaMasCorredera =
+    /\bfij[ao][^+]{0,14}[+y][^+]{0,14}corred/.test(t)
+    || /\bcorred[^+]{0,14}[+y][^+]{0,14}fij[ao]/.test(t)
+    || /\bmitad\s+fij[ao][\s\S]{0,24}mitad\s+corred/.test(t)
+    || /\bmitad\s+corred[\s\S]{0,24}mitad\s+fij[ao]/.test(t);
+  // La corredera puede venir nombrada o dicha con VERBO ("una corre y la otra queda fija"),
+  // que es como habla el cliente de verdad. Lo pidio Codex y es correcto.
+  const _corrPorForma = /corredera|corrediz|sliding|deslizan/.test(t)
+    || /\b(?:corre|corren|corran)\b/.test(t);
+  const _hayFija =
+    /\b(?:hojas?|pa[nñ]os?|una|uno|1|lado|lateral(?:es)?|derech[ao]|izquierd[ao]|otra|otro)\b[^.]{0,20}\b(?:fij[ao]s?|no\s+abre)\b/.test(t)
+    || /\bfij[ao]s?\b[^.]{0,14}\b(?:hojas?|pa[nñ]os?|lateral(?:es)?)\b/.test(t);
+  if (!_fijaMasCorredera && !(_corrPorForma && _hayFija)) return false;
+  // 🔴 EL CONTEO DECIDE, Y ES DE PLATA. `detectHojas` cuenta hojas TOTALES (en "corredera 3
+  // hojas la del medio fija" devuelve 3, de las cuales 2 son moviles). Con 3 o mas paños quedan
+  // 2+ moviles: eso es SLIDING doble riel, calibrado contra Winart v69621, y NO se escala.
+  // Sin conteo declarado, una corredera con un paño fijo son 2 paños = 1 sola movil.
+  const n = detectHojas(t);
+  return n === undefined || n <= 2;
+}
+
+/**
  * [Codex/Gemini 4a vuelta] ¿El texto trae ALGÚN indicio de un nº de hojas que detectHojas podría
  * no resolver limpio? Dígito o palabra pegada a "hoja" AUNQUE el separador no sea espacio
  * ("3-hojas", "hojas: 3"), doble/triple/cuádruple, o una corrección ("sino"). Se usa en el envelope
@@ -1075,6 +1132,27 @@ export async function priceAllEngine(d, customer_id = "") {
         item.source = "activa_engine"; item.confidence = "manual"; item.fuera_de_alcance = true;
         return { escalada: true };
       }
+    }
+    // 🏭 [2026-09-18] MONORRIEL = ANDES, Y ANDES LO COTIZA MARCELO.
+    // Hecho del negocio (dueño, textual): *"una corredera un hoja paño fijo es andes
+    // monorriel"*. Ya estaba en DIBUJO-VENTANAS-ACTIVA.md desde el 11-sep.
+    // La rama ANDES de abajo solo se activa con la PALABRA "andes", y el cliente nunca la
+    // escribe: describe la FORMA. Por eso una "corredera con un paño fijo" se colaba —antes
+    // como ventana FIJA, y tras el fix de apertura del 18-sep habria pasado a SLIDING de 2
+    // hojas doble riel: otro producto equivocado, y encima SLIDING no tiene monorriel.
+    // Se escala con el nombre del PRODUCTO, no de la linea: el cliente pidio "una corredera
+    // con un paño fijo", no "una Andes", y no tiene por que aprender nuestro catalogo.
+    // 🔴 SOLO EL TEXTO DEL ITEM. `d.texto_cliente` es el mensaje ENTERO del cliente: en una lista
+    // de 17 ventanas, con que UNA fuera monorriel escalarian LAS 17. Es la misma trampa que ya
+    // esta advertida arriba para `_textoParaEje`, y aca costaria el flujo completo. La copia
+    // literal del pedido vive en `descripcion_producto` (asi lo exige el schema), que es de este
+    // item y de ningun otro.
+    if (tipo === "CORREDERA" && !ANDES_AUTO_COTIZA && esMonorrielPorForma(
+      `${item.descripcion || ""} ${item.product || ""} ${item.label || ""} ${item.producto || ""}`)) {
+      item.price_warning = "La corredera de una hoja con paño fijo (monorriel) la cotiza "
+        + "Marcelo directamente para darte el precio exacto.";
+      item.source = "activa_engine"; item.confidence = "manual"; item.fuera_de_alcance = true;
+      return { escalada: true };
     }
     // [2026-08-27] LINEA ANDES: sólo el envelope CALIBRADO contra Winart (doble riel · 2 hojas ·
     // hoja 66, ≥3,5 m², ≤2,5 m/lado). Fuera de eso (hoja 54 chica, monorriel, 3-4 hojas, grande)
