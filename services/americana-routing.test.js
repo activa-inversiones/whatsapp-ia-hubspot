@@ -275,7 +275,10 @@ test('🔴 una corredera con paño fijo se cotiza sola, en la linea MAS ECONOMIC
     // ahi seria cotizar algo que no se fabrica. Levantado para el dueño.
     assert.equal(b.serie, 'ANDES', 'la mas economica DISPONIBLE con nuestros vidrios');
     assert.equal(b.riel, 'MONORRIEL');
-    assert.match(items[0].nota_linea || '', /mas economica/i, 'y al cliente se le dice');
+    // [Gemini] La nota NO nombra la linea ni dice "la mas economica": lo primero no significa
+    // nada para el cliente y lo segundo abarata la marca. Le dice QUE ventana es, en su idioma.
+    assert.match(items[0].nota_linea || '', /una hoja con pa[nñ]o fijo/i, 'y al cliente se le dice');
+    assert.doesNotMatch(items[0].nota_linea || '', /andes|monorriel|economic/i);
     assert.equal(b.hojas, 1, 'un monorriel es UNA hoja movil; la otra mitad es el paño fijo');
     assert.ok(!items[0].fuera_de_alcance, 'NO se escala: se cotiza solo');
   });
@@ -305,18 +308,50 @@ test('🔒 LA PRECEDENCIA COMPLETA, en orden (la pidio Codex en la compuerta)', 
   }
 });
 
-/* 🔴 LIMITE DECLARADO, NO TAPADO: un pedido que trae 3+ paños descritos como "2 hojas MAS un
- * fijo", o dos ventanas en una linea ("una corredera y una fija"), se lee como monorriel.
- * ⚠️ Desde el 19-sep eso ya no escala: se COTIZA como ANDES monorriel. O sea el limite dejo de
- * ser "va a Marcelo de mas" y paso a ser "puede cotizarse en la linea equivocada", que es mas
- * caro. Queda medido y declarado; el arreglo de fondo sigue siendo segmentar el pedido por
- * ventana antes de clasificar: tablero #797. */
-test('🔴 limite conocido: 3+ paños o dos ventanas en una linea se leen como monorriel', () => {
+/* 🔴 [Gemini, compuerta] UN FIJO **ADICIONAL** A LAS HOJAS SON 3+ PAÑOS, NO UN MONORRIEL.
+ * Textual: *"corredera de dos hojas mas fijo lateral... fisicamente es un ventanal de 3 paños.
+ * Al ser procesado como monorriel, el bot re-escribe a hojas:1 y se manda a fabricar una ventana
+ * de 2 paños en lugar de la de 3 que el cliente necesita"*.
+ * Era un limite ASUMIDO mientras el monorriel ESCALABA (sobre-escalar no cuesta plata). Cuando
+ * el monorriel paso a cotizarse solo, el mismo limite se volvio peligroso: ya no manda el caso a
+ * Marcelo, lo FABRICA mal. Por eso ahora se excluye. */
+test('🔴 "N hojas MAS un fijo" son 3+ paños: no es monorriel', () => {
   for (const t of [
     'ventana corredera de dos hojas mas un paño fijo superior',
     'corredera de dos hojas mas fijo lateral',
-    'dos ventanas: una corredera y una fija',
+    'corredera de 3 hojas y un fijo',
   ]) {
-    assert.equal(esMonorrielPorForma(t), true, `${t} — hoy sobre-escala, y esta asumido`);
+    assert.equal(esMonorrielPorForma(t), false, `${t} — son 3+ paños`);
   }
+});
+test('🔒 pero "N hojas CON una fija" SI es monorriel: son 2 paños, no 3', () => {
+  // El conector tiene que ser ADITIVO. Incluir "con" e "y" apagaba el caso mas comun de todos.
+  for (const t of [
+    'corredera 2 hojas con una hoja fija',
+    'corredera de dos hojas, una fija',
+    'corredera con un paño fijo',
+  ]) assert.equal(esMonorrielPorForma(t), true, t);
+});
+
+test('🔴 un monorriel MAS GRANDE que lo estandar escala, por peso de la hoja', async () => {
+  // [Gemini] *"una hoja movil de 2,0 x 2,4 m de termopanel pesa mas de 100 kg: los rodamientos y
+  // perfiles se deformaran"*. MEDIDO: una de 4000x2400 salia cotizada (referencial) como ANDES
+  // monorriel. Se usa el limite de fabricacion de corredera que el sistema YA tiene; el tope
+  // propio del ANDES monorriel es un dato del dueño que todavia falta (tablero #799).
+  await conMotorStub(async (enviados) => {
+    const items = [{ measures: '4000x2400mm', product: 'CORREDERA', descripcion: 'una corredera y un paño fijo', qty: 1 }];
+    await priceAllEngine({ comuna: 'Temuco', items });
+    assert.equal(items[0].fuera_de_alcance, true, 'un ventanal de 4x2,4 no se auto-cotiza como monorriel');
+    assert.equal(enviados.length, 0, 'ni siquiera se le pregunta al motor');
+  });
+});
+
+test('🔒 y uno de medida normal se sigue cotizando solo', async () => {
+  await conMotorStub(async (enviados) => {
+    const items = [{ measures: '1500x1200mm', product: 'CORREDERA', descripcion: 'una corredera y un paño fijo', qty: 1 }];
+    await priceAllEngine({ comuna: 'Temuco', items });
+    assert.ok(!items[0].fuera_de_alcance);
+    assert.equal(enviados[0]?.serie, 'ANDES');
+    assert.equal(enviados[0]?.riel, 'MONORRIEL');
+  });
 });

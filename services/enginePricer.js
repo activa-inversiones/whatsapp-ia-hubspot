@@ -592,7 +592,11 @@ export function detectConfigCorredera(texto, hojas) {
 export function esMonorrielPorForma(texto) {
   const t = String(texto || "").normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   // Negacion: "que NO sea monorriel" no es monorriel (mismo criterio que la rama ANDES).
-  if (/\b(?:no|sin|que\s+no)\s+(?:sea\s+|es\s+)?(?:monorriel|mono\s*-?\s*riel|un\s*riel)\b/.test(t)) return false;
+  // ⚠️ [Nemotron, tercer revisor] LA NEGACION LLEVA PALABRAS EN EL MEDIO. Textual:
+  // *"«no quiero que sea monorriel»: hay palabras intermedias entre «no» y «sea», el patron no
+  // coincide y la negacion no se detecta"*. MEDIDO: daba true. Ahora se admite lo que el
+  // cliente mete en el medio ("no QUIERO QUE sea", "sin QUE VAYA").
+  if (/\b(?:no|sin|tampoco)\b[^.]{0,25}\b(?:monorriel|mono\s*-?\s*riel|un\s*riel)\b/.test(t)) return false;
   // La PALABRA es inequivoca: si el cliente dice "monorriel", es monorriel y no hay que contar.
   if (/\bmono\s*-?\s*r?riel\b/.test(t)) return true;
   // ⚠️ [Codex, compuerta] ACA ESTABA EL BLOCKER: las señales de forma hacian `return true` ANTES
@@ -607,11 +611,33 @@ export function esMonorrielPorForma(texto) {
     || /\bmitad\s+corred[\s\S]{0,24}mitad\s+fij[ao]/.test(t);
   // La corredera puede venir nombrada o dicha con VERBO ("una corre y la otra queda fija"),
   // que es como habla el cliente de verdad. Lo pidio Codex y es correcto.
-  const _corrPorForma = /corredera|corrediz|sliding|deslizan/.test(t)
-    || /\b(?:corre|corren|corran)\b/.test(t);
+  // ⚠️ [Nemotron] El cliente conjuga: "otro que se DESLICE", "que DESLIZA". MEDIDO: un
+  // monorriel de verdad —"un paño fijo y otro que se deslice"— daba false y se cobraba 36% de
+  // mas, como corredera de dos hojas que corren.
+  // Ojo con la ortografia: el subjuntivo va con C ("que se desliCe"), no con Z.
+  const _corrPorForma = /corredera|corrediz|sliding|desli[cz]/.test(t)
+    || /\b(?:corre|corren|corran|corriendo)\b/.test(t);
   const _hayFija =
     /\b(?:hojas?|pa[nñ]os?|una|uno|1|lado|lateral(?:es)?|derech[ao]|izquierd[ao]|otra|otro)\b[^.]{0,20}\b(?:fij[ao]s?|no\s+abre)\b/.test(t)
     || /\bfij[ao]s?\b[^.]{0,14}\b(?:hojas?|pa[nñ]os?|lateral(?:es)?)\b/.test(t);
+  // ⚠️ [Gemini, compuerta] UN FIJO **ADICIONAL** A LAS HOJAS SON 3+ PAÑOS, NO UN MONORRIEL.
+  // Textual: *"corredera de dos hojas mas fijo lateral... fisicamente es un ventanal de 3 paños
+  // (2 moviles + 1 fijo). Al ser procesado como monorriel, el bot re-escribe los parametros a
+  // hojas:1, y se manda a fabricar una ventana de 2 paños en lugar de la de 3 que el cliente
+  // necesita"*. Tenia razon, y ahora es peor que antes: ANTES este caso ESCALABA (seguro) y
+  // desde que el monorriel se auto-cotiza terminaria fabricandose mal.
+  // Un monorriel tiene EXACTAMENTE 2 paños: la hoja que corre y el fijo.
+  // El conector tiene que ser ADITIVO: "2 hojas MAS un fijo" son 3 paños. "2 hojas CON una
+  // hoja fija" son 2 paños —uno corre y el otro no— y ESO SI es un monorriel; incluir "con"
+  // e "y" apagaba el caso mas comun de todos.
+  if (/\b(?:dos|2|tres|3|cuatro|4)\s+hojas?\b[^.]{0,20}\b(?:mas|más|ademas|además|sumado)\b[^.]{0,20}\bfij[ao]/.test(t)) return false;
+  // ⚠️ [Nemotron] Y TAMPOCO SI LAS HOJAS **CORREN** Y ADEMAS HAY UNA FIJA. Textual:
+  // *"«corredera de 2 hojas que corren y una fija»... en realidad tiene 2 hojas moviles + 1
+  // fija (= 3 paños), no es monorriel"*. MEDIDO: daba true, o sea subcobro del 27% y una
+  // ventana de 2 paños fabricada donde el cliente pidio 3.
+  // La diferencia con "2 hojas, una fija" (que SI es monorriel) es que ahi la fija es UNA DE
+  // las dos; aca las dos corren y la fija es aparte.
+  if (/\b(?:dos|2|tres|3|cuatro|4)\s+hojas?\s+que\s+(?:corren|corran|se\s+mueven|desliz\w*)\b[^.]{0,25}\bfij[ao]/.test(t)) return false;
   if (!_fijaMasCorredera && !(_corrPorForma && _hayFija)) return false;
   // 🔴 EL CONTEO DECIDE, Y ES DE PLATA. `detectHojas` cuenta hojas TOTALES (en "corredera 3
   // hojas la del medio fija" devuelve 3, de las cuales 2 son moviles). Con 3 o mas paños quedan
@@ -1205,10 +1231,36 @@ export async function priceAllEngine(d, customer_id = "") {
       // pide por su nombre, con termopaneles de 16-24 mm. Queda levantado para el dueño.
       // ANDES monorriel si esta calibrado y usa los vidrios del catalogo (verificado en vivo:
       // 1500x1200 -> $291.411 "Corredera ANDES 54 Monorriel"; 3000x2200 -> $805.640 "ANDES 66").
+      // ⚠️ [Gemini, compuerta] TOPE DE TAMAÑO, Y LA RAZON ES FISICA, NO COMERCIAL.
+      // Textual: *"si un cliente pide un ventanal de 4,0 x 2,4 m como «una corredera y un paño
+      // fijo», se cotizara automaticamente como ANDES Monorriel. Una hoja movil de 2,0 x 2,4 m
+      // de termopanel pesa mas de 100 kg: los rodamientos y perfiles se deformaran"*. MEDIDO:
+      // una de 4000x2400 salia cotizada (referencial) como ANDES monorriel.
+      // Se usa el limite de fabricacion de corredera que el sistema YA tiene documentado
+      // (FABRICATION_LIMITS.SLIDING.H98). NO se inventa un tope propio del ANDES monorriel:
+      // ese dato es del dueño y todavia no lo tenemos (tablero #799).
+      const _limMono = FABRICATION_LIMITS.SLIDING.H98;
+      if (m.ancho_mm > _limMono.maxAncho || m.alto_mm > _limMono.maxAlto) {
+        item.price_warning = "Ese ventanal de una hoja corredera con paño fijo es mas grande que "
+          + "lo estandar; Marcelo lo revisa y te confirma el precio exacto.";
+        item.source = "activa_engine"; item.confidence = "manual"; item.fuera_de_alcance = true;
+        return { escalada: true };
+      }
       serie = "ANDES";
-      item.nota_linea = "Cotizada en linea Andes monorriel, que es la mas economica disponible "
-        + "para este tipo de ventana (una hoja que corre + un paño fijo). Si la prefiere en otra "
-        + "linea, se la ajusto.";
+      // ⚠️ [Gemini, compuerta] COMO SE LE DICE AL CLIENTE. La primera version decia "linea Andes
+      // monorriel... la mas economica disponible... si la prefiere en otra linea se la ajusto", y
+      // Gemini la desarmo con tres razones de venta, no de codigo:
+      //  · *"para el cliente de Temuco, «Andes» es una comuna o la cordillera, y «monorriel» es un
+      //    tren elevado: no entiende que le estas vendiendo"*.
+      //  · *"decirle «es la mas economica» abarata la marca: el cliente asocia lo mas economico con
+      //    mala calidad, filtracion o PVC delgado"* — y en Temuco eso pesa.
+      //  · *"«si la prefiere en otra linea se la ajusto» es un suicidio para la automatizacion: va
+      //    a preguntar que otras lineas hay y cuanto cuestan, y obliga a que entre un humano"*.
+      // El dueño pidio *"indicandole a cliente eso"*: que sepa QUE ventana es y que el precio es
+      // el conveniente. Eso se dice en su idioma —una hoja que corre y un paño fijo— sin nombrar
+      // la linea, sin la palabra "economica" y sin abrir una negociacion.
+      item.nota_linea = "Esta cotizada como corredera de una hoja con paño fijo, que es "
+        + "exactamente lo que pidio, con el mejor precio para ese formato.";
     }
     // [2026-08-27] LINEA ANDES: sólo el envelope CALIBRADO contra Winart (doble riel · 2 hojas ·
     // hoja 66, ≥3,5 m², ≤2,5 m/lado). Fuera de eso (hoja 54 chica, monorriel, 3-4 hojas, grande)

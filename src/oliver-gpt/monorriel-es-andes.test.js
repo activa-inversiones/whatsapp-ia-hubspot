@@ -22,7 +22,7 @@ import { esMonorrielPorForma } from '../../services/enginePricer.js';
  * DOS moviles ⇒ NO es monorriel, es SLIDING doble riel, y esa SI esta calibrada (Winart v69621).
  * ========================================================================= */
 
-test('🔴 1 hoja movil + 1 paño fijo ES monorriel (→ ANDES → escala)', () => {
+test('🔴 1 hoja movil + 1 paño fijo ES monorriel (→ se cotiza en ANDES monorriel)', () => {
   for (const t of [
     'corredera con un paño fijo',
     'corredera de dos paños, un paño fijo',
@@ -117,4 +117,38 @@ test('🔴 americana y monorriel se activan A LA VEZ: por eso la americana tiene
     assert.equal(esLineaAmericana(item), true, `${t} -> es americana`);
     assert.equal(esMonorrielPorForma(t), true, `${t} -> tambien es monorriel (por eso chocaban)`);
   }
+});
+
+/* =========================================================================
+ * 🔱 TERCER REVISOR (Nemotron 120B, via NVIDIA NIM) — Codex estaba sin cupo.
+ * Levanto cuatro; TRES eran reales, medidos.
+ * ========================================================================= */
+
+test('🔴 la NEGACION lleva palabras en el medio', () => {
+  // *"«no quiero que sea monorriel»: hay palabras intermedias entre «no» y «sea», el patron no
+  // coincide y la negacion no se detecta"*. Daba true.
+  for (const t of [
+    'no quiero que sea monorriel',
+    'prefiero que no sea monorriel',
+    'sin que vaya monorriel',
+  ]) assert.equal(esMonorrielPorForma(t), false, t);
+});
+
+test('🔴 el cliente CONJUGA el verbo: "que se deslice", "que desliza"', () => {
+  // Un monorriel de verdad daba false y se cobraba 36% de mas, como corredera de dos hojas que
+  // corren. Ojo con la ortografia: el subjuntivo va con C ("desliCe"), no con Z.
+  for (const t of [
+    'necesito una ventana con un paño fijo y otro que se deslice',
+    'un paño fijo y otro que desliza',
+    'una hoja que deslice y una fija',
+  ]) assert.equal(esMonorrielPorForma(t), true, t);
+});
+
+test('🔴 "N hojas QUE CORREN y una fija" son N+1 paños, no un monorriel', () => {
+  // *"«corredera de 2 hojas que corren y una fija»... tiene 2 hojas moviles + 1 fija (3 paños)"*.
+  // Daba true: subcobro del 27% y una ventana de 2 paños fabricada donde el cliente pidio 3.
+  // La diferencia con "2 hojas, una fija" —que SI es monorriel— es que ahi la fija es UNA de las
+  // dos; aca las dos corren y la fija es aparte.
+  assert.equal(esMonorrielPorForma('quiero una ventana corredera de 2 hojas que corren y una fija'), false);
+  assert.equal(esMonorrielPorForma('corredera de dos hojas, una fija'), true, 'esta SI es monorriel');
 });
