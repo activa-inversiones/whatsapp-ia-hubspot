@@ -161,7 +161,35 @@ export async function pedirVientos({ comuna = '', cliente = '', ventanas }) {
       signal: AbortSignal.timeout(10000),
     });
     if (!r.ok) return null;
-    return await r.json();
+    const data = await r.json();
+    // 🔴 [2026-09-19] EL NUMERO DE VENTANA VUELVE A PEGARSE ACA, PORQUE THERMAL NO LO DEVUELVE.
+    // MEDIDO en vivo contra el motor: se le manda `pos` y lo ACEPTA sin quejarse (no rechaza
+    // campos desconocidos), pero su respuesta trae solo nombre/medidas/vidrio/capacidad/
+    // veredicto/flechas. Y el informe de vientos se dibuja desde ESA respuesta, asi que el
+    // numero del cliente se perdia justo en el ultimo salto: la propuesta decia "V14" y el
+    // informe de vientos "V2".
+    // ⚠️ No se le pide a THERMAL que lo devuelva: es un PROVEEDOR —"se le pide, no se le mete
+    // mano" (regla de la casa)—. Se re-asocia de este lado, por nombre + medidas, que es lo que
+    // se le mando. Si el match no es UNICO no se asigna nada: mejor sin numero que con el
+    // numero de otra ventana.
+    try {
+      const porClave = new Map();
+      for (const v of ventanas) {
+        const k = `${String(v?.nombre || '')}|${v?.ancho_mm}|${v?.alto_mm}`;
+        porClave.set(k, porClave.has(k) ? null : v);   // repetida ⇒ ambigua ⇒ no se usa
+      }
+      const pegarPos = (lista) => {
+        if (!Array.isArray(lista)) return;
+        for (const f of lista) {
+          if (!f || typeof f !== 'object' || f.pos !== undefined) continue;
+          const o = porClave.get(`${String(f.nombre || '')}|${f.ancho_mm}|${f.alto_mm}`);
+          if (o && o.pos !== undefined) f.pos = o.pos;
+        }
+      };
+      pegarPos(data?.ventanas);
+      pegarPos(data?.curvas?.interseccion_por_ventana);
+    } catch { /* el informe sale igual, solo sin el numero del cliente */ }
+    return data;
   } catch {
     return null;   // THERMAL caido o sin la ruta todavia: la secuencia sigue sin vientos
   }
