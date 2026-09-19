@@ -1040,6 +1040,47 @@ export async function runTool(name, input = {}, ctx = {}) {
       // CRÍTICO: los unit_price de los items deben venir del motor (calcular_cotizacion),
       // nunca inventados por el LLM. El webhook.js pasa el name/phone/comuna desde el state
       // si el LLM no los pasó explícitamente.
+      //
+      // 🔴 [2026-09-19] SI FALTA UNA VENTANA COTIZADA, SE AVISA. NO SE AGREGA SOLA.
+      // En la propuesta 0485 el cliente recibio 16 de 17: Oliver cotizo las 17 —la N°13
+      // (proyectante baño 575x375) volvio OK, $146.400— y al armar el PDF la dejo afuera por
+      // traer `referencial: true`. Se le dijo que no lo hiciera en el prompt Y en el resultado
+      // de la tool; las dos son instrucciones, y las desobedecio.
+      //
+      // ⚠️ LA PRIMERA VERSION DE ESTO AGREGABA LA VENTANA SOLA, y Codex la refuto con la razon
+      // correcta: *"confunde 'el motor calculo esto' con 'el cliente quiere esto en esta
+      // propuesta'. El precio confirma cotizabilidad; no confirma intencion"*. Tenia razon, y
+      // los contraejemplos son cotidianos: una RECOTIZACION ("mejor de 2,5 m") metia las dos
+      // medidas; una pregunta exploratoria ("¿cuanto saldria si fuera mas grande?") entraba al
+      // PDF; y las propuestas A/B/C por color cotizan el MISMO item tres veces. Mandarle al
+      // cliente una ventana que no pidio —y cobrarsela— es peor que perder una.
+      // Para hacerlo bien hace falta un id de item pedido con su estado (activa / reemplazada /
+      // descartada / exploratoria), que hoy no existe: queda en el tablero (#798).
+      //
+      // Mientras tanto: se MIDE y se avisa a Marcelo, que puede corregirlo antes de que el
+      // cliente decida. Avisar no cuesta plata; mandar el producto equivocado si.
+      const _delTurno = Array.isArray(ctx.toolCallsDelTurno) ? ctx.toolCallsDelTurno : [];
+      if (_delTurno.length) {
+        try {
+          const { itemsFromQuoteCalls } = await import('./pdf-intent.js');
+          const _cotizados = itemsFromQuoteCalls(_delTurno, input.default_color || '');
+          const _clave = (it) => String(it?.measures || '').replace(/\s|mm/gi, '').toLowerCase();
+          const _yaVan = new Set((input.items || []).map(_clave));
+          const _faltan = _cotizados.filter((c) => !_yaVan.has(_clave(c)));
+          if (_faltan.length) {
+            const _detalle = _faltan.map((f) => `${f.measures} ${f.product}`).join(' · ');
+            console.warn(`[pdf] ${_faltan.length} ventana(s) cotizada(s) NO van en el PDF: ${_detalle}`);
+            if (typeof ctx.notifyMarcelo === 'function') {
+              await ctx.notifyMarcelo({
+                motivo: 'ventanas_cotizadas_fuera_del_pdf',
+                texto: `El PDF sale con ${(input.items || []).length} ventana(s) y se cotizaron `
+                  + `${_cotizados.length}. Quedaron fuera: ${_detalle}. `
+                  + 'Puede ser una recotizacion legitima, o una ventana que el cliente pidio y se perdio.',
+              });
+            }
+          }
+        } catch (e) { console.warn('[pdf] no se pudo comparar cotizadas vs PDF:', e && e.message); }
+      }
       return ctx.generarPdf(input);
     }
 

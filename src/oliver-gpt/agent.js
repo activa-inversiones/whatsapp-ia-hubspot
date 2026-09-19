@@ -144,7 +144,12 @@ export async function handleTurn({ history = [], userText, state = {}, toolCtx =
 
       let result;
       try {
-        result = await execTool(name, input, toolCtx);
+        // 🔴 [2026-09-19] EL PDF TIENE QUE VER LO QUE YA SE COTIZO EN ESTE TURNO.
+        // En la propuesta 0485 el cliente recibio 16 de 17 ventanas: Oliver cotizo las 17 y al
+        // armar el PDF dejo una afuera. `generar_pdf_cotizacion` completa ahora con lo que el
+        // motor SI cotizo, y para eso necesita las tool calls previas. Se pasa la referencia
+        // viva de `toolCalls`, que en este punto ya tiene todo lo del turno.
+        result = await execTool(name, input, { ...toolCtx, toolCallsDelTurno: toolCalls });
       } catch (err) {
         result = { ok: false, error: String(err && err.message ? err.message : err) };
       }
