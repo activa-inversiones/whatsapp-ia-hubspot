@@ -94,3 +94,43 @@ export function rotulosDeVentanas(lista) {
     return `V${i + 1}`;
   });
 }
+
+/**
+ * 🔴 NUMERA LA LISTA UNA SOLA VEZ, ANTES DE QUE NADIE LA FILTRE.
+ *
+ * ⚠️ [Codex, compuerta] ESTE ERA EL AGUJERO QUE QUEDABA, y es el MISMO defecto original
+ * mudado a otro documento. Textual: *"la combinacion 'cliente sin pos + ventana intermedia
+ * ilegible para Vientos' sigue produciendo documentos irreconciliables"*.
+ * MEDIDO con 3 ventanas sin numerar, donde el informe de vientos descarta la del medio porque
+ * no puede leerle el vidrio:
+ *     propuesta -> V1, V2, V3
+ *     vientos   -> V1, V2      ⇒ la MISMA ventana es "V3" en una y "V2" en el otro.
+ * Cada documento numeraba por la posicion de SU lista, y las listas no son la misma.
+ *
+ * La regla: el numero se decide sobre la lista COMPLETA, antes de filtrar, y despues viaja
+ * pegado a la ventana. Asi, saquen la que saquen, el numero no se mueve.
+ *
+ * TODO O NADA, igual que `rotulosDeVentanas`: si el cliente numero bien (todas, sin repetir),
+ * mandan SUS numeros; si no, se numera por posicion pero se CONGELA aqui. Nunca se mezcla un
+ * `pos` del cliente con un indice inventado, porque eso deja dos "V2" en el mismo documento
+ * —lo advirtio Codex y tiene razon—.
+ *
+ * ⚠️ MUTA los items a proposito: los tres documentos se derivan de esta misma lista, asi que
+ * escribir el numero aca es lo que garantiza que los tres lo hereden.
+ *
+ * @param {Array<object>} items - la lista COMPLETA del pedido, antes de cualquier filtro
+ * @returns {Array<object>} los mismos items, cada uno con `pos` asignado
+ */
+export function numerarVentanas(items) {
+  const arr = Array.isArray(items) ? items : [];
+  if (!arr.length) return arr;
+  const nums = arr.map((v) => {
+    const n = Number(String(v?.pos ?? v?.posicion ?? v?.id_ventana ?? '').trim().replace(/^v/i, ''));
+    return Number.isInteger(n) && n > 0 && n < 1000 ? n : null;
+  });
+  const delCliente = nums.every((n) => n !== null) && new Set(nums).size === nums.length;
+  arr.forEach((v, i) => {
+    if (v && typeof v === 'object') v.pos = delCliente ? nums[i] : i + 1;
+  });
+  return arr;
+}

@@ -63,6 +63,7 @@ import { elegirVideo, mensajeDelVideo, mediaIdsDisponibles } from '../../service
 // de la casa), Oliver arma el PDF y lo entrega como 2o documento.
 import { pedirVientos, ventanasParaVientos } from '../../services/vientosThermal.js';
 import { generarInformeVientosPdf } from '../../services/informeVientosPdf.js';
+import { numerarVentanas } from '../../services/etiquetaVentana.js'; // [2026-09-19] el numero se congela antes de filtrar
 
 // Cuanto se espera antes de mandar el video. Cae DESPUES del informe termico (4 s + 35 s)
 // para no encimarle tres mensajes seguidos al cliente: propuesta → informe → video.
@@ -2600,6 +2601,16 @@ Comuna: ${datos.comuna}`
           // ── GUARDIA ANTI-ALUCINACIÓN DE PRECIOS (regla del dueño: marcar/pedir, NUNCA rellenar) ──
           // Si algún ítem no trae unit_price>0 (que DEBE venir de calcular_cotizacion), NO se genera
           // el PDF ni se quema un correlativo ISO. Convierte la defensa de "solo prompt" a "prompt+código".
+          // 🔴 [2026-09-19] EL NUMERO DE CADA VENTANA SE CONGELA ACA, ANTES DE QUE NADIE FILTRE.
+          // Lo cazo Codex en la compuerta y estaba pasando: los tres documentos (propuesta,
+          // termico, vientos) numeraban por la posicion de SU lista, y esas listas NO son la
+          // misma —el informe de vientos descarta las ventanas a las que no puede leerles el
+          // vidrio—. MEDIDO con 3 ventanas sin numerar, descartando la del medio:
+          //     propuesta -> V1, V2, V3   ·   vientos -> V1, V2
+          // O sea la MISMA ventana salia "V3" en una y "V2" en el otro. Es el defecto original
+          // del cliente (4 de 16 ventanas mal numeradas) mudado a otro documento.
+          // Numerando aca, arriba de todo, los tres heredan el mismo numero pase lo que pase.
+          numerarVentanas(input.items);
           const itemsBad = (input.items || []).filter((it) => !(Number(it.unit_price) > 0));
           if (!input.items?.length || itemsBad.length) {
             log('error', 'generarPdf.guard',

@@ -121,3 +121,45 @@ test('🔴 los TRES documentos rotulan IGUAL la misma ventana (lo advirtio Gemin
   assert.deepEqual(termico, propuesta, 'el informe termico no puede numerar distinto');
   assert.deepEqual(vientos, propuesta, 'ni el de vientos');
 });
+
+/* =========================================================================
+ * 🔱 "LA QUE LO MATA" DE CODEX: el mismo defecto, mudado a otro documento.
+ * Textual: *"la combinacion 'cliente sin pos + ventana intermedia ilegible para Vientos' sigue
+ * produciendo documentos irreconciliables"*. MEDIDO: era cierto.
+ * ========================================================================= */
+
+test('🔴 sin numeracion del cliente, filtrar una ventana NO corre a las demas', async () => {
+  const { rotulosDeVentanas, numerarVentanas } = await import('./etiquetaVentana.js');
+  const pedido = [{ measures: '1000x1000' }, { measures: '2000x2000' }, { measures: '3000x3000' }];
+  numerarVentanas(pedido);                       // se congela ANTES de filtrar
+  const vientos = [pedido[0], pedido[2]];        // la 2 es ilegible para ese calculo
+  assert.deepEqual(rotulosDeVentanas(pedido), ['V1', 'V2', 'V3']);
+  assert.deepEqual(rotulosDeVentanas(vientos), ['V1', 'V3'],
+    'la tercera ventana tiene que seguir siendo V3 aunque la segunda no este');
+});
+
+test('🔒 numerar respeta al cliente cuando el numero de EL sirve', async () => {
+  const { rotulosDeVentanas, numerarVentanas } = await import('./etiquetaVentana.js');
+  const pedido = [{ pos: 12 }, { pos: 14 }, { pos: 15 }];
+  numerarVentanas(pedido);
+  assert.deepEqual(rotulosDeVentanas(pedido), ['V12', 'V14', 'V15']);
+});
+
+test('🔒 numeracion PARCIAL no se mezcla: nunca dos "V2" en el mismo documento', async () => {
+  const { numerarVentanas } = await import('./etiquetaVentana.js');
+  // Codex: *"mezclar pos explicito con fallback puede crear dos V2"*. No se mezcla: o todos
+  // los del cliente, o todos por posicion.
+  const pedido = [{ pos: 5 }, {}, { pos: 9 }];
+  numerarVentanas(pedido);
+  assert.deepEqual(pedido.map((v) => v.pos), [1, 2, 3]);
+  const dup = [{ pos: 2 }, { pos: 2 }];
+  numerarVentanas(dup);
+  assert.deepEqual(dup.map((v) => v.pos), [1, 2], 'un duplicado invalida toda la numeracion');
+});
+
+test('🔒 lista vacia o rara no explota', async () => {
+  const { numerarVentanas } = await import('./etiquetaVentana.js');
+  assert.deepEqual(numerarVentanas([]), []);
+  assert.deepEqual(numerarVentanas(null), []);
+  assert.deepEqual(numerarVentanas(undefined), []);
+});
