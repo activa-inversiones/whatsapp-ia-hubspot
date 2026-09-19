@@ -1077,12 +1077,20 @@ export async function runTool(name, input = {}, ctx = {}) {
           if (_faltan.length) {
             const _detalle = _faltan.map((f) => `${f.measures} ${f.product}`).join(' · ');
             console.warn(`[pdf] ${_faltan.length} ventana(s) cotizada(s) NO van en el PDF: ${_detalle}`);
+            // 🔴 [2026-09-19] LA FIRMA ES `{ reason, data }`, NO `{ motivo, texto }`.
+            // Lo escribi mal hoy mismo y el aviso habria llegado SIN decir que ventana falta:
+            // `notifyMarcelo` (webhook.js:2526) pasa `payload.reason` a notifyHighValue, que es
+            // lo unico que termina en el mensaje ("⚡ Motivo: ..."); un `texto` suelto se
+            // descarta. El prefijo `oliver_gpt:` importa: marca la escalacion como EXPLICITA y
+            // evita que el filtro de leads STANDARD se la coma (highValueNotifier.js:200).
+            // Es el mismo patron que costo caro toda esta sesion: construir algo que no se
+            // ejecuta como uno cree.
             if (typeof ctx.notifyMarcelo === 'function') {
               await ctx.notifyMarcelo({
-                motivo: 'ventanas_cotizadas_fuera_del_pdf',
-                texto: `El PDF sale con ${(input.items || []).length} ventana(s) y se cotizaron `
-                  + `${_cotizados.length}. Quedaron fuera: ${_detalle}. `
+                reason: `oliver_gpt: se cotizaron ${_cotizados.length} ventanas y el PDF sale con `
+                  + `${(input.items || []).length}. QUEDARON FUERA: ${_detalle}. `
                   + 'Puede ser una recotizacion legitima, o una ventana que el cliente pidio y se perdio.',
+                data: { ventanas_fuera_del_pdf: _faltan.map((f) => `${f.measures} ${f.product}`) },
               });
             }
           }

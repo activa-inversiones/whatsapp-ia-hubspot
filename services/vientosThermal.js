@@ -111,6 +111,10 @@ export function ventanasParaVientos(items = []) {
       ? { ancho_mm: Math.round(Number(it.pano_vidrio.ancho_mm)), alto_mm: Math.round(Number(it.pano_vidrio.alto_mm)) }
       : null;
     legibles.push({
+      // 🔴 [2026-09-19] El numero que puso el CLIENTE, para que los TRES documentos
+      // (propuesta, termico, vientos) rotulen igual la misma ventana. Lo advirtio Gemini:
+      // dos documentos de la misma casa que numeran distinto no se pueden reconciliar.
+      pos: it.pos ?? undefined,
       nombre: (it.producto_label || it.product || 'Ventana').slice(0, 60),
       ancho_mm: pano ? pano.ancho_mm : dims.ancho_mm,
       alto_mm: pano ? pano.alto_mm : dims.alto_mm,

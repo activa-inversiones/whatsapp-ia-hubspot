@@ -56,8 +56,12 @@ test('🔴 si una ventana cotizada NO va en el PDF, se avisa a Marcelo', async (
   });
 
   assert.ok(aviso, 'tenia que avisarle a Marcelo');
-  assert.match(aviso.texto, /575x375/, 'el aviso dice CUAL ventana quedo fuera');
-  assert.equal(aviso.motivo, 'ventanas_cotizadas_fuera_del_pdf');
+  // 🔴 LA FIRMA IMPORTA: `notifyMarcelo` solo hace viajar `reason` al mensaje que llega al
+  // telefono ("⚡ Motivo: ..."). Un `texto` suelto se descarta y el aviso llega mudo — que es
+  // como estaba escrito al principio, hoy mismo.
+  assert.match(aviso.reason, /575x375/, 'el aviso dice CUAL ventana quedo fuera');
+  assert.match(aviso.reason, /^oliver_gpt:/, 'el prefijo lo marca como escalacion EXPLICITA');
+  assert.deepEqual(aviso.data.ventanas_fuera_del_pdf, ['575x375 Proyectante S60']);
   // 🔴 Y el PDF NO se toca: agregarla sola confunde "el motor lo calculo" con "el cliente lo
   // quiere". Una recotizacion metia las dos medidas; una pregunta exploratoria entraba al PDF.
   assert.equal(recibido.items.length, 2, 'el PDF sale como lo armo Oliver: no se le agrega nada');

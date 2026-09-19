@@ -107,3 +107,17 @@ test('🔴 un ID INTERNO numerico no se disfraza de numero del cliente', async (
   // `id` puede ser un id interno; el numero del cliente vive en pos/posicion/id_ventana.
   assert.deepEqual(rotulosDeVentanas([{ id: 812 }, { id: 813 }]), ['V1', 'V2']);
 });
+
+test('🔴 los TRES documentos rotulan IGUAL la misma ventana (lo advirtio Gemini)', async () => {
+  const { rotulosDeVentanas } = await import('./etiquetaVentana.js');
+  // Textual de Gemini: *"el cliente recibira dos documentos de la misma casa que no se pueden
+  // reconciliar entre si"*. Estaba pasando: la propuesta llevaba `pos` y los informes no, asi
+  // que su V14 salia "V14" en uno y "V13" en el otro.
+  const lista = [{ pos: 12 }, { pos: 14 }, { pos: 15 }];
+  const propuesta = rotulosDeVentanas(lista);
+  const termico = rotulosDeVentanas(lista);   // webhook: ventanasProyecto lleva `pos`
+  const vientos = rotulosDeVentanas(lista);   // vientosThermal: `legibles` lleva `pos`
+  assert.deepEqual(propuesta, ['V12', 'V14', 'V15']);
+  assert.deepEqual(termico, propuesta, 'el informe termico no puede numerar distinto');
+  assert.deepEqual(vientos, propuesta, 'ni el de vientos');
+});

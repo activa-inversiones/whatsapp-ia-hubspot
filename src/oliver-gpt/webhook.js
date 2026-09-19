@@ -3963,6 +3963,15 @@ Comuna: ${datos.comuna}`
               // Las MISMAS ventanas que declara la propuesta (mismo mapeo que el camino
               // clasico de abajo): informe y propuesta tienen que decir lo mismo siempre.
               const ventanasProyecto = (input.items || []).map((it) => ({
+                // 🔴 [2026-09-19] EL MISMO NUMERO DE VENTANA EN LOS TRES DOCUMENTOS.
+                // Lo advirtio Gemini en la compuerta y estaba pasando: la propuesta usa el
+                // numero que puso el CLIENTE (`pos`) y el informe se numeraba solo, asi que el
+                // cliente recibia dos documentos de la misma casa que no se pueden reconciliar
+                // —su V14 en uno y V13 en el otro—.
+                // ⚠️ Va en `pos`, NO en `id`: `id` puede ser un identificador INTERNO y por eso
+                // dejo de contar como numeracion del cliente (lo cazo Codex: un id 812 salia
+                // impreso "V812", fingiendo que el cliente habia numerado asi).
+                pos: it.pos ?? undefined,
                 producto: it.producto_label || it.product || '',
                 medidas: it.measures_original || it.measures || '',
                 vidrio: it.glass_label || '',
@@ -4151,6 +4160,15 @@ Comuna: ${datos.comuna}`
           if (docSent && !modoInformePrimero) {
             try {
               const ventanasProyecto = (input.items || []).map((it) => ({
+                // 🔴 [2026-09-19] EL MISMO NUMERO DE VENTANA EN LOS TRES DOCUMENTOS.
+                // Lo advirtio Gemini en la compuerta y estaba pasando: la propuesta usa el
+                // numero que puso el CLIENTE (`pos`) y el informe se numeraba solo, asi que el
+                // cliente recibia dos documentos de la misma casa que no se pueden reconciliar
+                // —su V14 en uno y V13 en el otro—.
+                // ⚠️ Va en `pos`, NO en `id`: `id` puede ser un identificador INTERNO y por eso
+                // dejo de contar como numeracion del cliente (lo cazo Codex: un id 812 salia
+                // impreso "V812", fingiendo que el cliente habia numerado asi).
+                pos: it.pos ?? undefined,
                 producto: it.producto_label || it.product || '',
                 medidas: it.measures_original || it.measures || '',
                 vidrio: it.glass_label || '',
