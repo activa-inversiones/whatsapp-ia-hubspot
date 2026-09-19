@@ -327,6 +327,11 @@ export const TOOL_DEFS = [
           comuna: { type: 'string', description: 'Comuna de despacho/instalacion. Opcional.' },
           cantidad: { type: 'integer', description: 'Cantidad de ventanas. Opcional.' },
           ambiente: { type: 'string', description: 'Recinto de la ventana (ej. "baño", "living"). Opcional pero ÚTIL: si es baño se usa vidrio satén automáticamente.' },
+          // 🔴 [2026-09-19] EL NUMERO QUE LE PUSO EL CLIENTE, no el del array.
+          // Medido en la propuesta 0485: al dejar una ventana afuera, TODAS las de abajo se
+          // corrieron y 4 de 16 salieron con un numero distinto al de la lista del cliente.
+          // Su N°14 aparecia como "V13". Con esto el documento imprime SU numero.
+          pos: { type: 'integer', description: 'El numero que el CLIENTE le dio a esta ventana en SU lista (1, 2, 3...). Copialo tal cual de lo que el escribio; NO lo renumeres ni lo inventes. Si su lista no venia numerada, NO mandes este campo. Sirve para que el PDF y los informes usen SU numeracion y el pueda casar cada ventana con su pedido.' },
           unidad_confirmada: {
             type: 'string',
             enum: ['mm', 'cm'],
@@ -860,6 +865,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         glass_label: it.glass_label,
         producto_label: it.producto_label,
         serie: it.serie,
+        pos: input.pos !== undefined ? Number(input.pos) : undefined,  // [2026-09-19] SU numero, no el del array
         referencial: it.referencial || false,
         // 🔴 [2026-09-19] LA INSTRUCCION VA DONDE SE TOMA LA DECISION, NO 500 LINEAS ARRIBA.
         // Oliver recibia `referencial: true` a secas y lo leia como "esto hay que escalar":
@@ -947,6 +953,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         glass_label: it.glass_label,
         producto_label: it.producto_label,
         serie: it.serie,
+        pos: input.pos !== undefined ? Number(input.pos) : undefined,  // [2026-09-19] SU numero, no el del array
         referencial: it.referencial || false,
         _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses precio_por_m2 ni otro campo.',
       };

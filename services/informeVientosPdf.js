@@ -14,7 +14,7 @@
 // serie del termico no.
 
 import PDFDocument from 'pdfkit';
-import { etiquetaVentana } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
+import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
 // [2026-08-30] El bloque "a nombre de quien va" (razon social o persona + RUT validado por
 // modulo 11) es EL MISMO modulo que usa el informe termico, a proposito: los dos documentos
 // tienen que verse de la misma casa, y este es el bloque donde una divergencia se nota.
@@ -691,6 +691,7 @@ function dibujarPaginaCurvas(doc, curvas) {
   }
 
   // ── Sus ventanas, marcadas sobre su curva ───────────────────────────────
+  const _rot = rotulosDeVentanas(inter);
   inter.forEach((f, i) => {
     // [Gemini, compuerta] Number() en ambos lados: un espesor que llegue como string no
     // puede dejar la ventana del cliente sin su marca en el grafico.
@@ -703,7 +704,7 @@ function dibujarPaginaCurvas(doc, curvas) {
     doc.circle(px + 1.2, py + 1.2, 5).fillOpacity(0.3).fill('#5A6B80');
     doc.fillOpacity(1).circle(px, py, 5).fillAndStroke(GOLD, NAVY);
     doc.circle(px, py, 2).fill('#FFF6E3');
-    doc.fillColor(NAVY).fontSize(6.5).font('Helvetica-Bold').text(etiquetaVentana(f, i), px - 4, py - 14);
+    doc.fillColor(NAVY).fontSize(6.5).font('Helvetica-Bold').text(_rot[i] || etiquetaVentana(f, i), px - 4, py - 14);
   });
   y = ctop + ch + 42;
 
@@ -738,12 +739,13 @@ function dibujarPaginaCurvas(doc, curvas) {
     y += 5;
   };
   cabeceraInterseccion();
+  const _rot2 = rotulosDeVentanas(inter);
   inter.forEach((f, i) => {
     // [Codex, re-pase] el salto se decide ANTES de imprimir la fila: decidirlo despues
     // dejaba una cabecera huerfana en pagina nueva cuando la ULTIMA fila lo gatillaba.
     if (y > 756) { doc.addPage(); y = 60; cabeceraInterseccion(); }
     doc.fillColor('#222').fontSize(8).font('Helvetica')
-      .text(`${etiquetaVentana(f, i)} · ${String(f.nombre || '').slice(0, 24)} (${f.ancho_mm}×${f.alto_mm})`, col0, y, { width: 182 });
+      .text(`${_rot2[i] || etiquetaVentana(f, i)} · ${String(f.nombre || '').slice(0, 24)} (${f.ancho_mm}×${f.alto_mm})`, col0, y, { width: 182 });
     (Array.isArray(f.por_espesor) ? f.por_espesor : []).filter(esObj).forEach((pe) => {
       const j = esps.indexOf(Math.round(pe.espesor_mm));
       if (j < 0) return;

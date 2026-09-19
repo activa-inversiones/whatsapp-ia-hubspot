@@ -42,3 +42,36 @@ export function etiquetaVentana(v, i) {
   // Si ya viene rotulada ("V13"), se respeta tal cual; si es solo el numero, se le pone la V.
   return /^v\s*\d+$/i.test(s) ? s.toUpperCase().replace(/\s+/g, '') : (/^\d+$/.test(s) ? `V${s}` : s);
 }
+
+/**
+ * 🔴 LOS ROTULOS DE TODA LA LISTA, DECIDIDOS DE UNA SOLA VEZ.
+ *
+ * ⚠️ [Codex, compuerta] POR QUE NO ALCANZA CON `etiquetaVentana` ITEM POR ITEM:
+ * el `pos` lo llena el LLM, y textual de Codex: *"la causa de muerte es confiar en que el LLM
+ * copie correctamente un identificador comercial sin una comprobacion determinista. El mismo
+ * componente que puede omitir una ventana ahora controla la etiqueta usada para reconciliar el
+ * pedido. No hay defensa cuando alucina, duplica u omite pos"*. Tenia razon: dos ventanas
+ * rotuladas "V5", o la mitad con numero del cliente y la otra mitad con el del array, dejan el
+ * documento PEOR que antes de todo esto.
+ *
+ * LA REGLA ES TODO O NADA: los numeros del cliente se usan solo si la lista entera los trae,
+ * son enteros positivos y no se repiten. Ante cualquier duda se cae a la numeracion por
+ * posicion, que es el comportamiento de siempre — nunca queda peor que antes.
+ * Los SALTOS si se permiten (el cliente que numera 7, 9, 10 esta diciendo algo); lo que no se
+ * permite son los duplicados, que es lo que vuelve ambigua la reconciliacion.
+ *
+ * @param {Array<object>} lista - las ventanas tal como van a salir en el documento
+ * @returns {string[]} un rotulo por ventana, en el mismo orden
+ */
+export function rotulosDeVentanas(lista) {
+  const arr = Array.isArray(lista) ? lista : [];
+  const crudos = arr.map((v) => v?.pos ?? v?.id_ventana ?? v?.posicion ?? v?.id);
+  const nums = crudos.map((x) => {
+    const n = Number(String(x ?? '').trim().replace(/^v/i, ''));
+    return Number.isInteger(n) && n > 0 && n < 1000 ? n : null;
+  });
+  const todos = nums.length > 0 && nums.every((n) => n !== null);
+  const sinRepetir = new Set(nums).size === nums.length;
+  if (todos && sinRepetir) return nums.map((n) => `V${n}`);
+  return arr.map((_, i) => `V${i + 1}`);
+}

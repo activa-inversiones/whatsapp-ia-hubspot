@@ -24,7 +24,7 @@
 // de la misma casa, y este es el bloque donde una divergencia se nota. Import puro: sin I/O
 // y sin pdfkit, no cambia el arranque del bot.
 import { identificarCliente, dibujarIdentidadCliente, textoInlineReceptor, destinatarioLegal } from './bloqueIdentidadPdf.js';
-import { etiquetaVentana } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
+import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
 
 export const VERSION = '1.1.0';
 
@@ -200,6 +200,7 @@ export function resumenVentanas(ventanas, uwMaxNorma) {
   const lista = Array.isArray(ventanas) ? ventanas : [];
   const exigencia = num(uwMaxNorma);
 
+  const _rot = rotulosDeVentanas(lista);
   const filas = lista.map((v, i) => {
     const { uwCliente, cumple } = veredictoUw(v && v.uw, uwMaxNorma);
     // 🔴 [2026-08-24 · Codex] LA CANTIDAD NO SE INVENTA. Antes esto era `Number(qty) || 1`
@@ -212,7 +213,7 @@ export function resumenVentanas(ventanas, uwMaxNorma) {
     const cantidadCierta = Number.isInteger(nCant) && nCant > 0;
     const cantidad = cantidadCierta ? nCant : 1;
     return {
-      id: etiquetaVentana(v, i),
+      id: _rot[i] || etiquetaVentana(v, i),
       producto: String(v?.producto || 'Ventana').trim(),
       medidas: String(v?.medidas || '').trim(),
       vidrio: String(v?.vidrio || '').trim(),

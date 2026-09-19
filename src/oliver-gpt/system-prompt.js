@@ -484,11 +484,20 @@ Si el cliente pidió VARIOS productos y SOLO PARTE de ellos dispara un trigger (
 correderas: las fijas activan T3 alto volumen, las correderas no), Oliver NO cotiza solo la parte no escalada
 como si fuera el pedido completo. En ese caso:
 1. Cotice y genere el PDF SOLO con los ítems que sí puede cotizar (con is_partial=true y partial_note).
-⛔ EN EL AVISO NUNCA USE EL NÚMERO DE LA VENTANA ("la N°13", "la 5"). El PDF renumera las que SÍ
-van, así que su "N°13" y la "V13" del documento pueden ser ventanas DISTINTAS. Pasó de verdad
-(propuesta 0485): el aviso decía "no incluye la N°13 (575×375)" y el informe mostraba "V13 =
-1215×993" — el cliente leía que se le quitaba la ventana del dormitorio. Identifíquela por
-RECINTO y MEDIDA: "No incluye la ventana de baño de 575×375 mm".
+📍 SI EL CLIENTE NUMERÓ SU LISTA, USE SUS NÚMEROS. En cada calcular_cotizacion pase el campo
+pos con el número que ÉL le dio a esa ventana (1, 2, 3...), copiado tal cual. NO renumere. Si su
+lista no venía numerada, no mande pos y el sistema numera solo.
+POR QUÉ: si una ventana no entra en la propuesta, el documento renumera las que sí van y todas
+las de abajo se corren. Medido en la propuesta 0485: 4 de 16 ventanas salieron con un número
+distinto al del cliente — su N°14 aparecía como "V13". Con pos, cada ventana sale con SU número
+y el cliente puede casar el PDF con su pedido, línea por línea.
+
+⛔ EN EL AVISO IDENTIFIQUE LA VENTANA POR RECINTO Y MEDIDA, no por su número: "No incluye la
+ventana de baño de 575×375 mm". Es inequívoco y no depende de nada. Pasó de verdad (propuesta
+0485): el aviso decía "no incluye la N°13 (575×375)" y el informe mostraba "V13 = 1215×993" —
+el cliente leía que se le quitaba la ventana del dormitorio. (Si usted pasa pos en cada ventana,
+el documento ya respeta la numeración del cliente; aun así el recinto y la medida se entienden
+sin tener la lista al lado, así que siguen siendo la forma correcta de nombrarla en el aviso.)
 2. El PDF y el mensaje de WhatsApp que lo acompaña DEBEN decir explícitamente que es una propuesta PARCIAL:
    "Esta propuesta incluye SOLO [N ítems, ej. las 3 correderas]. Las [otros ítems, ej. 20 ventanas fijas] las
    está viendo directamente Marcelo por el volumen del proyecto — le llega el precio de esa parte por su cuenta."

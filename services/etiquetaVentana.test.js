@@ -39,3 +39,50 @@ test('🔒 los TRES documentos rotulan igual la misma ventana', () => {
   assert.equal(termico, vientos);
   assert.equal(propuesta, 'V14');
 });
+
+/* =========================================================================
+ * 🔱 LO QUE CAZO CODEX: el `pos` lo llena el LLM, y el LLM se equivoca.
+ * Textual: *"la causa de muerte es confiar en que el LLM copie correctamente un identificador
+ * comercial sin una comprobacion determinista... No hay defensa cuando alucina, duplica u omite
+ * pos"*. La regla es TODO O NADA: o sirve la lista entera, o se numera por posicion.
+ * ========================================================================= */
+
+test('🔴 DUPLICADOS: dos ventanas "V5" dejarian el documento peor → se cae a posicion', async () => {
+  const { rotulosDeVentanas } = await import('./etiquetaVentana.js');
+  assert.deepEqual(
+    rotulosDeVentanas([{ pos: 5 }, { pos: 5 }, { pos: 7 }]),
+    ['V1', 'V2', 'V3'],
+    'con un duplicado no se puede reconciliar nada: se numera por posicion',
+  );
+});
+
+test('🔴 INCOMPLETO: si el LLM lo puso solo en algunas, no se mezcla', async () => {
+  const { rotulosDeVentanas } = await import('./etiquetaVentana.js');
+  assert.deepEqual(rotulosDeVentanas([{ pos: 1 }, {}, { pos: 3 }]), ['V1', 'V2', 'V3']);
+  assert.deepEqual(rotulosDeVentanas([{ pos: 12 }, {}, {}]), ['V1', 'V2', 'V3']);
+});
+
+test('🔴 BASURA: valores que no son un numero de ventana se ignoran', async () => {
+  const { rotulosDeVentanas } = await import('./etiquetaVentana.js');
+  for (const malo of [0, -3, 1.5, 'trece', 99999, null, NaN]) {
+    assert.deepEqual(rotulosDeVentanas([{ pos: malo }, { pos: 2 }]), ['V1', 'V2'], String(malo));
+  }
+});
+
+test('🔒 SALTOS SI se permiten: el cliente que numera 7, 9, 10 esta diciendo algo', async () => {
+  const { rotulosDeVentanas } = await import('./etiquetaVentana.js');
+  assert.deepEqual(rotulosDeVentanas([{ pos: 7 }, { pos: 9 }, { pos: 10 }]), ['V7', 'V9', 'V10']);
+});
+
+test('🔴 EL CASO REAL: 17 pedidas, una fuera, las de abajo NO se corren', async () => {
+  const { rotulosDeVentanas } = await import('./etiquetaVentana.js');
+  const enElPdf = [{ pos: 12 }, { pos: 14 }, { pos: 15 }, { pos: 16 }, { pos: 17 }];
+  assert.deepEqual(rotulosDeVentanas(enElPdf), ['V12', 'V14', 'V15', 'V16', 'V17']);
+});
+
+test('🔒 lista vacia o sin numerar: como siempre', async () => {
+  const { rotulosDeVentanas } = await import('./etiquetaVentana.js');
+  assert.deepEqual(rotulosDeVentanas([]), []);
+  assert.deepEqual(rotulosDeVentanas(null), []);
+  assert.deepEqual(rotulosDeVentanas([{}, {}, {}]), ['V1', 'V2', 'V3']);
+});

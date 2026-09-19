@@ -58,6 +58,9 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
         compuesta: t.result.compuesta || undefined,
         hoja_mm: (String(t.result.producto_label || '').match(/H(\d{2,3})/i) || [])[1]
           ? Number(String(t.result.producto_label || '').match(/H(\d{2,3})/i)[1]) : undefined,
+        // [2026-09-19] El numero que le puso el CLIENTE. Sin esto el PDF renumera y su N.14
+        // sale como "V13" (medido en la propuesta 0485).
+        pos: t.result?.pos ?? t.input?.pos ?? undefined,
         ambiente: t.input?.ambiente || '',
         termico: t.result?.termico || null,   // [thermal] Uw → PDF (camino determinista)
         referencial: !!t.result?.referencial, // [2026-07-07] fuera de estándar → escalación a Marcelo (revisión ingeniería)

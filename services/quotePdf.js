@@ -7,7 +7,7 @@
 // NO inventa precios: usa it.unit_price tal cual viene del motor.
 
 import { dibujarVentana, medidas, claveColor, COLORES } from "./dibujoVentana.js";
-import { etiquetaVentana } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
+import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
 import { dibujarVentanaIso } from "./dibujoIsometrico.js";
 // 🔴 [2026-08-30] EL RUT DEL CLIENTE. Alfredo Arias (conv 56952077379) lo pidio CUATRO veces
 // y el documento no tenia donde ponerlo: este bloque imprimia solo nombre·telefono·comuna.
@@ -166,6 +166,9 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       // ancho en vez de 57, y a ese tamaño el travesaño se lee. Cuesta una hoja mas y la vale
       // — un dibujo que el cliente no puede leer no sirve para nada.
       const rowH = 210;
+      // [Codex, compuerta] Los rotulos se deciden UNA vez para todo el documento: si el LLM
+      // mando numeros del cliente incompletos o repetidos, se cae a la posicion para TODOS.
+      const _rot = rotulosDeVentanas(items);
       items.forEach((it, idx) => {
         if (y + rowH > doc.page.height - 90) {           // salto de página
           doc.addPage(); header(doc, quoteNumber); y = 110; y = tableHead(doc, y);
@@ -192,7 +195,7 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         // el anterior. El titulo ademas se acota a dos lineas con puntos suspensivos, para
         // que un label larguisimo no empuje el resto fuera de la fila.
         const COL_X = 212, COL_W = 146;
-        const titulo = `${etiquetaVentana(it, idx)} · ${label}`;
+        const titulo = `${_rot[idx] || etiquetaVentana(it, idx)} · ${label}`;
         doc.fillColor(DARK).fontSize(9).font("Helvetica-Bold");
         const hTitulo = Math.min(24, doc.heightOfString(titulo, { width: COL_W }));
         let yTxt = y + 8;

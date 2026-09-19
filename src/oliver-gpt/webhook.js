@@ -4452,6 +4452,7 @@ Comuna: ${datos.comuna}`
                     // lo vio en la propuesta CM-FR-004-2026-0483: sus dos correderas de 3 hojas con
                     // la central fija salieron dibujadas con 2. Es lo que DESCRIBE LA VENTA (cuantas
                     // hojas y que riel), no desglose de materiales: por eso entra en la version flaca.
+                    pos:      it.pos ?? null,          // [2026-09-19] SU numero de ventana
                     corredera: it.corredera || null,
                     uw:       it.termico?.uw ?? null,
                   })),
@@ -4692,6 +4693,7 @@ Comuna: ${datos.comuna}`
                 // lo vio en la propuesta CM-FR-004-2026-0483: sus dos correderas de 3 hojas con
                 // la central fija salieron dibujadas con 2. Es lo que DESCRIBE LA VENTA (cuantas
                 // hojas y que riel), no desglose de materiales: por eso entra en la version flaca.
+                pos:         it.pos ?? null,       // [2026-09-19] SU numero de ventana, no el del array
                 corredera: it.corredera || null,
                 uw:          it.termico?.uw ?? null,
               })),
