@@ -3023,6 +3023,12 @@ Comuna: ${datos.comuna}`
               // habia escrito "LAS MEDIDAS ESTAN ALTO POR ANCHO".
               texto_cliente: _textoCliente,
             };
+            // ⚠️ [2026-09-19] SE PROBO cambiar esto por `priceAllFn` (la via inyectable que el
+            // archivo ya tiene y que otros dos puntos usan) para poder testear el copy-back de
+            // abajo sin levantar el webhook. ROMPIO 2 tests que miden algo real —que al motor no
+            // se le pregunte lo mismo dos veces— porque con el mock inyectado cambia el conteo
+            // de llamadas. Se revirtio: la comodidad de testear no vale romper una optimizacion
+            // medida. Queda anotado para que el proximo no repita el intento.
             await priceAllEngine(_therm);
             (input.items || []).forEach((it, k) => {
               const _t = _therm.items[k];
@@ -3048,6 +3054,20 @@ Comuna: ${datos.comuna}`
               // llega al PDF. El dueño lo vio de inmediato: *"la imagen de la cotizacion no
               // representa lo que necesitamos que vea el cliente"*.
               if (_t && _t.compuesta) it.compuesta = _t.compuesta;
+
+              // 🔴 [2026-09-19] Y LOS OTROS DOS BLOQUES DEL MOTOR, QUE SE QUEDABAN EN LA COPIA.
+              // Esta re-cotizacion trabaja sobre COPIAS de los items, y solo se devolvian
+              // `termico`, `compuesta`, `hoja_mm` y las medidas. `corredera` (nº de hojas + riel)
+              // y `pano_vidrio` (el vidrio con los descuentos reales de marco y hoja) se
+              // calculaban en el motor y morian ahi.
+              // Se noto asi: las correderas de 3 hojas SE DIBUJAN bien, pero solo porque el TEXTO
+              // del label dice "triple hoja" y `hojasDe()` lo lee del texto. Si el motor cambia el
+              // rotulo, el dibujo vuelve a 2 hojas sin que nadie se entere. El bloque estructurado
+              // es la fuente de verdad; el texto es el respaldo, no al reves.
+              // `pano_vidrio` lo usan las cotas del dibujo y la RESISTENCIA del informe de vientos
+              // (el vidrio resiste segun SU tamaño, no el de la ventana).
+              if (_t && _t.corredera) it.corredera = _t.corredera;
+              if (_t && _t.pano_vidrio) it.pano_vidrio = _t.pano_vidrio;
 
               // Y el ancho de hoja de una corredera (H80 / H98): el dibujo lo usa para el
               // grueso real del bastidor. Sale del label que devuelve el motor, que es quien
