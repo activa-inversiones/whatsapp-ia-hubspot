@@ -24,6 +24,7 @@
 // de la misma casa, y este es el bloque donde una divergencia se nota. Import puro: sin I/O
 // y sin pdfkit, no cambia el arranque del bot.
 import { identificarCliente, dibujarIdentidadCliente, textoInlineReceptor, destinatarioLegal } from './bloqueIdentidadPdf.js';
+import { etiquetaVentana } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
 
 export const VERSION = '1.1.0';
 
@@ -211,7 +212,7 @@ export function resumenVentanas(ventanas, uwMaxNorma) {
     const cantidadCierta = Number.isInteger(nCant) && nCant > 0;
     const cantidad = cantidadCierta ? nCant : 1;
     return {
-      id: String(v?.id || `V${i + 1}`),
+      id: etiquetaVentana(v, i),
       producto: String(v?.producto || 'Ventana').trim(),
       medidas: String(v?.medidas || '').trim(),
       vidrio: String(v?.vidrio || '').trim(),

@@ -568,7 +568,7 @@ export const TOOL_DEFS = [
           grand_total: { type: 'number', description: 'Total calculado en CLP (suma de unit_price * qty). Debe venir de calcular_cotizacion.' },
           descuento_pct: { type: 'number', description: 'Descuento al cliente en % (ej. 10 = 10% off). Opcional (default 0). SOLO si el dueño autoriza un descuento. Se muestra como línea "Descuento" en el PDF y se recalcula el total con IVA.' },
           is_partial: { type: 'boolean', description: 'true SOLO si parte del pedido del cliente escaló a Marcelo y este PDF cubre ÚNICAMENTE los ítems cotizables (ver REGLA #6.1). Muestra un aviso visible "PROPUESTA PARCIAL" en el PDF. NUNCA true si el PDF ya cubre todo lo que el cliente pidió.' },
-          partial_note: { type: 'string', description: 'Solo si is_partial=true. Frase corta (ej. "No incluye las 20 ventanas fijas del proyecto, que Marcelo te cotiza directo") que se imprime bajo el aviso PARCIAL en el PDF.' },
+          partial_note: { type: 'string', description: 'Solo si is_partial=true. Frase corta que se imprime bajo el aviso PARCIAL en el PDF. ⛔ NUNCA uses el NUMERO de la ventana ("la N°13", "la 5"): el PDF renumera las ventanas que SI van, asi que tu N°13 y la V13 del documento pueden ser ventanas DISTINTAS — le paso a un cliente real y parecia que se le quitaba otra ventana. Identificala por RECINTO y MEDIDA: "No incluye la ventana de baño de 575x375 mm, que la cotiza Marcelo". Ej. correcto: "No incluye las ventanas de aluminio del living, que Marcelo te cotiza directo".' },
         },
         required: ['items'],
         additionalProperties: false,
