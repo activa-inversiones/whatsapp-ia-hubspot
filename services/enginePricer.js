@@ -1427,6 +1427,20 @@ export async function priceAllEngine(d, customer_id = "") {
     item.total_price = lineTotal;
     item.source = "activa_engine";
     item.confidence = "high";
+    // 🔴 [2026-09-19] LO QUE EL MOTOR AVISA, EL CLIENTE LO TIENE QUE LEER.
+    // El motor devuelve `avisos` cuando cambia o estira lo que le pidieron (una hoja que no
+    // existe en ese color, una medida bajo el minimo del perfil...). El bot NUNCA leyo ese
+    // campo: solo llenaba `price_warning` cuando la cotizacion FALLABA. Asi que un aviso sobre
+    // una cotizacion EXITOSA se perdia entero y al cliente le llegaba el precio limpio.
+    //
+    // Importa desde hoy, que el dueño ordeno cotizar TODA medida ("coticemoslas todas sean
+    // grandes o pequeñas"): sin este puente, una ventana imposible cotizaba con un numero de
+    // aspecto normal y sin una sola palabra de advertencia. MEDIDO en el motor con precios
+    // uniformes: 1 mm de ancho -> $258.766, y 4 hojas en 600 mm -> $468.831, MAS CARA que una
+    // ventana normal de 1600x1200 ($355.727). Lo levanto Gemini en la compuerta cruzada.
+    if (Array.isArray(r.avisos) && r.avisos.length) {
+      item.price_warning = r.avisos.join(" · ");
+    }
     // Persistir especificación para el PDF/etiqueta (antes se perdía): serie + hoja + riel
     item.serie = serie;
     if (r.producto_label) item.producto_label = r.producto_label;
