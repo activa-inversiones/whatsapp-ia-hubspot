@@ -214,10 +214,22 @@ function medidas(m) {
  * muestra al cliente un producto que no es el que se le va a fabricar.
  */
 function esMonorriel(it) {
-  // 🔴 [2026-09-23] SE AGREGA `producto`: asi se llama el campo en el item que se guarda en
-  // `quotes` y que es el que llega al PDF. Sin el, el dibujo no veia el texto de la ventana.
-  // Es el mismo agujero que ya se habia tapado en `tipoDe` el 18-sep, en este mismo archivo.
-  const t = `${it?.product || ""} ${it?.producto_label || ""} ${it?.label || ""} ${it?.producto || ""} ${it?.descripcion || ""}`;
+  // 🔴 [2026-09-23] SE AGREGA `producto`, Y SOLO `producto`: asi se llama el campo en el item
+  // que llega al PDF (webhook lo arma como `producto: it.producto_label`) y en el que se guarda
+  // en la tabla `quotes`. Sin el, el dibujo no veia el texto de la ventana. Es el mismo agujero
+  // que ya se habia tapado en `tipoDe` el 18-sep, en este mismo archivo.
+  //
+  // ⛔ NO AGREGAR `descripcion` NI NINGUN CAMPO DE TEXTO LIBRE. Estuvo puesto una hora y lo
+  // volteo la compuerta cruzada (Gemini, 23-sep) con un caso que no tiene vuelta:
+  //     { product: "FIJA", descripcion: "ventana fija de baño, abajo de la corredera
+  //       monorriel del living" }
+  // La palabra "monorriel" de OTRA ventana secuestraba esta, y como `tipoDe` consulta el
+  // monorriel primero, una FIJA salia dibujada como corredera con flecha y manilla: se cobra
+  // una ventana y se dibuja otra, que es exactamente el defecto que este commit viene a cerrar.
+  // Es el mismo motivo por el que `enginePricer` mira SOLO el texto del item y nunca
+  // `texto_cliente`. MEDIDO antes de sacarlo: el item que llega al PDF NO trae `descripcion`,
+  // asi que el campo no aportaba nada y solo abria la puerta.
+  const t = `${it?.product || ""} ${it?.producto_label || ""} ${it?.label || ""} ${it?.producto || ""}`;
   // 🔴 SEÑAL FUERTE: LA DECIDE `esMonorrielPorForma`, QUE ES LA UNICA FUENTE (formaMonorriel.js).
   // Antes aca vivia una copia propia, mas debil, y el 23-sep le mostro a un cliente real una
   // corredera SLIDING de dos hojas moviles sobre un monorriel que se le habia COTIZADO BIEN

@@ -1301,3 +1301,25 @@ test("🔴 #880 el dibujo y el PRECIO usan la misma fuente (no dos copias que se
     );
   }
 });
+
+// 🔴 #880 · GUARDIA QUE PUSO LA COMPUERTA CRUZADA (Gemini, 23-sep). La primera versión del fix
+// metía `descripcion` —texto libre— en lo que mira el dibujante, y Gemini lo volteó con un caso
+// que no tiene vuelta: en un presupuesto de varias ventanas, la palabra "monorriel" de OTRA
+// ventana secuestraba esta. Como `tipoDe` pregunta por el monorriel ANTES que nada, una ventana
+// FIJA salía dibujada como corredera con flecha y manilla: se cobra una y se dibuja otra, que es
+// el defecto exacto que #880 vino a cerrar. Se sacó el campo. Este test impide que vuelva.
+test("🔴 #880 el texto de OTRA ventana no secuestra el dibujo de esta", () => {
+  const M = { ancho_mm: 600, alto_mm: 600 };
+  const CASOS = [
+    // [item, tipo esperado] — el texto libre nombra un monorriel que NO es esta ventana
+    [{ product: "FIJA", descripcion: "fija de baño, abajo de la corredera monorriel del living" }, "FIJA"],
+    [{ producto: "Proyectante (bisagra superior)", descripcion: "va sobre la corredera con paño fijo" }, "PROYECTANTE"],
+    [{ producto: "Puerta", descripcion: "da hacia la corredera con paño fijo del comedor" }, "PUERTA"],
+  ];
+  for (const [it, esperado] of CASOS) {
+    assert.equal(tipoDe(it), esperado, `"${it.descripcion}" no puede convertir la ventana en corredera`);
+    const h = planoDeVentana(it, M).hojas;
+    const pareceMono = h.length === 2 && h.filter((x) => x.sinBastidor).length === 1;
+    assert.equal(pareceMono, false, "y tampoco se dibuja como monorriel");
+  }
+});
