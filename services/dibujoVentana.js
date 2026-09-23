@@ -37,6 +37,8 @@
 // grafito antracita con grano fino tipo gofrado; el negro con granulado que destella; el
 // blanco liso con puro brillo. `textura`: "madera" (hebras onduladas) / "grano" (motas
 // cortas claras y oscuras) / "liso" (solo el brillo). `brillo` = factor de la hebra especular.
+import { esMonorrielPorForma } from "./formaMonorriel.js";
+
 const COLORES = {
   blanco:    { f: "#F4F4F1", e: "#000000", nombre: "Blanco", veta: null, textura: "liso", brillo: 1.08 },
   roble:     { f: "#9A5B1E", e: "#000000", nombre: "Roble", veta: "#6E3C12", textura: "madera", brillo: 1.30 },   // roble dorado
@@ -212,15 +214,19 @@ function medidas(m) {
  * muestra al cliente un producto que no es el que se le va a fabricar.
  */
 function esMonorriel(it) {
-  const t = `${it?.product || ""} ${it?.producto_label || ""} ${it?.label || ""}`;
-  // SEÑAL FUERTE: el texto describe la ventana misma. Manda siempre.
-  //   "monorriel" · "fija + corredera" (en cualquier orden) · "mitad fija ... mitad corredera"
-  const fuerte = /mono\s?-?r?riel/i.test(t)
-    || /fij[ao][^+]{0,14}[+y][^+]{0,14}corred/i.test(t)
-    || /corred[^+]{0,14}[+y][^+]{0,14}fij[ao]/i.test(t)
-    || /mitad\s+fij[ao][\s\S]{0,24}mitad\s+corred/i.test(t)
-    || /mitad\s+corred[\s\S]{0,24}mitad\s+fij[ao]/i.test(t);
-  if (fuerte) return true;
+  // 🔴 [2026-09-23] SE AGREGA `producto`: asi se llama el campo en el item que se guarda en
+  // `quotes` y que es el que llega al PDF. Sin el, el dibujo no veia el texto de la ventana.
+  // Es el mismo agujero que ya se habia tapado en `tipoDe` el 18-sep, en este mismo archivo.
+  const t = `${it?.product || ""} ${it?.producto_label || ""} ${it?.label || ""} ${it?.producto || ""} ${it?.descripcion || ""}`;
+  // 🔴 SEÑAL FUERTE: LA DECIDE `esMonorrielPorForma`, QUE ES LA UNICA FUENTE (formaMonorriel.js).
+  // Antes aca vivia una copia propia, mas debil, y el 23-sep le mostro a un cliente real una
+  // corredera SLIDING de dos hojas moviles sobre un monorriel que se le habia COTIZADO BIEN
+  // (CM-FR-004-2026-0515, $193.891 = "Corredera ANDES 54 Monorriel"). La copia exigia un
+  // conector "+" o "y" entre las palabras, y el label que sale de verdad dice "Corredera CON
+  // paño fijo". La canonica ya cubria ese caso, con negaciones y conteo de hojas encima.
+  // ⚠️ NO volver a escribir regex de monorriel en este archivo: se agregan alla y las dos
+  // puntas —el precio y el dibujo— quedan de acuerdo por construccion.
+  if (esMonorrielPorForma(t)) return true;
   // SEÑAL DEBIL: la sola palabra "americana". La linea AMERICANA es monorriel y nada mas, PERO
   // 🔴 en este repo "americana" TAMBIEN es un ambiente de la casa (cocina americana) — hay tests
   // que lo distinguen. Sin guardia, "Proyectante S60 cocina americana" se dibujaba como

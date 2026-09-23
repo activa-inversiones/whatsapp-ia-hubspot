@@ -1225,3 +1225,79 @@ test('🔴 pero NO se miente al reves: un vidrio simple dice "vidrio"', () => {
     assert.match(mk(g).etiquetaVidrio, /^vidrio /, g || '(sin dato)');
   }
 });
+
+// ---------------------------------------------------------------------------
+// 🔴 #880 — EL MONORRIEL COTIZADO SE DIBUJABA COMO SLIDING DE DOS HOJAS
+// ---------------------------------------------------------------------------
+// Reclamo del dueño sobre una propuesta REAL enviada a un cliente (CM-FR-004-2026-0515,
+// 23-sep 17:16). Textual: *"OLIVER LE PIDIERON MONORRIEL QUE SON CORREDERA UNA HOJA FIJA COLOR
+// BLANCO Y MOSTRO IMAGEN DE SLIDING"*.
+//
+// Lo que hacía que fuera GRAVE y no cosmético: el PRECIO estaba BIEN. Medido en vivo contra el
+// motor el mismo día, 1420x900 blanco 4+12+4:
+//     ANDES MONORRIEL  -> $193.891  "Corredera ANDES 54 Monorriel"   <- lo que se cobró ✅
+//     SLIDING 2 hojas  -> $274.671  "Corredera SLIDING H80 Doble Riel S75"
+// O sea: se le cobró el monorriel y se le MOSTRÓ el dibujo de otro producto, más caro. El
+// cliente firma mirando la figura, no el nombre de la línea.
+//
+// La causa raíz NO fue el regex: fue que la misma pregunta se contestaba en dos lugares con dos
+// criterios (lección L3 de DIBUJO-VENTANAS-ACTIVA.md). Por eso el guardia de abajo prueba las
+// DOS PUNTAS DE ACUERDO, no solo que el dibujo salga bien: si alguien vuelve a escribir una
+// copia propia del detector en el dibujante, este test cae aunque su copia funcione para el
+// caso de hoy.
+test("🔴 #880 un monorriel cotizado se DIBUJA como monorriel: 1 hoja móvil + 1 paño fijo", () => {
+  const M = { ancho_mm: 1420, alto_mm: 900 };
+  // El item TAL COMO SE GUARDA en la tabla `quotes` y llega al PDF: el texto vive en `producto`.
+  const real = planoDeVentana({ producto: "Corredera con paño fijo", color: "Blanco" }, M);
+  assert.equal(real.hojas.length, 2, "un monorriel se ve con DOS paños");
+  const fijos = real.hojas.filter((h) => h.sinBastidor);
+  assert.equal(fijos.length, 1, "EXACTAMENTE un paño fijo (sin contorno de hoja)");
+  const moviles = real.hojas.filter((h) => !h.sinBastidor);
+  assert.equal(moviles.length, 1, "y EXACTAMENTE una hoja que corre: una sola vía");
+});
+
+test("🔴 #880 el label real y la palabra 'monorriel' dan EL MISMO dibujo", () => {
+  const M = { ancho_mm: 1420, alto_mm: 900 };
+  const norm = (it) => JSON.stringify(
+    planoDeVentana(it, M).hojas.map((h) => [h.sinBastidor, h.sinManilla, h.riel]),
+  );
+  // Es el corazón del defecto: estos dos decían cosas distintas y son la MISMA ventana.
+  assert.equal(
+    norm({ producto: "Corredera con paño fijo" }),
+    norm({ producto: "Corredera monorriel" }),
+    "'con paño fijo' es como lo escribe el sistema; 'monorriel' como lo pide el cliente",
+  );
+});
+
+test("🔴 #880 el dibujo y el PRECIO usan la misma fuente (no dos copias que se contradicen)", async () => {
+  // Verificación cruzada de módulos: si el dibujante vuelve a tener criterio propio, esto cae.
+  const { esMonorrielPorForma } = await import("./formaMonorriel.js");
+  const M = { ancho_mm: 1420, alto_mm: 900 };
+  const CASOS = [
+    // [texto, ¿es monorriel?] — mezcla del label del sistema y de cómo habla el cliente chileno
+    ["Corredera con paño fijo", true],
+    ["corredera con un paño fijo", true],
+    ["corredera monorriel", true],
+    ["mitad fija mitad corredera", true],
+    ["un paño fijo y otro que se deslice", true],
+    ["Corredera 2 hojas", false],
+    ["corredera de dos hojas mas un fijo lateral", false], // 3 paños, NO es monorriel
+    ["no quiero que sea monorriel", false],
+  ];
+  for (const [txt, esMono] of CASOS) {
+    // ⚠️ "monorriel dibujado" = DOS paños y EXACTAMENTE UNO sin bastidor. No alcanza con
+    // "algún paño sin bastidor": una ventana FIJA también va sin bastidor, y con esa versión
+    // más floja el caso "no quiero que sea monorriel" daba un falso positivo. Lo cazó este
+    // mismo test al escribirlo, que es justamente para lo que sirve.
+    const _h = planoDeVentana({ producto: txt }, M).hojas;
+    const dibujadoComoMono = _h.length === 2 && _h.filter((h) => h.sinBastidor).length === 1;
+    assert.equal(
+      esMonorrielPorForma(txt), esMono,
+      `el PRECIO debe leer "${txt}" como ${esMono ? "" : "NO "}monorriel`,
+    );
+    assert.equal(
+      dibujadoComoMono, esMono,
+      `y el DIBUJO tiene que coincidir con el precio en "${txt}"`,
+    );
+  }
+});
