@@ -10,7 +10,7 @@
     "test": "node --test \"*.test.js\" \"services/**/*.test.js\" \"src/**/*.test.js\""
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "22.x"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.100.1",
