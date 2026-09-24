@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+# pre-push — corre la suite ANTES de que el push llegue a producción.
+#
+# POR QUÉ EXISTE (24-sep, pedido del dueño). Un `git push` en este repo ES un despliegue: Railway
+# construye y publica solo. Y se midió que los tests no los corría nadie automáticamente — el CXM
+# llegó a tener 19 archivos con 350 pruebas y NINGÚN comando que las ejecutara.
+# Esto no reemplaza la compuerta cruzada: sólo evita que un rojo evidente llegue a producción.
+#
+# NO consume minutos de GitHub Actions: corre en esta máquina. Regla del cupo gratis.
+set -e
+DESDE=$(date +%s)
+printf '\n🧪 pre-push: corriendo la suite antes de desplegar (~2 min)...\n\n'
+if npm test; then
+  printf '\n✅ pre-push: suite verde en %s s — el push sigue.\n\n' "$(( $(date +%s) - DESDE ))"
+  exit 0
+fi
+printf '\n'
+printf '🛑 PUSH FRENADO: la suite tiene tests en rojo (%s s).\n' "$(( $(date +%s) - DESDE ))"
+printf '   En este repo un push es un DESPLIEGUE A PRODUCCION, así que no sale con rojos.\n'
+printf '   Arreglá lo que falló (el nombre del test sale arriba) y volvé a intentar.\n\n'
+exit 1

@@ -1678,11 +1678,81 @@ export async function handleWebhook(req, res, deps = {}) {
     // se maneja en CÓDIGO, no en el LLM. Mismo módulo compartido que IG/FB.
     const escalationTemplateFn = deps.sendEscalationTemplate || sendEscalationTemplate;
     if (isEscalationRequest(userText)) {
-      await safe('escalate.notify', () =>
+      // 🔴 [#888 · 24-sep] ANTES ESTE FALLO ERA INVISIBLE, Y AL CLIENTE SE LE DECÍA QUE NO.
+      // `safe()` solo loguea si la función LANZA. Ni notifyHighValue ni sendEscalationTemplate lanzan:
+      // devuelven {sent:false} / {ok:false} y ese valor se descartaba sin leerlo. O sea que si el aviso
+      // a Marcelo no salía —ADMIN_PIN sin setear, SELF_URL mal, timeout de Meta, ventana de 24 h
+      // cerrada— NO quedaba rastro en ningún lado, y acto seguido se le manda al cliente un texto que
+      // afirma "Le avisé al Ing. Marcelo Cifuentes Méndez... Te contacta personalmente".
+      // Un cliente que pide hablar con una persona es de lo más caro que pasa por acá, y el comentario
+      // de arriba ya decía que esto es "plata/reputación". Ahora el fallo se DECLARA.
+      const rNotify = await safe('escalate.notify', () =>
         notifyHighValue(enviarSinPausa, from, { data: { ...state }, history },
           'cliente pidió hablar con un humano / molesto'));
-      await safe('escalate.template', () =>
+      const rTemplate = await safe('escalate.template', () =>
         escalationTemplateFn(state.name || '', 'cliente pide hablar con humano'));
+      // Los dos caminos son independientes: basta que UNO haya salido para que Marcelo se haya enterado.
+      //
+      // ⚠️ [#888 r2 · Kimi K3 en el tridente, MEDIA] `cooldown` NO ES UNA FALLA: ES «YA SE LE AVISÓ».
+      // Verificado en services/highValueNotifier.js:190-193 — devuelve {sent:false, reason:'cooldown'}
+      // cuando YA se mandó una alerta con la misma key y tier igual o mayor dentro de COOLDOWN_MS.
+      // Contarlo como "no llegó" produce un pánico falso: el cliente insiste dos veces en esa ventana,
+      // el template tiene un timeout, y se escribe "hay que llamarlo a mano" por un aviso que sí salió.
+      // Gemini, en el mismo tridente, pidió incluir también 'standard_lead'. REFUTADO midiendo:
+      // highValueNotifier.js:200 exige `reason === "auto"` para devolver standard_lead, y esta llamada
+      // manda 'cliente pidió hablar con un humano / molesto' — no puede ocurrir por este camino. Y si
+      // algún día pudiera, meterlo acá sería un ERROR: standard_lead significa que a Marcelo NO se le
+      // dijo. Sólo 'cooldown' garantiza que ya se enteró.
+      const NO_SON_FALLAS = new Set(['cooldown']); // no-envíos donde el dueño YA está enterado
+      const avisoNotify = rNotify?.sent === true || NO_SON_FALLAS.has(rNotify?.reason);
+      const avisoTemplate = rTemplate?.ok === true;
+      const avisoLlego = avisoNotify || avisoTemplate;
+
+      // [#888 r2 · Kimi, MEDIA] Y el canal roto no puede quedar invisible sólo porque el OTRO salvó la
+      // situación: si notifyHighValue falló por algo real (no_owner_phone = configuración rota,
+      // permanente) y el template salió, antes no se decía NADA y el canal principal seguía muerto.
+      const notifyFalloReal = rNotify?.sent !== true && !NO_SON_FALLAS.has(rNotify?.reason);
+      if (avisoLlego && notifyFalloReal) {
+        log('warn', 'escalate.canal_degradado', {
+          from,
+          motivo_notify: rNotify?.error || rNotify?.reason || (rNotify === null ? 'excepcion' : 'sin_confirmacion'),
+          nota: 'el aviso salió por el otro camino, pero este quedó roto y hay que mirarlo',
+        });
+      }
+
+      if (!avisoLlego) {
+        const motivoNotify = rNotify?.error || rNotify?.reason || (rNotify === null ? 'excepcion' : 'sin_confirmacion');
+        const motivoTemplate = rTemplate?.error || rTemplate?.reason || (rTemplate === null ? 'excepcion' : 'sin_confirmacion');
+        log('error', 'escalate.AVISO_NO_SALIO', {
+          from, motivo_notify: motivoNotify, motivo_template: motivoTemplate,
+          por_que_importa: 'el cliente pidió hablar con una persona y se le dijo que ya se avisó',
+        });
+        // [#888 r2 · Kimi, MEDIA-ALTA] SIN ESTO, 5 MENSAJES DEL CLIENTE = 5 EVENTOS IDÉNTICOS.
+        // Alguien que pide hablar con una persona insiste, y con razón. El mismo patrón de deduplicación
+        // con TTL que ya usa este archivo más abajo para los avisos de entrega dudosa.
+        // «Ante la duda, avisa»: si no se puede leer la marca, se escribe el evento igual — un evento
+        // repetido molesta, uno que falta deja a un cliente esperando una llamada que nadie va a hacer.
+        const kDedup = `escalate:avisoFallido:${from}`;
+        let yaAvisado = null;
+        try { yaAvisado = await (deps.leerEstado || leerEstado)(kDedup); } catch { /* ante la duda, avisa */ }
+        const DEDUP_MS = 6 * 3600 * 1000;
+        if (!yaAvisado?.at || (Date.now() - yaAvisado.at) > DEDUP_MS) {
+          // Queda en la conversación, que es lo que se mira desde el panel: un console.error en Railway
+          // se pierde entre miles de líneas y nadie lo revisa.
+          await safe('escalate.marcarAvisoFallido', () => bridge.pushConversationEvent({
+            channel: 'whatsapp', external_id: from, direction: 'outbound', actor_type: 'system',
+            actor_name: 'Sistema', message_type: 'text',
+            body: '⚠️ El cliente pidió hablar con una persona y el aviso a Marcelo NO salió. '
+              + 'Al cliente se le dijo que sí. Hay que llamarlo a mano.',
+            metadata: { source: 'oliver_gpt_webhook', escalation: true, aviso_fallido: true,
+              // [#888 r2 · Kimi] También el `reason`, no sólo `error`: si no, un 'no_owner_phone' no
+              // quedaba en la conversación y sólo vivía en el log, que nadie revisa.
+              motivo_notify: motivoNotify, motivo_template: motivoTemplate },
+          }));
+          try { await (deps.escribirEstado || escribirEstado)(kDedup, { at: Date.now() }, 7 * 24 * 3600); }
+          catch { /* si no se puede marcar, el próximo vuelve a avisar: falla del lado seguro */ }
+        }
+      }
       const escMsg = escalationMessage();
       await safe('escalate.send', () => sendWhatsAppText(from, escMsg));
       await safe('escalate.persistIn', () => bridge.pushConversationEvent({
