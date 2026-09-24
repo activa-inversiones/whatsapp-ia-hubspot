@@ -1323,3 +1323,80 @@ test("🔴 #880 el texto de OTRA ventana no secuestra el dibujo de esta", () => 
     assert.equal(pareceMono, false, "y tampoco se dibuja como monorriel");
   }
 });
+
+// ---------------------------------------------------------------------------
+// 🔴 #883 — LA VENTANA EN ESQUINA SE DIBUJA COMO UNA SOLA VENTANA
+// ---------------------------------------------------------------------------
+// Pedido del dueño (24-sep), textual: *"todas las ventanas por separado existen solo las
+// unimos a traves de conectores"* y *"colocarle las medidas ... y unidas para que se vea mas
+// formal"*. Hasta hoy el motor la COTIZABA (#722, #882) y el PDF no la dibujaba.
+//
+// ⚠️ Lo que este test NO prueba, dicho explicito: que el dibujo se PAREZCA a una bow window.
+// Eso se mira renderizando, no leyendo (es la regla de DIBUJO-VENTANAS-ACTIVA.md). Acá se
+// comprueba lo que un test SI puede: que sea UNA figura y no tres, que las cotas digan los
+// milimetros REALES del cliente, y que el poste no se dibuje.
+test("🔴 #883 la esquina es UNA ventana: paños pegados, no tres sueltas", () => {
+  const LAT = { tipo: "COMPUESTA", ancho_mm: 400,
+    compuesta: { orientacion: "vertical", partes: [{ tipo: "PROYECTANTE", alto_mm: 750 }, { tipo: "FIJA", alto_mm: 750 }] } };
+  const it = { producto_label: "Ventana en esquina", measures: "2800x1500", color: "Blanco",
+    esquina: { partes: [LAT, { tipo: "FIJA", ancho_mm: 2000 }, LAT] } };
+  const p = planoDeVentana(it, { x: 0, y: 0, w: 600, h: 320 });
+
+  assert.equal(p.tipo, "ESQUINA");
+  // 5 celdas: cada lateral se parte en proyectante + fijo, y el central entero.
+  assert.equal(p.marcos.length, 5);
+  assert.deepEqual(p.hojas.map((h) => h.tipo),
+    ["PROYECTANTE", "FIJA", "FIJA", "PROYECTANTE", "FIJA"]);
+
+  // 🔴 PEGADOS. Si entre dos paños vecinos queda un hueco, se ven tres ventanas sueltas, que
+  // es exactamente lo que el dueño no quiere. Se admite la junta de la linea, nada mas.
+  const porPano = [0, 1, 2].map((i) => p.marcos.filter((m) => m.pano === i));
+  for (let i = 0; i < porPano.length - 1; i++) {
+    const derA = Math.max(...porPano[i].map((m) => m.x + m.w));
+    const izqB = Math.min(...porPano[i + 1].map((m) => m.x));
+    assert.ok(izqB - derA <= 1.01, `paños ${i} y ${i + 1} separados ${izqB - derA}px: se ven sueltos`);
+  }
+});
+
+test("🔴 #883 las cotas dicen los MILIMETROS REALES, no los dibujados en escorzo", () => {
+  // Es el punto delicado: los laterales se dibujan mas angostos porque giran, pero el cliente
+  // tiene que leer SU medida. Si algun dia alguien hace que la cota salga del ancho dibujado,
+  // este test cae y esa ventana deja de mentirle al cliente.
+  const LAT = { tipo: "COMPUESTA", ancho_mm: 400,
+    compuesta: { orientacion: "vertical", partes: [{ tipo: "PROYECTANTE", alto_mm: 750 }, { tipo: "FIJA", alto_mm: 750 }] } };
+  const it = { producto_label: "Ventana en esquina", measures: "2800x1500", color: "Blanco",
+    esquina: { partes: [LAT, { tipo: "FIJA", ancho_mm: 2000 }, LAT] } };
+  const p = planoDeVentana(it, { x: 0, y: 0, w: 600, h: 320 });
+
+  const porPano = p.cotas.filter((c) => c.fila === 0).map((c) => c.texto);
+  assert.deepEqual(porPano, ["400", "2000", "400"], "la medida del cliente, no la del papel");
+  const totales = p.cotas.filter((c) => c.fila === 1).map((c) => c.texto);
+  assert.deepEqual(totales, ["2800", "1500"], "el total es la SUMA DIRECTA (regla del dueño)");
+
+  // Y el escorzo existe de verdad: el lateral se dibuja mas angosto de lo que le tocaria.
+  const anchoPano = (i) => {
+    const ms = p.marcos.filter((m) => m.pano === i);
+    return Math.max(...ms.map((m) => m.x + m.w)) - Math.min(...ms.map((m) => m.x));
+  };
+  // ⚠️ CON MARGEN, Y NO ES UN DETALLE: la primera version comparaba `< 400/2000` pelado y el
+  // test PASABA IGUAL con el escorzo neutralizado, porque la division da 0.19999999999999998
+  // por punto flotante. Un test que sobrevive a que le saquen lo que prueba no prueba nada.
+  // Se exige un escorzo REAL de al menos 10%.
+  assert.ok(anchoPano(0) / anchoPano(1) < (400 / 2000) * 0.9,
+    `el lateral tiene que verse MAS angosto que su proporcion (esta girado); `
+    + `ratio ${anchoPano(0) / anchoPano(1)}`);
+});
+
+test("🔴 #883 el poste se COBRA pero NO se dibuja", () => {
+  // Regla del dueño, 11-sep: *"quedan instalados, pero la ventana desde adentro no se ve ese
+  // perfil, se ve desde afuera"*, y confirmada el 24-sep: *"por vista desde adentro, que es la
+  // que entregamos nosotros, no se ve, pero se agrega el perfil y el acero y los tornillos"*.
+  // El cobro vive en el motor (quoteEngine); acá solo se deja fijo que el DIBUJO no lo pinta,
+  // y declarado, para que nadie lo agregue creyendo que falta.
+  const it = { producto_label: "Ventana en esquina", measures: "2800x1500", color: "Blanco",
+    esquina: { partes: [{ tipo: "FIJA", ancho_mm: 400 }, { tipo: "FIJA", ancho_mm: 2000 }, { tipo: "FIJA", ancho_mm: 400 }] } };
+  const p = planoDeVentana(it, { x: 0, y: 0, w: 600, h: 320 });
+  assert.equal(p.esquina.poste_dibujado, false);
+  assert.equal(p.esquina.uniones, 2);
+  assert.equal(p.marcos.length, 3, "sin sub-paños son 3 celdas, una por paño");
+});

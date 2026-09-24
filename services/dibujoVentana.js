@@ -966,6 +966,102 @@ function planoDeVentana(it, caja) {
   const intX = x + marco, intY = y + marco;
   const intW = Math.max(1, w - 2 * marco), intH = Math.max(1, h - 2 * marco);
 
+  // ── ESQUINA / BOW WINDOW: N VENTANAS UNIDAS POR UN CONECTOR ─────────────────
+  // 🔴 [2026-09-24 · #883] Pedido del dueño sobre la bow window que estaba cotizando. Hasta
+  // hoy el motor la COTIZABA (#722, #882) y el PDF no la dibujaba: salia partida en ventanas
+  // sueltas, una al lado de la otra, que es lo que el dueño no quiere ver.
+  // Textual: *"todas las ventanas por separado existen solo las unimos a traves de
+  // conectores"* y *"colocarle las medidas ... y unidas para que se vea mas formal"*.
+  //
+  // ⚠️ NO SE ESCRIBE UN CAMINO NUEVO. Es la COMPUESTA horizontal con tres diferencias, y las
+  // tres salen de reglas del dueño que ya estaban escritas:
+  //   1. Los paños van PEGADOS (la compuesta deja el acople de 2 mm a la vista). El poste
+  //      de esquina NO SE DIBUJA — regla del 11-sep: *"la ventana desde adentro no se ve ese
+  //      perfil, se ve desde afuera"*, y el cliente la mira desde adentro.
+  //   2. Un paño de la esquina puede ser EL MISMO una compuesta (el lateral mitad fijo mitad
+  //      proyectante de #882). Se reparte su propio rectangulo con la misma funcion.
+  //   3. Los paños de los EXTREMOS se dibujan mas angostos: estan girados hacia el muro y se
+  //      ven en escorzo. El dueño lo pidio asi — *"que se mueva un poquito"*.
+  //      🔴 ESCORZO_LATERAL es una CONVENCION DE DIBUJO, no una medida. No sale de ninguna
+  //      ficha: es cuanto se acorta un paño girado para que se lea que gira. Por eso la COTA
+  //      SIGUE DICIENDO LOS MILIMETROS REALES (400), no los dibujados: el cliente tiene que
+  //      leer su medida, no la del papel.
+  const _esq = (Array.isArray(it?.esquina?.partes) && it.esquina.partes.length >= 2)
+    ? it.esquina : null;
+  if (_esq) {
+    const partesE = _esq.partes;
+    const n = partesE.length;
+    const ESCORZO_LATERAL = 0.72;
+    // Los anchos DIBUJADOS: los extremos acortados, el resto tal cual. Se reparte sobre estos
+    // para que el conjunto siga llenando la caja.
+    const partesDibujo = partesE.map((pt, i) => ({
+      ...pt,
+      ancho_mm: Math.max(1, Number(pt.ancho_mm) || 1) * ((i === 0 || i === n - 1) ? ESCORZO_LATERAL : 1),
+    }));
+    // Pegados: una junta de medio pixel, solo para que se vea la linea entre marcos vecinos.
+    const marcosE = repartirPorPartes(x, y, w, h, partesDibujo, 0.5, false);
+
+    const hojasE = [];
+    const marcosPubE = [];
+    marcosE.forEach((r, i) => {
+      const sub = (Array.isArray(partesE[i]?.compuesta?.partes) && partesE[i].compuesta.partes.length >= 2)
+        ? partesE[i].compuesta.partes : null;
+      // Un paño compuesto se reparte por DENTRO de su propio rectangulo, con la misma
+      // funcion y el mismo acople de 2 mm que usa una compuesta suelta: es la misma ventana.
+      const celdas = sub
+        ? repartirPorPartes(r.x, r.y, r.w, r.h, sub, Math.max(1, 2 * escala), true)
+        : [{ ...r, idx: 0 }];
+      const tiposCelda = sub ? sub.map((pt) => tipoDeParte(pt.tipo)) : [tipoDeParte(partesE[i].tipo)];
+      celdas.forEach((c, j) => {
+        const tp = tiposCelda[j];
+        const marcoP = marcoDe(tp);
+        const mx = Math.min(marcoP, c.w / 3), my = Math.min(marcoP, c.h / 3);
+        const hoja = { x: c.x + mx, y: c.y + my,
+          w: Math.max(0.5, c.w - 2 * mx), h: Math.max(0.5, c.h - 2 * my), idx: hojasE.length };
+        const perfil = tp === "FIJA" ? junquillo : perfilHoja;
+        const insetX = Math.min(perfil, hoja.w / 3), insetY = Math.min(perfil, hoja.h / 3);
+        const vidrioRect = { x: hoja.x + insetX, y: hoja.y + insetY,
+          w: Math.max(0, hoja.w - 2 * insetX), h: Math.max(0, hoja.h - 2 * insetY) };
+        hojasE.push({
+          ...hoja, vidrioRect,
+          junquilloRect: rectJunquillo(vidrioRect, Math.min(junquillo, insetX, insetY)),
+          manoDerecha: true, tipo: tp,
+          sinBastidor: tp === "FIJA",
+          simbolo: tp === "FIJA" ? [] : simboloApertura(tp, vidrioRect, true),
+          flecha: 0,
+          // `pano` dice a que paño de la esquina pertenece. Lo usa el pintado para saber
+          // cual va girado, sin tener que adivinarlo por la posicion.
+          pano: i,
+        });
+        marcosPubE.push({ x: c.x, y: c.y, w: c.w, h: c.h, marco: marcoP, pano: i });
+      });
+    });
+    hojasE.forEach((hj) => { hj.manilla = manillaDe(hj, escala); });
+
+    // Las cotas: la de cada paño dice su medida REAL, sobre el marco dibujado en escorzo.
+    // Se usa un marco por PAÑO (no por celda): el cliente cota la ventana, no sus mitades.
+    const marcoPorPano = marcosE.map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h }));
+    return {
+      tipo: "ESQUINA", ancho, alto, escala, color, vidrio, glassCode: codigoVidrio(it),
+      cotas: cotasDe({ x, y, w, h, ancho, alto, marcos: marcoPorPano, partes: partesE, vertical: false }),
+      marcoRect: null,
+      marcos: marcosPubE,
+      marco, perfilHoja, junquillo, hojas: hojasE,
+      esquina: {
+        uniones: n - 1,
+        escorzo_lateral: ESCORZO_LATERAL,
+        // Declarado a proposito: el poste existe y se COBRA, pero no se dibuja.
+        poste_dibujado: false,
+        partes: partesE.map((pt, i) => ({
+          tipo: tipoDeParte(pt.tipo), ancho_mm: pt.ancho_mm, idx: i,
+          girado: i === 0 || i === n - 1,
+        })),
+      },
+      etiqueta: `${ancho}×${alto} mm`,
+      etiquetaVidrio: etiquetaVidrioDe(it),
+    };
+  }
+
   // ── COMPUESTA: DOS VENTANAS COMPLETAS ACOPLADAS, no una con divisiones ───────
   // 🔴 [2026-08-25, corrección del dueño sobre el dibujo] La primera versión dibujaba UN
   // marco exterior con los paños adentro compartiendo los lados. Eso NO es la ventana:

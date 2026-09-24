@@ -162,15 +162,24 @@ function poligono(doc, pts, relleno, borde) {
  * @param {{x:number,y:number,w:number,h:number}} r rectangulo EXTERIOR del perfil
  * @param {number} g grueso del frente: la diagonal va de la esquina exterior a la interior
  */
-function esquinasEnIngle(doc, r, g, color) {
+// 🔴 [2026-09-24 · #883] `solo` limita el inglete a las esquinas del CONTORNO EXTERIOR.
+// Lo pidió el dueño mirando el render de la ventana en esquina: *"esta tiene como cortados los
+// perfiles en la parte superior"*. La causa: dos marcos pegados dibujaban CADA UNO su inglete
+// en la esquina que comparten, y las dos diagonales se cruzaban formando un pico — se lee como
+// un perfil cortado. En la ventana real esa junta no es una esquina de marco: es el montante
+// donde va el poste, y ahí el perfil sigue derecho.
+// `solo` es {ni,nd,si,sd} (norte-izq, norte-der, sur-izq, sur-der). Sin él se dibujan las
+// cuatro, que es como se comportaba antes: ninguna ventana ya dibujada se mueve.
+function esquinasEnIngle(doc, r, g, color, solo = null) {
   const gx = Math.min(g, r.w / 2), gy = Math.min(g, r.h / 2);
   if (!(gx > 0.4 && gy > 0.4)) return;   // a esta escala la diagonal no se leeria
   const x2 = r.x + r.w, y2 = r.y + r.h;
+  const va = (k) => !solo || solo[k];
   doc.save().lineWidth(0.3).strokeColor(color);
-  doc.moveTo(r.x, r.y).lineTo(r.x + gx, r.y + gy).stroke();
-  doc.moveTo(x2, r.y).lineTo(x2 - gx, r.y + gy).stroke();
-  doc.moveTo(r.x, y2).lineTo(r.x + gx, y2 - gy).stroke();
-  doc.moveTo(x2, y2).lineTo(x2 - gx, y2 - gy).stroke();
+  if (va('ni')) doc.moveTo(r.x, r.y).lineTo(r.x + gx, r.y + gy).stroke();
+  if (va('nd')) doc.moveTo(x2, r.y).lineTo(x2 - gx, r.y + gy).stroke();
+  if (va('si')) doc.moveTo(r.x, y2).lineTo(r.x + gx, y2 - gy).stroke();
+  if (va('sd')) doc.moveTo(x2, y2).lineTo(x2 - gx, y2 - gy).stroke();
   doc.restore();
 }
 export function dibujarVentanaIso(doc, caja, it) {
@@ -251,7 +260,29 @@ export function dibujarVentanaIso(doc, caja, it) {
   // convierte un rectángulo plano en un volumen.
   const claro = tinte(p.color.f, 1.18);
   const oscuro = tinte(p.color.f, 0.68);
-  for (const m of marcos) {
+  // 🔴 [2026-09-24 · #883] EN LA VENTANA EN ESQUINA LA PROFUNDIDAD SE DIBUJA UNA SOLA VEZ,
+  // sobre el contorno del conjunto, no paño por paño.
+  // Lo cazó el dueño mirando el render, textual: *"esta tiene como cortados los perfiles en la
+  // parte superior ... la parte de abajo esta bien"*. Y el detalle de que ABAJO estuviera bien
+  // es el que explica la causa: la fuga va hacia ARRIBA y a la derecha, así que las caras
+  // superiores son las únicas que se pisan. Cada paño dibujaba SU parábola de profundidad y,
+  // como los paños están pegados, la diagonal del que termina cruzaba con la del que empieza:
+  // quedaba una muesca en V, que se lee como un perfil cortado.
+  // En la ventana real el cabezal de los paños unidos es coplanar y CONTINUO — se lee como una
+  // sola banda. Por eso el contorno del conjunto es más fiel que la suma de las partes.
+  // ⚠️ Solo para ESQUINA: una compuesta lleva su acople de 2 mm a la vista a propósito (regla
+  // del dueño, 25-ago: *"quedaron unidas y deben ser como separadas, ahí va la unión mini"*),
+  // así que ahí las caras siguen siendo una por paño y nada se mueve.
+  const marcosFondo = (p.tipo === 'ESQUINA' && marcos.length > 1)
+    ? [{
+      x: Math.min(...marcos.map((m) => m.x)),
+      y: Math.min(...marcos.map((m) => m.y)),
+      w: Math.max(...marcos.map((m) => m.x + m.w)) - Math.min(...marcos.map((m) => m.x)),
+      h: Math.max(...marcos.map((m) => m.y + m.h)) - Math.min(...marcos.map((m) => m.y)),
+      marco: marcos[0].marco,
+    }]
+    : marcos;
+  for (const m of marcosFondo) {
     const c = carasPerfil(m, fuga, fuga.dx * 0.35);
     poligono(doc, c.superior, claro, p.color.e);
     poligono(doc, c.derecha, oscuro, p.color.e);
@@ -291,11 +322,25 @@ export function dibujarVentanaIso(doc, caja, it) {
   }
 
   // ── 2. La cara frontal: el mismo plano de siempre ──
+  // [#883] En la esquina, una celda solo lleva inglete donde toca el borde EXTERIOR del
+  // conjunto. Se compara contra el contorno con una tolerancia de 1 px, que es la junta con
+  // que se dibujan los paños pegados.
+  const _ext = (p.tipo === 'ESQUINA' && marcos.length > 1) ? {
+    x: Math.min(...marcos.map((m) => m.x)), y: Math.min(...marcos.map((m) => m.y)),
+    x2: Math.max(...marcos.map((m) => m.x + m.w)), y2: Math.max(...marcos.map((m) => m.y + m.h)),
+  } : null;
+  const soloExterior = (m) => {
+    if (!_ext) return null;
+    const T = 1.2;
+    const izq = Math.abs(m.x - _ext.x) <= T, der = Math.abs(m.x + m.w - _ext.x2) <= T;
+    const arr = Math.abs(m.y - _ext.y) <= T, aba = Math.abs(m.y + m.h - _ext.y2) <= T;
+    return { ni: izq && arr, nd: der && arr, si: izq && aba, sd: der && aba };
+  };
   for (const m of marcos) {
     doc.rect(m.x, m.y, m.w, m.h).lineWidth(0.6).fillAndStroke(p.color.f, p.color.e);
     // La folia de la cara frontal: misma textura y brillo que el plano 2D (muestrario 26-ago).
     pintarTexturaPerfil(doc, m, Math.min(m.marco || p.marco, m.w / 2, m.h / 2), p.color);
-    esquinasEnIngle(doc, m, m.marco || p.marco, p.color.e);
+    esquinasEnIngle(doc, m, m.marco || p.marco, p.color.e, soloExterior(m));
   }
 
   for (const hoja of p.hojas) {
