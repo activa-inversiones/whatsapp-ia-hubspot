@@ -42,6 +42,18 @@ export const APERTURAS = Object.freeze([
   'PUERTA_DOBLE',     // abatible 2 hojas con zapata
 ]);
 
+// 🔴 [2026-09-24 · #884] LO QUE EL MOTOR ACEPTA ES MAS QUE LO QUE EL LLM PUEDE PEDIR, y la
+// diferencia es a proposito.
+//   · `APERTURAS`       -> el enum de las tools: lo que Oliver puede emitir.
+//   · `APERTURAS_MOTOR` -> lo que `calcularCotizacion` deja pasar.
+// ESQUINA (bow window) vive SOLO en la segunda. El LLM no tiene cómo mandar los paños —la tool
+// no tiene ese parametro—, asi que si pudiera emitir 'ESQUINA' el motor le contestaria
+// `partes_invalidas` y la ventana escalaria: un modo de falla nuevo a cambio de nada.
+// La esquina la arma el PRICER a partir de las tres medidas del cliente (enginePricer), que es
+// donde estan los anchos de cada paño. El enum del LLM queda igual que ayer, y el test que lo
+// fija en 9 aperturas sigue siendo un guardia de verdad en vez de una lista que se estira sola.
+export const APERTURAS_MOTOR = Object.freeze([...APERTURAS, 'ESQUINA']);
+
 // Familias de vidrio validas para listarVidrios.
 export const FAMILIAS_VIDRIO = Object.freeze(['TERMOPANEL', 'MONOLITICO']);
 
@@ -76,7 +88,7 @@ function normalizarApertura(tipo) {
         'y seleccione el termopanel con glass_id (vea listarVidrios).'
     );
   }
-  if (!APERTURAS.includes(t)) {
+  if (!APERTURAS_MOTOR.includes(t)) {
     throw new EngineError(
       `Apertura desconocida: '${tipo}'. Valores validos: ${APERTURAS.join(', ')}.`
     );
@@ -175,7 +187,7 @@ function normalizeColor(c) {
  */
 export async function calcularCotizacion(params = {}) {
   const { tipo, ancho_mm, alto_mm, glass_id, serie, color, comuna, cantidad, hojas, partes, orientacion,
-    riel, activos, hojas_fijas } = params;
+    riel, activos, hojas_fijas, angulo } = params;
   const fueraDeAlcance = detectarProductoFueraDeAlcance('', { tipo, serie, riel });  // [2026-09-19] el riel decide si un ANDES es el monorriel calibrado
   if (fueraDeAlcance.fueraDeAlcance) {
     throw new EngineError(fueraDeAlcance.razon, { body: fueraDeAlcance });
@@ -219,6 +231,13 @@ export async function calcularCotizacion(params = {}) {
   // El dueño lo venia diciendo: *"te la he enviado varias veces y aun no podemos avanzar"*.
   // ⚠️ Abajo hay un test que compara TODO lo que el pricer manda contra lo que sale por HTTP,
   // para que la cuarta vez no exista.
+  // 🔴 [2026-09-24 · #884] EL ANGULO DE LA UNION, Y ES LA CUARTA VEZ QUE ESTA LISTA BLANCA
+  // MUERDE. El comentario de arriba decia *"para que la cuarta vez no exista"* — casi: el test
+  // que se dejo compara lo que el pricer manda contra lo que sale por HTTP, y por eso esta vez
+  // se cazo ANTES de produccion en vez de despues. El campo se calculaba bien en el pricer y
+  // se caia aca, y una esquina de 45° habria salido cotizada como una de 90°: otro esquinero,
+  // otro precio.
+  if (angulo !== undefined) payload.angulo = Number(angulo);
   if (riel !== undefined) payload.riel = riel;
   if (activos !== undefined) payload.activos = Number(activos);
   if (hojas_fijas !== undefined) payload.hojas_fijas = Number(hojas_fijas);

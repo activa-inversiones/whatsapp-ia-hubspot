@@ -1,0 +1,107 @@
+// ENRUTAMIENTO DE LA VENTANA EN ESQUINA / BOW WINDOW (#884).
+//
+// 🔴 EL DEFECTO QUE CIERRA, medido en produccion el 24-sep sobre un pedido REAL del dueño:
+// Oliver recibio una bow window y la partio en ITEMS SUELTOS (un fijo de 2000x1500 + dos
+// compuestos de 400x1500), **sin los postes de esquina**, que son un producto que se compra y
+// se instala. Tres ventanas que no se unen en angulo.
+// Y si el cliente usaba la notacion del dueño —"2000x1500x400"— era peor: `medidas()` leia
+// {2000, 1500} y **el tercer numero se descartaba EN SILENCIO**.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { priceAllEngine } from './enginePricer.js';
+
+function conMotorStub(fn) {
+  const orig = globalThis.fetch;
+  const enviados = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('/quotes/calculate')) {
+      const body = JSON.parse(opts.body || '{}');
+      enviados.push(body);
+      return { ok: true, status: 200, async json() {
+        return { ok: true, grand_total: 700000, total_clp: 594397, unit_price: 594397,
+          producto_label: 'Ventana en esquina (3 paños, union 90°)',
+          materiales: { subtotal: 527184 } };
+      } };
+    }
+    return { ok: false, status: 404, async json() { return {}; } };
+  };
+  return Promise.resolve(fn(enviados)).finally(() => { globalThis.fetch = orig; });
+}
+
+test('🔴 #884 la notacion 2000x1500x400 se cotiza como UNA ventana en esquina', async () => {
+  await conMotorStub(async (enviados) => {
+    const items = [{ measures: '2000x1500x400', product: 'VENTANA',
+      descripcion: 'bow window, laterales mitad fijo mitad proyectante', qty: 1 }];
+    await priceAllEngine({ comuna: 'Temuco', items });
+
+    assert.equal(enviados.length, 1, 'UNA sola llamada: es una ventana, no tres');
+    const b = enviados[0];
+    assert.equal(b.tipo, 'ESQUINA');
+    assert.equal(b.alto_mm, 1500);
+    assert.equal(b.angulo, 90, 'el poste que describio el dueño');
+    assert.equal(b.partes.length, 3);
+    // 🔴 EL TERCER NUMERO NO SE PIERDE: es todo el punto de este ticket.
+    assert.deepEqual(b.partes.map((p) => p.ancho_mm), [400, 2000, 400]);
+    assert.equal(b.partes[1].tipo, 'FIJA', 'el central');
+    // Laterales mitad y mitad, porque el cliente lo dijo.
+    assert.equal(b.partes[0].tipo, 'COMPUESTA');
+    assert.deepEqual(b.partes[0].partes.map((p) => p.tipo), ['PROYECTANTE', 'FIJA']);
+    assert.equal(b.partes[0].partes.reduce((s, p) => s + p.alto_mm, 0), 1500,
+      'las dos mitades tienen que sumar el alto, sin perder un milimetro por el redondeo');
+    // Y al cliente se le dice QUE se le cotizo, para que pueda corregirlo.
+    assert.match(items[0].nota_linea || '', /esquina/i);
+  });
+});
+
+test('🔴 #884 en centimetros tambien, que es como el dueño la escribio primero', async () => {
+  await conMotorStub(async (enviados) => {
+    await priceAllEngine({ comuna: 'Temuco', items: [
+      { measures: '200x150x40', product: 'VENTANA', descripcion: 'bow window', qty: 1 }] });
+    assert.deepEqual(enviados[0].partes.map((p) => p.ancho_mm), [400, 2000, 400]);
+    assert.equal(enviados[0].alto_mm, 1500);
+  });
+});
+
+test('🔴 #884 sin decir la apertura NO se inventa: laterales fijos, y se le avisa', async () => {
+  // Regla anti-alucinacion del cotizador: lo que el cliente no dijo no se rellena en silencio.
+  // Se cotiza lo conservador y la nota le pide que confirme, en vez de suponerle una apertura.
+  await conMotorStub(async (enviados) => {
+    const items = [{ measures: '2000x1500x400', product: 'VENTANA', descripcion: 'bow window', qty: 1 }];
+    await priceAllEngine({ comuna: 'Temuco', items });
+    assert.equal(enviados[0].partes[0].tipo, 'FIJA');
+    assert.match(items[0].nota_linea || '', /laterales fijos/i);
+    assert.match(items[0].nota_linea || '', /se abran/i, 'y se le ofrece cambiarlo');
+  });
+});
+
+test('🔴 #884 nombra la bow window pero no da las tres medidas -> ESCALA, no adivina', async () => {
+  // El ancho de cada paño lo define donde cae el muro. El motor se niega a suponerlo
+  // (`partes_invalidas`) y aca se escala pidiendo exactamente lo que falta.
+  await conMotorStub(async (enviados) => {
+    const items = [{ measures: '2800x1500', product: 'VENTANA', descripcion: 'quiero una bow window', qty: 1 }];
+    await priceAllEngine({ comuna: 'Temuco', items });
+    assert.equal(enviados.length, 0, 'no se llama al motor con un reparto inventado');
+    assert.ok(items[0].fuera_de_alcance, 'se escala a Marcelo');
+    assert.match(items[0].price_warning || '', /2000x1500x400|lateral/i, 'y se pide lo que falta');
+  });
+});
+
+test('🔒 #884 una ventana NORMAL no se toca', async () => {
+  await conMotorStub(async (enviados) => {
+    await priceAllEngine({ comuna: 'Temuco', items: [
+      { measures: '1420x900', product: 'CORREDERA', descripcion: 'corredera 2 hojas', qty: 1 }] });
+    assert.notEqual(enviados[0].tipo, 'ESQUINA');
+    assert.equal(enviados[0].ancho_mm, 1420);
+  });
+});
+
+test('🔒 #884 "la ventana de la esquina del living" es UBICACION, no tipologia', async () => {
+  // Mismo caso que la *cocina* americana, que ya mordio a este repo: una palabra que en Chile
+  // sirve para dos cosas. Si esto se rompe, una corredera comun sale cotizada como esquina.
+  await conMotorStub(async (enviados) => {
+    await priceAllEngine({ comuna: 'Temuco', items: [
+      { measures: '1420x900', product: 'CORREDERA', descripcion: 'la ventana de la esquina del living', qty: 1 }] });
+    assert.notEqual(enviados[0].tipo, 'ESQUINA');
+  });
+});

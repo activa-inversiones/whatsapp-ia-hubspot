@@ -23,6 +23,7 @@ import { detectarProductoFueraDeAlcance } from "./productoFueraDeAlcance.js";
 // la misma pregunta y le mostro al cliente una ventana que no era la que se le cotizo.
 // NO volver a definirlas aca: la regla es una sola funcion que resuelve.
 import { detectHojas, esMonorrielPorForma } from "./formaMonorriel.js";
+import { leerMedidaTriple, esBowPorForma } from "./formaEsquina.js";
 export { detectHojas, esMonorrielPorForma };
 
 // glass_id por defecto (termopanel). Configurable por env.
@@ -1272,10 +1273,72 @@ export async function priceAllEngine(d, customer_id = "") {
     const comuna = d.comuna || "";
     const cantidad = Math.max(1, Number(item.qty) || 1);
 
+    // ── 4b) VENTANA EN ESQUINA / BOW WINDOW ────────────────────────────────────
+    // 🔴 [2026-09-24 · #884] Instruccion del dueño: *"cuando te pidan una ventana bow window
+    // 200x150x40, la primera medida es fija, la segunda es la altura y la tercera es los
+    // laterales"* · *"2000X1500X400 ... 2000 DE ANCHO CENTRAL, 1500 EL ALTO Y LOS LATERALES
+    // DE 400X1500"*.
+    //
+    // 🔴 LO QUE PASABA ANTES, MEDIDO: `medidas("2000x1500x400")` devuelve {2000, 1500} y **el
+    // tercer numero se descartaba EN SILENCIO**. Los laterales desaparecian, se cotizaba una
+    // ventana de 2000x1500 y NO habia error ni aviso. Perder una medida que el cliente SI
+    // escribio es peor que no entenderla: si no se entiende, alguien pregunta.
+    let _esBow = false;
+    const _triple = leerMedidaTriple(`${item.measures || ""} ${item.medidas || ""}`);
+    // Se reusa el `_txtItem` de arriba a proposito: una sola definicion de "el texto de ESTE
+    // item", que ademas ya cubre `producto_label`. Declarar otro era pedir que se separaran.
+    if (_triple || esBowPorForma(_txtItem)) {
+      // La apertura de los laterales SALE DEL TEXTO. No se inventa: es el producto que se
+      // fabrica y la diferencia de plata entre un fijo y un proyectante no es chica.
+      const _mitadYMitad = /mitad\s+fij[ao][\s\S]{0,30}mitad\s+(?:proyect|abat|oscilo)/i.test(_txtItem)
+        || /mitad\s+(?:proyect|abat|oscilo)[\s\S]{0,30}mitad\s+fij[ao]/i.test(_txtItem)
+        || /(?:superior|arriba)[\s\S]{0,30}proyect[\s\S]{0,40}(?:inferior|abajo)[\s\S]{0,30}fij[ao]/i.test(_txtItem);
+      if (!_triple) {
+        // Nombro la bow window pero no dio las tres medidas: NO se adivina el reparto. El
+        // ancho de cada paño lo define donde cae el muro — el motor ya se niega a suponerlo
+        // (`partes_invalidas`), y aca se escala con un mensaje que pide lo que falta.
+        item.price_warning = "Es una ventana en esquina: necesito el ancho del paño central, "
+          + "el alto, y el ancho de cada lateral (por ejemplo 2000x1500x400). Marcelo te confirma.";
+        item.source = "activa_engine"; item.confidence = "manual"; item.fuera_de_alcance = true;
+        return { escalada: true };
+      }
+      // ⚠️ EL ANGULO: 90° es el caso que el dueño describio (*"el poste de union es 90 grados"*)
+      // y el unico que aparece en sus dos referencias de Winart. Si el cliente dice otro, el
+      // motor lo lee igual por `angulo`; aca solo se fija el default declarado.
+      const _lateral = _mitadYMitad
+        ? { tipo: "COMPUESTA", ancho_mm: _triple.lateral_mm, orientacion: "vertical",
+            partes: [{ tipo: "PROYECTANTE", alto_mm: Math.round(_triple.alto_mm / 2) },
+                     { tipo: "FIJA", alto_mm: _triple.alto_mm - Math.round(_triple.alto_mm / 2) }] }
+        : { tipo: "FIJA", ancho_mm: _triple.lateral_mm };
+      // El PDF dibuja la esquina a partir de este MISMO dato (#883): una sola fuente para el
+      // precio y para el dibujo, que es la leccion que dejo el #880.
+      item.esquina = {
+        partes: [_lateral, { tipo: "FIJA", ancho_mm: _triple.central_mm }, _lateral],
+        uniones: 2, angulo: 90,
+      };
+      _esBow = true;
+      // Que el cliente sepa QUE se le cotizo, en su idioma, y pueda corregirlo. Mismo criterio
+      // que la nota del monorriel (decision del dueño, 19-sep): se le dice la VENTANA, no la
+      // linea ni el nombre tecnico.
+      item.nota_linea = _mitadYMitad
+        ? `Ventana en esquina: paño central de ${_triple.central_mm} mm y dos laterales de `
+          + `${_triple.lateral_mm} mm, cada lateral con la mitad de arriba que se abre y la de abajo fija.`
+        : `Ventana en esquina: paño central de ${_triple.central_mm} mm y dos laterales fijos de `
+          + `${_triple.lateral_mm} mm. Si querés que los laterales se abran, decímelo y lo ajusto.`;
+    }
+
     // 5) Llamada al Engine — el fallo de ESTE ítem NO mata el resto (se marca y sigue)
     let r;
     try {
-      r = await calcularCotizacion({
+      r = _esBow ? await calcularCotizacion({
+        tipo: "ESQUINA", alto_mm: _triple.alto_mm, angulo: item.esquina.angulo,
+        // ⚠️ `ancho_mm` es obligatorio para el cliente del motor aunque la ESQUINA calcule su
+        // ancho de los paños. Se manda la SUMA DIRECTA, que es la misma regla del dueño
+        // (*"se suma solamente lo que envian los clientes"*), asi los dos coinciden.
+        ancho_mm: _triple.central_mm + _triple.lateral_mm * 2,
+        partes: item.esquina.partes,
+        color, glass_id, comuna, cantidad,
+      }) : await calcularCotizacion({
         tipo, serie,
         // Un monorriel es UNA hoja movil. El conteo del cliente ("2 hojas", "dos paños")
         // cuenta los PAÑOS que se ven, no las hojas que corren: aca manda la forma.
