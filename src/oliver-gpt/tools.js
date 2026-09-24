@@ -815,6 +815,19 @@ export async function runTool(name, input = {}, ctx = {}) {
           // [Ronda 2 2026-07-20] texto LITERAL del cliente → la guarda de alcance del
           // catálogo (enginePricer paso 0) por fin VE el producto real, no solo el enum.
           descripcion: input.descripcion_producto || '',
+          // 🔴 [2026-09-24 · #884 r3] EL TEXTO LITERAL DE LAS MEDIDAS, SIN RESOLVER.
+          // `measures` de arriba se arma con el ancho y alto YA resueltos, o sea SIEMPRE un
+          // PAR. Una bow window se pide con TRES ("2000x1500x400" = central x alto x cada
+          // lateral) y el tercer numero moria aca: nunca llegaba al pricer, que por eso no
+          // podia rutearla y Oliver terminaba escalandola.
+          // MEDIDO en produccion dos veces (20:38 y 20:54 del 24-sep): Oliver entendia el
+          // pedido, lo repetia correcto, y escalaba igual. No era el ruteo ni el motor: era
+          // que la tercera medida no tenia por donde pasar.
+          // ⚠️ Va CRUDO a proposito. Lo resuelto vive en `measures`; esto es lo que escribio
+          // el cliente, y es la unica forma de no perder una medida que el sistema todavia
+          // no sabe modelar. Quien lo lea tiene que asumir que puede venir en cualquier
+          // unidad y con cualquier cantidad de numeros.
+          medidas_texto: input.medidas_texto || '',
           // [2026-08-25 · Codex] Los paños explicitos del cliente viajan hasta el motor.
           // 🔴 [2026-08-26] PARTES 50/50 INFERIDAS SE DESCARTAN. La tool dice "solo si el
           // cliente dio el ancho de cada paño", pero el LLM igual manda mitades calculadas

@@ -105,3 +105,48 @@ test('🔒 #884 "la ventana de la esquina del living" es UBICACION, no tipologia
     assert.notEqual(enviados[0].tipo, 'ESQUINA');
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// #884 r3 — LA PRUEBA QUE FALTÓ LAS DOS PRIMERAS VECES: DESDE LA TOOL REAL
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// 🔴 POR QUÉ EXISTE, y es una lección de método que costó dos intentos en PRODUCCIÓN:
+// Los tests de arriba pasaban y Oliver seguía sin cotizar la bow window (24-sep, 20:38 y
+// 20:54). El motivo: esos tests le pasan al pricer un item YA ARMADO con las tres medidas.
+// En producción ese item no existía — la tool construye `measures` con el ancho y alto YA
+// RESUELTOS (`${ancho}x${alto}mm`), o sea SIEMPRE un par, y el tercer número moría ahí.
+//
+// ⚠️ UN TEST QUE CONSTRUYE SU PROPIA ENTRADA NO PRUEBA QUE LA ENTRADA EXISTA.
+// Este entra por `runTool`, que es por donde entra Oliver de verdad.
+test('🔴 #884 r3 · desde la TOOL: medidas_texto "2000x1500x400" llega al motor como ESQUINA', async () => {
+  const { runTool } = await import('../src/oliver-gpt/tools.js');
+  await conMotorStub(async (enviados) => {
+    await runTool('calcular_cotizacion', {
+      tipo: 'FIJA',
+      medidas_texto: '2000x1500x400',
+      descripcion_producto: 'bow window, laterales mitad superior proyectante mitad inferior marco fijo',
+      color: 'BLANCO', comuna: 'Temuco', cantidad: 1,
+    }, {});
+    assert.equal(enviados.length, 1, 'UNA llamada al motor: es una ventana, no tres');
+    const b = enviados[0];
+    assert.equal(b.tipo, 'ESQUINA', 'la tool tiene que terminar pidiendo una ESQUINA');
+    // 🔴 EL TERCER NÚMERO SOBREVIVE EL VIAJE ENTERO. Es todo el punto.
+    assert.deepEqual(b.partes.map((p) => p.ancho_mm), [400, 2000, 400]);
+    assert.equal(b.alto_mm, 1500);
+    assert.equal(b.angulo, 90);
+    // Y la apertura sale de lo que dijo el cliente, no de un default.
+    assert.equal(b.partes[0].tipo, 'COMPUESTA');
+  });
+});
+
+test('🔒 #884 r3 · una ventana NORMAL por la misma tool no se convierte en esquina', async () => {
+  const { runTool } = await import('../src/oliver-gpt/tools.js');
+  await conMotorStub(async (enviados) => {
+    await runTool('calcular_cotizacion', {
+      tipo: 'CORREDERA', medidas_texto: '1420x900',
+      descripcion_producto: 'corredera de 2 hojas',
+      color: 'BLANCO', comuna: 'Temuco', cantidad: 1,
+    }, {});
+    assert.equal(enviados[0].tipo, 'CORREDERA');
+    assert.equal(enviados[0].ancho_mm, 1420);
+  });
+});

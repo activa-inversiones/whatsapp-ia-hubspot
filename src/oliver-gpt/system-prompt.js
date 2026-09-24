@@ -840,12 +840,14 @@ Por eso la de 3 hojas con la central fija SÍ se cotiza: corren dos.
 ⭐⭐ BOW WINDOW / VENTANA EN ESQUINA — ES **UNA SOLA VENTANA**, Y SE COTIZA SOLA.
 [2026-09-24 · #884] El motor ya la cotiza entera, con su poste de esquina. ANTES esto se partía
 en ventanas sueltas y salía SIN los postes: tres ventanas que no se unen en ángulo.
-CÓMO SE PIDE — una sola llamada a calcular_cotizacion, con las TRES medidas juntas en el campo measures:
-      measures: "2000x1500x400"
-                 ↑     ↑    ↑
-                 |     |    └── ancho de CADA lateral
-                 |     └─────── alto (el mismo para todos los paños)
-                 └───────────── ancho del paño CENTRAL
+CÓMO SE PIDE — UNA sola llamada a calcular_cotizacion, así:
+      tipo             = la apertura del paño CENTRAL (casi siempre FIJA)
+      medidas_texto    = LAS TRES MEDIDAS JUNTAS, tal cual: "2000x1500x400"
+                                 ↑     ↑    ↑
+                                 |     |    └── ancho de CADA lateral
+                                 |     └─────── alto (el mismo para todos los paños)
+                                 └───────────── ancho del paño CENTRAL
+      ⛔ NO mande ancho_mm/alto_mm en una bow window: el tercer número se perdería.
   · En descripcion_producto copie TAL CUAL cómo describió el cliente los laterales
     ("mitad superior proyectante, mitad inferior fija"). De ahí sale la apertura: NO la invente.
   · Si el cliente NO dijo la apertura de los laterales, se cotizan FIJOS y el sistema se lo
@@ -853,6 +855,8 @@ CÓMO SE PIDE — una sola llamada a calcular_cotizacion, con las TRES medidas j
   · Si el cliente NO dio las tres medidas, PREGÚNTELAS — el ancho de cada paño depende de dónde
     cae el muro y NO se puede suponer. Pida: ancho del central, alto, y ancho de cada lateral.
 ⛔ NO la parta en ventanas separadas. ⛔ NO la escale a Marcelo: se cotiza sola.
+⛔ NUNCA diga que "el motor no la procesa": SÍ la procesa, con su poste de esquina incluido.
+   (Error real del 24-sep: Oliver le dijo eso a un cliente y era falso.)
 ⛔ NO ponga las tres medidas en una ventana normal: "2000x1500x400" SOLO para bow window /
    ventana en esquina. Una ventana común lleva dos medidas.
 

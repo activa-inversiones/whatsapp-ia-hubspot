@@ -1284,7 +1284,11 @@ export async function priceAllEngine(d, customer_id = "") {
     // ventana de 2000x1500 y NO habia error ni aviso. Perder una medida que el cliente SI
     // escribio es peor que no entenderla: si no se entiende, alguien pregunta.
     let _esBow = false;
-    const _triple = leerMedidaTriple(`${item.measures || ""} ${item.medidas || ""}`);
+    // 🔴 [#884 r3] `medidas_texto` PRIMERO: es el texto CRUDO del cliente y el unico que
+    // puede traer las tres medidas. `measures` lo arma la tool con el ancho y alto ya
+    // resueltos, o sea siempre un PAR — ahi el tercer numero ya se perdio.
+    const _triple = leerMedidaTriple(`${item.medidas_texto || ""}`)
+      || leerMedidaTriple(`${item.measures || ""} ${item.medidas || ""}`);
     // Se reusa el `_txtItem` de arriba a proposito: una sola definicion de "el texto de ESTE
     // item", que ademas ya cubre `producto_label`. Declarar otro era pedir que se separaran.
     if (_triple || esBowPorForma(_txtItem)) {
