@@ -17,11 +17,25 @@ import { fileURLToPath } from 'node:url';
 const raiz = fileURLToPath(new URL('./', import.meta.url));
 const leer = (f) => readFileSync(raiz + f, 'utf8');
 
-test('Node queda FIJADO en 22, no en un piso abierto', () => {
+// 🔴 ESTE TEST VIGILABA EL ARCHIVO EQUIVOCADO, y por eso pasó en verde mientras producción seguía
+// en Node 18. Comprobaba `engines` en package.json; pero ESTE REPO SE CONSTRUYE CON DOCKERFILE, así
+// que la imagen base manda y `engines` se ignora. Lo cazó el log de build de Railway:
+//     npm warn EBADENGINE required: { node: '22.x' }, current: { node: 'v18.20.8' }
+// Un guardia que mira el archivo que no decide da falsa tranquilidad, que es peor que no tenerlo.
+// Ahora se vigila el Dockerfile, que es donde se decide de verdad, Y package.json, para que los dos
+// digan lo mismo y nadie se confunda leyendo uno solo.
+test('Node queda FIJADO en 22 en el DOCKERFILE, que es lo que manda acá', () => {
+  const df = leer('Dockerfile');
+  const from = (df.match(/^FROM.*$/m) || [''])[0];
+  assert.match(from, /node:22[.-]/, `FROM = "${from.trim()}" — la imagen base es la que fija Node`);
+  assert.doesNotMatch(from, /node:(1[0-9]|20)[.-]/, 'Node 18 y 20 ya no reciben parches de seguridad');
+});
+
+test('package.json y .nvmrc dicen lo MISMO que el Dockerfile (no deciden, pero no pueden contradecirlo)', () => {
   const e = JSON.parse(leer('package.json')).engines?.node || '';
-  assert.match(e, /^22/, `engines.node = "${e}" — un ">=18" permite seguir en Node 18`);
-  assert.doesNotMatch(e, /^>=/, 'Railway puede instalar 18 y cumplir un piso: no garantiza nada');
-  assert.ok(existsSync(raiz + '.nvmrc'), 'y .nvmrc para que el local coincida con producción');
+  assert.match(e, /^22/, `engines.node = "${e}" — si dice otra cosa, npm tira EBADENGINE en cada build`);
+  assert.doesNotMatch(e, /^>=/, 'un piso se cumple con Node 18: no garantiza nada');
+  assert.ok(existsSync(raiz + '.nvmrc'), 'y .nvmrc para que el local coincida');
   assert.equal(leer('.nvmrc').trim(), '22');
 });
 

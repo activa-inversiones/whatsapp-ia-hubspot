@@ -94,7 +94,12 @@ test("no usa APIs que falten en el Node de producción (node:18-slim)", async ()
 
   // API → primera versión de Node que la tiene. Ampliar al agregar código.
   // (AbortSignal.any NO va acá: está desde 18.17 — ese fue el error de la primera versión.)
-  const MINIMA_DE_PRODUCCION = 18;
+  // [23-sep] 18 → 22. Quien lo pidió: el dueño ("dale con los 3: lock, node 22 y los 20 clientes"),
+  // y el disparador fue que Node 18 dejó de recibir parches de seguridad en abril de 2025 — 17 meses.
+  // Este número NO es cosmético: es el techo de qué APIs se pueden usar sin que fallen EN SILENCIO en
+  // producción. Subirlo habilita las de 20, 21 y 22 de la lista de abajo. El test de más abajo, que
+  // vigila el Dockerfile, es el que obligó a venir hasta acá — funcionó exactamente como fue diseñado.
+  const MINIMA_DE_PRODUCCION = 22;
   const APIS = [
     [".toSorted(", 20],
     [".toReversed(", 20],
@@ -112,17 +117,24 @@ test("no usa APIs que falten en el Node de producción (node:18-slim)", async ()
   }
 });
 
-test("el Dockerfile sigue en Node 18 — si sube, revisar la lista de arriba", async () => {
-  // Codex marcó que la versión anterior solo verificaba "FROM node:<número>" sin exigir
-  // que ese número fuera 18: pasaba igual con node:22. Ahora se afirma la versión.
+// ⚠️ ASERCIÓN DADA VUELTA EL 23-sep, 18 → 22, y queda escrito por qué y de quién salió la orden.
+// Dar vuelta un test es una decisión, no un trámite. Este guardia decía "sigue en Node 18" y NO
+// significaba "Node 18 para siempre": significaba "si alguien lo sube, que venga a actualizar la
+// tabla de APIs de arriba". Hizo justo eso — se puso rojo al cambiar el Dockerfile y mandó a la tabla.
+// Quien pidió el cambio: el dueño, 23-sep. Motivo: Node 18 sin parches de seguridad desde abril 2025.
+// MEDIDO antes: el build de Railway decía `EBADENGINE required: { node: '22.x' }, current: v18.20.8` —
+// o sea que pinear `engines` en package.json NO movía nada, porque acá manda el Dockerfile.
+test("el Dockerfile está en Node 22 — si cambia, revisar la lista de APIs de arriba", async () => {
+  // Codex marcó que una versión anterior solo verificaba "FROM node:<número>" sin exigir CUÁL:
+  // pasaba con cualquiera. Por eso se afirma el número exacto, no el formato.
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");
   const df = readFileSync(fileURLToPath(new URL("../Dockerfile", import.meta.url)), "utf8");
   const m = df.match(/FROM\s+node:(\d+)/i);
   assert.ok(m, "no se pudo leer la versión de Node del Dockerfile");
   assert.equal(
-    Number(m[1]), 18,
-    "el Dockerfile cambió de versión de Node: revisar la lista de APIs del test anterior"
+    Number(m[1]), 22,
+    "el Dockerfile cambió de versión de Node: revisar MINIMA_DE_PRODUCCION y la lista de APIs de arriba"
   );
 });
 
