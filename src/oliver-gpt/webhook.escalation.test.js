@@ -180,3 +180,16 @@ test('#888 r2: si NO se puede leer la marca de deduplicación, avisa igual (ante
   assert.ok(spy.convEvents.some((e) => e?.metadata?.aviso_fallido === true),
     'un evento repetido molesta; uno que falta deja a un cliente esperando una llamada que nadie hará');
 });
+
+// [#888 r2 · Codex en el tridente, MEDIA] EL CASO QUE FALTABA: notify OK + template fallido.
+// Codex lo dijo exacto: "`avisoLlego = avisoTemplate` pasaría los tres tests nuevos". O sea que los
+// tests no distinguían entre mirar los dos canales y mirar sólo uno. Este lo distingue.
+test('#888 r2: si notify SALIÓ y el template falló, NO hay pánico (Marcelo ya se enteró)', async () => {
+  const { deps, spy } = makeDeps({
+    notifyHighValue: async () => ({ sent: true, score: { tier: 'HIGH' } }),
+    sendEscalationTemplate: async () => ({ ok: false, error: 'ADMIN_PIN_missing' }),
+  });
+  await handleWebhook(makeReq('quiero hablar con un humano'), makeRes(), deps);
+  assert.ok(!spy.convEvents.some((e) => e?.metadata?.aviso_fallido === true),
+    'el aviso principal salió: pedir una llamada a mano sería una alarma falsa');
+});
