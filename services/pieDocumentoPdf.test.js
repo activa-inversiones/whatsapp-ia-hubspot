@@ -3,8 +3,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  FIRMA_ACTIVA, CINTA_ENERGIA, textoConfidencial,
-  dibujarPieDocumento, dibujarFirmaActiva,
+  FIRMA_ACTIVA, CINTA_ENERGIA, textoConfidencial, textoConfidencialCorto,
+  dibujarPieDocumento, dibujarFirmaActiva, sellarConfidencialidad,
 } from './pieDocumentoPdf.js';
 
 // Doble de pdfkit: registra lo que se dibujo, sin generar un PDF de verdad.
@@ -65,7 +65,9 @@ test('el pie completo escribe nombre, cargo, titulos, contacto y la clausula', (
   assert.match(todo, /Evaluador Energético Externo acreditado MINVU/);
   assert.match(todo, /Constructor Civil/);
   assert.match(todo, /mcifuentes@activaspa\.cl/);
-  assert.match(todo, /CONFIDENCIAL/);
+  // La clausula YA NO va en el bloque: desde el 25-sep se sella en el borde inferior de CADA
+  // hoja (pedido del dueno). Si volviera aca, saldria DUPLICADA en la ultima pagina.
+  assert.ok(!/CONFIDENCIAL/.test(todo), 'la clausula no va en el bloque, va por pagina');
   assert.ok(yFinal > 100, 'debe devolver la Y siguiente para que el llamador siga dibujando');
 });
 
@@ -99,4 +101,55 @@ test('si el pie cabe, NO agrega pagina', () => {
   d.page.height = 792;
   dibujarPieDocumento(d, { y: 200, ancho: 512, destinatario: '' });
   assert.equal(d.paginas, 1);
+});
+
+
+// ---------------------------------------------------------------------------
+// SELLADO EN TODAS LAS HOJAS (pedido del dueno 25-sep: *"me referia que estuviera en todas
+// las hojas en el borde inferior"*). Una hoja suelta fotocopiada tiene que llevar el aviso.
+// ---------------------------------------------------------------------------
+function docConPaginas(n) {
+  const escrito = [];
+  let actual = 0;
+  return {
+    escrito,
+    page: { width: 595, height: 842, margins: { bottom: 50 } },
+    bufferedPageRange() { return { start: 0, count: n }; },
+    switchToPage(i) { actual = i; return this; },
+    fillColor() { return this; }, fontSize() { return this; }, font() { return this; },
+    text(t, x, y) { escrito.push({ pagina: actual, t: String(t), y }); return this; },
+  };
+}
+
+test('🔴 la clausula se sella en TODAS las hojas, una vez por hoja', () => {
+  const d = docConPaginas(3);
+  const n = sellarConfidencialidad(d, { destinatario: 'Fulano, RUT 1-9' });
+  assert.equal(n, 3);
+  assert.deepEqual(d.escrito.map((e) => e.pagina), [0, 1, 2]);
+  for (const e of d.escrito) assert.match(e.t, /CONFIDENCIAL/);
+});
+
+test('se apoya en el BORDE INFERIOR, no en el medio de la hoja', () => {
+  const d = docConPaginas(1);
+  sellarConfidencialidad(d, { destinatario: '', margenInferior: 66 });
+  assert.equal(d.escrito[0].y, 842 - 66);
+});
+
+test('anula el margen inferior: sin eso pdfkit agrega hojas al escribir abajo', () => {
+  const d = docConPaginas(1);
+  sellarConfidencialidad(d, { destinatario: '' });
+  assert.equal(d.page.margins.bottom, 0);
+});
+
+test('un documento SIN buffer de paginas no revienta: no sella y sigue', () => {
+  const sinBuffer = { page: { width: 595, height: 842 } };
+  assert.equal(sellarConfidencialidad(sinBuffer, { destinatario: '' }), 0);
+});
+
+test('la version corta nombra al destinatario y conserva la advertencia legal', () => {
+  const t = textoConfidencialCorto('Maya Mapu SpA, RUT 77.123.456-0');
+  assert.match(t, /Uso exclusivo de Maya Mapu SpA/);
+  assert.match(t, /acciones civiles y penales/);
+  assert.ok(textoConfidencialCorto('').length < textoConfidencial('').length,
+    'la de cada hoja es mas corta que la larga');
 });

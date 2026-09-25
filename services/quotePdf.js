@@ -17,7 +17,7 @@ import { dibujarVentanaIso } from "./dibujoIsometrico.js";
 // Asi la propuesta, el informe termico y el de vientos deciden lo mismo con el mismo codigo.
 import { receptorParaDocumento } from "./receptorCliente.js";
 import { identificarCliente, destinatarioLegal } from "./bloqueIdentidadPdf.js";
-import { dibujarPieDocumento } from "./pieDocumentoPdf.js";
+import { dibujarPieDocumento, sellarConfidencialidad } from "./pieDocumentoPdf.js";
 
 const NAVY = "#0B3D6F", GOLD = "#C4993B", GRAY = "#6B7B8D", DARK = "#1A2332", LINE = "#E2E8F0";
 
@@ -88,7 +88,8 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
   const { default: PDFDocument } = await import("pdfkit");
   return new Promise((resolve, reject) => {
     try {
-      const doc = new PDFDocument({ size: "A4", margin: 50 });
+      // bufferPages: para sellar la confidencialidad en TODAS las hojas al final.
+      const doc = new PDFDocument({ size: "A4", margin: 50, bufferPages: true });
       const chunks = [];
       doc.on("data", c => chunks.push(c));
       doc.on("end", () => resolve(Buffer.concat(chunks)));
@@ -322,6 +323,10 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       doc.rect(0, doc.page.height - 54, doc.page.width, 54).fill(NAVY);
       doc.fillColor("#fff").fontSize(9).font("Helvetica-Bold").text("Activa Inversiones · Ventanas PVC certificadas · Temuco", 50, doc.page.height - 42, { align: "center", width: doc.page.width - 100 });
       doc.fillColor(GOLD).fontSize(8).font("Helvetica").text("WhatsApp +56 9 5729 6035 · activaspa.cl · Cada ventana se puede ver en 3D y probar en tu pared", 50, doc.page.height - 26, { align: "center", width: doc.page.width - 100 });
+
+      // Clausula de confidencialidad en el borde inferior de CADA hoja, por encima de la
+      // franja azul (54 pt). Pedido del dueno 25-sep.
+      sellarConfidencialidad(doc, { destinatario: destinatarioPropuesta(data), margenInferior: 68 });
 
       doc.end();
     } catch (e) { reject(e); }

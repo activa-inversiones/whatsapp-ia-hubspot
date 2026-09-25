@@ -56,6 +56,45 @@ export function textoConfidencial(destinatario) {
     + 'documento por error, notifíquelo a mcifuentes@activaspa.cl y elimínelo.';
 }
 
+/**
+ * Version CONDENSADA de la clausula, para el borde inferior de TODAS las hojas.
+ * Pedido del dueno (25-sep): *"me referia que estuviera en todas las hojas en el borde
+ * inferior"*. La version larga quedaba una sola vez al final; una hoja suelta fotocopiada
+ * salia sin ninguna advertencia.
+ */
+export function textoConfidencialCorto(destinatario) {
+  const quien = destinatario ? `de ${destinatario}` : 'de su destinatario';
+  return 'CONFIDENCIAL · Uso exclusivo ' + quien + ' · Prohibida su reproducción, distribución '
+    + 'o publicación, total o parcial, sin autorización escrita de Activa Inversiones; su '
+    + 'incumplimiento facultará el ejercicio de las acciones civiles y penales que contemple '
+    + 'la legislación chilena.';
+}
+
+/**
+ * Sella la clausula en el BORDE INFERIOR DE CADA HOJA. Requiere `bufferPages: true` en el
+ * PDFDocument; si el documento no lo tiene, no hace nada en vez de reventar.
+ *
+ * `margenInferior` = a que altura del borde se apoya. Cada documento tiene su propia franja
+ * de pie y el texto va por encima de ella.
+ */
+export function sellarConfidencialidad(doc, { destinatario, margenInferior = 66, color = '#8A93A0',
+                                              tamano = 5.4, x = 50 } = {}) {
+  if (typeof doc.bufferedPageRange !== 'function') return 0;
+  let rango;
+  try { rango = doc.bufferedPageRange(); } catch { return 0; }
+  if (!rango || !rango.count) return 0;
+
+  const texto = textoConfidencialCorto(destinatario);
+  const ancho = doc.page.width - x * 2;
+  for (let i = rango.start; i < rango.start + rango.count; i++) {
+    doc.switchToPage(i);
+    doc.page.margins.bottom = 0;            // sin esto pdfkit agrega hojas al escribir abajo
+    doc.fillColor(color).fontSize(tamano).font('Helvetica')
+       .text(texto, x, doc.page.height - margenInferior, { width: ancho, align: 'justify' });
+  }
+  return rango.count;
+}
+
 /** Cinta de 5 colores. Devuelve la Y siguiente. */
 export function dibujarCintaEnergetica(doc, x, y, ancho, alto = 3) {
   const w = ancho / CINTA_ENERGIA.length;
@@ -168,7 +207,7 @@ export function dibujarConfidencialidad(doc, { x = 50, y, ancho, destinatario, p
 
 /** Los dos juntos, que es como van en los tres documentos. Devuelve la Y siguiente. */
 /** Alto que reserva el pie completo (firma + clausula). Medido renderizando. */
-export const ALTO_PIE = 150;   // medido renderizando: 141 pt + margen
+export const ALTO_PIE = 105;   // solo la firma: la clausula se sella por pagina
 
 /**
  * Los dos juntos, que es como van en los tres documentos. Devuelve la Y siguiente.
@@ -185,6 +224,7 @@ export function dibujarPieDocumento(doc, { x = 50, y, ancho, destinatario, palet
     doc.addPage();
     y = typeof alSaltar === 'number' ? alSaltar : 60;
   }
-  const y2 = dibujarFirmaActiva(doc, { x, y, ancho, paleta, firma });
-  return dibujarConfidencialidad(doc, { x, y: y2, ancho, destinatario, paleta });
+  // La clausula YA NO va aca: desde el 25-sep se sella en el borde inferior de TODAS las
+  // hojas con `sellarConfidencialidad()`. Dejarla tambien aca la duplicaria en la ultima.
+  return dibujarFirmaActiva(doc, { x, y, ancho, paleta, firma });
 }

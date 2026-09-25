@@ -24,7 +24,7 @@
 // de la misma casa, y este es el bloque donde una divergencia se nota. Import puro: sin I/O
 // y sin pdfkit, no cambia el arranque del bot.
 import { identificarCliente, dibujarIdentidadCliente, textoInlineReceptor, destinatarioLegal } from './bloqueIdentidadPdf.js';
-import { dibujarPieDocumento } from './pieDocumentoPdf.js';
+import { dibujarPieDocumento, sellarConfidencialidad } from './pieDocumentoPdf.js';
 import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
 
 export const VERSION = '1.1.0';
@@ -1151,6 +1151,10 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
           .text(`www.activaspa.cl  ·  Informe preliminar sin costo  ·  Página ${i - rango.start + 1} de ${rango.count}`,
             50, doc.page.height - 26, pie);
       }
+      // Clausula de confidencialidad en el BORDE INFERIOR DE CADA HOJA, por encima de la
+      // franja azul (52 pt). Pedido del dueno 25-sep: una hoja suelta fotocopiada tiene que
+      // llevar la advertencia igual.
+      sellarConfidencialidad(doc, { destinatario, margenInferior: 66 });
 
       doc.end();
     } catch (e) {

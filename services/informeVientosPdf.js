@@ -19,7 +19,7 @@ import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2
 // modulo 11) es EL MISMO modulo que usa el informe termico, a proposito: los dos documentos
 // tienen que verse de la misma casa, y este es el bloque donde una divergencia se nota.
 import { identificarCliente, dibujarIdentidadCliente, textoInlineReceptor, destinatarioLegal } from './bloqueIdentidadPdf.js';
-import { dibujarPieDocumento } from './pieDocumentoPdf.js';
+import { dibujarPieDocumento, sellarConfidencialidad } from './pieDocumentoPdf.js';
 
 const NAVY = '#0B3D6F';
 const GOLD = '#C4993B';
@@ -62,7 +62,8 @@ export async function generarInformeVientosPdf(datos, {
   const traeClima = Boolean(datos.clima && !datos.clima._hueco
     && (datos.clima.lluvia || datos.clima.temperatura || datos.clima.racha_marco));
   const tituloDoc = traeClima ? 'INFORME DE VIENTOS Y CLIMA' : 'INFORME DE VIENTOS';
-  const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: `${traeClima ? 'Informe de vientos y clima' : 'Informe de vientos'} ${numeroInforme}` } });
+  // bufferPages: para poder sellar la confidencialidad en TODAS las hojas al final.
+  const doc = new PDFDocument({ size: 'A4', margin: 50, bufferPages: true, info: { Title: `${traeClima ? 'Informe de vientos y clima' : 'Informe de vientos'} ${numeroInforme}` } });
   const chunks = [];
   doc.on('data', (c) => chunks.push(c));
   const fin = new Promise((res) => doc.on('end', () => res(Buffer.concat(chunks))));
@@ -272,6 +273,9 @@ export async function generarInformeVientosPdf(datos, {
     y, ancho: W - 100, destinatario, firma: firma || null,
     paleta: { navy: NAVY, gold: '#C4993B', gray: '#485A6B', verde: '#1B6B3A' },
   });
+
+  // Clausula en el borde inferior de CADA hoja (pedido del dueno 25-sep).
+  sellarConfidencialidad(doc, { destinatario, margenInferior: 34 });
 
   doc.end();
   return fin;
