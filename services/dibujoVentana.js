@@ -741,7 +741,12 @@ export function tipoVidrioDe(it) {
   // El separador se normaliza a "+", que es como se escribe un DVH en Chile y como lo
   // escribio el dueno. El dato de origen puede venir con "/" o "-".
   if (!composicion) return ['Termopanel', 'DVH'];
-  return ['Termopanel', `${composicion[1]}+${composicion[2]}+${composicion[3]}`];
+  // El acabado NO se pierde: un termopanel saten en un bano es otra cosa que uno transparente,
+  // y el cliente lo tiene que ver en el pano, no solo en la linea de descripcion. Medido en la
+  // base viva: 17 de 280 informes traen "saten (bano)".
+  const acabado = crudo.match(/(sat[eé]n|acidado|esmerilado|opaco|bronce|gris|reflectivo)/i);
+  const linea2 = `${composicion[1]}+${composicion[2]}+${composicion[3]}`;
+  return ['Termopanel', acabado ? `${linea2} ${acabado[1].toLowerCase()}` : linea2];
 }
 
 function etiquetaVidrioDe(it) {
