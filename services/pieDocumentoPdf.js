@@ -156,6 +156,39 @@ export function dibujarQR(doc, { x, y, lado = 46, folio, color = '#1F3A6E' }) {
   return url;
 }
 
+/**
+ * INSIGNIA "EVALUACION ENERGETICA" del encabezado: las flechas de la etiqueta de eficiencia
+ * (A->G) en VECTOR — cero imagenes, cero peso.
+ *
+ * Vivia suelta dentro de informeTermicoPdf.js y por eso solo la tenia ese documento. Pedido
+ * del dueno (25-sep): *"no veo esto... debe traspasarse a todos"*. Se sube al modulo
+ * compartido para que sea UNA pieza y no tres copias que despues divergen (es lo que ya paso
+ * con la firma y con "Calificador").
+ *
+ * `conTexto=false` dibuja solo las flechas: en la propuesta el encabezado ya lleva el folio y
+ * el contacto a la derecha, y ahi las palabras no entran sin pisarlos.
+ */
+export function dibujarInsigniaEnergetica(doc, { x, y, escala = 1, conTexto = true,
+                                                 oro = '#C4993B' } = {}) {
+  const COLS = ['#009640', '#52AE32', '#C8D400', '#FFED00', '#FBBA00', '#EB6909', '#E30613'];
+  const paso = 9.2 * escala;
+  let ancho = 0;
+  for (let i = 0; i < COLS.length; i++) {
+    const bw = (30 + i * 6) * escala;
+    const by = y + i * paso;
+    ancho = Math.max(ancho, bw + 5 * escala);
+    doc.polygon([x, by], [x + bw, by], [x + bw + 5 * escala, by + 3.4 * escala],
+                [x + bw, by + 6.8 * escala], [x, by + 6.8 * escala]).fill(COLS[i]);
+  }
+  if (conTexto) {
+    doc.fillColor('#fff').fontSize(10 * escala).font('Helvetica-Bold')
+       .text('EVALUACIÓN', x + 83 * escala, y + 19 * escala, { width: 102, align: 'left', lineBreak: false });
+    doc.fillColor(oro).fontSize(10 * escala).font('Helvetica-Bold')
+       .text('ENERGÉTICA', x + 83 * escala, y + 32 * escala, { width: 102, align: 'left', lineBreak: false });
+  }
+  return { ancho, alto: COLS.length * paso };
+}
+
 /** Cinta de 5 colores. Devuelve la Y siguiente. */
 export function dibujarCintaEnergetica(doc, x, y, ancho, alto = 3) {
   const w = ancho / CINTA_ENERGIA.length;

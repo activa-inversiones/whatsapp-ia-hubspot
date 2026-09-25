@@ -24,7 +24,7 @@
 // de la misma casa, y este es el bloque donde una divergencia se nota. Import puro: sin I/O
 // y sin pdfkit, no cambia el arranque del bot.
 import { identificarCliente, dibujarIdentidadCliente, textoInlineReceptor, destinatarioLegal } from './bloqueIdentidadPdf.js';
-import { dibujarPieDocumento, sellarConfidencialidad } from './pieDocumentoPdf.js';
+import { dibujarPieDocumento, sellarConfidencialidad, dibujarInsigniaEnergetica } from './pieDocumentoPdf.js';
 import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
 
 export const VERSION = '1.1.0';
@@ -424,21 +424,8 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
       // una sola corrección de texto: "cambiar CALIFICADOR energético por EVALUADOR" —
       // acá va la forma sustantiva, EVALUACIÓN ENERGÉTICA, que calza con el cargo real
       // de la firma (Evaluador Energético Externo acreditado MINVU).
-      {
-        const COLORES = ['#009640', '#52AE32', '#C8D400', '#FFED00', '#FBBA00', '#EB6909', '#E30613'];
-        const lx = W - 195, ly = 13;      // esquina del bloque de flechas
-        for (let bi = 0; bi < 7; bi++) {
-          const bw = 30 + bi * 6;         // cada peldaño un poco más largo, como la etiqueta
-          const by = ly + bi * 9.2;
-          doc.polygon(
-            [lx, by], [lx + bw, by], [lx + bw + 5, by + 3.4], [lx + bw, by + 6.8], [lx, by + 6.8]
-          ).fill(COLORES[bi]);
-        }
-        doc.fillColor('#fff').fontSize(10).font('Helvetica-Bold')
-          .text('EVALUACIÓN', W - 112, 32, { width: 102, align: 'left' });
-        doc.fillColor(GOLD).fontSize(10).font('Helvetica-Bold')
-          .text('ENERGÉTICA', W - 112, 45, { width: 102, align: 'left' });
-      }
+      // La insignia vive ahora en pieDocumentoPdf.js: la comparten los TRES documentos.
+      dibujarInsigniaEnergetica(doc, { x: W - 195, y: 13, oro: GOLD });
 
       doc.fillColor(DARK).fontSize(17).font('Helvetica-Bold')
         .text('INFORME TÉRMICO', 50, 118);

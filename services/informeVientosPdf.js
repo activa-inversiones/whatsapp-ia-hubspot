@@ -19,7 +19,7 @@ import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2
 // modulo 11) es EL MISMO modulo que usa el informe termico, a proposito: los dos documentos
 // tienen que verse de la misma casa, y este es el bloque donde una divergencia se nota.
 import { identificarCliente, dibujarIdentidadCliente, textoInlineReceptor, destinatarioLegal } from './bloqueIdentidadPdf.js';
-import { dibujarPieDocumento, sellarConfidencialidad } from './pieDocumentoPdf.js';
+import { dibujarPieDocumento, sellarConfidencialidad, dibujarInsigniaEnergetica } from './pieDocumentoPdf.js';
 
 const NAVY = '#0B3D6F';
 const GOLD = '#C4993B';
@@ -73,6 +73,10 @@ export async function generarInformeVientosPdf(datos, {
   doc.fillColor('#fff').fontSize(22).font('Helvetica-Bold').text('ACTIVA INVERSIONES', 50, 28);
   doc.fillColor(GOLD).fontSize(10).font('Helvetica').text('Ventanas PVC · Termopanel · Fábrica en Temuco', 50, 56);
   doc.fillColor('#fff').fontSize(9).text('Evaluación energética acreditada MINVU', 50, 72);
+
+  // Insignia de evaluacion energetica, la misma de los otros dos documentos
+  // (dueno 25-sep: *"debe traspasarse a todos"*).
+  dibujarInsigniaEnergetica(doc, { x: W - 195, y: 13, oro: GOLD });
 
   // [Dueno 28-ago, "informe nivel corp"] El titulo dice lo que el documento ES.
   doc.fillColor(NAVY).fontSize(20).font('Helvetica-Bold').text(tituloDoc, 50, 112);

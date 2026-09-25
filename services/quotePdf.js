@@ -17,7 +17,7 @@ import { dibujarVentanaIso, escalaDeVentanaIso } from "./dibujoIsometrico.js";
 // Asi la propuesta, el informe termico y el de vientos deciden lo mismo con el mismo codigo.
 import { receptorParaDocumento } from "./receptorCliente.js";
 import { identificarCliente, destinatarioLegal } from "./bloqueIdentidadPdf.js";
-import { dibujarPieDocumento, sellarConfidencialidad } from "./pieDocumentoPdf.js";
+import { dibujarPieDocumento, sellarConfidencialidad, dibujarInsigniaEnergetica } from "./pieDocumentoPdf.js";
 
 const NAVY = "#0B3D6F", GOLD = "#C4993B", GRAY = "#6B7B8D", DARK = "#1A2332", LINE = "#E2E8F0";
 
@@ -69,8 +69,13 @@ function header(doc, quoteNumber) {
   doc.fillColor("#fff").fontSize(22).font("Helvetica-Bold").text("ACTIVA INVERSIONES", 50, 26);
   doc.fillColor(GOLD).fontSize(10).font("Helvetica").text("Ventanas PVC · Termopanel · Alta Eficiencia Energética", 50, 54);
   doc.fillColor("#fff").fontSize(9).text("Temuco · La Araucanía · Chile", 50, 70);
-  doc.fillColor("#fff").fontSize(9).text(`Propuesta N° ${quoteNumber}`, doc.page.width - 250, 40, { width: 200, align: "right" });
-  doc.fillColor(GOLD).fontSize(8).text(`+56 9 5729 6035 · activaspa.cl`, doc.page.width - 250, 56, { width: 200, align: "right" });
+  // Insignia de evaluacion energetica, la misma de los dos informes (dueno 25-sep: *"debe
+  // traspasarse a todos"*). SIN texto y al 55 %: en este encabezado la derecha ya la ocupan
+  // el folio y el contacto, y las palabras "EVALUACION ENERGETICA" los pisarian. El subtitulo
+  // de la izquierda ya dice "Alta Eficiencia Energetica", asi que no se pierde el mensaje.
+  dibujarInsigniaEnergetica(doc, { x: doc.page.width - 93, y: 8, escala: 0.55, conTexto: false });
+  doc.fillColor("#fff").fontSize(9).text(`Propuesta N° ${quoteNumber}`, doc.page.width - 250, 52, { width: 200, align: "right" });
+  doc.fillColor(GOLD).fontSize(8).text(`+56 9 5729 6035 · activaspa.cl`, doc.page.width - 250, 68, { width: 200, align: "right" });
   doc.rect(0, 90, doc.page.width, 4).fill(GOLD);
 }
 function tableHead(doc, y) {
