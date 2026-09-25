@@ -991,7 +991,21 @@ function planoDeVentana(it, caja) {
   if (_esq) {
     const partesE = _esq.partes;
     const n = partesE.length;
-    const ESCORZO_LATERAL = 0.72;
+    // 🔴 [2026-09-24 · #886 r2] SIN ESCORZO: LA VENTANA VA DE FRENTE, EN PROPORCION REAL.
+    // Decision del dueño mirando los dos renders, textual: *"mejor la dejas de frente ... los
+    // 400 que pusiste es muy pequeño para los 2000 es solo 5 veces y con lo que le pusiste se
+    // ve muy pequeña, de mentira"*. Tenia razon y la cuenta lo dice: 400 contra 2000 es 1 a 5,
+    // y con el escorzo de 0,52 quedaba 1 a 9,6 — el lateral se veia la mitad de lo que es.
+    // ⚠️ SE INTENTO DOS VECES (0,72 y 0,52) y las dos se veian mal. El problema no era el
+    // numero: era la idea. Fingir un giro acortando el ancho MIENTE sobre la proporcion, que
+    // es lo unico que el cliente puede verificar contra su muro. Entre sugerir el angulo y
+    // respetar la medida, manda la medida.
+    // Queda en 1 a proposito y con nombre, en vez de borrar la variable: deja dicho que se
+    // evaluo y se descarto, para que nadie lo "arregle" de nuevo dentro de un mes.
+    // ⏭️ La perspectiva de verdad —el lateral girado con su cara en angulo— necesita dibujar
+    // el perfil en 3D, y para eso estan los DWG/DXF de los perfiles que ya tenemos (el dueño
+    // lo recordo en la misma conversacion). Eso es otro trabajo, no un factor.
+    const ESCORZO_LATERAL = 1;
     // Los anchos DIBUJADOS: los extremos acortados, el resto tal cual. Se reparte sobre estos
     // para que el conjunto siga llenando la caja.
     const partesDibujo = partesE.map((pt, i) => ({

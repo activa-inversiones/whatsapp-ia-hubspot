@@ -4582,7 +4582,16 @@ Comuna: ${datos.comuna}`
                     // hojas y que riel), no desglose de materiales: por eso entra en la version flaca.
                     pos:      it.pos ?? null,          // [2026-09-19] SU numero de ventana
                     nota_linea: it.nota_linea || null,
+                    // 🔴 [2026-09-24 · #886] LA VENTANA EN ESQUINA, Y ES LA QUINTA VEZ QUE UNA LISTA
+                    // BLANCA DE ESTE TIPO MUERDE (partes 25-ago · orientacion 26-ago · riel/activos/
+                    // hojas_fijas 18-sep · angulo hoy mismo en engine-client).
+                    // MEDIDO: el dueño cotizo la primera bow window de verdad y salio con el PRECIO
+                    // CORRECTO ($705.287, "Ventana en esquina (3 paños, union 90°)") pero DIBUJADA
+                    // COMO UNA VENTANA SOLA. El pricer dejaba `item.esquina` con los paños y aca se
+                    // caia en silencio: el plano no tenia de donde sacar la figura.
+                    // Es el mismo defecto que el #880: precio bien, dibujo de otro producto.
                     corredera: it.corredera || null,
+                    esquina: it.esquina || null,
                     uw:       it.termico?.uw ?? null,
                   })),
                   // El MISMO lead que la opcion A: es un solo cliente. Sin `lead`,
@@ -4824,7 +4833,16 @@ Comuna: ${datos.comuna}`
                 // hojas y que riel), no desglose de materiales: por eso entra en la version flaca.
                 pos:         it.pos ?? null,       // [2026-09-19] SU numero de ventana, no el del array
                 nota_linea:  it.nota_linea || null,   // [2026-09-19] "cotizada en la linea mas economica"
+                // 🔴 [2026-09-24 · #886] LA VENTANA EN ESQUINA, Y ES LA QUINTA VEZ QUE UNA LISTA
+                // BLANCA DE ESTE TIPO MUERDE (partes 25-ago · orientacion 26-ago · riel/activos/
+                // hojas_fijas 18-sep · angulo hoy mismo en engine-client).
+                // MEDIDO: el dueño cotizo la primera bow window de verdad y salio con el PRECIO
+                // CORRECTO ($705.287, "Ventana en esquina (3 paños, union 90°)") pero DIBUJADA
+                // COMO UNA VENTANA SOLA. El pricer dejaba `item.esquina` con los paños y aca se
+                // caia en silencio: el plano no tenia de donde sacar la figura.
+                // Es el mismo defecto que el #880: precio bien, dibujo de otro producto.
                 corredera: it.corredera || null,
+                esquina: it.esquina || null,
                 uw:          it.termico?.uw ?? null,
               })),
               // [ajuste abogado] click-ids a NIVEL RAÍZ: fireConversion (sales-os) los lee de

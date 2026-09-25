@@ -1373,18 +1373,23 @@ test("🔴 #883 las cotas dicen los MILIMETROS REALES, no los dibujados en escor
   const totales = p.cotas.filter((c) => c.fila === 1).map((c) => c.texto);
   assert.deepEqual(totales, ["2800", "1500"], "el total es la SUMA DIRECTA (regla del dueño)");
 
-  // Y el escorzo existe de verdad: el lateral se dibuja mas angosto de lo que le tocaria.
+  // 🔴 [2026-09-24 · #886 r2] ESTE TEST SE DIO VUELTA, Y NO FUE UN TRAMITE.
+  // Pedia lo CONTRARIO —que el lateral se dibujara mas angosto que su proporcion, para
+  // sugerir que gira— y lo revirtio una decision del dueño mirando el render, textual:
+  //   *"mejor la dejas de frente ... los 400 que pusiste es muy pequeño para los 2000 es solo
+  //    5 veces y con lo que le pusiste se ve muy pequeña, de mentira"*.
+  // La cuenta le da: 400 contra 2000 es 1 a 5, y el escorzo lo dejaba en 1 a 9,6. Fingir el
+  // giro acortando el ancho MIENTE sobre la proporcion, que es lo unico que el cliente puede
+  // verificar contra su muro.
+  // Se probo con 0,72 y con 0,52; las dos se veian mal. El defecto no era el numero.
+  // AHORA SE EXIGE LO OPUESTO: proporcion REAL. Si alguien vuelve a meter escorzo, cae.
   const anchoPano = (i) => {
     const ms = p.marcos.filter((m) => m.pano === i);
     return Math.max(...ms.map((m) => m.x + m.w)) - Math.min(...ms.map((m) => m.x));
   };
-  // ⚠️ CON MARGEN, Y NO ES UN DETALLE: la primera version comparaba `< 400/2000` pelado y el
-  // test PASABA IGUAL con el escorzo neutralizado, porque la division da 0.19999999999999998
-  // por punto flotante. Un test que sobrevive a que le saquen lo que prueba no prueba nada.
-  // Se exige un escorzo REAL de al menos 10%.
-  assert.ok(anchoPano(0) / anchoPano(1) < (400 / 2000) * 0.9,
-    `el lateral tiene que verse MAS angosto que su proporcion (esta girado); `
-    + `ratio ${anchoPano(0) / anchoPano(1)}`);
+  const ratio = anchoPano(0) / anchoPano(1);
+  assert.ok(Math.abs(ratio - 400 / 2000) < 0.01,
+    `el lateral se dibuja en su proporcion REAL (400/2000 = 0,2); salio ${ratio}`);
 });
 
 test("🔴 #883 el poste se COBRA pero NO se dibuja", () => {
