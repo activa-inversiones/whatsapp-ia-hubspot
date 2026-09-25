@@ -9,14 +9,16 @@ import {
 
 // Doble de pdfkit: registra lo que se dibujo, sin generar un PDF de verdad.
 function docFalso() {
-  const escrito = [], rects = [];
+  const escrito = [], rects = [], imagenes = [];
   const d = {
-    escrito, rects,
+    escrito, rects, imagenes,
     fillColor() { return d; }, fontSize() { return d; }, font() { return d; },
     text(t) { escrito.push(String(t)); return d; },
     rect(x, y, w, h) { rects.push({ x, y, w, h, color: null }); return d; },
     fill(c) { if (rects.length) rects[rects.length - 1].color = c; return d; },
     heightOfString() { return 30; },
+    widthOfString(t) { return String(t).length * 4; },   // suficiente para medir el bloque dorado
+    image(ruta) { imagenes.push(ruta); return d; },
   };
   return d;
 }
@@ -39,8 +41,10 @@ test('la firma es UNA sola para los tres documentos, y dice Evaluador', () => {
   assert.match(FIRMA_ACTIVA.cargo, /Evaluador Energético/);
   assert.ok(!/Calificador/.test(FIRMA_ACTIVA.cargo),
     'el MINVU acredita Evaluadores, no Calificadores');
-  assert.match(FIRMA_ACTIVA.titulos, /Constructor Civil/);
-  assert.match(FIRMA_ACTIVA.titulos, /Magíster en Negocios/);
+  const titulos = FIRMA_ACTIVA.titulos.join(' ');
+  assert.ok(Array.isArray(FIRMA_ACTIVA.titulos), 'los titulos van por lineas: la columna mide 338pt');
+  assert.match(titulos, /Constructor Civil/);
+  assert.match(titulos, /Magíster en Negocios/);
 });
 
 test('la cinta dibuja los 5 colores de la etiqueta de eficiencia', () => {
@@ -60,4 +64,19 @@ test('el pie completo escribe nombre, cargo, titulos, contacto y la clausula', (
   assert.match(todo, /mcifuentes@activaspa\.cl/);
   assert.match(todo, /CONFIDENCIAL/);
   assert.ok(yFinal > 100, 'debe devolver la Y siguiente para que el llamador siga dibujando');
+});
+
+test('🔴 los DOS logotipos van en el pie (reclamo del dueno 25-sep: "pense que la firma la dejariamos asi")', () => {
+  const d = docFalso();
+  dibujarFirmaActiva(d, { y: 100, ancho: 512 });
+  assert.equal(d.imagenes.length, 2, 'deben ir el logo de Activa Y el sello CEV');
+  assert.match(d.imagenes.join(' '), /logo-activa\.png/);
+  assert.match(d.imagenes.join(' '), /sello-cev\.png/);
+});
+
+test('el cargo va sobre bloque dorado, no como texto dorado (contraste 1,86:1 medido)', () => {
+  const d = docFalso();
+  dibujarFirmaActiva(d, { y: 100, ancho: 512, paleta: { gold: '#F5B222' } });
+  assert.ok(d.rects.some(r => r.color === '#F5B222' && r.h === 13),
+    'debe existir el rectangulo dorado del cargo');
 });

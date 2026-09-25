@@ -34,9 +34,11 @@ export const CINTA_ENERGIA = ['#00A651', '#8DC63F', '#FFF200', '#F7941E', '#ED1C
 export const FIRMA_ACTIVA = {
   nombre: 'Marcelo Cifuentes Méndez',
   cargo: 'Evaluador Energético Externo acreditado MINVU · Res. 266/2025',
-  titulos: 'Ingeniero Civil Industrial · Constructor Civil · Ingeniero Electrónico · '
-         + 'MBA Magíster en Administración y Negocios · Magíster en Negocios',
-  rol: 'Gerente de Ingeniería · Activa Inversiones',
+  titulos: [
+    'Ingeniero Civil Industrial · Constructor Civil · Ingeniero Electrónico',
+    'MBA Magíster en Administración y Negocios · Magíster en Negocios',
+  ],
+  rol: 'Gerente de Ingeniería',
   contacto: 'mcifuentes@activaspa.cl · +56 9 5729 6035',
 };
 
@@ -61,30 +63,91 @@ export function dibujarCintaEnergetica(doc, x, y, ancho, alto = 3) {
   return y + alto;
 }
 
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import fs from 'node:fs';
+
+const _AQUI = path.dirname(fileURLToPath(import.meta.url));
+export const RUTA_LOGO  = path.join(_AQUI, '..', 'assets', 'firma', 'logo-activa.png');
+export const RUTA_SELLO = path.join(_AQUI, '..', 'assets', 'firma', 'sello-cev.png');
+
+/** Imagen solo si el archivo existe. Mejor un pie sin logo que un PDF que no sale. */
+function imagenSiExiste(doc, ruta, x, y, opciones) {
+  try {
+    if (!fs.existsSync(ruta)) return false;
+    doc.image(ruta, x, y, opciones);
+    return true;
+  } catch { return false; }
+}
+
 /**
- * Firma completa y uniforme. `paleta` = { navy, gold, gray, verde } del documento que llama.
- * Devuelve la Y siguiente.
+ * Firma completa, con el MISMO dibujo que la firma de correo: cinta de eficiencia, los dos
+ * logotipos, el cargo en bloque dorado y la credencial en caja verde.
+ *
+ * POR QUE DOS COLUMNAS Y LOS LOGOS LADO A LADO: apilados median ~110 pt de alto y el informe
+ * termico ya avisa en su codigo que reservar de mas manda la firma a una SEGUNDA PAGINA vacia
+ * (informeTermicoPdf.js:1122). Lado a lado el bloque entero mide ~70 pt y no empuja nada.
+ *
+ * `paleta` = { navy, gold, gray, verde }. Devuelve la Y siguiente.
  */
 export function dibujarFirmaActiva(doc, { x = 50, y, ancho, paleta = {} }) {
-  const NAVY = paleta.navy || '#1F3A6E';
-  const GRAY = paleta.gray || '#777777';
+  const NAVY  = paleta.navy  || '#1F3A6E';
+  const GOLD  = paleta.gold  || '#F5B222';
+  const GRAY  = paleta.gray  || '#777777';
   const VERDE = paleta.verde || '#1B6B3A';
   const f = FIRMA_ACTIVA;
 
-  let cur = dibujarCintaEnergetica(doc, x, y, ancho) + 9;
-  doc.fillColor(NAVY).fontSize(11).font('Helvetica-Bold')
-     .text(f.nombre, x, cur, { width: ancho, lineBreak: false });
-  cur += 14;
-  doc.fillColor(VERDE).fontSize(8.5).font('Helvetica-Bold')
-     .text(f.cargo, x, cur, { width: ancho, lineBreak: false });
-  cur += 12;
+  const yIni = dibujarCintaEnergetica(doc, x, y, ancho) + 10;
+  const ANCHO_IZQ = 160;
+  const xDer = x + ANCHO_IZQ + 14;
+  const anchoDer = ancho - ANCHO_IZQ - 14;
+
+  // ---------- columna izquierda: los dos logotipos + la credencial ----------
+  let yIzq = yIni;
+  const hayLogo  = imagenSiExiste(doc, RUTA_LOGO,  x,      yIzq + 8, { width: 82 });
+  const haySello = imagenSiExiste(doc, RUTA_SELLO, x + 92, yIzq,     { width: 66 });
+  yIzq += (hayLogo || haySello) ? 42 : 0;
+
+  // credencial en caja verde (misma del correo)
+  doc.rect(x, yIzq, ANCHO_IZQ, 24).fill('#EAF4EC');
+  doc.rect(x, yIzq, 2.5, 24).fill('#00A651');
+  doc.fillColor(VERDE).fontSize(6.2).font('Helvetica-Bold')
+     .text('EVALUADOR ENERGÉTICO ACREDITADO MINVU', x + 6, yIzq + 5,
+           { width: ANCHO_IZQ - 10, lineBreak: false })
+     .text('Res. 266/2025', x + 6, yIzq + 13, { width: ANCHO_IZQ - 10, lineBreak: false });
+  yIzq += 28;
+
+  // ---------- filete dorado vertical ----------
+  doc.rect(x + ANCHO_IZQ + 6, yIni, 2, Math.max(yIzq - yIni, 76)).fill(GOLD);
+
+  // ---------- columna derecha: nombre, cargo y contacto ----------
+  let yDer = yIni;
+  doc.fillColor(NAVY).fontSize(12).font('Helvetica-Bold')
+     .text(f.nombre, xDer, yDer, { width: anchoDer, lineBreak: false });
+  yDer += 16;
+
+  // cargo sobre bloque dorado: el dorado como texto sobre blanco da 1,86:1 y se lee lavado;
+  // como FONDO con el azul encima da 5,97:1. Medido, no estimado.
+  doc.font('Helvetica-Bold').fontSize(7.5);
+  const anchoCargo = doc.widthOfString(f.rol.toUpperCase()) + 14;
+  doc.rect(xDer, yDer, anchoCargo, 13).fill(GOLD);
+  doc.fillColor(NAVY).text(f.rol.toUpperCase(), xDer + 7, yDer + 3.5, { lineBreak: false });
+  yDer += 19;
+
+  doc.fillColor(GRAY).fontSize(7.5).font('Helvetica');
+  for (const linea of f.titulos) {
+    doc.text(linea, xDer, yDer, { width: anchoDer, lineBreak: false });
+    yDer += 10;
+  }
+  yDer += 3;
+  doc.fillColor(NAVY).fontSize(7.5).font('Helvetica-Bold')
+     .text(f.cargo, xDer, yDer, { width: anchoDer, lineBreak: false });
+  yDer += 12;
   doc.fillColor(GRAY).fontSize(7.5).font('Helvetica')
-     .text(f.titulos, x, cur, { width: ancho, lineBreak: false });
-  cur += 10;
-  doc.text(f.rol, x, cur, { width: ancho, lineBreak: false });
-  cur += 10;
-  doc.text(f.contacto, x, cur, { width: ancho, lineBreak: false });
-  return cur + 12;
+     .text(f.contacto, xDer, yDer, { width: anchoDer, lineBreak: false });
+  yDer += 12;
+
+  return Math.max(yIzq, yDer) + 8;
 }
 
 /** Caja de confidencialidad. Devuelve la Y siguiente. */
