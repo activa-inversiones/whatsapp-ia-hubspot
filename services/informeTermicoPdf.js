@@ -24,6 +24,7 @@
 // de la misma casa, y este es el bloque donde una divergencia se nota. Import puro: sin I/O
 // y sin pdfkit, no cambia el arranque del bot.
 import { identificarCliente, dibujarIdentidadCliente, textoInlineReceptor, destinatarioLegal } from './bloqueIdentidadPdf.js';
+import { dibujarPieDocumento } from './pieDocumentoPdf.js';
 import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
 
 export const VERSION = '1.1.0';
@@ -1122,22 +1123,18 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
       // el pie arranca en height-52. Reservar 210 como antes mandaba la firma a una segunda
       // página VACÍA de contenido — el mismo síntoma del bug de las cotizaciones, medido acá:
       // 2 páginas donde la 2ª solo tenía la firma. Un informe preliminar entra en una hoja.
-      saltoSiNoCabe(110);
+      // 170 y no 110: el pie ahora trae los dos logotipos y la clausula de confidencialidad.
+      // Medido renderizando con pdfkit: 149 pt + margen. Con 110 la firma se partia.
+      saltoSiNoCabe(160);
       y += 12;
       doc.moveTo(50, y).lineTo(W - 50, y).strokeColor(GOLD).lineWidth(1).stroke();
-      y += 16;
-      doc.fillColor(DARK).fontSize(11).font('Helvetica-Bold')
-        .text(firma.nombre || 'Ing. Marcelo Cifuentes Méndez', 50, y);
-      y = doc.y + 2;
-      doc.fillColor(GRAY).fontSize(9).font('Helvetica')
-        .text(firma.cargo || 'Evaluador Energético Externo acreditado MINVU', 50, y, { width: W - 100 });
-      y = doc.y + 1;
-      if (firma.resolucion) {
-        doc.fillColor(GRAY).fontSize(9).text(firma.resolucion, 50, y, { width: W - 100 });
-        y = doc.y + 1;
-      }
-      doc.fillColor(GRAY).fontSize(8)
-        .text('Consultas técnicas: +56 9 5729 6035', 50, y + 4);
+      y += 14;
+      // Firma y confidencialidad COMPARTIDAS con la propuesta y el informe de vientos
+      // (pieDocumentoPdf.js). `firma` sigue pudiendo sobrescribir al firmante.
+      y = dibujarPieDocumento(doc, {
+        y, ancho: W - 100, destinatario, firma,
+        paleta: { navy: NAVY, gold: GOLD, gray: GRAY, verde: '#1B6B3A' },
+      });
 
       // ── PIE EN TODAS LAS PÁGINAS ────────────────────────────────────────
       // Con varias hojas, un pie solo en la última deja las anteriores sin identificar. Se

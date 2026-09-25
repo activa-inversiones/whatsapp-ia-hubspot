@@ -58,7 +58,16 @@ const conLaminas = (nombre) => ({
   laminas: [{ id: '10', png: pngReal() }, { id: '01', png: pngReal() }],
 });
 
-const contarImagenes = (pdf) => (pdf.toString('latin1').match(/\/Subtype\s*\/Image/g) || []).length;
+// [2026-09-25] El pie de firma (pieDocumentoPdf.js) incrusta SIEMPRE 2 imagenes de MARCA: el
+// logo de Activa y el sello CEV. No son figuras tecnicas. Lo que estos tests custodian es que
+// no se cuele una FIGURA SIN ROTULO en un informe firmado, no el logotipo, asi que se
+// descuentan. Orden del dueno (25-sep): *"pense que la firma la dejariamos asi"*, mostrando
+// la firma de correo con los dos logotipos.
+// El test de mas abajo comprueba que esas 2 imagenes de marca ESTAN: sin el, este descuento
+// podria enmascarar una figura filtrada.
+const IMAGENES_DE_MARCA_DEL_PIE = 2;
+const contarTodasLasImagenes = (pdf) => (pdf.toString('latin1').match(/\/Subtype\s*\/Image/g) || []).length;
+const contarImagenes = (pdf) => contarTodasLasImagenes(pdf) - IMAGENES_DE_MARCA_DEL_PIE;
 
 test('con perfil rotulado, las isotermas SÍ entran al PDF', async () => {
   const pdf = await generarInformeTermicoPdf(DATOS, { laminas: conLaminas('S60 proyectante WinHouse') });
@@ -185,4 +194,11 @@ test('🔒 [#392] el aviso legal lleva la razon social Y el RUT verificados del 
   assert.ok(src.includes("EMISOR_RAZON_SOCIAL || 'Activa Inversiones EIRL'"), 'razon social exacta');
   assert.ok(src.includes("EMISOR_RUT || '76.486.825-0'"), 'RUT exacto');
   assert.ok(src.includes('RUT ${rutEmisor}'), 'y aparece en el texto legal');
+});
+
+
+test('🔴 el pie SIEMPRE trae las 2 imagenes de marca (si no, contarImagenes enmascararia una figura filtrada)', async () => {
+  const pdf = await generarInformeTermicoPdf(DATOS, {});
+  assert.ok(contarTodasLasImagenes(pdf) >= IMAGENES_DE_MARCA_DEL_PIE,
+    'el logo y el sello del pie deben estar: el descuento de contarImagenes depende de eso');
 });

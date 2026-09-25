@@ -10,13 +10,16 @@ import {
 // Doble de pdfkit: registra lo que se dibujo, sin generar un PDF de verdad.
 function docFalso() {
   const escrito = [], rects = [], imagenes = [];
+  let paginas = 1;
   const d = {
-    escrito, rects, imagenes,
+    escrito, rects, imagenes, get paginas() { return paginas; },
     fillColor() { return d; }, fontSize() { return d; }, font() { return d; },
     text(t) { escrito.push(String(t)); return d; },
     rect(x, y, w, h) { rects.push({ x, y, w, h, color: null }); return d; },
     fill(c) { if (rects.length) rects[rects.length - 1].color = c; return d; },
     heightOfString() { return 30; },
+    page: { height: 792 },
+    addPage() { paginas += 1; return d; },
     widthOfString(t) { return String(t).length * 4; },   // suficiente para medir el bloque dorado
     image(ruta) { imagenes.push(ruta); return d; },
   };
@@ -79,4 +82,21 @@ test('el cargo va sobre bloque dorado, no como texto dorado (contraste 1,86:1 me
   dibujarFirmaActiva(d, { y: 100, ancho: 512, paleta: { gold: '#F5B222' } });
   assert.ok(d.rects.some(r => r.color === '#F5B222' && r.h === 13),
     'debe existir el rectangulo dorado del cargo');
+});
+
+test('🔴 GUARDIA DE PAGINA: si el pie no cabe agrega UNA pagina, no una por linea', () => {
+  // El defecto real, medido al conectar esto: dibujar en una `y` absoluta que ya no cabe
+  // hacia que pdfkit agregara una pagina POR CADA linea. Los informes pasaron de 2 a 4
+  // paginas y lo cazaron los tests de conteo de informeVientosPdf.curvas.test.js.
+  const d = docFalso();
+  d.page.height = 792;
+  dibujarPieDocumento(d, { y: 700, ancho: 512, destinatario: '' });   // 700 + 150 > 792 - 60
+  assert.equal(d.paginas, 2, 'exactamente UNA pagina nueva');
+});
+
+test('si el pie cabe, NO agrega pagina', () => {
+  const d = docFalso();
+  d.page.height = 792;
+  dibujarPieDocumento(d, { y: 200, ancho: 512, destinatario: '' });
+  assert.equal(d.paginas, 1);
 });

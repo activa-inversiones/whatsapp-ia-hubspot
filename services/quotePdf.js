@@ -16,7 +16,8 @@ import { dibujarVentanaIso } from "./dibujoIsometrico.js";
 //   · identificarCliente    -> decide titular vs contacto y limpia el texto para las fuentes PDF
 // Asi la propuesta, el informe termico y el de vientos deciden lo mismo con el mismo codigo.
 import { receptorParaDocumento } from "./receptorCliente.js";
-import { identificarCliente } from "./bloqueIdentidadPdf.js";
+import { identificarCliente, destinatarioLegal } from "./bloqueIdentidadPdf.js";
+import { dibujarPieDocumento } from "./pieDocumentoPdf.js";
 
 const NAVY = "#0B3D6F", GOLD = "#C4993B", GRAY = "#6B7B8D", DARK = "#1A2332", LINE = "#E2E8F0";
 
@@ -40,6 +41,16 @@ function fmt(n) { return "$" + Math.round(Number(n) || 0).toLocaleString("es-CL"
  *
  * Exportada para poder probar la decision sin generar un PDF.
  */
+/**
+ * Destinatario legal de la propuesta ("Fulano, RUT 12.345.678-9"), para la clausula de
+ * confidencialidad del pie. Vacio si el cliente todavia no se identifico, que es lo mas
+ * comun: ahi la clausula dice "su destinatario" y no imprime nada raro.
+ */
+export function destinatarioPropuesta(data = {}) {
+  const rcp = receptorParaDocumento(data && data.receptor, { nombreFallback: (data && data.name) || "" });
+  return rcp ? destinatarioLegal(identificarCliente(rcp)) : "";
+}
+
 export function lineaReceptorPropuesta(data = {}) {
   const rcp = receptorParaDocumento(data && data.receptor, { nombreFallback: (data && data.name) || "" });
   if (!rcp) return "";
@@ -289,15 +300,15 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       doc.fillColor(DARK).fontSize(8.5).font("Helvetica-Oblique")
          .text("Esta propuesta la reviso y la firmo yo. Si algo no queda como corresponde, se corrige.",
                50, y, { width: doc.page.width - 100, lineBreak: false });
-      y += 16;
-      doc.fillColor(DARK).fontSize(9.5).font("Helvetica-Bold")
-         .text("Marcelo Cifuentes Méndez", 50, y, { lineBreak: false }); y += 12;
-      doc.fillColor("#2E7D32").fontSize(8).font("Helvetica-Bold")
-         .text("Evaluador Energético Externo acreditado MINVU · Res. 266/2025", 50, y, { lineBreak: false }); y += 11;
-      doc.fillColor(GRAY).fontSize(7.5).font("Helvetica");
-      doc.text("Ingeniero Civil Industrial · Constructor Civil · Ingeniero Electrónico · MBA Magíster en Administración y Negocios · Magíster en Negocios", 50, y, { lineBreak: false }); y += 10;
-      doc.text("Gerente de Ingeniería · Activa Inversiones", 50, y, { lineBreak: false }); y += 10;
-      doc.text("mcifuentes@activaspa.cl · +56 9 5729 6035", 50, y, { lineBreak: false }); y += 10;
+      y += 18;
+      // Firma y confidencialidad COMPARTIDAS con los dos informes (pieDocumentoPdf.js). Antes
+      // este bloque estaba copiado acá y por eso decía "Calificador" cuando los informes ya
+      // decían "Evaluador": el dato vivía en tres archivos.
+      y = dibujarPieDocumento(doc, {
+        y, ancho: doc.page.width - 100,
+        destinatario: destinatarioPropuesta(data),
+        paleta: { navy: NAVY, gold: GOLD, gray: GRAY, verde: "#1B6B3A" },
+      });
 
       // ── Footer ───────────────────────────────────────────────────────────
       // 🔴 [2026-08-26] ESTE PIE AGREGABA DOS PAGINAS EN BLANCO A **TODA** COTIZACION.

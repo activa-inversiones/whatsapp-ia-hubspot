@@ -19,6 +19,7 @@ import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2
 // modulo 11) es EL MISMO modulo que usa el informe termico, a proposito: los dos documentos
 // tienen que verse de la misma casa, y este es el bloque donde una divergencia se nota.
 import { identificarCliente, dibujarIdentidadCliente, textoInlineReceptor, destinatarioLegal } from './bloqueIdentidadPdf.js';
+import { dibujarPieDocumento } from './pieDocumentoPdf.js';
 
 const NAVY = '#0B3D6F';
 const GOLD = '#C4993B';
@@ -264,11 +265,13 @@ export async function generarInformeVientosPdf(datos, {
     .text('Este informe verifica el VIDRIO de sus ventanas frente al viento y es informativo para su decisión de '
       + 'compra. No constituye el cálculo estructural del edificio ni reemplaza una memoria de cálculo firmada.', 58, y + 6, { width: W - 116 });
   y += 46;
-  const f = firma || {};
-  doc.fillColor(NAVY).fontSize(9).font('Helvetica-Bold')
-    .text(String(f.nombre || 'Ing. Marcelo Cifuentes M.'), 50, y);
-  doc.fillColor('#555').fontSize(8).font('Helvetica')
-    .text(String(f.cargo || 'Evaluador Energético acreditado MINVU · Activa Inversiones'), 50, y + 12);
+  // Firma y confidencialidad COMPARTIDAS con la propuesta y el informe termico
+  // (pieDocumentoPdf.js). Antes este pie era el mas pobre de los tres: 9 pt, sin titulos,
+  // sin contacto y sin decir que el documento es confidencial.
+  dibujarPieDocumento(doc, {
+    y, ancho: W - 100, destinatario, firma: firma || null,
+    paleta: { navy: NAVY, gold: '#C4993B', gray: '#485A6B', verde: '#1B6B3A' },
+  });
 
   doc.end();
   return fin;

@@ -81,13 +81,23 @@ test('con el bloque de curvas el informe crece a 2+ paginas', async () => {
 test('sin bloque de curvas sale la version corta de 1 pagina, sin romper', async () => {
   const pdf = await generarInformeVientosPdf(datosBase(), { nombre: 'M', comuna: 'Loncoche', numeroInforme: 'T-2' });
   assert.ok(Buffer.isBuffer(pdf));
-  assert.equal(paginasDe(pdf), 1);
+  // [2026-09-25] +1 pagina: el pie ahora lleva firma con logotipos y clausula de
+  // confidencialidad (pieDocumentoPdf.js) y no cabe en el resto de la ultima hoja.
+  // NO es un desborde: hay guardia de pagina y agrega UNA sola. Orden del dueno
+  // (25-sep): *"los pie deben decir que son informes confidenciales"* + la firma con
+  // los dos logos. El costo de una hoja mas fue aceptado a sabiendas.
+  assert.equal(paginasDe(pdf), 2);
 });
 
 test('un bloque de curvas HUECO (motor declaro que no pudo) tampoco rompe', async () => {
   const datos = { ...datosBase(), curvas: { _hueco: true, por_que: 'x' } };
   const pdf = await generarInformeVientosPdf(datos, { nombre: 'M', comuna: 'L', numeroInforme: 'T-3' });
-  assert.equal(paginasDe(pdf), 1);
+  // [2026-09-25] +1 pagina: el pie ahora lleva firma con logotipos y clausula de
+  // confidencialidad (pieDocumentoPdf.js) y no cabe en el resto de la ultima hoja.
+  // NO es un desborde: hay guardia de pagina y agrega UNA sola. Orden del dueno
+  // (25-sep): *"los pie deben decir que son informes confidenciales"* + la firma con
+  // los dos logos. El costo de una hoja mas fue aceptado a sabiendas.
+  assert.equal(paginasDe(pdf), 2);
 });
 
 test('[Gemini, compuerta] un proyecto de 20 ventanas salta de pagina sin romper', async () => {
@@ -193,8 +203,13 @@ test('sin clima (motor viejo o hueco) nada cambia: la degradacion es total', asy
   const conHueco = { ...datosBase(), curvas: bloqueCurvas(), clima: { _hueco: true, por_que: 'x' } };
   const p1 = paginasDe(await generarInformeVientosPdf(sinClima, { nombre: 'M', comuna: 'T', numeroInforme: 'T-C2' }));
   const p2 = paginasDe(await generarInformeVientosPdf(conHueco, { nombre: 'M', comuna: 'T', numeroInforme: 'T-C3' }));
-  assert.equal(p1, 2);
-  assert.equal(p2, 2, 'un clima hueco no imprime pagina');
+  // [2026-09-25] +1 pagina: el pie ahora lleva firma con logotipos y clausula de
+  // confidencialidad (pieDocumentoPdf.js) y no cabe en el resto de la ultima hoja.
+  // NO es un desborde: hay guardia de pagina y agrega UNA sola. Orden del dueno
+  // (25-sep): *"los pie deben decir que son informes confidenciales"* + la firma con
+  // los dos logos. El costo de una hoja mas fue aceptado a sabiendas.
+  assert.equal(p1, 3);
+  assert.equal(p2, 3, 'un clima hueco no imprime pagina');
 });
 
 test('clima parcial (solo lluvia, sin temperatura ni racha) imprime lo que HAY', async () => {

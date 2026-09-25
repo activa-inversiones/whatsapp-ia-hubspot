@@ -90,12 +90,16 @@ function imagenSiExiste(doc, ruta, x, y, opciones) {
  *
  * `paleta` = { navy, gold, gray, verde }. Devuelve la Y siguiente.
  */
-export function dibujarFirmaActiva(doc, { x = 50, y, ancho, paleta = {} }) {
+export function dibujarFirmaActiva(doc, { x = 50, y, ancho, paleta = {}, firma = null }) {
   const NAVY  = paleta.navy  || '#1F3A6E';
   const GOLD  = paleta.gold  || '#F5B222';
   const GRAY  = paleta.gray  || '#777777';
   const VERDE = paleta.verde || '#1B6B3A';
-  const f = FIRMA_ACTIVA;
+  // `firma` permite que un informe puntual lo firme OTRO profesional sin tocar el codigo.
+  // Sin eso, conectar este modulo habria pisado en silencio el parametro `firma` que los dos
+  // informes ya aceptaban.
+  const f = firma ? { ...FIRMA_ACTIVA, ...firma } : FIRMA_ACTIVA;
+  const titulos = Array.isArray(f.titulos) ? f.titulos : [String(f.titulos || '')];
 
   const yIni = dibujarCintaEnergetica(doc, x, y, ancho) + 10;
   const ANCHO_IZQ = 160;
@@ -104,27 +108,27 @@ export function dibujarFirmaActiva(doc, { x = 50, y, ancho, paleta = {} }) {
 
   // ---------- columna izquierda: los dos logotipos + la credencial ----------
   let yIzq = yIni;
-  const hayLogo  = imagenSiExiste(doc, RUTA_LOGO,  x,      yIzq + 8, { width: 82 });
-  const haySello = imagenSiExiste(doc, RUTA_SELLO, x + 92, yIzq,     { width: 66 });
-  yIzq += (hayLogo || haySello) ? 42 : 0;
+  const hayLogo  = imagenSiExiste(doc, RUTA_LOGO,  x,      yIzq + 8, { width: 68 });
+  const haySello = imagenSiExiste(doc, RUTA_SELLO, x + 92, yIzq,     { width: 54 });
+  yIzq += (hayLogo || haySello) ? 34 : 0;
 
   // credencial en caja verde (misma del correo)
-  doc.rect(x, yIzq, ANCHO_IZQ, 24).fill('#EAF4EC');
-  doc.rect(x, yIzq, 2.5, 24).fill('#00A651');
+  doc.rect(x, yIzq, ANCHO_IZQ, 19).fill('#EAF4EC');
+  doc.rect(x, yIzq, 2.5, 19).fill('#00A651');
   doc.fillColor(VERDE).fontSize(6.2).font('Helvetica-Bold')
-     .text('EVALUADOR ENERGÉTICO ACREDITADO MINVU', x + 6, yIzq + 5,
+     .text('EVALUADOR ENERGÉTICO ACREDITADO MINVU', x + 6, yIzq + 4,
            { width: ANCHO_IZQ - 10, lineBreak: false })
-     .text('Res. 266/2025', x + 6, yIzq + 13, { width: ANCHO_IZQ - 10, lineBreak: false });
-  yIzq += 28;
+     .text('Res. 266/2025', x + 6, yIzq + 11, { width: ANCHO_IZQ - 10, lineBreak: false });
+  yIzq += 22;
 
   // ---------- filete dorado vertical ----------
   doc.rect(x + ANCHO_IZQ + 6, yIni, 2, Math.max(yIzq - yIni, 76)).fill(GOLD);
 
   // ---------- columna derecha: nombre, cargo y contacto ----------
   let yDer = yIni;
-  doc.fillColor(NAVY).fontSize(12).font('Helvetica-Bold')
+  doc.fillColor(NAVY).fontSize(10.5).font('Helvetica-Bold')
      .text(f.nombre, xDer, yDer, { width: anchoDer, lineBreak: false });
-  yDer += 16;
+  yDer += 14;
 
   // cargo sobre bloque dorado: el dorado como texto sobre blanco da 1,86:1 y se lee lavado;
   // como FONDO con el azul encima da 5,97:1. Medido, no estimado.
@@ -132,12 +136,12 @@ export function dibujarFirmaActiva(doc, { x = 50, y, ancho, paleta = {} }) {
   const anchoCargo = doc.widthOfString(f.rol.toUpperCase()) + 14;
   doc.rect(xDer, yDer, anchoCargo, 13).fill(GOLD);
   doc.fillColor(NAVY).text(f.rol.toUpperCase(), xDer + 7, yDer + 3.5, { lineBreak: false });
-  yDer += 19;
+  yDer += 17;
 
   doc.fillColor(GRAY).fontSize(7.5).font('Helvetica');
-  for (const linea of f.titulos) {
+  for (const linea of titulos) {
     doc.text(linea, xDer, yDer, { width: anchoDer, lineBreak: false });
-    yDer += 10;
+    yDer += 9;
   }
   yDer += 3;
   doc.fillColor(NAVY).fontSize(7.5).font('Helvetica-Bold')
@@ -147,7 +151,7 @@ export function dibujarFirmaActiva(doc, { x = 50, y, ancho, paleta = {} }) {
      .text(f.contacto, xDer, yDer, { width: anchoDer, lineBreak: false });
   yDer += 12;
 
-  return Math.max(yIzq, yDer) + 8;
+  return Math.max(yIzq, yDer) + 6;
 }
 
 /** Caja de confidencialidad. Devuelve la Y siguiente. */
@@ -163,7 +167,24 @@ export function dibujarConfidencialidad(doc, { x = 50, y, ancho, destinatario, p
 }
 
 /** Los dos juntos, que es como van en los tres documentos. Devuelve la Y siguiente. */
-export function dibujarPieDocumento(doc, { x = 50, y, ancho, destinatario, paleta }) {
-  const y2 = dibujarFirmaActiva(doc, { x, y, ancho, paleta });
+/** Alto que reserva el pie completo (firma + clausula). Medido renderizando. */
+export const ALTO_PIE = 150;   // medido renderizando: 141 pt + margen
+
+/**
+ * Los dos juntos, que es como van en los tres documentos. Devuelve la Y siguiente.
+ *
+ * GUARDIA DE PAGINA: dibujar en una `y` absoluta que ya no cabe hace que pdfkit agregue una
+ * pagina POR CADA linea. Al conectar esto la primera vez, los informes pasaron de 2 a 4
+ * paginas y lo cazaron los tests de conteo. Si no cabe, se agrega UNA pagina y se empieza
+ * arriba.
+ */
+export function dibujarPieDocumento(doc, { x = 50, y, ancho, destinatario, paleta, firma = null,
+                                            margenInferior = 60, alSaltar = null }) {
+  const tope = doc.page.height - margenInferior;
+  if (y + ALTO_PIE > tope) {
+    doc.addPage();
+    y = typeof alSaltar === 'number' ? alSaltar : 60;
+  }
+  const y2 = dibujarFirmaActiva(doc, { x, y, ancho, paleta, firma });
   return dibujarConfidencialidad(doc, { x, y: y2, ancho, destinatario, paleta });
 }
