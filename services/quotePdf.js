@@ -208,13 +208,16 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         // que un label larguisimo no empuje el resto fuera de la fila.
         const COL_X = 212, COL_W = 146;
         const titulo = `${_rot[idx] || etiquetaVentana(it, idx)} · ${label}`;
-        doc.fillColor(DARK).fontSize(9).font("Helvetica-Bold");
-        const hTitulo = Math.min(24, doc.heightOfString(titulo, { width: COL_W }));
+        // [2026-09-25] Tipografia mas grande en la partida. Reclamo del dueno: *"las de las
+        // ventanas estan muy pequenas"*. La fila mide 210 pt y la descripcion crecio 2,4 pt
+        // (medido): sobra espacio, no habia razon para tenerla tan chica.
+        doc.fillColor(DARK).fontSize(10).font("Helvetica-Bold");
+        const hTitulo = Math.min(26, doc.heightOfString(titulo, { width: COL_W }));
         let yTxt = y + 8;
-        doc.text(titulo, COL_X, yTxt, { width: COL_W, height: 24, ellipsis: true });
+        doc.text(titulo, COL_X, yTxt, { width: COL_W, height: 26, ellipsis: true });
         yTxt += hTitulo + 3;
 
-        doc.fillColor(GRAY).fontSize(7.5).font("Helvetica");
+        doc.fillColor(GRAY).fontSize(8.5).font("Helvetica");
         const desc = `${ms.ancho}×${ms.alto} mm · ${m2} m² · ${col.nombre} · ${vidrio}`;
         const hDesc = doc.heightOfString(desc, { width: COL_W });
         doc.text(desc, COL_X, yTxt, { width: COL_W });
@@ -222,7 +225,7 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
 
         // [thermal] Uw discreto bajo la descripción — SOLO si vino del motor (null=H98 → nada)
         if (it.termico && Number(it.termico.uw) > 0) {
-          doc.fillColor(GRAY).fontSize(6.8).font("Helvetica-Oblique")
+          doc.fillColor(GRAY).fontSize(7.5).font("Helvetica-Oblique")
              .text(`Uw = ${Number(it.termico.uw).toFixed(2)} W/m²K · ISO 10077-1`, COL_X, yTxt, { width: COL_W, lineBreak: false });
           yTxt += 10;
         }
@@ -299,7 +302,11 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       doc.moveTo(50, y).lineTo(doc.page.width - 50, y).lineWidth(0.5).strokeColor(LINE).stroke();
       y += 12;
       doc.fillColor(DARK).fontSize(8.5).font("Helvetica-Oblique")
-         .text("Esta propuesta la reviso y la firmo yo. Si algo no queda como corresponde, se corrige.",
+         // [2026-09-25] Voz de EMPRESA, no personal. Correccion del dueno: *"esa parte no debe
+         // ser personal, debemos ser y comunicar como empresa esas cosas"*. El compromiso que
+         // la origino (21-ago: *"algun texto de compromiso con las cosas bien hechas"*) se
+         // conserva entero; lo que cambia es quien habla: Activa, no una persona.
+         .text("En Activa Inversiones cada propuesta la revisa y firma su responsable técnico. Si algo no queda como corresponde, se corrige.",
                50, y, { width: doc.page.width - 100, lineBreak: false });
       y += 18;
       // Firma y confidencialidad COMPARTIDAS con los dos informes (pieDocumentoPdf.js). Antes

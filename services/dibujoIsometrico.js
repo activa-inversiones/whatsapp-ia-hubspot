@@ -16,7 +16,7 @@
 // convención de dibujo técnico "cabinet" — la cara de frente queda a escala real y sin
 // deformar, que es lo que el cliente necesita para reconocer su ventana.
 
-import { planoDeVentana, pintarTexturaPerfil, manillaFormas, pintarManilla } from './dibujoVentana.js';
+import { tipoVidrioDe, planoDeVentana, pintarTexturaPerfil, manillaFormas, pintarManilla } from './dibujoVentana.js';
 
 /**
  * Fondo del perfil, por SERIE, en mm.
@@ -460,6 +460,29 @@ export function dibujarVentanaIso(doc, caja, it) {
   // pista de que esa hoja no se abre es que le falta la flecha — y eso el cliente no lo lee.
   // Va sobre el vidrio de esa hoja, que a esta altura ya tiene las coordenadas finales (si esta
   // en el riel exterior, el encogido de perspectiva de mas arriba ya la movio).
+  // ── TIPO DE VIDRIO EN CADA PANO ───────────────────────────────────────
+  // Pedido del dueno (25-sep): *"deberian tener el tipo de termopanel en cada vidrio que
+  // coloquemos"*. Va ACA y no en el plano 2D: el dibujo que llega al cliente es el ISOMETRICO
+  // (leccion L2 de DIBUJO-VENTANAS-ACTIVA.md — un arreglo hecho solo en el 2D no se ve).
+  // Mismo criterio que el rotulo FIJA de mas abajo: solo si el pano da el alto y el ancho.
+  const tipo = tipoVidrioDe(it);
+  if (tipo) {
+    // Umbral por tamano, SIN medir: el doble de pruebas de dibujoIsometrico.test.js no
+    // implementa `heightOfString`, y no se le agrega una dependencia a un test ajeno por una
+    // etiqueta. `tipoVidrioDe` ya acota el texto a 22 caracteres => a 5,2 pt son 2 lineas
+    // como maximo (~13 pt). Apoyado en 0,62 del alto, un pano de 34 pt le da el aire justo.
+    const ALTO_MAX = 13;
+    doc.font('Helvetica-Bold').fontSize(5.2);
+    for (const hoja of p.hojas) {
+      const v = hoja.vidrioRect;
+      // Si no cabe, NO se dibuja: un rotulo encimado es peor que ninguno (fue exactamente lo
+      // que paso con el recuadro verde del pie el 25-sep).
+      if (!v || v.w < 30 || v.h < ALTO_MAX + 21) continue;
+      doc.fillColor('#46586B')
+         .text(tipo, v.x + 2, v.y + v.h * 0.62, { width: v.w - 4, align: 'center' });
+    }
+  }
+
   const fijada = p.hojas.find((h) => h.fijaEnSitio && h.vidrioRect);
   if (fijada) {
     const v = fijada.vidrioRect;

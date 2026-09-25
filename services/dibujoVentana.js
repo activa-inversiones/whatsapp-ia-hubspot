@@ -718,6 +718,28 @@ function tripleRielDe(it) {
  * no lo exponen, o una linea sin calcular) NO se dibuja nada: una medida de vidrio inventada en
  * un plano es peor que ninguna.
  */
+/**
+ * TIPO de vidrio para rotular CADA pano del dibujo. Pedido del dueno (25-sep): *"deberian
+ * tener el tipo de termopanel en cada vidrio que coloquemos"*.
+ *
+ * Sale del vidrio REAL de la partida, nunca de un default: el catalogo tiene 18 vidrios
+ * SIMPLES cotizables (monolitico, laminado, espejo) y rotular uno de esos como "termopanel"
+ * seria mentirle al cliente en la figura que esta mirando. Mismo criterio que
+ * `etiquetaVidrioDe`, que ya lo tenia resuelto para la medida.
+ *
+ * Sin dato devuelve null y no se dibuja nada.
+ */
+export function tipoVidrioDe(it) {
+  const crudo = String((it && (it.glass_label || it.glass_code || it.vidrio)) || '').trim();
+  if (!crudo) return null;
+  // Se recorta a lo esencial: en un pano de ~60 pt no entra "Termopanel DVH 4/12/4 recocido
+  // incoloro". Se conserva la palabra que identifica el producto y la composicion si viene.
+  const composicion = crudo.match(/(\d+(?:\.\d+)?)\s*[+/-]\s*(\d+(?:\.\d+)?)\s*[+/-]\s*(\d+(?:\.\d+)?)/);
+  const esTermopanel = !!composicion || /termopanel|dvh/i.test(crudo);
+  if (!esTermopanel) return crudo.length > 22 ? crudo.slice(0, 21) + '…' : crudo;
+  return composicion ? `Termopanel ${composicion[0].replace(/\s+/g, '')}` : 'Termopanel DVH';
+}
+
 function etiquetaVidrioDe(it) {
   const p = it && it.pano_vidrio;
   const a = Number(p && p.ancho_mm);
