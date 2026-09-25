@@ -9,10 +9,10 @@ import {
 
 // Doble de pdfkit: registra lo que se dibujo, sin generar un PDF de verdad.
 function docFalso() {
-  const escrito = [], rects = [], imagenes = [];
+  const escrito = [], rects = [], imagenes = [], enlaces = [];
   let paginas = 1;
   const d = {
-    escrito, rects, imagenes, get paginas() { return paginas; },
+    escrito, rects, imagenes, enlaces, get paginas() { return paginas; },
     fillColor() { return d; }, fontSize() { return d; }, font() { return d; },
     text(t) { escrito.push(String(t)); return d; },
     rect(x, y, w, h) { rects.push({ x, y, w, h, color: null }); return d; },
@@ -21,6 +21,7 @@ function docFalso() {
     page: { height: 792 },
     addPage() { paginas += 1; return d; },
     widthOfString(t) { return String(t).length * 4; },   // suficiente para medir el bloque dorado
+    link(x, y, w, h, url) { enlaces.push({ x, y, w, h, url }); return d; },
     image(ruta) { imagenes.push(ruta); return d; },
   };
   return d;
@@ -169,6 +170,7 @@ function docQR() {
     rect(x, y, w, h) { rects.push({ x, y, w, h }); return d; },
     fill() { return d; },
     heightOfString() { return 20; }, widthOfString(t) { return String(t).length * 4; },
+    link() { return d; },
   };
   return d;
 }

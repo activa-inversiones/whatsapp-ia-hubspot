@@ -42,16 +42,7 @@ export const CINTA_ENERGIA = ['#00A651', '#8DC63F', '#FFF200', '#F7941E', '#ED1C
 // Identidad del firmante. UNA sola fuente para los tres documentos: cuando el dueño cambia
 // un título, cambia acá y no en tres archivos (así se coló "Calificador" en la propuesta
 // mientras los informes ya decían "Evaluador").
-export const FIRMA_ACTIVA = {
-  nombre: 'Marcelo Cifuentes Méndez',
-  cargo: 'Evaluador Energético Externo acreditado MINVU · Res. 266/2025',
-  titulos: [
-    'Ingeniero Civil Industrial · Constructor Civil · Ingeniero Electrónico',
-    'MBA Magíster en Administración y Negocios · Magíster en Negocios',
-  ],
-  rol: 'Gerente de Ingeniería',
-  contacto: 'mcifuentes@activaspa.cl · +56 9 5729 6035',
-};
+export { FIRMA_ACTIVA } from './firmaActiva.js';
 
 /**
  * Cláusula de confidencialidad. `destinatario` sale de destinatarioLegal() del bloque de
@@ -167,6 +158,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 import qrcode from 'qrcode-generator';
+import { FIRMA_ACTIVA } from './firmaActiva.js';
 
 const _AQUI = path.dirname(fileURLToPath(import.meta.url));
 export const RUTA_LOGO  = path.join(_AQUI, '..', 'assets', 'firma', 'logo-activa.png');
@@ -203,9 +195,9 @@ export function dibujarFirmaActiva(doc, { x = 50, y, ancho, paleta = {}, firma =
   const titulos = Array.isArray(f.titulos) ? f.titulos : [String(f.titulos || '')];
 
   const yIni = dibujarCintaEnergetica(doc, x, y, ancho) + 10;
-  const ANCHO_IZQ = 160;
+  const ANCHO_IZQ = 150;
   const xDer = x + ANCHO_IZQ + 14;
-  const anchoDer = ancho - ANCHO_IZQ - 14 - 56;   // 56 = QR + aire
+  const anchoDer = ancho - ANCHO_IZQ - 14 - 72;   // 72 = QR (62) + zona de silencio
 
   // ---------- columna izquierda: los dos logotipos + la credencial ----------
   let yIzq = yIni;
@@ -245,17 +237,47 @@ export function dibujarFirmaActiva(doc, { x = 50, y, ancho, paleta = {}, firma =
     yDer += 9;
   }
   yDer += 3;
+  const cargoLinea = f.resolucionCorta ? `${f.cargo} · ${f.resolucionCorta}` : f.cargo;
   doc.fillColor(NAVY).fontSize(7.5).font('Helvetica-Bold')
-     .text(f.cargo, xDer, yDer, { width: anchoDer, lineBreak: false });
+     .text(cargoLinea, xDer, yDer, { width: anchoDer, lineBreak: false });
   yDer += 12;
-  doc.fillColor(GRAY).fontSize(7.5).font('Helvetica')
-     .text(f.contacto, xDer, yDer, { width: anchoDer, lineBreak: false });
+  // CONTACTO PINCHABLE. Pedido del dueno (25-sep): *"si quiero pinchar whatsapp, telefono,
+  // link de la empresa... para que sea mas facil contactarnos"*. En PDF los enlaces se marcan
+  // con `link:` y el lector abre el telefono, WhatsApp o el navegador. Se dibuja pieza por
+  // pieza midiendo el ancho, porque cada una lleva SU url.
+  const piezas = [
+    { t: f.correo, url: f.correoUrl, color: GRAY },
+    { t: '  ·  ', url: null, color: '#C9CDD4' },
+    { t: f.telefono, url: f.telefonoUrl, color: GRAY },
+    { t: '  ·  ', url: null, color: '#C9CDD4' },
+    { t: 'WhatsApp', url: f.whatsappUrl, color: '#128C7E', negrita: true },
+    { t: '  ·  ', url: null, color: '#C9CDD4' },
+    { t: f.web, url: f.webUrl, color: NAVY, negrita: true },
+  ];
+  // ⚠️ El enlace NO se pasa dentro de `text({ link })`: en esta version de pdfkit, combinarlo
+  // con `lineBreak: false` revienta con "unsupported number: NaN" (medido aislandolo). Se
+  // dibuja el texto y despues se pone el rectangulo pinchable encima, que ademas es exacto.
+  let xc = xDer;
+  for (const pz of piezas) {
+    if (!pz.t) continue;
+    doc.font(pz.negrita ? 'Helvetica-Bold' : 'Helvetica').fontSize(7.5).fillColor(pz.color);
+    const w = doc.widthOfString(pz.t);
+    doc.text(pz.t, xc, yDer, { lineBreak: false });
+    if (pz.url) doc.link(xc, yDer - 1, w, 10, pz.url);
+    xc += w;
+  }
   yDer += 12;
 
-  // QR de verificacion al extremo derecho, alineado con el bloque.
-  const LADO_QR = 46;
+  // QR de verificacion al extremo derecho. 62 pt y no 46: pedido del dueno (25-sep), *"deberia
+  // ser un poco mas grande para que el cliente no le cueste tanto escanearlo si imprime la
+  // hoja"*. A 62 pt impresos son ~2,2 cm de lado, que es el minimo comodo para la camara de un
+  // telefono a un palmo de distancia.
+  const LADO_QR = 62;
   const xQR = x + ancho - LADO_QR - 6;   // 6 = zona de silencio derecha
-  if (dibujarQR(doc, { x: xQR, y: yIni + 2, lado: LADO_QR, folio, color: NAVY })) {
+  const urlQR = dibujarQR(doc, { x: xQR, y: yIni + 2, lado: LADO_QR, folio, color: NAVY });
+  if (urlQR) {
+    // El QR tambien se puede PINCHAR: quien lea el PDF en el computador no tiene camara.
+    doc.link(xQR, yIni + 2, LADO_QR, LADO_QR, urlQR);
     doc.fillColor(GRAY).fontSize(5.2).font('Helvetica')
        .text('Verifique este', xQR, yIni + LADO_QR + 5, { width: LADO_QR, align: 'center', lineBreak: false })
        .text('documento', xQR, yIni + LADO_QR + 11, { width: LADO_QR, align: 'center', lineBreak: false });

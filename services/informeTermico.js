@@ -31,6 +31,8 @@
 // se testea sin red.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { FIRMA_ACTIVA } from './firmaActiva.js';
+
 export const VERSION = '1.1.0';
 
 // [2026-08-21] LA FIRMA. Pedido del dueño: que se vea "muy formal pero a la vez cercano",
@@ -42,10 +44,19 @@ export const VERSION = '1.1.0';
 // el system-prompt (líneas 55, 82, 483) es: **Evaluador Energético Externo ACREDITADO POR
 // el MINVU, Resolución 266/2025 del Diario Oficial**. Es más fuerte, porque trae número de
 // resolución que el cliente puede buscar. Acreditado POR el MINVU ≠ consultor DEL MINVU.
+// [2026-09-25] Ya NO es una copia propia. Reclamo del dueno: *"los documentos no tienen el
+// mismo formato, deben quedar estandar"*, y tenia razon — esta copia decia "Ing. Marcelo" y
+// dejaba la resolucion en un campo aparte que el pie no dibuja, asi que los DOS informes
+// salian con otro nombre y SIN "Res. 266/2025", mientras la propuesta si la mostraba.
+// La redaccion del cargo no se perdio: subio a FIRMA_ACTIVA con su porque.
+// [2026-09-25] Ya NO es una copia. Los datos viven en firmaActiva.js -- un modulo de DATOS
+// PUROS, sin imports ni red, para no romper la pureza de este archivo. Antes esta copia decia
+// "Ing. Marcelo" y dejaba la resolucion en un campo que el pie del PDF no dibuja, asi que los
+// dos informes salian con otro nombre y SIN "Res. 266/2025".
 const FIRMA = {
-  nombre: 'Ing. Marcelo Cifuentes Méndez',
-  cargo: 'Evaluador Energético Externo acreditado MINVU',
-  resolucion: 'Res. 266/2025, Diario Oficial',
+  nombre: FIRMA_ACTIVA.nombreProsa,
+  cargo: FIRMA_ACTIVA.cargo,
+  resolucion: FIRMA_ACTIVA.resolucion,
 };
 
 // [2026-08-21] DOS TIEMPOS, no uno. Corrección del dueño: *"no olvidar que hay que ser más
