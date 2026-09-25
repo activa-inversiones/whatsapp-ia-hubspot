@@ -3033,6 +3033,14 @@ Comuna: ${datos.comuna}`
                     descripcion: it.descripcion || it.ambiente || '',
                     orientacion: it.compuesta?.orientacion || it.orientacion || undefined,
                     partes:      Array.isArray(it.compuesta?.partes) ? it.compuesta.partes : undefined,
+                    // 🔴 [2026-09-24 · #888] LA ESQUINA VIAJA TAL CUAL A LA SONDA DE COLOR.
+                    // Observacion del dueño, y tiene razon: *"solo son materiales distintos,
+                    // no medidas; la ventana sigue siendo la misma, asi que deberia ser mas
+                    // facil"*. Exacto: re-cotizar por color NO deberia obligar a re-deducir la
+                    // geometria. Si el item ya la trae, se la lleva y listo.
+                    // (El pricer igual sabe reconstruirla desde la etiqueta — #888 — pero eso
+                    // es la RED, no el camino: una red que se usa siempre es un camino malo.)
+                    esquina:     it.esquina || undefined,
                   })),
                   comuna: input.comuna || state.comuna || '',
                   texto_cliente: _textoCliente,

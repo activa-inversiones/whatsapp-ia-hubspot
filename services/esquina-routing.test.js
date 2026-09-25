@@ -175,3 +175,34 @@ test('🔴 #887 la medida que ve el cliente es la de SU ventana, no la del paño
     assert.deepEqual(enviados[0].partes.map((p) => p.ancho_mm), [400, 2000, 400]);
   });
 });
+
+test('🔴 #888 las OPCIONES POR COLOR se re-cotizan: tres colores, tres precios', async () => {
+  // Reclamo del dueño sobre la propuesta 0542: las tres (Blanco, Nogal, New Black) salieron
+  // con el MISMO precio, $503.585. El motor SÍ cobra distinto por color — verificado en vivo:
+  //   Blanco $705.287 · Nogal $811.516 · New Black $872.204 c/IVA.
+  // La causa era MI PROPIO GUARDIA: la sonda que re-cotiza cada color arma sus items SIN
+  // `medidas_texto` (solo `measures`, ya resuelto a un par), así que los tres caían en la
+  // escalada de "faltan las tres medidas" y ninguno se re-cotizaba.
+  // Ahora la esquina se recupera del propio item o de la etiqueta, que es lo único que
+  // sobrevive. El dueño lo dijo más simple: "solo son materiales distintos, no medidas".
+  const lbl = 'Bow window · Ventana en esquina (3 paños, union 90°): '
+    + 'Compuesto 400mm (Proyectante 750mm (arriba) + Fijo 750mm (abajo)) + Fijo 2000mm + '
+    + 'Compuesto 400mm (Proyectante 750mm (arriba) + Fijo 750mm (abajo))';
+  const vistos = [];
+  for (const color of ['BLANCO', 'NOGAL', 'NEWBLACK']) {
+    await conMotorStub(async (enviados) => {
+      // EXACTAMENTE la forma que arma la sonda de color: sin medidas_texto.
+      const items = [{ product: lbl, measures: '2800x1500mm', color, qty: 1 }];
+      await priceAllEngine({ comuna: 'Temuco', items });
+      assert.equal(enviados.length, 1, `${color}: tiene que LLAMAR al motor, no escalar`);
+      assert.equal(enviados[0].tipo, 'ESQUINA', `${color}: y pedir una esquina`);
+      assert.deepEqual(enviados[0].partes.map((p) => p.ancho_mm), [400, 2000, 400]);
+      assert.equal(enviados[0].color, color, 'con SU color: es lo único que cambia');
+      assert.ok(!items[0].fuera_de_alcance, `${color}: no se escala`);
+      // 🔴 Y sin el aviso de tamaño: 2800 es la SUMA de tres paños, no el ancho de uno.
+      assert.doesNotMatch(String(items[0].price_warning || ''), /excede l[ií]mite/i);
+      vistos.push(color);
+    });
+  }
+  assert.deepEqual(vistos, ['BLANCO', 'NOGAL', 'NEWBLACK']);
+});
