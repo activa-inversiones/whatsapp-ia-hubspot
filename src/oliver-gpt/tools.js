@@ -905,7 +905,17 @@ export async function runTool(name, input = {}, ctx = {}) {
           + 'Marcelo ya queda avisado por dentro, automaticamente.' } : {}),
         // [2026-07-06 LOTE2] Medidas RESUELTAS con sufijo mm: pending_quote/PDF re-cotizan con ESTO
         // (no con el texto crudo del cliente) → la confirmación de unidad sobrevive hasta el PDF.
-        medidas_resueltas: `${med.ancho_mm}x${med.alto_mm}mm`,
+        // 🔴 [2026-09-24 · #887] SE RESPETA LA MEDIDA QUE EL PRICER HAYA CORREGIDO.
+        // `med` es el par que resolvio la tool ANTES de cotizar. En una bow window ese par es
+        // el pano CENTRAL (2000x1500), no la ventana: el total es 400+2000+400 = 2800, y el
+        // pricer lo escribe en `it.measures` al rutearla a ESQUINA.
+        // El prompt le dice al LLM que copie `medidas_resueltas` TAL CUAL al PDF, asi que este
+        // era el ultimo lugar donde la ventana completa se perdia — reclamo del dueño sobre la
+        // propuesta 0541: la descripcion decia 2000x1500 y la ventana mide 2800x1500. El
+        // cliente compara ese numero contra su muro.
+        // ⚠️ Para una ventana normal `it.measures` YA es `${med.ancho_mm}x${med.alto_mm}mm`
+        // (se arma asi mas arriba), asi que preferirlo no cambia nada fuera de la esquina.
+        medidas_resueltas: it.measures || `${med.ancho_mm}x${med.alto_mm}mm`,
         termico: it.termico || null,          // [thermal] hoja Uw para el PDF (null = no mostrar)
         _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses otro campo. En "measures" de cada item del PDF pasa medidas_resueltas TAL CUAL.',
       };

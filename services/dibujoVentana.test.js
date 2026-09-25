@@ -1448,3 +1448,28 @@ test("🔒 #886 una etiqueta que NO es de esquina no se convierte en una", () =>
     assert.notEqual(p.tipo, "ESQUINA", label);
   }
 });
+
+test("🔴 #887 un paño 'Compuesto' SIN detalle sigue dibujándose compuesto", () => {
+  // Reclamo del dueño sobre la propuesta 0541: *"no puso la ventana proyectante a los lados
+  // de las bow windows"*. La etiqueta que llega al PDF a veces viene sin los sub-paños, y el
+  // lateral salía como un paño FIJO entero — lo contrario de lo que el cliente pidió.
+  // Dibujar un "Compuesto" como FIJO no es prudencia: afirma que NO abre.
+  const p = planoDeVentana({
+    producto_label: "Ventana en esquina (3 paños, union 90°): Compuesto 400mm + Fijo 2000mm + Compuesto 400mm",
+    measures: "2800x1500",
+  }, { x: 0, y: 0, w: 600, h: 320 });
+  assert.equal(p.marcos.length, 5, "los laterales se parten aunque el label no lo detalle");
+  assert.deepEqual(p.hojas.map((h) => h.tipo),
+    ["PROYECTANTE", "FIJA", "FIJA", "PROYECTANTE", "FIJA"]);
+  assert.equal(p.esquina.partes[0].derivado_de, "label_sin_detalle", "y queda declarado el default");
+});
+
+test("🔒 #887 el nombre nuevo 'Bow window' y el viejo dibujan igual", () => {
+  // Hay propuestas YA EMITIDAS con "Ventana en esquina". Tienen que seguir dibujándose.
+  const cuerpo = ": Compuesto 400mm + Fijo 2000mm + Compuesto 400mm";
+  const a = planoDeVentana({ producto_label: `Bow window · ventana en esquina (3 paños, union 90°)${cuerpo}`, measures: "2800x1500" }, { x: 0, y: 0, w: 600, h: 320 });
+  const b = planoDeVentana({ producto_label: `Ventana en esquina (3 paños, union 90°)${cuerpo}`, measures: "2800x1500" }, { x: 0, y: 0, w: 600, h: 320 });
+  assert.equal(a.tipo, "ESQUINA");
+  assert.equal(b.tipo, "ESQUINA");
+  assert.equal(a.marcos.length, b.marcos.length);
+});

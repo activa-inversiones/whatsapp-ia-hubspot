@@ -1321,6 +1321,19 @@ export async function priceAllEngine(d, customer_id = "") {
         uniones: 2, angulo: 90,
       };
       _esBow = true;
+      // 🔴 [2026-09-24 · #887] LA MEDIDA QUE VE EL CLIENTE ES LA DE SU VENTANA COMPLETA.
+      // Reclamo del dueño mirando la propuesta 0541: la descripcion decia "2000x1500 mm"
+      // —el pano CENTRAL— cuando la ventana mide 2800x1500. El cliente compara ese numero
+      // contra su muro, asi que mostrarle el central es mostrarle otra ventana.
+      // El ancho total es la SUMA DIRECTA, que es la regla del dueño del 11-sep: *"se suma
+      // solamente lo que envian los clientes"*. El poste queda por fuera y el cliente mide
+      // por dentro, asi que 400 + 2000 + 400 = 2800 y no se suma ni se resta nada.
+      // ⚠️ Se pisa `measures` DESPUES de que el pricer ya resolvio ancho/alto para el motor:
+      // el motor recibe los paños por `partes`, no por esta cadena, asi que cambiarla no
+      // mueve ni un peso del precio. Solo cambia lo que se LEE.
+      const _anchoTotal = _triple.central_mm + _triple.lateral_mm * 2;
+      item.measures = `${_anchoTotal}x${_triple.alto_mm}mm`;
+      item.measures_original = item.measures;
       // Que el cliente sepa QUE se le cotizo, en su idioma, y pueda corregirlo. Mismo criterio
       // que la nota del monorriel (decision del dueño, 19-sep): se le dice la VENTANA, no la
       // linea ni el nombre tecnico.

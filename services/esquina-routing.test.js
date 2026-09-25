@@ -18,11 +18,15 @@ function conMotorStub(fn) {
     if (u.includes('/quotes/calculate')) {
       const body = JSON.parse(opts.body || '{}');
       enviados.push(body);
-      return { ok: true, status: 200, async json() {
-        return { ok: true, grand_total: 700000, total_clp: 594397, unit_price: 594397,
-          producto_label: 'Ventana en esquina (3 paños, union 90°)',
-          materiales: { subtotal: 527184 } };
-      } };
+      // ⚠️ `text()` NO es decorativo: el cliente del motor lee el cuerpo con res.text() y
+      // despues lo parsea. Sin esto el doble tira "res.text is not a function", la llamada
+      // se cuenta igual en `enviados` (por eso los tests que solo miran el payload pasaban)
+      // pero el item vuelve SIN PRECIO. Un doble incompleto deja pasar medio camino.
+      const _cuerpo = JSON.stringify({ ok: true, grand_total: 700000, total_clp: 594397,
+        unit_price: 594397, producto_label: 'Ventana en esquina (3 paños, union 90°)',
+        materiales: { subtotal: 527184 } });
+      return { ok: true, status: 200, headers: { get: () => 'application/json' },
+        async text() { return _cuerpo; }, async json() { return JSON.parse(_cuerpo); } };
     }
     return { ok: false, status: 404, async json() { return {}; } };
   };
@@ -148,5 +152,26 @@ test('🔒 #884 r3 · una ventana NORMAL por la misma tool no se convierte en es
     }, {});
     assert.equal(enviados[0].tipo, 'CORREDERA');
     assert.equal(enviados[0].ancho_mm, 1420);
+  });
+});
+
+test('🔴 #887 la medida que ve el cliente es la de SU ventana, no la del paño central', async () => {
+  // Reclamo del dueño sobre la propuesta 0541: la descripción decía "2000x1500 mm" —el paño
+  // CENTRAL— cuando la ventana mide 2800x1500. El cliente compara ese número contra su muro,
+  // así que mostrarle el central es mostrarle otra ventana.
+  // El total es la SUMA DIRECTA (regla del dueño, 11-sep): 400 + 2000 + 400 = 2800.
+  const { runTool } = await import('../src/oliver-gpt/tools.js');
+  await conMotorStub(async (enviados) => {
+    const r = await runTool('calcular_cotizacion', {
+      tipo: 'FIJA', medidas_texto: '2000x1500x400',
+      descripcion_producto: 'bow window, laterales mitad superior proyectante mitad inferior fija',
+      color: 'BLANCO', comuna: 'Temuco', cantidad: 1,
+    }, {});
+    // `medidas_resueltas` es lo que el prompt le manda copiar al PDF como `measures`.
+    assert.match(String(r.medidas_resueltas || ''), /^2800x1500/,
+      `el cliente tiene que leer 2800x1500, no el paño central; salió "${r.medidas_resueltas}"`);
+    // Y el MOTOR sigue recibiendo los paños por `partes`: la medida que se muestra no mueve
+    // ni un peso del precio.
+    assert.deepEqual(enviados[0].partes.map((p) => p.ancho_mm), [400, 2000, 400]);
   });
 });

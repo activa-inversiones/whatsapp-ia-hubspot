@@ -956,7 +956,9 @@ function hojaDelLabel(it) {
  */
 function esquinaDesdeLabel(it) {
   const label = String(it?.producto_label || it?.product || it?.producto || "");
-  const m = label.match(/ventana\s+en\s+esquina[^:]*:\s*([\s\S]+)$/i);
+  // [#887] Se acepta el nombre nuevo ("Bow window · ventana en esquina (...)") y el viejo:
+  // hay propuestas ya emitidas con el anterior y tienen que seguir dibujandose igual.
+  const m = label.match(/(?:bow\s*-?\s*window|ventana\s+en\s+esquina)[^:]*:\s*([\s\S]+)$/i);
   if (!m) return null;
   const trozos = [];
   let nivel = 0, actual = "";
@@ -977,6 +979,23 @@ function esquinaDesdeLabel(it) {
     if (!Number.isFinite(ancho_mm) || ancho_mm <= 0) return null;
     // Un paño COMPUESTO trae sus mitades entre parentesis.
     const sub = [...t.matchAll(/([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+(\d+(?:[.,]\d+)?)\s*mm\s*\((?:arriba|abajo|izquierda|derecha)\)/gi)];
+    // 🔴 [2026-09-24 · #887] UN PAÑO "Compuesto" SIN DETALLE SIGUE SIENDO COMPUESTO.
+    // Reclamo del dueño sobre la propuesta 0541: *"no puso la ventana proyectante a los lados
+    // de las bow windows"*. La etiqueta que llega al PDF a veces viene SIN los sub-paños
+    // ("... Compuesto 400mm + Fijo 2000mm + Compuesto 400mm") y el lateral salia dibujado
+    // como un paño fijo entero — justo lo contrario de lo que el cliente pidio.
+    // Dibujar un "Compuesto" como FIJO no es prudencia: es afirmar que NO abre, que es una
+    // afirmacion mas fuerte que la que evita. Sin detalle se usa el default del motor de
+    // compuestas —mitad proyectante arriba + mitad fija abajo—, que es el que el motor aplica
+    // cuando el cliente no desglosa, asi que el dibujo coincide con lo que se COTIZO.
+    // Queda declarado aparte de `label` para que se vea que aca hubo un default.
+    if (/^compuest/i.test(cab[1]) && sub.length < 2) {
+      partes.push({
+        tipo: "COMPUESTA", ancho_mm, derivado_de: "label_sin_detalle",
+        compuesta: { orientacion: "vertical", partes: [{ tipo: "PROYECTANTE" }, { tipo: "FIJA" }] },
+      });
+      continue;
+    }
     if (/^compuest/i.test(cab[1]) && sub.length >= 2) {
       partes.push({
         tipo: "COMPUESTA", ancho_mm,
@@ -1140,6 +1159,8 @@ function planoDeVentana(it, caja) {
         partes: partesE.map((pt, i) => ({
           tipo: tipoDeParte(pt.tipo), ancho_mm: pt.ancho_mm, idx: i,
           girado: i === 0 || i === n - 1,
+          // [#887] Si este paño se completo con un default (label sin detalle), queda dicho.
+          ...(pt.derivado_de ? { derivado_de: pt.derivado_de } : {}),
         })),
       },
       etiqueta: `${ancho}×${alto} mm`,
