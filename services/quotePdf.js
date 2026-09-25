@@ -338,14 +338,31 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       // una pagina cada vez que un `text()` cae mas abajo del margen. Son dos lineas: dos
       // paginas fantasma, en cada propuesta que se le mando a un cliente.
       // Medido: un PDF de CERO items salia con 3 paginas.
-      // Se anula el margen inferior SOLO para pintar el pie, que es contenido fijo y va donde
-      // uno decide, no donde el flujo de texto lo lleve.
-      doc.page.margins.bottom = 0;
-      // Filete dorado sobre la franja: los tres documentos cierran igual.
-      doc.rect(0, doc.page.height - 56, doc.page.width, 1.6).fill(GOLD);
-      doc.rect(0, doc.page.height - 54, doc.page.width, 54).fill(NAVY);
-      doc.fillColor("#fff").fontSize(9).font("Helvetica-Bold").text("Activa Inversiones · Ventanas PVC certificadas · Temuco", 50, doc.page.height - 42, { align: "center", width: doc.page.width - 100 });
-      doc.fillColor(GOLD).fontSize(8).font("Helvetica").text("WhatsApp +56 9 5729 6035 · activaspa.cl · Cada ventana se puede ver en 3D y probar en tu pared", 50, doc.page.height - 26, { align: "center", width: doc.page.width - 100 });
+      // ── PIE EN TODAS LAS PAGINAS ──────────────────────────────────────
+      // [2026-09-25] Antes se pintaba UNA sola vez, sobre la pagina que estuviera activa al
+      // terminar. Con una hoja no se notaba; con dos, la primera salia SIN franja. El dueno
+      // lo cazo mirando el PDF: *"le sacaste la parte inferior"*. Era un defecto viejo que
+      // quedo a la vista recien ahora, porque la clausula de confidencialidad si va en todas
+      // las hojas y dejaba el aviso flotando sobre el vacio.
+      // Mismo patron que los dos informes: se recorre el buffer de paginas al final.
+      {
+        const pie = { align: "center", width: doc.page.width - 100, lineBreak: false };
+        const rango = doc.bufferedPageRange();
+        for (let i = rango.start; i < rango.start + rango.count; i++) {
+          doc.switchToPage(i);
+          // El margen inferior se anula SOLO para pintar el pie, que es contenido fijo y va
+          // donde uno decide, no donde el flujo de texto lo lleve.
+          doc.page.margins.bottom = 0;
+          // Filete dorado sobre la franja: los tres documentos cierran igual.
+          doc.rect(0, doc.page.height - 56, doc.page.width, 1.6).fill(GOLD);
+          doc.rect(0, doc.page.height - 54, doc.page.width, 54).fill(NAVY);
+          doc.fillColor("#fff").fontSize(9).font("Helvetica-Bold")
+             .text("Activa Inversiones · Ventanas PVC certificadas · Temuco", 50, doc.page.height - 44, pie);
+          doc.fillColor(GOLD).fontSize(8).font("Helvetica")
+             .text(`WhatsApp +56 9 5729 6035 · activaspa.cl · Página ${i - rango.start + 1} de ${rango.count}`,
+                   50, doc.page.height - 30, pie);
+        }
+      }
 
       // Clausula de confidencialidad en el borde inferior de CADA hoja, por encima de la
       // franja azul (54 pt). Pedido del dueno 25-sep.
