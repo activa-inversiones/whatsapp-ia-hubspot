@@ -838,14 +838,6 @@ function centralFijaDe(it) {
 // Encaja el rectángulo ancho×alto dentro de la caja disponible SIN deformarlo.
 // La escala tiene que ser la misma en x e y: una ventana de 2000×500 debe verse chata,
 // porque el cliente compara la proporción con el hueco de su casa.
-/** Escala natural de una ventana en una caja, sin dibujarla. La usa quotePdf para calcular
- *  la escala COMUN de toda la propuesta: el minimo de todas. */
-export function escalaNatural(it, caja) {
-  const { ancho, alto } = medidas(it && it.measures);
-  if (!(ancho > 0 && alto > 0 && caja.w > 0 && caja.h > 0)) return null;
-  return Math.min(caja.w / ancho, caja.h / alto);
-}
-
 function encajar(ancho, alto, cajaW, cajaH) {
   const escala = Math.min(cajaW / ancho, cajaH / alto);
   const w = ancho * escala, h = alto * escala;
@@ -1042,29 +1034,20 @@ function hojaDelLabel(it) {
 
 
 
-/**
- * `opciones.escala` fuerza una escala COMUN a todas las ventanas de la propuesta, en vez de
- * que cada una se ajuste sola a su caja. Reclamo del dueno (25-sep): *"los marcos deberian
- * estar hechos a escala... el perfil S60 se ve como si fuera mas grande de lo que es... la
- * idea es que todas las imagenes esten en la misma escala"*. Tenia razon: ajustando cada una
- * por separado, una ventana de 1000x1200 y una de 1500x1200 salian del MISMO tamano en la
- * hoja, y el mismo perfil de 40 mm se dibujaba mas grueso en la chica.
- * Nunca AMPLIA sobre lo que cabe: se toma el minimo con la escala natural de la caja, o la
- * ventana se saldria del recuadro.
- */
-function planoDeVentana(it, caja, opciones) {
+function planoDeVentana(it, caja) {
   const { ancho, alto } = medidas(it?.measures);
   const tipo = tipoDe(it);
   const n = hojasDe(it);
   const color = COLORES[claveColor(it?.color)] || COLORES.blanco;
   const vidrio = VIDRIOS[claveVidrio(it?.glass_label, it?.ambiente)] || VIDRIOS.incoloro;
 
-  const natural = encajar(ancho, alto, caja.w, caja.h);
-  const forzada = Number(opciones && opciones.escala);
-  const esc = forzada > 0 ? Math.min(forzada, natural.escala) : natural.escala;
-  const escala = esc;
-  const w = ancho * esc, h = alto * esc;
-  const dx = (caja.w - w) / 2, dy = (caja.h - h) / 2;
+  // Cada ventana se encaja SOLA en su recuadro, lo mas grande que entre. El 25-sep se probo
+  // una escala comun a toda la propuesta y el dueno la rechazo: *"podria haber una ventana de
+  // 5 metros por 5 metros y otra de 300x300 y no se veria en la misma cotizacion"*.
+  // La proporcion perfil-vidrio NO se falsea por esto: el perfil esta en milimetros y se
+  // multiplica por la MISMA escala, asi que en una ventana chica el marco se ve
+  // proporcionalmente mas grueso — que es lo que el cliente tiene que poder juzgar.
+  const { w, h, escala, dx, dy } = encajar(ancho, alto, caja.w, caja.h);
   const x = caja.x + dx, y = caja.y + dy;
 
   // Marco y hoja a escala real: 60 mm de marco y 40 mm de hoja son medidas de perfil PVC.

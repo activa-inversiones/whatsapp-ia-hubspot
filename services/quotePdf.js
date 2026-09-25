@@ -8,7 +8,7 @@
 
 import { dibujarVentana, medidas, claveColor, COLORES } from "./dibujoVentana.js";
 import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
-import { dibujarVentanaIso, escalaDeVentanaIso } from "./dibujoIsometrico.js";
+import { dibujarVentanaIso } from "./dibujoIsometrico.js";
 // 🔴 [2026-08-30] EL RUT DEL CLIENTE. Alfredo Arias (conv 56952077379) lo pidio CUATRO veces
 // y el documento no tenia donde ponerlo: este bloque imprimia solo nombre·telefono·comuna.
 // Se reusan los DOS modulos compartidos, no se escribe una tercera version de la regla:
@@ -186,15 +186,15 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       // [Codex, compuerta] Los rotulos se deciden UNA vez para todo el documento: si el LLM
       // mando numeros del cliente incompletos o repetidos, se cae a la posicion para TODOS.
       const _rot = rotulosDeVentanas(items);
-      // ESCALA COMUN a toda la propuesta. Reclamo del dueno (25-sep): *"los marcos deberian
-      // estar hechos a escala... la idea es que todas las imagenes esten en la misma escala"*.
-      // Antes cada ventana se ajustaba sola a su caja, asi que una de 1000x1200 y una de
-      // 1500x1200 salian del MISMO tamano en la hoja y el mismo perfil de 40 mm se dibujaba
-      // mas grueso en la chica. Se toma el MINIMO: con el maximo, la ventana mas grande se
-      // saldria de su recuadro.
-      const _cajaDibujo = { x: 46, y: 0, w: 156, h: rowH - 14 };
-      const _escalas = items.map((it) => escalaDeVentanaIso(_cajaDibujo, it)).filter((e) => e > 0);
-      const escalaComun = _escalas.length ? Math.min(..._escalas) : 0;
+      // 🔴 NO SE UNIFICA LA ESCALA ENTRE VENTANAS, y es deliberado. El 25-sep se probo la
+      // escala comun y el dueno la rechazo con el motivo exacto: *"podria haber una ventana
+      // de 5 metros por 5 metros y otra de 300x300 y no se veria en la misma cotizacion...
+      // me interesa que se vea, y que se vea que es mucho perfil para tan poca ventana"*.
+      // Cada ventana se dibuja lo mas grande que entre en SU recuadro. La proporcion
+      // perfil-vidrio NO se falsea: el perfil se dibuja en milimetros y escala junto con la
+      // ventana, asi que en una ventana chica el marco se ve proporcionalmente mas grueso,
+      // que es JUSTO lo que el cliente tiene que poder juzgar.
+      // La comparacion de tamanos entre ventanas la da la COTA, que dice los mm reales.
       items.forEach((it, idx) => {
         if (y + rowH > doc.page.height - 90) {           // salto de página
           doc.addPage(); header(doc, quoteNumber); y = 110; y = tableHead(doc, y);
@@ -206,7 +206,7 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         // imagen tridimensional de la forma, y asociada a que los colores tambien sean los
         // reales"*. Los colores ya salian de la paleta real de Winart; lo que faltaba era el
         // volumen. El plano tecnico 2D sigue existiendo y se usa donde hacen falta las cotas.
-        dibujarVentanaIso(doc, { x: 46, y: y + 6, w: 156, h: rowH - 14 }, it, { escala: escalaComun });
+        dibujarVentanaIso(doc, { x: 46, y: y + 6, w: 156, h: rowH - 14 }, it);
         // descripción
         const col = COLORES[claveColor(it.color)] || COLORES.blanco;
         const label = it.producto_label || (it.product || "Ventana").replace(/_/g, " ");

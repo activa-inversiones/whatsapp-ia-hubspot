@@ -16,7 +16,7 @@
 // convención de dibujo técnico "cabinet" — la cara de frente queda a escala real y sin
 // deformar, que es lo que el cliente necesita para reconocer su ventana.
 
-import { tipoVidrioDe, escalaNatural, planoDeVentana, pintarTexturaPerfil, manillaFormas, pintarManilla } from './dibujoVentana.js';
+import { tipoVidrioDe, planoDeVentana, pintarTexturaPerfil, manillaFormas, pintarManilla } from './dibujoVentana.js';
 
 /**
  * Fondo del perfil, por SERIE, en mm.
@@ -182,22 +182,7 @@ function esquinasEnIngle(doc, r, g, color, solo = null) {
   if (va('sd')) doc.moveTo(x2, y2).lineTo(x2 - gx, y2 - gy).stroke();
   doc.restore();
 }
-/**
- * Escala natural de `it` en `caja`, con las MISMAS reservas que usa el dibujo. quotePdf toma
- * el minimo de todas para que la propuesta entera vaya a una sola escala. Vive aca y no en
- * quotePdf para que las reservas no queden duplicadas en dos archivos: si manana cambia
- * ALTO_COTA, la escala comun se entera sola.
- */
-export function escalaDeVentanaIso(caja, it) {
-  const reserva = Math.max(6, Math.min(caja.w, caja.h) * 0.16);
-  const ALTO_COTA = 24;
-  return escalaNatural(it, {
-    w: Math.max(20, caja.w - reserva),
-    h: Math.max(20, caja.h - reserva - ALTO_COTA),
-  });
-}
-
-export function dibujarVentanaIso(doc, caja, it, opciones) {
+export function dibujarVentanaIso(doc, caja, it) {
   // La fuga se come espacio arriba y a la derecha: se reserva ANTES de encajar la ventana,
   // si no la profundidad se sale de la caja y pisa lo que esté al lado.
   const reserva = Math.max(6, Math.min(caja.w, caja.h) * 0.16);
@@ -215,7 +200,7 @@ export function dibujarVentanaIso(doc, caja, it, opciones) {
     x: caja.x, y: caja.y + reserva,
     w: Math.max(20, caja.w - reserva), h: Math.max(20, caja.h - reserva - ALTO_COTA),
   };
-  const p = planoDeVentana(it, cajaUtil, { escala: opciones && opciones.escala });
+  const p = planoDeVentana(it, cajaUtil);
   const fuga = vectorFuga(p.escala, fondoDe(it));
   const marcos = p.marcos || [p.marcoRect];
 
