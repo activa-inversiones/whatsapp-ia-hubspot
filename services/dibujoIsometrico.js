@@ -16,7 +16,7 @@
 // convención de dibujo técnico "cabinet" — la cara de frente queda a escala real y sin
 // deformar, que es lo que el cliente necesita para reconocer su ventana.
 
-import { tipoVidrioDe, planoDeVentana, pintarTexturaPerfil, manillaFormas, pintarManilla } from './dibujoVentana.js';
+import { tipoVidrioDe, escalaNatural, planoDeVentana, pintarTexturaPerfil, manillaFormas, pintarManilla } from './dibujoVentana.js';
 
 /**
  * Fondo del perfil, por SERIE, en mm.
@@ -182,7 +182,22 @@ function esquinasEnIngle(doc, r, g, color, solo = null) {
   if (va('sd')) doc.moveTo(x2, y2).lineTo(x2 - gx, y2 - gy).stroke();
   doc.restore();
 }
-export function dibujarVentanaIso(doc, caja, it) {
+/**
+ * Escala natural de `it` en `caja`, con las MISMAS reservas que usa el dibujo. quotePdf toma
+ * el minimo de todas para que la propuesta entera vaya a una sola escala. Vive aca y no en
+ * quotePdf para que las reservas no queden duplicadas en dos archivos: si manana cambia
+ * ALTO_COTA, la escala comun se entera sola.
+ */
+export function escalaDeVentanaIso(caja, it) {
+  const reserva = Math.max(6, Math.min(caja.w, caja.h) * 0.16);
+  const ALTO_COTA = 24;
+  return escalaNatural(it, {
+    w: Math.max(20, caja.w - reserva),
+    h: Math.max(20, caja.h - reserva - ALTO_COTA),
+  });
+}
+
+export function dibujarVentanaIso(doc, caja, it, opciones) {
   // La fuga se come espacio arriba y a la derecha: se reserva ANTES de encajar la ventana,
   // si no la profundidad se sale de la caja y pisa lo que esté al lado.
   const reserva = Math.max(6, Math.min(caja.w, caja.h) * 0.16);
@@ -192,10 +207,15 @@ export function dibujarVentanaIso(doc, caja, it) {
   // dibujamos le sobran 15 px de margen contra el borde. Se habia agregado una reserva "por
   // las dudas"; el test de mutacion mostro que sacarla no rompe nada, asi que no va: codigo
   // defensivo que ningun caso justifica es codigo que despues nadie se atreve a tocar.
-  const p = planoDeVentana(it, {
+  // Alto reservado ABAJO para la cota de elevacion y el rotulo del vidrio. Se descuenta ANTES
+  // de encajar la ventana: pelear por el espacio DESPUES es lo que hacia que en una ventana
+  // alta (la proyectante) el numero quedara pisando el marco.
+  const ALTO_COTA = 24;
+  const cajaUtil = {
     x: caja.x, y: caja.y + reserva,
-    w: Math.max(20, caja.w - reserva), h: Math.max(20, caja.h - reserva),
-  });
+    w: Math.max(20, caja.w - reserva), h: Math.max(20, caja.h - reserva - ALTO_COTA),
+  };
+  const p = planoDeVentana(it, cajaUtil, { escala: opciones && opciones.escala });
   const fuga = vectorFuga(p.escala, fondoDe(it));
   const marcos = p.marcos || [p.marcoRect];
 
@@ -471,15 +491,22 @@ export function dibujarVentanaIso(doc, caja, it) {
     // implementa `heightOfString`, y no se le agrega una dependencia a un test ajeno por una
     // etiqueta. `tipoVidrioDe` ya acota el texto a 22 caracteres => a 5,2 pt son 2 lineas
     // como maximo (~13 pt). Apoyado en 0,62 del alto, un pano de 34 pt le da el aire justo.
-    const ALTO_MAX = 13;
-    doc.font('Helvetica-Bold').fontSize(5.2);
+    // `tipoVidrioDe` devuelve 1 o 2 lineas: "Termopanel" arriba y la composicion abajo
+    // (*"termopanel debe quedar arriba de 4+12+4"*, dueno 25-sep). A 5,4 pt cada linea mide
+    // ~6,8 pt; dos lineas ~14. Apoyado en 0,58 del alto, un pano de 36 pt da el aire justo.
+    const INTERLINEA = 6.8;
+    const altoRotulo = tipo.length * INTERLINEA;
     for (const hoja of p.hojas) {
       const v = hoja.vidrioRect;
-      // Si no cabe, NO se dibuja: un rotulo encimado es peor que ninguno (fue exactamente lo
-      // que paso con el recuadro verde del pie el 25-sep).
-      if (!v || v.w < 30 || v.h < ALTO_MAX + 21) continue;
-      doc.fillColor('#46586B')
-         .text(tipo, v.x + 2, v.y + v.h * 0.62, { width: v.w - 4, align: 'center' });
+      // Si no cabe, NO se dibuja: un rotulo encimado es peor que ninguno.
+      if (!v || v.w < 30 || v.h < altoRotulo + 22) continue;
+      let yr = v.y + v.h * 0.58;
+      tipo.forEach((linea, i) => {
+        doc.font(i === 0 ? 'Helvetica-Bold' : 'Helvetica').fontSize(5.4)
+           .fillColor('#46586B')
+           .text(linea, v.x + 2, yr, { width: v.w - 4, align: 'center', lineBreak: false });
+        yr += INTERLINEA;
+      });
     }
   }
 
@@ -498,13 +525,53 @@ export function dibujarVentanaIso(doc, caja, it) {
   // no de la ventana; sin este numero en la figura el cliente no puede atar las dos cosas.
   // Solo sale si el motor la calculo: una medida de vidrio inventada en un plano es peor que
   // ninguna. Si no cabe debajo, se omite antes que pisar el borde de la caja.
+  // COTA DE ELEVACION, no un texto suelto. Pedido del dueno (25-sep): *"donde dice 1500x1200
+  // debe ser mas grande... se tiene que ver como si fuera una medicion de elevacion de
+  // construccion"*.
+  //
+  // ⚠️ NO contradice la regla de arriba ("no lleva cotas a proposito"): esa regla es sobre
+  // cotar una CARA EN PERSPECTIVA, que se lee mal. Esta cota va DEBAJO de la cara frontal,
+  // que en proyeccion cabinet esta a escala real y sin deformar.
+  const frente = (p.marcos && p.marcos.length)
+    ? p.marcos.reduce((a, m) => ({
+        x0: Math.min(a.x0, m.x), x1: Math.max(a.x1, m.x + m.w),
+        y1: Math.max(a.y1, m.y + m.h),
+      }), { x0: Infinity, x1: -Infinity, y1: -Infinity })
+    : { x0: p.marcoRect.x, x1: p.marcoRect.x + p.marcoRect.w, y1: p.marcoRect.y + p.marcoRect.h };
+
   const hayVidrio = Boolean(p.etiquetaVidrio);
-  const yEtiqueta = caja.y + caja.h - (hayVidrio ? 10 : 2);
-  doc.fillColor('#6B7B8D').fontSize(6.5).font('Helvetica')
-     .text(p.etiqueta, caja.x, yEtiqueta, { width: caja.w, align: 'center' });
+  const yCota = frente.y1 + 15;
+  const TIC = 2.6;
+  // La marca a 45° sobresale TIC hacia afuera del extremo, asi que la cota se acota al borde
+  // de la caja: el test "el volumen NUNCA se sale de su caja" la cazo saliendose 2,6 pt por la
+  // izquierda en la compuesta de 3 panos. La diferencia con el borde real del marco es de
+  // 2,6 pt como maximo — imperceptible — y salirse de la caja pisa lo que este al lado.
+  const cx0 = Math.max(frente.x0, caja.x + TIC);
+  const cx1 = Math.min(frente.x1, caja.x + caja.w - TIC);
+  // Con ALTO_COTA reservado arriba, el aire esta garantizado. La condicion queda igual por
+  // si alguien toca la reserva: antes que dibujar algo encimado, se cae al rotulo simple.
+  if (cx1 > cx0 && yCota + 4 < caja.y + caja.h && yCota - 10 > frente.y1) {
+    doc.save().lineWidth(0.4).strokeColor('#9AA5B1');
+    // lineas de extension: bajan desde el marco hasta la linea de cota
+    doc.moveTo(cx0, frente.y1 + 2).lineTo(cx0, yCota + TIC).stroke();
+    doc.moveTo(cx1, frente.y1 + 2).lineTo(cx1, yCota + TIC).stroke();
+    // linea de cota + marcas a 45°, que es la convencion de plano de arquitectura
+    doc.moveTo(cx0, yCota).lineTo(cx1, yCota).stroke();
+    doc.moveTo(cx0 - TIC, yCota + TIC).lineTo(cx0 + TIC, yCota - TIC).stroke();
+    doc.moveTo(cx1 - TIC, yCota + TIC).lineTo(cx1 + TIC, yCota - TIC).stroke();
+    doc.restore();
+    // El numero va SOBRE la linea, como en un plano. 8,5 pt y no 6,5: es la medida que el
+    // cliente compara con el hueco de su casa.
+    doc.fillColor('#46586B').fontSize(8.5).font('Helvetica-Bold')
+       .text(p.etiqueta, cx0, yCota - 11, { width: cx1 - cx0, align: 'center', lineBreak: false });
+  } else {
+    doc.fillColor('#46586B').fontSize(8.5).font('Helvetica-Bold')
+       .text(p.etiqueta, caja.x, caja.y + caja.h - 11, { width: caja.w, align: 'center', lineBreak: false });
+  }
   if (hayVidrio) {
-    doc.fillColor('#8A96A6').fontSize(5.8).font('Helvetica')
-       .text(p.etiquetaVidrio, caja.x, yEtiqueta + 8, { width: caja.w, align: 'center' });
+    doc.fillColor('#8A96A6').fontSize(6).font('Helvetica')
+       .text(p.etiquetaVidrio, caja.x, Math.min(yCota + 4, caja.y + caja.h - 7),
+             { width: caja.w, align: 'center', lineBreak: false });
   }
 
   doc.restore();

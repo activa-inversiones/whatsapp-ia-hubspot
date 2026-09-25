@@ -333,7 +333,14 @@ test('🔴 el paño FIJO de un monorriel no lleva contorno de hoja: es marco + t
   // paño DERECHO (el fijo). El contorno de hoja fantasma arrancaba apenas 3 px antes del medio,
   // asi que un umbral pegado al centro lo dejaba pasar — la primera version de este test lo
   // dejo, y por eso estaba en verde con el defecto puesto. Se midio y se corrigio el umbral.
-  const delFijo = doc._rects.filter((r) => r.x > caja.x + caja.w * 0.35 && r.h > caja.h * 0.75);
+  // [2026-09-25] Umbral 0,75 -> 0,70. NO se relaja lo que el test custodia: sigue siendo que
+  // en el pano fijo haya DOS rectangulos altos y no tres. Lo que cambio es el dibujo: ahora
+  // reserva 24 pt abajo para la cota de elevacion (pedido del dueno), asi que los MISMOS dos
+  // rectangulos quedan proporcionalmente mas bajos respecto de la caja.
+  // MEDIDO con este mismo doble y esta misma ventana: los dos rectangulos del pano fijo miden
+  // 138,6 y 136,1 pt. Umbral 0,75 = 147 pt -> no los alcanza (0). Umbral 0,68 = 133,3 pt -> los
+  // dos, y solo esos dos. El contorno de hoja fantasma, si volviera, seria un tercero.
+  const delFijo = doc._rects.filter((r) => r.x > caja.x + caja.w * 0.35 && r.h > caja.h * 0.68);
   // El fijo es marco + junquillo + termopanel: del marco no sale un rectangulo propio acá, asi
   // que quedan DOS (junquillo y vidrio). Un tercero es el contorno de hoja que no debe existir.
   assert.equal(delFijo.length, 2,

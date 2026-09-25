@@ -732,12 +732,16 @@ function tripleRielDe(it) {
 export function tipoVidrioDe(it) {
   const crudo = String((it && (it.glass_label || it.glass_code || it.vidrio)) || '').trim();
   if (!crudo) return null;
-  // Se recorta a lo esencial: en un pano de ~60 pt no entra "Termopanel DVH 4/12/4 recocido
-  // incoloro". Se conserva la palabra que identifica el producto y la composicion si viene.
   const composicion = crudo.match(/(\d+(?:\.\d+)?)\s*[+/-]\s*(\d+(?:\.\d+)?)\s*[+/-]\s*(\d+(?:\.\d+)?)/);
   const esTermopanel = !!composicion || /termopanel|dvh/i.test(crudo);
-  if (!esTermopanel) return crudo.length > 22 ? crudo.slice(0, 21) + '…' : crudo;
-  return composicion ? `Termopanel ${composicion[0].replace(/\s+/g, '')}` : 'Termopanel DVH';
+  if (!esTermopanel) return [crudo.length > 22 ? `${crudo.slice(0, 21)}…` : crudo];
+  // DOS lineas: la palabra arriba y la composicion abajo. Pedido del dueno (25-sep):
+  // *"termopanel debe quedar arriba de 4+12+4"*. Asi se lee como la especificacion de un
+  // plano y no como una frase suelta dentro del vidrio.
+  // El separador se normaliza a "+", que es como se escribe un DVH en Chile y como lo
+  // escribio el dueno. El dato de origen puede venir con "/" o "-".
+  if (!composicion) return ['Termopanel', 'DVH'];
+  return ['Termopanel', `${composicion[1]}+${composicion[2]}+${composicion[3]}`];
 }
 
 function etiquetaVidrioDe(it) {
@@ -772,6 +776,14 @@ function centralFijaDe(it) {
 // Encaja el rectángulo ancho×alto dentro de la caja disponible SIN deformarlo.
 // La escala tiene que ser la misma en x e y: una ventana de 2000×500 debe verse chata,
 // porque el cliente compara la proporción con el hueco de su casa.
+/** Escala natural de una ventana en una caja, sin dibujarla. La usa quotePdf para calcular
+ *  la escala COMUN de toda la propuesta: el minimo de todas. */
+export function escalaNatural(it, caja) {
+  const { ancho, alto } = medidas(it && it.measures);
+  if (!(ancho > 0 && alto > 0 && caja.w > 0 && caja.h > 0)) return null;
+  return Math.min(caja.w / ancho, caja.h / alto);
+}
+
 function encajar(ancho, alto, cajaW, cajaH) {
   const escala = Math.min(cajaW / ancho, cajaH / alto);
   const w = ancho * escala, h = alto * escala;
@@ -968,14 +980,29 @@ function hojaDelLabel(it) {
 
 
 
-function planoDeVentana(it, caja) {
+/**
+ * `opciones.escala` fuerza una escala COMUN a todas las ventanas de la propuesta, en vez de
+ * que cada una se ajuste sola a su caja. Reclamo del dueno (25-sep): *"los marcos deberian
+ * estar hechos a escala... el perfil S60 se ve como si fuera mas grande de lo que es... la
+ * idea es que todas las imagenes esten en la misma escala"*. Tenia razon: ajustando cada una
+ * por separado, una ventana de 1000x1200 y una de 1500x1200 salian del MISMO tamano en la
+ * hoja, y el mismo perfil de 40 mm se dibujaba mas grueso en la chica.
+ * Nunca AMPLIA sobre lo que cabe: se toma el minimo con la escala natural de la caja, o la
+ * ventana se saldria del recuadro.
+ */
+function planoDeVentana(it, caja, opciones) {
   const { ancho, alto } = medidas(it?.measures);
   const tipo = tipoDe(it);
   const n = hojasDe(it);
   const color = COLORES[claveColor(it?.color)] || COLORES.blanco;
   const vidrio = VIDRIOS[claveVidrio(it?.glass_label, it?.ambiente)] || VIDRIOS.incoloro;
 
-  const { w, h, escala, dx, dy } = encajar(ancho, alto, caja.w, caja.h);
+  const natural = encajar(ancho, alto, caja.w, caja.h);
+  const forzada = Number(opciones && opciones.escala);
+  const esc = forzada > 0 ? Math.min(forzada, natural.escala) : natural.escala;
+  const escala = esc;
+  const w = ancho * esc, h = alto * esc;
+  const dx = (caja.w - w) / 2, dy = (caja.h - h) / 2;
   const x = caja.x + dx, y = caja.y + dy;
 
   // Marco y hoja a escala real: 60 mm de marco y 40 mm de hoja son medidas de perfil PVC.
