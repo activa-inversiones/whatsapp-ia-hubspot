@@ -82,9 +82,18 @@ export function textoConfidencialCorto(destinatario) {
  *
  * `margenInferior` = a que altura del borde se apoya. Cada documento tiene su propia franja
  * de pie y el texto va por encima de ella.
+ *
+ * 🔴 TAMANO 7,5 pt = 2,65 mm, NO 5,4. La Ley 19.496 art. 17 exige para los contratos de
+ * adhesion "un tamano de letra no inferior a 2,5 milimetros", y sanciona lo que no cumple:
+ * *"las clausulas que no cumplan con dichos requisitos no produciran efecto alguno respecto
+ * del consumidor"*. Estos documentos no son un contrato de adhesion, pero una clausula que
+ * pretende OBLIGAR al que la recibe no puede quedar por debajo de ese piso: si alguna vez
+ * pasa a formar parte del contrato, en letra chica no vale nada.
+ * El gris tambien se oscurecio (#5C6673): la norma pide "claramente legible", no solo un
+ * tamano.
  */
-export function sellarConfidencialidad(doc, { destinatario, margenInferior = 66, color = '#8A93A0',
-                                              tamano = 5.4, x = 50 } = {}) {
+export function sellarConfidencialidad(doc, { destinatario, margenInferior = 66, color = '#5C6673',
+                                              tamano = 7.5, x = 50 } = {}) {
   if (typeof doc.bufferedPageRange !== 'function') return 0;
   let rango;
   try { rango = doc.bufferedPageRange(); } catch { return 0; }

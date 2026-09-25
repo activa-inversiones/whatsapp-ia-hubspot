@@ -328,7 +328,7 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
 
       // Clausula de confidencialidad en el borde inferior de CADA hoja, por encima de la
       // franja azul (54 pt). Pedido del dueno 25-sep.
-      sellarConfidencialidad(doc, { destinatario: destinatarioPropuesta(data), margenInferior: 78 });
+      sellarConfidencialidad(doc, { destinatario: destinatarioPropuesta(data), margenInferior: 88 });
 
       doc.end();
     } catch (e) { reject(e); }

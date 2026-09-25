@@ -1150,7 +1150,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
       // Clausula de confidencialidad en el BORDE INFERIOR DE CADA HOJA, por encima de la
       // franja azul (52 pt). Pedido del dueno 25-sep: una hoja suelta fotocopiada tiene que
       // llevar la advertencia igual.
-      sellarConfidencialidad(doc, { destinatario, margenInferior: 76 });
+      sellarConfidencialidad(doc, { destinatario, margenInferior: 86 });
 
       doc.end();
     } catch (e) {

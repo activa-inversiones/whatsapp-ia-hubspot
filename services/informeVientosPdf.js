@@ -293,7 +293,7 @@ export async function generarInformeVientosPdf(datos, {
 
   // Clausula en el borde inferior de CADA hoja, POR ENCIMA de la franja (pedido del dueno
   // 25-sep). 76 y no 44: antes la franja no existia y podia apoyarse mas abajo.
-  sellarConfidencialidad(doc, { destinatario, margenInferior: 76 });
+  sellarConfidencialidad(doc, { destinatario, margenInferior: 86 });
 
   doc.end();
   return fin;

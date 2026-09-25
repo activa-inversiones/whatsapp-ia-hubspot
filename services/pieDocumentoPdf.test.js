@@ -205,3 +205,17 @@ test('el QR se dibuja con rectangulos (vectorial), no como imagen', () => {
     assert.ok(r.y >= 20 && r.y <= 20 + 46, 'ningun modulo se sale arriba/abajo');
   }
 });
+
+test('🔴 LEY 19.496 art. 17: la clausula NO puede ir bajo 2,5 mm de alto de letra', () => {
+  // *"Los contratos de adhesion... deberan estar escritos de modo claramente legible, con un
+  // tamano de letra no inferior a 2,5 milimetros"*, y las clausulas que no cumplen "no
+  // produciran efecto alguno respecto del consumidor". 1 pt = 0,35278 mm => el piso son
+  // 7,0865 pt. Estaba en 5,4 (1,91 mm) y el dueno lo noto mirando el PDF, no un test.
+  const d = docConPaginas(1);
+  let usado = null;
+  const fontSizeOrig = d.fontSize.bind(d);
+  d.fontSize = (n) => { usado = n; return fontSizeOrig(n); };
+  sellarConfidencialidad(d, { destinatario: 'X' });
+  const mm = usado * 0.35278;
+  assert.ok(mm >= 2.5, `la clausula quedo en ${mm.toFixed(2)} mm: bajo el minimo legal de 2,5`);
+});
