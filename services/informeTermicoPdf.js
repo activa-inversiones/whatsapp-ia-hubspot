@@ -1137,6 +1137,9 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
       for (let i = rango.start; i < rango.start + rango.count; i++) {
         doc.switchToPage(i);
         doc.page.margins.bottom = 0;
+        // Filete dorado sobre la franja: mismo remate que la propuesta y el informe de
+        // vientos. Los tres cierran igual (reclamo del dueno 25-sep: *"deben quedar estandar"*).
+        doc.rect(0, doc.page.height - 54, W, 1.6).fill(GOLD);
         doc.rect(0, doc.page.height - 52, W, 52).fill(NAVY);
         doc.fillColor('#fff').fontSize(9).font('Helvetica-Bold')
           .text('Activa Inversiones · Fábrica de Ventanas y Puertas PVC · Temuco', 50, doc.page.height - 42, pie);

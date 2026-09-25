@@ -206,13 +206,15 @@ export function dibujarFirmaActiva(doc, { x = 50, y, ancho, paleta = {}, firma =
   yIzq += (hayLogo || haySello) ? 34 : 0;
 
   // credencial en caja verde (misma del correo)
-  doc.rect(x, yIzq, ANCHO_IZQ, 19).fill('#EAF4EC');
-  doc.rect(x, yIzq, 2.5, 19).fill('#00A651');
+  // DOS lineas medidas, no una que se parta sola: "EVALUADOR ENERGETICO ACREDITADO MINVU"
+  // mide 145 pt y la caja tiene 140 utiles, asi que pdfkit la envolvia y la segunda linea
+  // quedaba PISADA por "Res. 266/2025". Se ve en los PDF del 25-sep como "MINVU/266/2025".
+  doc.rect(x, yIzq, ANCHO_IZQ, 21).fill('#EAF4EC');
+  doc.rect(x, yIzq, 2.5, 21).fill('#00A651');
   doc.fillColor(VERDE).fontSize(6.2).font('Helvetica-Bold')
-     .text('EVALUADOR ENERGÉTICO ACREDITADO MINVU', x + 6, yIzq + 4,
-           { width: ANCHO_IZQ - 10, lineBreak: false })
-     .text('Res. 266/2025', x + 6, yIzq + 11, { width: ANCHO_IZQ - 10, lineBreak: false });
-  yIzq += 22;
+     .text('EVALUADOR ENERGÉTICO', x + 6, yIzq + 4.5, { width: ANCHO_IZQ - 10, lineBreak: false })
+     .text('ACREDITADO MINVU · Res. 266/2025', x + 6, yIzq + 12, { width: ANCHO_IZQ - 10, lineBreak: false });
+  yIzq += 24;
 
   // ---------- filete dorado vertical ----------
   doc.rect(x + ANCHO_IZQ + 6, yIni, 2, Math.max(yIzq - yIni, 76)).fill(GOLD);

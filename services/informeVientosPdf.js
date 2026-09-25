@@ -267,8 +267,33 @@ export async function generarInformeVientosPdf(datos, {
     paleta: { navy: NAVY, gold: '#C4993B', gray: '#485A6B', verde: '#1B6B3A' },
   });
 
-  // Clausula en el borde inferior de CADA hoja (pedido del dueno 25-sep).
-  sellarConfidencialidad(doc, { destinatario, margenInferior: 44 });
+  // ── PIE EN TODAS LAS PAGINAS ──────────────────────────────────────────
+  // [2026-09-25] Faltaba. Reclamo del dueno: *"al informe de vientos le falta la parte azul
+  // de abajo"*. Los otros dos documentos ya la tenian y este no, que es justo lo que hacia
+  // que no se vieran de la misma casa. Mismo patron que informeTermicoPdf.js: se recorre el
+  // buffer de paginas al final, que es la forma que soporta pdfkit.
+  {
+    const pie = { align: 'center', width: W - 100, lineBreak: false };
+    const rango = doc.bufferedPageRange();
+    for (let i = rango.start; i < rango.start + rango.count; i++) {
+      doc.switchToPage(i);
+      doc.page.margins.bottom = 0;
+      // Filete dorado sobre la franja: es el detalle que separa un documento formal de una
+      // hoja con un rectangulo azul abajo.
+      doc.rect(0, doc.page.height - 54, W, 1.6).fill(GOLD);
+      doc.rect(0, doc.page.height - 52, W, 52).fill(NAVY);
+      doc.fillColor('#fff').fontSize(9).font('Helvetica-Bold')
+        .text('Activa Inversiones · Fábrica de Ventanas y Puertas PVC · Temuco',
+          50, doc.page.height - 42, pie);
+      doc.fillColor(GOLD).fontSize(8).font('Helvetica')
+        .text(`www.activaspa.cl  ·  Informe técnico de viento  ·  Página ${i - rango.start + 1} de ${rango.count}`,
+          50, doc.page.height - 26, pie);
+    }
+  }
+
+  // Clausula en el borde inferior de CADA hoja, POR ENCIMA de la franja (pedido del dueno
+  // 25-sep). 76 y no 44: antes la franja no existia y podia apoyarse mas abajo.
+  sellarConfidencialidad(doc, { destinatario, margenInferior: 76 });
 
   doc.end();
   return fin;

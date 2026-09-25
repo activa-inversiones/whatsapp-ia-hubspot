@@ -320,6 +320,8 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       // Se anula el margen inferior SOLO para pintar el pie, que es contenido fijo y va donde
       // uno decide, no donde el flujo de texto lo lleve.
       doc.page.margins.bottom = 0;
+      // Filete dorado sobre la franja: los tres documentos cierran igual.
+      doc.rect(0, doc.page.height - 56, doc.page.width, 1.6).fill(GOLD);
       doc.rect(0, doc.page.height - 54, doc.page.width, 54).fill(NAVY);
       doc.fillColor("#fff").fontSize(9).font("Helvetica-Bold").text("Activa Inversiones · Ventanas PVC certificadas · Temuco", 50, doc.page.height - 42, { align: "center", width: doc.page.width - 100 });
       doc.fillColor(GOLD).fontSize(8).font("Helvetica").text("WhatsApp +56 9 5729 6035 · activaspa.cl · Cada ventana se puede ver en 3D y probar en tu pared", 50, doc.page.height - 26, { align: "center", width: doc.page.width - 100 });
