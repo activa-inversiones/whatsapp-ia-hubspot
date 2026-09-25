@@ -356,23 +356,80 @@ export function manillaFormas(q) {
  */
 export function pintarManilla(doc, f, dx = 0, dy = 0) {
   const R = (r) => doc.roundedRect(r.x + dx, r.y + dy, r.w, r.h, Math.min(r.r, r.w / 2, r.h / 2));
+  // Degradado solo si el pdfkit real lo trae: los dobles de prueba no lo implementan, y una
+  // manilla sin degradado es la de antes, no un PDF roto.
+  const conDegradado = typeof doc.linearGradient === 'function';
+  const grad = (x1, y1, x2, y2, paradas) => {
+    const g = doc.linearGradient(x1, y1, x2, y2);
+    paradas.forEach(([t, c]) => g.stop(t, c));
+    return g;
+  };
 
-  R(f.roseta).lineWidth(0.32).fillAndStroke("#D8DCE1", "#4A5560");
-  R(f.palanca).lineWidth(0.32).fillAndStroke("#F1F3F5", "#4A5560");
-  R(f.cuello).lineWidth(0.28).fillAndStroke("#B9BFC6", "#4A5560");
-  // La hebra de luz y la sombra del cilindro, a lo largo de la palanca.
+  // ── ROSETA: dos anillos concentricos. Una roseta de un solo tono se lee como un sticker;
+  // las de verdad son una pieza torneada con un rebaje.
+  R(f.roseta).lineWidth(0.32).fillAndStroke('#C9CFD6', '#46515C');
+  const m = Math.min(f.roseta.w, f.roseta.h) * 0.22;
+  const interior = {
+    x: f.roseta.x + m, y: f.roseta.y + m,
+    w: f.roseta.w - m * 2, h: f.roseta.h - m * 2, r: Math.max(0.4, f.roseta.r - m),
+  };
+  if (interior.w > 0.8 && interior.h > 0.8) {
+    R(interior).lineWidth(0.22).fillAndStroke('#EDF0F3', '#8A939C');
+  }
+
+  // ── PALANCA CONICA. Una barra de ancho constante es lo que la hacia ver ordinaria: las
+  // manillas reales se afinan hacia la punta y rematan redondeadas.
   const p = f.palanca;
-  doc.lineWidth(Math.max(0.25, (f.horiz ? p.h : p.w) * 0.16));
+  const px = p.x + dx, py = p.y + dy;
+  const AFINA = 0.66;                       // grosor de la punta respecto de la base
+  // La punta se arma con `polygon` y no con curvas: los dobles de prueba del repo no
+  // implementan quadraticCurveTo, y no se le agrega una dependencia a un test ajeno por el
+  // remate de una manilla de 6 pt. Tres segmentos alcanzan: a este tamano no se distingue.
+  doc.save();
   if (f.horiz) {
-    doc.strokeColor("#FFFFFF").moveTo(p.x + dx + p.r, p.y + dy + p.h * 0.24)
-       .lineTo(p.x + dx + p.w - p.r, p.y + dy + p.h * 0.24).stroke();
-    doc.strokeColor("#9AA1A8").lineWidth(0.25).moveTo(p.x + dx + p.r, p.y + dy + p.h * 0.82)
-       .lineTo(p.x + dx + p.w - p.r, p.y + dy + p.h * 0.82).stroke();
+    const hb = p.h, ht = p.h * AFINA;
+    const yb0 = py, yb1 = py + hb;
+    const yt0 = py + (hb - ht) / 2, yt1 = yt0 + ht, ym = py + hb / 2;
+    const xt = px + p.w;
+    doc.polygon(
+      [px, yb0], [xt - ht * 0.55, yt0], [xt - ht * 0.16, yt0 + ht * 0.13], [xt, ym],
+      [xt - ht * 0.16, yt1 - ht * 0.13], [xt - ht * 0.55, yt1], [px, yb1]
+    );
+    if (conDegradado) {
+      doc.lineWidth(0.3).fillAndStroke(grad(px, yb0, px, yb1,
+        [[0, '#FAFBFC'], [0.32, '#E7EAEE'], [0.62, '#C4CAD1'], [1, '#9AA2AA']]), '#46515C');
+    } else {
+      doc.lineWidth(0.3).fillAndStroke('#E7EAEE', '#46515C');
+    }
   } else {
-    doc.strokeColor("#FFFFFF").moveTo(p.x + dx + p.w * 0.24, p.y + dy + p.r)
-       .lineTo(p.x + dx + p.w * 0.24, p.y + dy + p.h - p.r).stroke();
-    doc.strokeColor("#9AA1A8").lineWidth(0.25).moveTo(p.x + dx + p.w * 0.82, p.y + dy + p.r)
-       .lineTo(p.x + dx + p.w * 0.82, p.y + dy + p.h - p.r).stroke();
+    const wb = p.w, wt = p.w * AFINA;
+    const xb0 = px, xb1 = px + wb;
+    const xt0 = px + (wb - wt) / 2, xt1 = xt0 + wt, xm = px + wb / 2;
+    const yt = py + p.h;
+    doc.polygon(
+      [xb0, py], [xt0, yt - wt * 0.55], [xt0 + wt * 0.13, yt - wt * 0.16], [xm, yt],
+      [xt1 - wt * 0.13, yt - wt * 0.16], [xt1, yt - wt * 0.55], [xb1, py]
+    );
+    if (conDegradado) {
+      doc.lineWidth(0.3).fillAndStroke(grad(xb0, py, xb1, py,
+        [[0, '#FAFBFC'], [0.32, '#E7EAEE'], [0.62, '#C4CAD1'], [1, '#9AA2AA']]), '#46515C');
+    } else {
+      doc.lineWidth(0.3).fillAndStroke('#E7EAEE', '#46515C');
+    }
+  }
+  doc.restore();
+
+  // ── CUELLO: va ENCIMA de la roseta y DEBAJO de la palanca, en sombra.
+  R(f.cuello).lineWidth(0.28).fillAndStroke('#AAB2BA', '#46515C');
+
+  // Hebra de luz: una sola, fina y corta. Sin degradado es lo unico que da volumen; con
+  // degradado remata el brillo del metal.
+  const largo = f.horiz ? p.w : p.h;
+  doc.lineWidth(Math.max(0.2, (f.horiz ? p.h : p.w) * 0.11)).strokeColor('#FFFFFF');
+  if (f.horiz) {
+    doc.moveTo(px + p.r, py + p.h * 0.27).lineTo(px + largo * 0.82, py + p.h * 0.27).stroke();
+  } else {
+    doc.moveTo(px + p.w * 0.27, py + p.r).lineTo(px + p.w * 0.27, py + largo * 0.82).stroke();
   }
 }
 
