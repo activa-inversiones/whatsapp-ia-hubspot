@@ -190,10 +190,13 @@ test('🔒 [#392] el aviso legal lleva la razon social Y el RUT verificados del 
   // comprobo por modulo 11 antes de escribirlo (suma 187 -> DV 0 ✓): un digito verificador
   // equivocado dentro del parrafo que pretende tener valor juridico es peor que no ponerlo.
   const { readFile } = await import('node:fs/promises');
-  const src = await readFile(new URL('./informeTermicoPdf.js', import.meta.url), 'utf8');
+  // [2026-09-25] El aviso legal se mudo al pie compartido (pieDocumentoPdf.js), que lo sella
+  // en TODAS las hojas. El guardia se mueve con el: lo que se custodia es que la razon social
+  // y el RUT salgan del entorno con estos respaldos verificados, no que vivan en tal archivo.
+  const src = await readFile(new URL('./pieDocumentoPdf.js', import.meta.url), 'utf8');
   assert.ok(src.includes("EMISOR_RAZON_SOCIAL || 'Activa Inversiones EIRL'"), 'razon social exacta');
   assert.ok(src.includes("EMISOR_RUT || '76.486.825-0'"), 'RUT exacto');
-  assert.ok(src.includes('RUT ${rutEmisor}'), 'y aparece en el texto legal');
+  assert.ok(src.includes('RUT ${EMISOR.rut}'), 'y aparece en el texto legal');
 });
 
 

@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FIRMA_ACTIVA, CINTA_ENERGIA, textoConfidencial, textoConfidencialCorto,
-  dibujarPieDocumento, dibujarFirmaActiva, sellarConfidencialidad,
+  dibujarPieDocumento, dibujarFirmaActiva, sellarConfidencialidad, dibujarQR, URL_VERIFICACION,
 } from './pieDocumentoPdf.js';
 
 // Doble de pdfkit: registra lo que se dibujo, sin generar un PDF de verdad.
@@ -152,4 +152,54 @@ test('la version corta nombra al destinatario y conserva la advertencia legal', 
   assert.match(t, /acciones civiles y penales/);
   assert.ok(textoConfidencialCorto('').length < textoConfidencial('').length,
     'la de cada hoja es mas corta que la larga');
+});
+
+// ---------------------------------------------------------------------------
+// QR DE VERIFICACION. Apunta al FOLIO ISO (informe_number / quote_number), que es el mismo
+// registro que ya se guardaba: *"los folios deben ser guardados como ISO registros como
+// todas las demas cotizaciones"*. No hay numeracion paralela.
+// ---------------------------------------------------------------------------
+function docQR() {
+  const rects = [];
+  const d = {
+    rects,
+    page: { width: 595, height: 842, margins: { bottom: 50 } },
+    fillColor() { return d; }, fontSize() { return d; }, font() { return d; },
+    text() { return d; }, image() { return d; },
+    rect(x, y, w, h) { rects.push({ x, y, w, h }); return d; },
+    fill() { return d; },
+    heightOfString() { return 20; }, widthOfString(t) { return String(t).length * 4; },
+  };
+  return d;
+}
+
+test('🔴 SIN folio no se dibuja QR: uno que apunte a la nada es peor que ninguno', () => {
+  assert.equal(dibujarQR(docQR(), { x: 0, y: 0, folio: '' }), null);
+  assert.equal(dibujarQR(docQR(), { x: 0, y: 0, folio: '   ' }), null);
+  assert.equal(dibujarQR(docQR(), { x: 0, y: 0 }), null);
+});
+
+test('el QR apunta al folio ISO, sobre la pagina publica de verificacion', () => {
+  const url = dibujarQR(docQR(), { x: 0, y: 0, folio: 'AT-CM-FR-006-2026-0281' });
+  assert.equal(url, URL_VERIFICACION + '/AT-CM-FR-006-2026-0281');
+  assert.match(url, /\/verificar\//);
+});
+
+test('el folio se codifica: un folio con caracteres raros no rompe la URL', () => {
+  const url = dibujarQR(docQR(), { x: 0, y: 0, folio: 'AT/2026 #1' });
+  assert.ok(!/[ #]/.test(url.split('/verificar/')[1]), 'el folio va escapado');
+});
+
+test('el QR se dibuja con rectangulos (vectorial), no como imagen', () => {
+  const d = docQR();
+  dibujarQR(d, { x: 10, y: 20, lado: 46, folio: 'AT-CM-FR-006-2026-0281' });
+  assert.ok(d.rects.length > 100, 'un QR real tiene cientos de modulos');
+  // El PRIMER rectangulo es la zona de silencio (fondo blanco), que por definicion es mas
+  // grande que el QR. Los modulos van despues y si deben caer dentro del lado declarado.
+  const [silencio, ...modulos] = d.rects;
+  assert.ok(silencio.w > 46 && silencio.h > 46, 'la zona de silencio rodea al QR');
+  for (const r of modulos) {
+    assert.ok(r.x >= 10 && r.x <= 10 + 46, 'ningun modulo se sale a la izquierda/derecha');
+    assert.ok(r.y >= 20 && r.y <= 20 + 46, 'ningun modulo se sale arriba/abajo');
+  }
 });

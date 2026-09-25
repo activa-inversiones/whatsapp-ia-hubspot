@@ -307,7 +307,7 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       // decían "Evaluador": el dato vivía en tres archivos.
       y = dibujarPieDocumento(doc, {
         y, ancho: doc.page.width - 100,
-        destinatario: destinatarioPropuesta(data),
+        destinatario: destinatarioPropuesta(data), folio: quoteNumber,
         paleta: { navy: NAVY, gold: GOLD, gray: GRAY, verde: "#1B6B3A" },
       });
 
@@ -326,7 +326,7 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
 
       // Clausula de confidencialidad en el borde inferior de CADA hoja, por encima de la
       // franja azul (54 pt). Pedido del dueno 25-sep.
-      sellarConfidencialidad(doc, { destinatario: destinatarioPropuesta(data), margenInferior: 68 });
+      sellarConfidencialidad(doc, { destinatario: destinatarioPropuesta(data), margenInferior: 78 });
 
       doc.end();
     } catch (e) { reject(e); }

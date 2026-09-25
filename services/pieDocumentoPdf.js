@@ -26,6 +26,17 @@
 
 // Colores de la etiqueta de eficiencia energética (los mismos del sello CEV y de la firma
 // de correo). No son decorativos: es lo que el cliente asocia a la calificación.
+/**
+ * EMISOR del documento. Sale del entorno, con los valores que dio el dueno el 24-ago como
+ * respaldo: "Activa Inversiones EIRL, RUT 76.486.825-0". El DV se comprobo por modulo 11
+ * (suma 187 -> DV 0 ✓): un digito verificador equivocado dentro del parrafo que pretende
+ * tener valor juridico es peor que no ponerlo. Guardado por informeTermicoPdf.laminas.test.js.
+ */
+export const EMISOR = {
+  razonSocial: String(process.env.EMISOR_RAZON_SOCIAL || 'Activa Inversiones EIRL').trim(),
+  rut: String(process.env.EMISOR_RUT || '76.486.825-0').trim(),
+};
+
 export const CINTA_ENERGIA = ['#00A651', '#8DC63F', '#FFF200', '#F7941E', '#ED1C24'];
 
 // Identidad del firmante. UNA sola fuente para los tres documentos: cuando el dueño cambia
@@ -64,10 +75,14 @@ export function textoConfidencial(destinatario) {
  */
 export function textoConfidencialCorto(destinatario) {
   const quien = destinatario ? `de ${destinatario}` : 'de su destinatario';
-  return 'CONFIDENCIAL · Uso exclusivo ' + quien + ' · Prohibida su reproducción, distribución '
-    + 'o publicación, total o parcial, sin autorización escrita de Activa Inversiones; su '
-    + 'incumplimiento facultará el ejercicio de las acciones civiles y penales que contemple '
-    + 'la legislación chilena.';
+  // Absorbe lo que decian los recuadros beige que los informes llevaban ARRIBA y que se
+  // retiraron el 25-sep por orden del dueno (*"solo uno de informe confidencial"*): el uso
+  // acotado AL PROYECTO y la prohibicion de usarlo para uno distinto. No se perdio nada.
+  return 'CONFIDENCIAL · Uso exclusivo ' + quien + ' y del proyecto que lo motivó · Prohibida '
+    + 'su reproducción, distribución o publicación, total o parcial, su alteración, y su uso '
+    + `por terceros o para un proyecto distinto, sin autorización escrita previa de `
+    + `${EMISOR.razonSocial}, RUT ${EMISOR.rut}; su incumplimiento facultará el ejercicio de `
+    + 'las acciones civiles y penales que contemple la legislación chilena.';
 }
 
 /**
@@ -95,6 +110,52 @@ export function sellarConfidencialidad(doc, { destinatario, margenInferior = 66,
   return rango.count;
 }
 
+/**
+ * Base de la pagina publica de verificacion. Del entorno para poder mudarla sin tocar codigo.
+ */
+export const URL_VERIFICACION = String(
+  process.env.VERIFICACION_BASE_URL || 'https://ops.activalabs.ai/verificar').replace(/\/+$/, '');
+
+/**
+ * QR de verificacion, dibujado con RECTANGULOS vectoriales (no una imagen PNG): queda nitido
+ * a cualquier zoom, pesa nada y no depende de un archivo en disco.
+ *
+ * ⚠️ El QR lleva SOLO el folio ISO. NO puede llevar la huella del PDF: el sha256 se calcula
+ * SOBRE el archivo terminado, que todavia no existe mientras lo estamos dibujando.
+ *
+ * `folio` vacio => no dibuja nada. Un QR que apunta a un folio inexistente es peor que no
+ * tener QR: le mostraria "no encontrado" al cliente.
+ */
+export function dibujarQR(doc, { x, y, lado = 46, folio, color = '#1F3A6E' }) {
+  const f = String(folio || '').trim();
+  if (!f) return null;
+  const url = `${URL_VERIFICACION}/${encodeURIComponent(f)}`;
+  let q;
+  try {
+    q = qrcode(0, 'M');            // version automatica, correccion media
+    q.addData(url);
+    q.make();
+  } catch {
+    return null;                   // sin QR el documento igual sale
+  }
+  const n = q.getModuleCount();
+  const paso = lado / n;
+
+  // ZONA DE SILENCIO: el estandar pide 4 modulos de blanco alrededor. jsQR decodifica igual
+  // sin ella (probado), pero los lectores de telefono son menos tolerantes y aca el QR queda
+  // pegado al resto del pie. Un fondo blanco explicito cuesta nada y quita el riesgo.
+  const silencio = paso * 4;
+  doc.rect(x - silencio, y - silencio, lado + silencio * 2, lado + silencio * 2).fill('#FFFFFF');
+
+  doc.fillColor(color);
+  for (let fila = 0; fila < n; fila++) {
+    for (let col = 0; col < n; col++) {
+      if (q.isDark(fila, col)) doc.rect(x + col * paso, y + fila * paso, paso + 0.12, paso + 0.12).fill(color);
+    }
+  }
+  return url;
+}
+
 /** Cinta de 5 colores. Devuelve la Y siguiente. */
 export function dibujarCintaEnergetica(doc, x, y, ancho, alto = 3) {
   const w = ancho / CINTA_ENERGIA.length;
@@ -105,6 +166,7 @@ export function dibujarCintaEnergetica(doc, x, y, ancho, alto = 3) {
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import qrcode from 'qrcode-generator';
 
 const _AQUI = path.dirname(fileURLToPath(import.meta.url));
 export const RUTA_LOGO  = path.join(_AQUI, '..', 'assets', 'firma', 'logo-activa.png');
@@ -129,7 +191,7 @@ function imagenSiExiste(doc, ruta, x, y, opciones) {
  *
  * `paleta` = { navy, gold, gray, verde }. Devuelve la Y siguiente.
  */
-export function dibujarFirmaActiva(doc, { x = 50, y, ancho, paleta = {}, firma = null }) {
+export function dibujarFirmaActiva(doc, { x = 50, y, ancho, paleta = {}, firma = null, folio = '' }) {
   const NAVY  = paleta.navy  || '#1F3A6E';
   const GOLD  = paleta.gold  || '#F5B222';
   const GRAY  = paleta.gray  || '#777777';
@@ -143,7 +205,7 @@ export function dibujarFirmaActiva(doc, { x = 50, y, ancho, paleta = {}, firma =
   const yIni = dibujarCintaEnergetica(doc, x, y, ancho) + 10;
   const ANCHO_IZQ = 160;
   const xDer = x + ANCHO_IZQ + 14;
-  const anchoDer = ancho - ANCHO_IZQ - 14;
+  const anchoDer = ancho - ANCHO_IZQ - 14 - 56;   // 56 = QR + aire
 
   // ---------- columna izquierda: los dos logotipos + la credencial ----------
   let yIzq = yIni;
@@ -190,7 +252,16 @@ export function dibujarFirmaActiva(doc, { x = 50, y, ancho, paleta = {}, firma =
      .text(f.contacto, xDer, yDer, { width: anchoDer, lineBreak: false });
   yDer += 12;
 
-  return Math.max(yIzq, yDer) + 6;
+  // QR de verificacion al extremo derecho, alineado con el bloque.
+  const LADO_QR = 46;
+  const xQR = x + ancho - LADO_QR - 6;   // 6 = zona de silencio derecha
+  if (dibujarQR(doc, { x: xQR, y: yIni + 2, lado: LADO_QR, folio, color: NAVY })) {
+    doc.fillColor(GRAY).fontSize(5.2).font('Helvetica')
+       .text('Verifique este', xQR, yIni + LADO_QR + 5, { width: LADO_QR, align: 'center', lineBreak: false })
+       .text('documento', xQR, yIni + LADO_QR + 11, { width: LADO_QR, align: 'center', lineBreak: false });
+  }
+
+  return Math.max(yIzq, yDer, yIni + LADO_QR + 18) + 6;
 }
 
 /** Caja de confidencialidad. Devuelve la Y siguiente. */
@@ -218,7 +289,7 @@ export const ALTO_PIE = 105;   // solo la firma: la clausula se sella por pagina
  * arriba.
  */
 export function dibujarPieDocumento(doc, { x = 50, y, ancho, destinatario, paleta, firma = null,
-                                            margenInferior = 60, alSaltar = null }) {
+                                            folio = '', margenInferior = 60, alSaltar = null }) {
   const tope = doc.page.height - margenInferior;
   if (y + ALTO_PIE > tope) {
     doc.addPage();
@@ -226,5 +297,5 @@ export function dibujarPieDocumento(doc, { x = 50, y, ancho, destinatario, palet
   }
   // La clausula YA NO va aca: desde el 25-sep se sella en el borde inferior de TODAS las
   // hojas con `sellarConfidencialidad()`. Dejarla tambien aca la duplicaria en la ultima.
-  return dibujarFirmaActiva(doc, { x, y, ancho, paleta, firma });
+  return dibujarFirmaActiva(doc, { x, y, ancho, paleta, firma, folio });
 }

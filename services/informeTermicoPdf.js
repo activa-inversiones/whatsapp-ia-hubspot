@@ -511,22 +511,15 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
       // que tiene que decir a quien obliga. Si no hay RUT valido no se nombra ninguno —
       // nunca uno "casi bueno".
       const destinatario = destinatarioLegal(idCliente);
-      const legal = 'DOCUMENTO CONFIDENCIAL: USO EXCLUSIVO DEL DESTINATARIO. '
-        + `Este informe fue preparado${destinatario ? ` para ${destinatario}` : ''} y para el proyecto que lo motivó. `
-        + `Su contenido, cálculos y figuras son de ${razonSocial}${rutEmisor ? `, RUT ${rutEmisor}` : ''}, `
-        + 'y están protegidos por la legislación de '
-        + 'Queda prohibida su reproducción total o parcial, su alteración, y su uso por terceros o para un '
-        + 'proyecto distinto (incluido presentarlo, o los valores que contiene, ante terceros o autoridades '
-        + 'por quien no es el destinatario) sin autorización escrita previa. El uso no autorizado podrá dar '
-        + 'lugar a las acciones legales que correspondan.';
-      doc.fontSize(8).font('Helvetica');
-      const altoLegal = doc.heightOfString(legal, { width: W - 116 });
-      doc.rect(50, 208, W - 100, altoLegal + 14).fill('#FDF6E9')
-        .strokeColor(GOLD).lineWidth(0.5).rect(50, 208, W - 100, altoLegal + 14).stroke();
-      doc.fillColor('#7A5B14').fontSize(8).font('Helvetica')
-        .text(legal, 58, 215, { width: W - 116, align: 'justify' });
-
-      let y = 208 + altoLegal + 26;
+      // [2026-09-25] El recuadro beige de confidencialidad que iba ACA se retiro por orden
+      // del dueno (*"solo uno de informe confidencial"*): la clausula ahora va en el borde
+      // inferior de TODAS las hojas (sellarConfidencialidad), no una vez arriba. Lo que ese
+      // recuadro decia de mas -uso acotado al proyecto, prohibicion de usarlo en otro- se
+      // absorbio en textoConfidencialCorto(), asi que no se perdio nada.
+      // De paso se va un defecto real que salia en cada informe: el parrafo decia
+      // "...estan protegidos por la legislacion de Queda prohibida su reproduccion...",
+      // con la frase cortada a la mitad.
+      let y = 208;
 
       // [2026-08-21] El dueno pidio el informe COMPLETO: "entregale el informe real, no importa
       // si son varias hojas". Asi que se deja de pelear por entrar en una pagina y se agrega un
@@ -1132,7 +1125,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
       // Firma y confidencialidad COMPARTIDAS con la propuesta y el informe de vientos
       // (pieDocumentoPdf.js). `firma` sigue pudiendo sobrescribir al firmante.
       y = dibujarPieDocumento(doc, {
-        y, ancho: W - 100, destinatario, firma,
+        y, ancho: W - 100, destinatario, firma, folio: numeroInforme,
         paleta: { navy: NAVY, gold: GOLD, gray: GRAY, verde: '#1B6B3A' },
       });
 
@@ -1154,7 +1147,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
       // Clausula de confidencialidad en el BORDE INFERIOR DE CADA HOJA, por encima de la
       // franja azul (52 pt). Pedido del dueno 25-sep: una hoja suelta fotocopiada tiene que
       // llevar la advertencia igual.
-      sellarConfidencialidad(doc, { destinatario, margenInferior: 66 });
+      sellarConfidencialidad(doc, { destinatario, margenInferior: 76 });
 
       doc.end();
     } catch (e) {

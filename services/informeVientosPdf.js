@@ -108,25 +108,18 @@ export async function generarInformeVientosPdf(datos, {
       + 'No es una cotización ni contiene precios: su propuesta económica se envía por separado.', 58, 185, { width: W - 116 });
 
   const destinatario = destinatarioLegal(idCliente);
-  const legal = 'DOCUMENTO CONFIDENCIAL: USO EXCLUSIVO DEL DESTINATARIO. Este informe fue preparado '
-    + `${destinatario ? `para ${destinatario} y ` : ''}para el proyecto que lo motivó. Su contenido y cálculos son de `
-    + 'Activa Inversiones EIRL, RUT 76.486.825-0. Queda prohibida su reproducción total o parcial y su uso por '
-    + 'terceros o para un proyecto distinto sin autorización escrita previa.';
-  // La caja del legal se MIDE, ya no lleva el alto fijo de 44 px. MEDIDO: el texto de antes
-  // ocupaba 27,7 px (holgura real 38) y sumarle el nombre y el RUT del receptor lo dejaba a
-  // 1 px del borde; una razon social un poco mas larga se derramaba fuera del recuadro beige.
-  // Es el mismo patron que el termico ya usaba (heightOfString -> rect de alto + 14). La caja
-  // ahora crece hacia abajo, nunca hacia arriba: el techo (212) es el de siempre.
-  doc.fontSize(8).font('Helvetica');
-  const altoLegal = doc.heightOfString(legal, { width: W - 116 });
-  doc.rect(50, 212, W - 100, altoLegal + 14).fill('#FDF6E9');
-  doc.fillColor('#7A5B14').fontSize(8).font('Helvetica').text(legal, 58, 218, { width: W - 116 });
+  // [2026-09-25] El recuadro beige de confidencialidad que iba ACA se retiro por orden del
+  // dueno (*"solo uno de informe confidencial"*): la clausula va ahora en el borde inferior
+  // de TODAS las hojas (sellarConfidencialidad). Lo que decia de mas -uso acotado al
+  // proyecto, prohibicion de usarlo en otro- se absorbio en textoConfidencialCorto().
 
   // ── Tabla de ventanas ───────────────────────────────────────────────────
   // Arranca debajo de la caja legal, que ahora es elastica. El piso sigue siendo el 274 fijo
   // de siempre: la tabla NO sube aunque la caja mida menos (asi el informe de siempre queda
   // pixel por pixel igual), y solo baja si el legal de verdad crecio con el RUT del receptor.
-  let y = Math.max(274, 212 + altoLegal + 32);
+  // Sin el recuadro legal, el contenido arranca donde empezaba la caja (212): el hueco se
+  // cierra en vez de dejar una franja en blanco.
+  let y = 212;
   doc.rect(50, y, W - 100, 22).fill(NAVY);
   doc.fillColor(GOLD).fontSize(9).font('Helvetica-Bold').text('LA RESISTENCIA DE SUS VENTANAS', 58, y + 7);
   doc.fillColor('#cbd5e1').fontSize(8).font('Helvetica')
@@ -270,12 +263,12 @@ export async function generarInformeVientosPdf(datos, {
   // (pieDocumentoPdf.js). Antes este pie era el mas pobre de los tres: 9 pt, sin titulos,
   // sin contacto y sin decir que el documento es confidencial.
   dibujarPieDocumento(doc, {
-    y, ancho: W - 100, destinatario, firma: firma || null,
+    y, ancho: W - 100, destinatario, firma: firma || null, folio: numeroInforme,
     paleta: { navy: NAVY, gold: '#C4993B', gray: '#485A6B', verde: '#1B6B3A' },
   });
 
   // Clausula en el borde inferior de CADA hoja (pedido del dueno 25-sep).
-  sellarConfidencialidad(doc, { destinatario, margenInferior: 34 });
+  sellarConfidencialidad(doc, { destinatario, margenInferior: 44 });
 
   doc.end();
   return fin;
