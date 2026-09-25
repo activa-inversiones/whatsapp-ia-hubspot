@@ -293,9 +293,9 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       doc.fillColor(DARK).fontSize(9.5).font("Helvetica-Bold")
          .text("Marcelo Cifuentes Méndez", 50, y, { lineBreak: false }); y += 12;
       doc.fillColor("#2E7D32").fontSize(8).font("Helvetica-Bold")
-         .text("Calificador Energético MINVU · Res. 266/2025", 50, y, { lineBreak: false }); y += 11;
+         .text("Evaluador Energético Externo acreditado MINVU · Res. 266/2025", 50, y, { lineBreak: false }); y += 11;
       doc.fillColor(GRAY).fontSize(7.5).font("Helvetica");
-      doc.text("Ingeniero Civil Industrial · Ingeniero Electrónico · MBA Administración y Negocios", 50, y, { lineBreak: false }); y += 10;
+      doc.text("Ingeniero Civil Industrial · Constructor Civil · Ingeniero Electrónico · MBA Magíster en Administración y Negocios · Magíster en Negocios", 50, y, { lineBreak: false }); y += 10;
       doc.text("Gerente de Ingeniería · Activa Inversiones", 50, y, { lineBreak: false }); y += 10;
       doc.text("mcifuentes@activaspa.cl · +56 9 5729 6035", 50, y, { lineBreak: false }); y += 10;
 
