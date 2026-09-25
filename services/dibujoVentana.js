@@ -942,6 +942,58 @@ function hojaDelLabel(it) {
   if (mJ) return Number(mJ[1]);
   return null;
 }
+
+/**
+ * Lee la composicion de una VENTANA EN ESQUINA desde la etiqueta que arma el motor.
+ * Devuelve {partes:[...]} o null si la etiqueta no es de una esquina.
+ *
+ * El formato lo produce `calculateBowQuote`:
+ *   "Ventana en esquina (N paños, union 90°): <paño> + <paño> + <paño>"
+ * y cada paño es "Fijo 2000mm" o "Compuesto 400mm (Proyectante 750mm (arriba) + Fijo 750mm (abajo))".
+ * El separador de PAÑOS es " + " a nivel 0: el " + " de adentro del parentesis pertenece al
+ * paño compuesto, asi que se corta contando parentesis en vez de con split (un split partia
+ * "Compuesto 400mm (Proyectante 750mm" por la mitad y dejaba media ventana).
+ */
+function esquinaDesdeLabel(it) {
+  const label = String(it?.producto_label || it?.product || it?.producto || "");
+  const m = label.match(/ventana\s+en\s+esquina[^:]*:\s*([\s\S]+)$/i);
+  if (!m) return null;
+  const trozos = [];
+  let nivel = 0, actual = "";
+  for (let i = 0; i < m[1].length; i++) {
+    const ch = m[1][i];
+    if (ch === "(") nivel++;
+    else if (ch === ")") nivel = Math.max(0, nivel - 1);
+    if (ch === "+" && nivel === 0) { trozos.push(actual); actual = ""; continue; }
+    actual += ch;
+  }
+  if (actual.trim()) trozos.push(actual);
+  const partes = [];
+  for (const t of trozos) {
+    const cab = t.trim().match(/^([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+(\d+(?:[.,]\d+)?)\s*mm/i);
+    if (!cab) return null;                       // formato inesperado: NO se adivina
+    const tipo = tipoDeParte(cab[1]);
+    const ancho_mm = parseFloat(cab[2].replace(",", "."));
+    if (!Number.isFinite(ancho_mm) || ancho_mm <= 0) return null;
+    // Un paño COMPUESTO trae sus mitades entre parentesis.
+    const sub = [...t.matchAll(/([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+(\d+(?:[.,]\d+)?)\s*mm\s*\((?:arriba|abajo|izquierda|derecha)\)/gi)];
+    if (/^compuest/i.test(cab[1]) && sub.length >= 2) {
+      partes.push({
+        tipo: "COMPUESTA", ancho_mm,
+        compuesta: {
+          orientacion: "vertical",
+          partes: sub.map((x) => ({ tipo: tipoDeParte(x[1]), alto_mm: parseFloat(x[2].replace(",", ".")) })),
+        },
+      });
+    } else {
+      partes.push({ tipo, ancho_mm });
+    }
+  }
+  if (partes.length < 2) return null;
+  return { partes, uniones: partes.length - 1, derivado_de: "label" };
+}
+
+
 function planoDeVentana(it, caja) {
   const { ancho, alto } = medidas(it?.measures);
   const tipo = tipoDe(it);
@@ -986,8 +1038,24 @@ function planoDeVentana(it, caja) {
   //      ficha: es cuanto se acorta un paño girado para que se lea que gira. Por eso la COTA
   //      SIGUE DICIENDO LOS MILIMETROS REALES (400), no los dibujados: el cliente tiene que
   //      leer su medida, no la del papel.
+  // 🛟 ULTIMA RED DE LA ESQUINA: reconstruirla desde la ETIQUETA.
+  // 🔴 [2026-09-24 · #886 r2] POR QUE HACE FALTA, medido en la propuesta 0539:
+  // el LLM reconstruye los items del PDF con un esquema FIJO (producto_label, measures,
+  // color, qty, unit_price, glass_label, ambiente) que NO lleva geometria, y la sonda que
+  // re-cotiza para el color arma sus items desde esos — o sea `measures` ya resuelto a un PAR.
+  // Resultado: `esquina` se perdia en TRES sitios distintos y la bow window salia con el
+  // precio correcto y dibujada como una ventana cualquiera.
+  // Lo unico que sobrevive el viaje entero es la ETIQUETA, y la etiqueta lo dice todo:
+  //   "Ventana en esquina (3 paños, union 90°): Compuesto 400mm (Proyectante 750mm (arriba)
+  //    + Fijo 750mm (abajo)) + Fijo 2000mm + Compuesto 400mm (...)"
+  // Es la MISMA red que ya existe para la compuesta (`partesDesdeLabel`, 26-ago) y por la
+  // misma razon: perseguir el dato por cada camino nuevo no escala; la etiqueta siempre llega.
+  // ⚠️ Se marca `derivado_de: "label"` — un dato derivado no se hace pasar por uno medido.
+  const _esqLabel = esquinaDesdeLabel(it);
   const _esq = (Array.isArray(it?.esquina?.partes) && it.esquina.partes.length >= 2)
-    ? it.esquina : null;
+    ? it.esquina
+    : _esqLabel;
+  void 0;
   if (_esq) {
     const partesE = _esq.partes;
     const n = partesE.length;
@@ -1062,6 +1130,9 @@ function planoDeVentana(it, caja) {
       marcos: marcosPubE,
       marco, perfilHoja, junquillo, hojas: hojasE,
       esquina: {
+        // Si la composicion NO vino del motor sino de la etiqueta, queda DECLARADO: un dato
+        // derivado no se hace pasar por uno medido (misma regla que la compuesta).
+        ...(_esq.derivado_de ? { derivado_de: _esq.derivado_de } : {}),
         uniones: n - 1,
         escorzo_lateral: ESCORZO_LATERAL,
         // Declarado a proposito: el poste existe y se COBRA, pero no se dibuja.

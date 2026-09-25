@@ -4475,6 +4475,16 @@ Comuna: ${datos.comuna}`
                       ambiente:       it.ambiente || '',
                       termico:        _p.termico || null,
                       compuesta:      _p.compuesta || it.compuesta || undefined,
+                      // 🔴 [2026-09-24 · #886 r2] Y LA ESQUINA, POR LA MISMA RAZON QUE LA
+                      // COMPUESTA: el LLM reconstruye los items del PDF con un esquema fijo
+                      // (producto_label, measures, color, qty, unit_price, glass_label,
+                      // ambiente) que NO tiene geometria. La figura se rehidrata de `_p`, que
+                      // es lo que devolvio el motor. Sin esta linea la bow window sale con el
+                      // precio correcto y dibujada como una ventana cualquiera.
+                      // MEDIDO: propuesta 0539 del 24-sep, ya con el arreglo de los otros dos
+                      // caminos desplegado (b4ea0b9) — seguia saliendo mal porque el PDF se
+                      // arma ACA. Tercer sitio de construccion del mismo item.
+                      esquina:        _p.esquina || it.esquina || undefined,
                       hoja_mm:        Number(it.hoja_mm) || undefined,
                       // 🔴 [Codex, compuerta] LAS PROPUESTAS POR COLOR SE ARMABAN SIN EL NUMERO
                       // DE VENTANA. Este camino (opciones A/B/C, una por color) construye sus

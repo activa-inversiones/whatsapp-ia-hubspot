@@ -1405,3 +1405,46 @@ test("🔴 #883 el poste se COBRA pero NO se dibuja", () => {
   assert.equal(p.esquina.uniones, 2);
   assert.equal(p.marcos.length, 3, "sin sub-paños son 3 celdas, una por paño");
 });
+
+// 🔴 #886 r2 — LA ESQUINA SE RECONSTRUYE DESDE LA ETIQUETA
+// Nacio de la propuesta 0539: la bow window salio con el PRECIO CORRECTO y dibujada como una
+// ventana cualquiera, YA con el arreglo de los otros dos caminos desplegado. El dato `esquina`
+// se perdia en TRES sitios, y el ultimo es estructural: el LLM reconstruye los items del PDF
+// con un esquema FIJO que no lleva geometria, y la sonda que re-cotiza por color arma los
+// suyos desde esos. Perseguir el dato por cada camino nuevo no escala.
+// Lo unico que sobrevive el viaje entero es la ETIQUETA — y la etiqueta lo dice todo.
+test("🔴 #886 la esquina se reconstruye desde la etiqueta cuando no viene la geometria", () => {
+  const label = "Ventana en esquina (3 paños, union 90°): "
+    + "Compuesto 400mm (Proyectante 750mm (arriba) + Fijo 750mm (abajo)) + Fijo 2000mm + "
+    + "Compuesto 400mm (Proyectante 750mm (arriba) + Fijo 750mm (abajo))";
+  // OJO: SIN `esquina` en el item — es exactamente como llega desde el PDF.
+  const p = planoDeVentana({ producto_label: label, measures: "2000x1500", color: "Blanco" },
+    { x: 0, y: 0, w: 600, h: 320 });
+
+  assert.equal(p.tipo, "ESQUINA", "sin esto se dibuja una ventana cualquiera");
+  assert.equal(p.marcos.length, 5, "3 paños, y los dos laterales partidos en dos");
+  assert.deepEqual(p.hojas.map((h) => h.tipo),
+    ["PROYECTANTE", "FIJA", "FIJA", "PROYECTANTE", "FIJA"]);
+  assert.deepEqual(p.cotas.filter((c) => c.fila === 0).map((c) => c.texto), ["400", "2000", "400"]);
+  // ⚠️ Un dato DERIVADO no se hace pasar por uno medido (regla de la casa).
+  assert.equal(p.esquina.derivado_de, "label");
+});
+
+test("🔒 #886 el corte de paños cuenta parentesis: un split por ' + ' parte la ventana al medio", () => {
+  // El " + " de adentro del parentesis pertenece al paño compuesto. Con un split ingenuo,
+  // "Compuesto 400mm (Proyectante 750mm" quedaba como un paño y la ventana salia con 5.
+  const label = "Ventana en esquina (3 paños, union 90°): "
+    + "Compuesto 400mm (Proyectante 750mm (arriba) + Fijo 750mm (abajo)) + Fijo 2000mm + "
+    + "Compuesto 400mm (Proyectante 750mm (arriba) + Fijo 750mm (abajo))";
+  const p = planoDeVentana({ producto_label: label, measures: "2000x1500" }, { x: 0, y: 0, w: 600, h: 320 });
+  assert.equal(p.esquina.partes.length, 3, "TRES paños, no cinco");
+  assert.deepEqual(p.esquina.partes.map((x) => x.ancho_mm), [400, 2000, 400]);
+});
+
+test("🔒 #886 una etiqueta que NO es de esquina no se convierte en una", () => {
+  for (const label of ["Corredera SLIDING H80 Doble Riel S75", "Proyectante S60",
+    "Ventana compuesta vertical: Proyectante 750mm (arriba) + Fijo 750mm (abajo)"]) {
+    const p = planoDeVentana({ producto_label: label, measures: "1420x900" }, { x: 0, y: 0, w: 600, h: 320 });
+    assert.notEqual(p.tipo, "ESQUINA", label);
+  }
+});
