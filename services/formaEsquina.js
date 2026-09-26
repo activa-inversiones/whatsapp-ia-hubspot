@@ -489,64 +489,88 @@ export function esquinaDesdeLabel(it) {
   const label = String(it?.producto_label || it?.product || it?.producto || "");
   // [#887] Se acepta el nombre nuevo ("Bow window · ventana en esquina (...)") y el viejo:
   // hay propuestas ya emitidas con el anterior y tienen que seguir dibujandose igual.
-  const m = label.match(/(?:bow\s*-?\s*window|ventana\s+en\s+esquina)[^:]*:\s*([\s\S]+)$/i);
-  if (!m) return null;
+  if (!/(?:bow\s*-?\s*windo?ws?|ventana\s+en\s+esquina)/i.test(label)) return null;
+  // 🔴 [2026-09-26 · #947, MEDIDO en la propuesta CM-FR-004-2026-0557] EL LLM REESCRIBE LA ETIQUETA
+  // AL PEDIR EL PDF. El motor devolvio "Bow window · ventana en esquina (4 paños, union 90°): Fijo
+  // 330mm + ..." y al PDF llego "Bow window · 4 paños (Fijo 330mm + Fijo 1830mm + Fijo 1830mm +
+  // Compuesto 325mm: Proyectante arriba + Fijo abajo) · unión 90°". El lector viejo exigia el ":"
+  // despues del nombre y "Nmm" en cada mitad: devolvia null, la ventana se dibujo como UNA
+  // proyectante de 4315x1540 y las opciones por color no se re-cotizaron (el precio salio bien
+  // porque viajo por unit_price). Ahora los paños se leen DONDE ESTEN: desde el primer
+  // "<Tipo> <n>mm" hasta el cierre del parentesis o el fin, y las mitades del compuesto se
+  // aceptan con o sin milimetros. Lo que no se entiende sigue devolviendo null: no se adivina.
+  const TIPO = "(?:fij[oa]|compuest[oa]|proyectante|batiente|oscilobatiente|abatible)";
+  const inicio = label.search(new RegExp(`${TIPO}\\s+\\d+(?:[.,]\\d+)?\\s*mm`, "i"));
+  if (inicio < 0) return null;
+  // Se corta en el ")" que cierra el nivel donde empezo la lista (si la lista venia entre
+  // parentesis) o en el fin del texto; el " + " de adentro de un parentesis pertenece al paño.
   const trozos = [];
   let nivel = 0, actual = "";
-  for (let i = 0; i < m[1].length; i++) {
-    const ch = m[1][i];
+  for (let i = inicio; i < label.length; i++) {
+    const ch = label[i];
     if (ch === "(") nivel++;
-    else if (ch === ")") nivel = Math.max(0, nivel - 1);
+    else if (ch === ")") { if (nivel === 0) break; nivel--; }
     if (ch === "+" && nivel === 0) { trozos.push(actual); actual = ""; continue; }
     actual += ch;
   }
   if (actual.trim()) trozos.push(actual);
-  const partes = [];
+  // En la forma del LLM las mitades del compuesto vienen tras ":" y SIN parentesis
+  // ("Compuesto 325mm: Proyectante arriba + Fijo abajo"): ese "+" esta a nivel 0 y las separaba
+  // en trozos sueltos. Un trozo que NO empieza con "<Tipo> <n>mm" no es un paño: es la
+  // continuacion del anterior.
+  const cabezaRe = new RegExp(`^\\s*${TIPO}\\s+\\d+(?:[.,]\\d+)?\\s*mm`, "i");
+  const panosTxt = [];
   for (const t of trozos) {
+    if (!cabezaRe.test(t) && panosTxt.length) panosTxt[panosTxt.length - 1] += " + " + t;
+    else panosTxt.push(t);
+  }
+  const partes = [];
+  for (const t of panosTxt) {
     const cab = t.trim().match(/^([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+(\d+(?:[.,]\d+)?)\s*mm/i);
     if (!cab) return null;                       // formato inesperado: NO se adivina
     const tipo = tipoDeParte(cab[1]);
     const ancho_mm = parseFloat(cab[2].replace(",", "."));
     if (!Number.isFinite(ancho_mm) || ancho_mm <= 0) return null;
-    // Un paño COMPUESTO trae sus mitades entre parentesis.
-    const sub = [...t.matchAll(/([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+(\d+(?:[.,]\d+)?)\s*mm\s*\((?:arriba|abajo|izquierda|derecha)\)/gi)];
+    if (!/^compuest/i.test(cab[1])) { partes.push({ tipo, ancho_mm }); continue; }
+    // Un paño COMPUESTO trae sus mitades: con milimetros ("Proyectante 770mm (arriba)") o solo
+    // con la posicion ("Proyectante arriba"), que es como las reescribe el LLM.
+    const resto = t.slice(cab[0].length);
+    const sub = [...resto.matchAll(new RegExp(`(fij[oa]|proyectante|batiente|oscilobatiente|abatible)\\s+(?:(\\d+(?:[.,]\\d+)?)\\s*mm\\s*)?\\(?\\s*(arriba|abajo|izquierda|derecha)\\s*\\)?`, "gi"))];
     // 🔴 [2026-09-24 · #887] UN PAÑO "Compuesto" SIN DETALLE SIGUE SIENDO COMPUESTO.
     // Reclamo del dueño sobre la propuesta 0541: *"no puso la ventana proyectante a los lados
     // de las bow windows"*. La etiqueta que llega al PDF a veces viene SIN los sub-paños
     // ("... Compuesto 400mm + Fijo 2000mm + Compuesto 400mm") y el lateral salia dibujado
     // como un paño fijo entero — justo lo contrario de lo que el cliente pidio.
-    // Dibujar un "Compuesto" como FIJO no es prudencia: es afirmar que NO abre, que es una
-    // afirmacion mas fuerte que la que evita. Sin detalle se usa el default del motor de
-    // compuestas —mitad proyectante arriba + mitad fija abajo—, que es el que el motor aplica
-    // cuando el cliente no desglosa, asi que el dibujo coincide con lo que se COTIZO.
-    // Queda declarado aparte de `label` para que se vea que aca hubo un default.
-    if (/^compuest/i.test(cab[1]) && sub.length < 2) {
+    // Sin detalle se usa el default del motor de compuestas —mitad proyectante arriba + mitad
+    // fija abajo—, que es el que el motor aplica cuando el cliente no desglosa, asi que el
+    // dibujo coincide con lo que se COTIZO. Queda declarado aparte de `label` para que se vea
+    // que aca hubo un default.
+    if (sub.length < 2) {
       partes.push({
         tipo: "COMPUESTA", ancho_mm, derivado_de: "label_sin_detalle",
         compuesta: { orientacion: "vertical", partes: [{ tipo: "PROYECTANTE" }, { tipo: "FIJA" }] },
       });
       continue;
     }
-    if (/^compuest/i.test(cab[1]) && sub.length >= 2) {
-      partes.push({
-        tipo: "COMPUESTA", ancho_mm,
-        compuesta: {
-          orientacion: "vertical",
-          partes: sub.map((x) => ({ tipo: tipoDeParte(x[1]), alto_mm: parseFloat(x[2].replace(",", ".")) })),
-        },
-      });
-    } else {
-      partes.push({ tipo, ancho_mm });
-    }
+    // Arriba primero, abajo despues, digan lo que digan en la etiqueta.
+    const orden = { arriba: 0, izquierda: 0, abajo: 1, derecha: 1 };
+    const mitades = sub.slice(0, 2).map((x) => ({
+      tipo: tipoDeParte(x[1]),
+      ...(x[2] ? { alto_mm: parseFloat(x[2].replace(",", ".")) } : {}),
+      _pos: orden[x[3].toLowerCase()] ?? 0,
+    })).sort((a, b) => a._pos - b._pos).map(({ _pos, ...x }) => x);
+    partes.push({ tipo: "COMPUESTA", ancho_mm, compuesta: { orientacion: "vertical", partes: mitades } });
   }
   if (partes.length < 2) return null;
+  // Si la etiqueta dice cuantos paños son, tienen que ser esos: si no calza, algo se perdio en
+  // la reescritura y NO se dibuja una ventana distinta de la que se cobro.
+  const nDicho = label.match(/(\d+)\s*pa[ñn]os/i);
+  if (nDicho && Number(nDicho[1]) !== partes.length) return null;
   // [2026-09-26 · #947] EL ANGULO TAMBIEN VIENE EN LA ETIQUETA ("union 90°"). Uno solo -> se
   // devuelve; dos distintos ("union 90° y 45°", como en la referencia del dueño) -> no se sabe
   // cual va en cada union y NO se adivina: se marca `angulo_ambiguo` y el que cotiza ESCALA
   // (tridente, Codex r2 GRAVE 4: antes el pricer le ponia 90 por defecto, o sea adivinaba).
-  // Sin esto, una esquina de 45° se re-cotizaba a 90° cada vez que se volvia a armar desde la
-  // etiqueta (la sonda de color del #888 y el PDF lo hacen).
-  const mu = label.match(/uni[oó]n\s+([^)]*)/i);
+  const mu = label.match(/uni[oó]n\s*:?\s*([^)]*)/i);
   const angs = mu
     ? [...new Set([...mu[1].matchAll(/(\d+(?:[.,]\d+)?)\s*°/g)].map((x) => parseFloat(x[1].replace(",", "."))))]
     : [];

@@ -699,3 +699,18 @@ test('🔒 #947 · Codex r5 MEDIO 3 · la exención temprana de la esquina tambi
     assert.deepEqual(enviados[0].partes.map((p) => p.ancho_mm), [1242, 1831, 1242]);
   });
 });
+
+test('🔴 #947 · MEDIDO (propuesta 0557) · por la etiqueta que REESCRIBE el LLM, la re-cotización sigue siendo la esquina de 4 paños', async () => {
+  await conMotorStub(async (enviados) => {
+    const items = [{ measures: '4315x1540mm', qty: 1, color: 'BLANCO',
+      product: 'Bow window · 4 paños (Fijo 330mm + Fijo 1830mm + Fijo 1830mm + Compuesto 325mm: Proyectante arriba + Fijo abajo) · unión 90°' }];
+    await priceAllEngine({ comuna: 'Temuco', items });
+    assert.equal(enviados.length, 1, `escalo: ${items[0].price_warning}`);
+    assert.equal(enviados[0].tipo, 'ESQUINA');
+    assert.equal(enviados[0].alto_mm, 1540);
+    assert.deepEqual(enviados[0].partes.map((p) => p.ancho_mm), [330, 1830, 1830, 325]);
+    assert.deepEqual(enviados[0].partes[3].partes.map((p) => [p.tipo, p.alto_mm]), [['PROYECTANTE', 770], ['FIJA', 770]]);
+    assert.equal(enviados[0].angulo, 90);
+    assert.equal(enviados[0].glass_id, 61);
+  });
+});

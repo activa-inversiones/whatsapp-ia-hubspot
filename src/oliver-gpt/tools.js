@@ -597,7 +597,9 @@ export const TOOL_DEFS = [
             items: {
               type: 'object',
               properties: {
-                producto_label: { type: 'string' },
+                // [2026-09-26 · #947, propuesta 0557] El PDF DIBUJA la ventana a partir de este texto: si el
+                // LLM lo resume, una bow window de 4 paños se dibuja como una sola ventana.
+                producto_label: { type: 'string', description: 'COPIA TAL CUAL el producto_label que devolvió calcular_cotizacion, completo, sin resumir ni reescribir: el PDF dibuja la ventana a partir de ese texto (una bow window resumida se dibuja como una sola ventana).' },
                 measures:       { type: 'string', description: 'Ej: "1500x1200 mm"' },
                 color:          { type: 'string' },
                 qty:            { type: 'integer' },

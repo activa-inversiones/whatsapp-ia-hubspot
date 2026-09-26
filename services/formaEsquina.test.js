@@ -288,3 +288,34 @@ test('🔒 #947 literalidad: las mitades del compuesto se declaran (no se invent
   const mitad = esquinaDesdePanos(PANOS_DUENO, { alto_mm: 1540, angulo: 90, exigir_literal: true, texto_cliente: texto, pares });
   assert.deepEqual(mitad.partes[3].partes.map((x) => x.alto_mm), [770, 770]);
 });
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// #947 · MEDIDO EN PRODUCCION (propuesta CM-FR-004-2026-0557, 26-sep 17:44): EL LLM REESCRIBE LA
+// ETIQUETA AL PEDIR EL PDF, y el dibujo salio como UNA proyectante de 4315x1540.
+// ══════════════════════════════════════════════════════════════════════════════════════════
+const LABEL_LLM = 'Bow window · 4 paños (Fijo 330mm + Fijo 1830mm + Fijo 1830mm + Compuesto 325mm: Proyectante arriba + Fijo abajo) · unión 90°';
+const LABEL_MOTOR = 'Bow window · ventana en esquina (4 paños, union 90°): Fijo 330mm + Fijo 1830mm + Fijo 1830mm + Compuesto 325mm (Proyectante 770mm (arriba) + Fijo 770mm (abajo))';
+
+test('🔴 #947 la etiqueta REESCRITA por el LLM se lee igual que la del motor', () => {
+  const a = esquinaDesdeLabel({ producto_label: LABEL_LLM });
+  const b = esquinaDesdeLabel({ producto_label: LABEL_MOTOR });
+  assert.ok(a, 'la del LLM devolvia null: la ventana se dibujaba como una sola');
+  assert.deepEqual(a.partes.map((p) => [p.tipo, p.ancho_mm]), [['FIJA', 330], ['FIJA', 1830], ['FIJA', 1830], ['COMPUESTA', 325]]);
+  assert.deepEqual(a.partes[3].compuesta.partes.map((x) => x.tipo), ['PROYECTANTE', 'FIJA']);
+  assert.equal(a.angulo, 90);
+  assert.equal(a.uniones, 3);
+  assert.deepEqual(b.partes.map((p) => [p.tipo, p.ancho_mm]), a.partes.map((p) => [p.tipo, p.ancho_mm]));
+  // Las mitades vienen "abajo + arriba" en cualquier orden: arriba queda primero.
+  const c = esquinaDesdeLabel({ producto_label: 'Bow window · 2 paños (Fijo 2000mm + Compuesto 400mm: Fijo abajo + Proyectante arriba)' });
+  assert.deepEqual(c.partes[1].compuesta.partes.map((x) => x.tipo), ['PROYECTANTE', 'FIJA']);
+});
+
+test('🔒 #947 si la etiqueta dice N paños y se leen otros, NO se adivina', () => {
+  assert.equal(esquinaDesdeLabel({ producto_label: 'Bow window · 4 paños (Fijo 330mm + Fijo 1830mm)' }), null);
+  assert.equal(esquinaDesdeLabel({ producto_label: 'Bow window · 4 paños (Fijo 330mm + Fijo 1830mm + Fijo 1830mm…' }), null,
+    'una etiqueta truncada a 3 de 4 paños no se completa');
+  // Truncada pero con los 4 paños: se lee, y el compuesto sin detalle usa el default (#887).
+  const t4 = esquinaDesdeLabel({ producto_label: 'Bow window · 4 paños (Fijo 330mm + Fijo 1830mm + Fijo 1830mm + Compuesto 325mm…)' });
+  assert.equal(t4.partes.length, 4);
+  assert.equal(t4.partes[3].derivado_de, 'label_sin_detalle');
+});

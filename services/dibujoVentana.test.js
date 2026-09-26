@@ -1505,3 +1505,16 @@ test("🔴 #947 el lateral COMPUESTO en la forma del MOTOR se dibuja PARTIDO, ig
   // Y el resumen dice que ese paño es compuesto, no fijo.
   assert.equal(pM.esquina.partes[3].tipo, "COMPUESTA");
 });
+
+test("🔴 #947 · MEDIDO (propuesta 0557) · con la etiqueta REESCRITA por el LLM el dibujo sigue siendo la esquina de 4 paños", () => {
+  // En la propuesta real salio UNA proyectante de 4315x1540 con su X y su manilla.
+  const it = { producto_label: "Bow window · 4 paños (Fijo 330mm + Fijo 1830mm + Fijo 1830mm + Compuesto 325mm: Proyectante arriba + Fijo abajo) · unión 90°",
+    product: "Bow window · 4 paños (Fijo 330mm + Fijo 1830mm + Fijo 1830mm + Compuesto 325mm: Proyectante arriba + Fijo abajo) · unión 90°",
+    measures: "4315x1540", color: "Blanco" };
+  const p = planoDeVentana(it, { x: 0, y: 0, w: 900, h: 420 });
+  assert.equal(p.tipo, "ESQUINA");
+  assert.equal(p.hojas.length, 5, "3 fijos + las dos mitades del lateral");
+  assert.equal(p.esquina.uniones, 3);
+  const lat = p.hojas.filter((h) => h.pano === 3).sort((a, b) => a.y - b.y);
+  assert.deepEqual(lat.map((h) => h.tipo), ["PROYECTANTE", "FIJA"]);
+});
