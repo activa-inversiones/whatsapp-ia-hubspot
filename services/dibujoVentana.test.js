@@ -1473,3 +1473,35 @@ test("🔒 #887 el nombre nuevo 'Bow window' y el viejo dibujan igual", () => {
   assert.equal(b.tipo, "ESQUINA");
   assert.equal(a.marcos.length, b.marcos.length);
 });
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// #947 (26-sep) — EL LATERAL COMPUESTO SE DIBUJA PARTIDO VENGA EN LA FORMA QUE VENGA
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// 🔴 MEDIDO RENDERIZANDO (regla de DIBUJO-VENTANAS-ACTIVA.md) la bow window de 4 paños del dueño
+// contra su version 70490 de Winart: el lateral de 325 "mitad proyectante arriba, mitad fija
+// abajo" salia como UN FIJO ENTERO cuando la geometria venia del pricer (forma del motor:
+// `partes` directo), y partido solo cuando venia de la etiqueta (`compuesta.partes`). Winart lo
+// muestra partido: A1 770 arriba + F4 770 abajo. Con `it.esquina` presente —todos los caminos
+// del chat desde el #884— la etiqueta ni se mira, asi que el cliente veia un fijo donde compro
+// una ventana que abre.
+test("🔴 #947 el lateral COMPUESTO en la forma del MOTOR se dibuja PARTIDO, igual que por etiqueta", () => {
+  const LABEL = "Bow window · ventana en esquina (4 paños, union 90°): Fijo 330mm + Fijo 1830mm + Fijo 1830mm + Compuesto 325mm (Proyectante 770mm (arriba) + Fijo 770mm (abajo))";
+  const base = { product: LABEL, producto_label: LABEL, measures: "4315x1540mm", color: "Blanco" };
+  const motor = { ...base, esquina: { partes: [
+    { tipo: "FIJA", ancho_mm: 330 }, { tipo: "FIJA", ancho_mm: 1830 }, { tipo: "FIJA", ancho_mm: 1830 },
+    { tipo: "COMPUESTA", ancho_mm: 325, orientacion: "vertical",
+      partes: [{ tipo: "PROYECTANTE", alto_mm: 770 }, { tipo: "FIJA", alto_mm: 770 }] },
+  ], uniones: 3, angulo: 90, alto_mm: 1540 } };
+  const caja = { x: 0, y: 0, w: 900, h: 420 };
+  const pM = planoDeVentana(motor, caja);
+  const pL = planoDeVentana(base, caja);          // sin geometria: se arma desde la etiqueta
+  assert.equal(pM.tipo, "ESQUINA");
+  assert.equal(pL.hojas.length, 5, "por etiqueta ya se dibujaba partido (#887): 3 fijos + 2 mitades");
+  assert.equal(pM.hojas.length, 5, "por la forma del motor tiene que dar LO MISMO");
+  // Las dos mitades del cuarto paño: la de arriba abre, la de abajo es fija.
+  const lat = pM.hojas.filter((h) => h.pano === 3).sort((a, b) => a.y - b.y);
+  assert.deepEqual(lat.map((h) => h.tipo), ["PROYECTANTE", "FIJA"]);
+  assert.ok(lat[0].y < lat[1].y, "la proyectante va ARRIBA");
+  // Y el resumen dice que ese paño es compuesto, no fijo.
+  assert.equal(pM.esquina.partes[3].tipo, "COMPUESTA");
+});

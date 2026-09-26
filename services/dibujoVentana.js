@@ -38,7 +38,7 @@
 // blanco liso con puro brillo. `textura`: "madera" (hebras onduladas) / "grano" (motas
 // cortas claras y oscuras) / "liso" (solo el brillo). `brillo` = factor de la hebra especular.
 import { esMonorrielPorForma } from "./formaMonorriel.js";
-import { esquinaDesdeLabel } from "./formaEsquina.js";
+import { esquinaDesdeLabel, partesEsquinaNormalizadas } from "./formaEsquina.js";
 
 const COLORES = {
   blanco:    { f: "#F4F4F1", e: "#000000", nombre: "Blanco", veta: null, textura: "liso", brillo: 1.08 },
@@ -1098,8 +1098,12 @@ function planoDeVentana(it, caja) {
   // misma razon: perseguir el dato por cada camino nuevo no escala; la etiqueta siempre llega.
   // ⚠️ Se marca `derivado_de: "label"` — un dato derivado no se hace pasar por uno medido.
   const _esqLabel = esquinaDesdeLabel(it);
+  // 🔴 [2026-09-26 · #947] La geometria del pricer/motor trae el paño compuesto en la forma del
+  // MOTOR (`partes` directo) y aca se leian sus mitades en `compuesta.partes`: el lateral "mitad
+  // proyectante, mitad fija" salia dibujado como un fijo entero. Medido renderizando la bow
+  // window de 4 paños del dueño contra la v70490 de Winart. Se normaliza a las dos formas.
   const _esq = (Array.isArray(it?.esquina?.partes) && it.esquina.partes.length >= 2)
-    ? it.esquina
+    ? { ...it.esquina, partes: partesEsquinaNormalizadas(it.esquina.partes) }
     : _esqLabel;
   void 0;
   if (_esq) {
@@ -1184,7 +1188,9 @@ function planoDeVentana(it, caja) {
         // Declarado a proposito: el poste existe y se COBRA, pero no se dibuja.
         poste_dibujado: false,
         partes: partesE.map((pt, i) => ({
-          tipo: tipoDeParte(pt.tipo), ancho_mm: pt.ancho_mm, idx: i,
+          // [#947] El compuesto se declara como tal: `tipoDeParte` no lo conoce y lo bajaba a FIJA.
+          tipo: /^compuest/i.test(String(pt.tipo || "")) ? "COMPUESTA" : tipoDeParte(pt.tipo),
+          ancho_mm: pt.ancho_mm, idx: i,
           girado: i === 0 || i === n - 1,
           // [#887] Si este paño se completo con un default (label sin detalle), queda dicho.
           ...(pt.derivado_de ? { derivado_de: pt.derivado_de } : {}),

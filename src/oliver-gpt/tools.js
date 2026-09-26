@@ -21,6 +21,7 @@ import {
 } from '../sales-agent/whatsapp-adapter.js';
 import { generatePremiumQuotePdf } from '../../services/quotePdf.js';
 import { priceAllEngine } from '../../services/enginePricer.js'; // [2026-06-14] pricer completo de V1 (serie SLIDING+hojas+vidrio auto)
+import { esquinaDesdePanos, esBowPorForma, paresDelTexto } from '../../services/formaEsquina.js'; // [2026-09-26 · #947] la bow window paño por paño
 import { detectarProductoFueraDeAlcance } from '../../services/productoFueraDeAlcance.js'; // [Ronda 2] guarda temprana en calcular_por_area
 
 // Rango plausible de una ventana/puerta en mm. Fuera de esto = dato dudoso (no cotizar a ciegas).
@@ -292,6 +293,52 @@ export const TOOL_DEFS = [
               },
               required: ['tipo'],
             },
+          },
+          // 🔴 [2026-09-26 · #947] LA BOW WINDOW PAÑO POR PAÑO. La notacion "central x alto x
+          // lateral" solo describe la simetrica de 3 paños. El dueño pidio una de 4 (330 F +
+          // 1830 F + 1830 F + 325 mitad y mitad) y Oliver, sin este campo, la forzo a 3 paños
+          // —otra ventana— y despues la escalo. Misma leccion que `partes` (25-ago): sin el
+          // campo en el schema (additionalProperties:false), el LLM no tiene por donde mandar
+          // lo que el cliente SI dijo.
+          panos_esquina: {
+            type: 'array',
+            description:
+              'SOLO para una BOW WINDOW / VENTANA EN ESQUINA (el cliente tiene que haberla llamado así: ' +
+              '"bow window", "ventana en esquina", "en L", "paños en ángulo") cuando describe CADA paño ' +
+              '(más de 3 paños, laterales de distinto ancho o aperturas distintas por paño). La lista ' +
+              'de paños EN ORDEN, de un extremo al otro, cada uno con su tipo y su ancho (el número que ' +
+              'escribió el cliente, con su unidad convertida a mm si la sabes). Con este campo NO uses la ' +
+              'notación de tres medidas, y manda SIEMPRE alto_mm = el alto común a todos los paños, copiado ' +
+              'del cliente. Entre 2 y 6 paños. NUNCA lo uses para una compuesta plana (paños sin ángulo).',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                tipo: {
+                  type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE', 'COMPUESTA'],
+                  description: 'Apertura de ESTE paño. COMPUESTA = "mitad proyectante arriba y mitad fija abajo" (u otra combinación arriba/abajo).',
+                },
+                ancho_mm: { type: 'number', description: 'Ancho de ESTE paño, EL NÚMERO TAL CUAL LO ESCRIBIÓ EL CLIENTE (sin convertir ni redondear: si escribió "33x154" manda 33). La unidad la resuelve el sistema con su texto. Un número que el cliente no escribió se rechaza.' },
+                arriba: {
+                  type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE'],
+                  description: 'OBLIGATORIO si tipo=COMPUESTA: apertura de la mitad de ARRIBA, tal como la describió el cliente. Si no lo dijo, pregúntele; no lo supongas.',
+                },
+                abajo: {
+                  type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE'],
+                  description: 'OBLIGATORIO si tipo=COMPUESTA: apertura de la mitad de ABAJO, tal como la describió el cliente.',
+                },
+                alto_arriba_mm: { type: 'number', description: 'SOLO si tipo=COMPUESTA y el cliente dio la altura de la mitad de arriba (ej. "400 arriba y 1100 abajo"): el número tal cual lo escribió. Si no lo dio, no lo mandes: se reparte mitad y mitad.' },
+                alto_abajo_mm: { type: 'number', description: 'SOLO si tipo=COMPUESTA y el cliente dio la altura de la mitad de abajo: el número tal cual lo escribió.' },
+              },
+              required: ['tipo', 'ancho_mm'],
+            },
+          },
+          angulo_esquina: {
+            type: 'number',
+            description:
+              'SOLO para bow window / ventana en esquina, y OBLIGATORIO con panos_esquina: el ángulo de las ' +
+              'uniones en grados como lo dijo el cliente (90 es lo usual; 45 si dice "cerca de 45 grados"; ' +
+              '135 se entiende como ángulo interior). Si no lo dijo, PREGÚNTESELO una vez; si no lo sabe, manda 90.',
           },
           ancho_mm: { type: 'number', description: 'Ancho en milimetros (tu mejor estimación). El sistema RE-CONVIERTE desde medidas_texto si lo incluyes, así que prioriza enviar medidas_texto.' },
           alto_mm: { type: 'number', description: 'Alto en milimetros (tu mejor estimación). El sistema RE-CONVIERTE desde medidas_texto si lo incluyes.' },
@@ -737,6 +784,43 @@ async function falloDeCotizacion(r, item, ctx) {
 }
 
 /**
+ * La instruccion que acompaña a `nota_linea` en el tool_result depende de QUE ventana es.
+ *
+ * 🔴 [2026-09-26 · #947] Antes la del monorriel ("quedo cotizada como corredera de una hoja
+ * con paño fijo") se pegaba a CUALQUIER `nota_linea`, y la ventana en esquina tiene la suya
+ * desde el #884 (24-sep). Oliver le habria dicho a un cliente que su bow window "quedo
+ * cotizada como corredera de una hoja": falso, y del tipo que cuesta confianza. Cazado al
+ * darle a la esquina de N paños su propia nota; hay un test que lo fija para las dos formas.
+ * @param {object} it - el item ya cotizado por el pricer.
+ * @returns {{nota_linea?:string, _decir_al_cliente?:string}}
+ */
+export function notaDeLineaParaElLLM(it) {
+  if (!it?.nota_linea) return {};
+  // El pricer deja `item.esquina` en TODOS los caminos de la esquina (paños del cliente, notacion
+  // triple, etiqueta) antes de cotizar: con eso alcanza. Nada de mirar el texto de la nota
+  // (tridente #947, Gemini r1 MENOR 4: un regex sobre la nota podia atrapar otra ventana).
+  if (it.esquina) {
+    return {
+      nota_linea: it.nota_linea,
+      _decir_al_cliente: 'Dile al cliente, con tus palabras y en UNA linea, como quedo armada su '
+        + 'ventana en esquina (los paños en orden y cual abre), tal como dice nota_linea, para que '
+        + 'pueda corregirla antes del PDF. ⛔ NO le nombres la linea ni codigos de perfil.',
+    };
+  }
+  // 🔴 [dueño, 2026-09-19] El monorriel: *"podemos dejarla solo como cotizacion mas economica"*
+  // + *"pero indicandole a cliente eso"*.
+  return {
+    nota_linea: it.nota_linea,
+    _decir_al_cliente: 'Mencionale al cliente, con tus palabras y en UNA linea, que esa '
+      + 'ventana quedo cotizada como corredera de una hoja con paño fijo —que es lo que '
+      + 'pidio— y con el mejor precio para ese formato. ⛔ NO le nombres la linea ("Andes", '
+      + '"monorriel"): no significan nada para el y suenan a otra cosa. ⛔ NO le digas "la '
+      + 'mas economica": abarata la marca. ⛔ NO le ofrezcas cambiarla de linea: abre una '
+      + 'negociacion que obliga a que entre un humano.',
+  };
+}
+
+/**
  * Ejecuta una tool por nombre contra el engine-client.
  * @param {string} name - Nombre de la tool (debe estar en TOOL_DEFS).
  * @param {object} input - Argumentos de la tool.
@@ -805,7 +889,66 @@ export async function runTool(name, input = {}, ctx = {}) {
       // cotizaba "Corredera S60" a MITAD de precio ($184k vs $352k correcto). El LLM ya NO
       // elige vidrio ni serie: lo decide el código battle-tested de V1.
       // Guard de medidas del cerebro INTACTO (cm/mm determinista + rechaza absurdas/fuera de rango).
-      const med = resolverMedidasMm(input);
+      const med0 = resolverMedidasMm(input);
+      // 🔴 [2026-09-26 · #947] LA ESQUINA PAÑO POR PAÑO. Si el LLM mando la lista de paños
+      // (`panos_esquina`), la ventana se arma de ahi —en orden, con la apertura de cada uno— y
+      // viaja YA ARMADA al pricer por `item.esquina`, el mismo camino que usa la sonda de color
+      // (#888). El par ancho×alto que va en `measures` es el del paño MAS GRANDE: de el sale el
+      // vidrio (por area), igual que en la notacion de tres medidas manda el central. El pricer
+      // despues escribe en `measures` la ventana completa, que es la que ve el cliente (#887).
+      // El alto: el que resolvio `resolverMedidasMm` desde el texto del cliente (ya en mm), o
+      // `alto_mm` si el texto no traia un par. Sin alto no se cotiza: se pide.
+      let esq = null;
+      if (Array.isArray(input.panos_esquina) && input.panos_esquina.length) {
+        const noCotiza = (error) => ({ ok: false, precio_invalido: true, requiere_revision: true, error });
+        // 🔴 [tridente, Codex r3 GRAVE 4] LA AUTORIDAD ES EL TEXTO DEL CLIENTE, no el del LLM.
+        // `descripcion_producto` y `medidas_texto` los escribe el LLM (copiando, en teoria): una
+        // descripcion alucinada ("bow window de dos paños") autoautorizaba la guardia. Cuando el
+        // webhook manda `ctx.textoCliente` (TODOS los mensajes del cliente), manda ese y solo ese;
+        // los campos del LLM quedan de respaldo para quien llame sin sesion (tests, herramientas).
+        const textoCliente = String(ctx.textoCliente || '').trim();
+        const textoAutoridad = textoCliente || [input.descripcion_producto, input.medidas_texto].filter(Boolean).join(' \n ');
+        // 🔴 [tridente, Codex r2 GRAVE 5] SOLO SI EL CLIENTE LA DESCRIBIO COMO ESQUINA. Sin esto,
+        // una compuesta plana mandada por error con `panos_esquina` salia cotizada como ESQUINA,
+        // con poste a 90°: otro producto y otro precio.
+        if (!esBowPorForma(textoAutoridad)) {
+          return noCotiza('panos_esquina es SOLO para una bow window / ventana en esquina, y el CLIENTE no la '
+            + 'describió así con sus palabras. Si es una ventana compuesta plana (paños uno al lado del otro, sin '
+            + 'ángulo), use tipo COMPUESTA con partes. Si de verdad es en esquina, pregúnteselo al cliente ("¿es una '
+            + 'ventana en esquina / bow window?") y vuelva a llamar cuando él lo confirme.');
+        }
+        // 🔴 [tridente, Codex r2 GRAVE 1] EL TEXTO MANDA. Si el par que escribio el cliente esta fuera
+        // de rango, no se pisa con el numero del LLM: se devuelve el error para que lo confirme.
+        if (!med0.ok) return med0;
+        // 🔴 [tridente, Codex r3 MEDIO 6] EL ANGULO SE PREGUNTA, no se asume en silencio. La Regla #34
+        // dice "preguntelo una vez; si no sabe, 90". Sin este campo la tool cotizaba a 90 sin que
+        // nadie preguntara. Ahora es obligatorio con panos_esquina: 90 solo despues de preguntar.
+        if (input.angulo_esquina === undefined || input.angulo_esquina === null || input.angulo_esquina === '') {
+          return noCotiza('Falta angulo_esquina: pregúntele al cliente el ángulo de las uniones (lo usual es 90°, '
+            + 'a veces 45°). Si el cliente no lo sabe, mande 90.');
+        }
+        if (!(Number(input.alto_mm) > 0)) {
+          return noCotiza('Falta alto_mm: con panos_esquina el alto (común a todos los paños) va explícito en '
+            + 'alto_mm, copiado TAL CUAL de lo que escribió el cliente (sin convertir).');
+        }
+        // 🔴 [tridente, Codex r2 GRAVE 2/3 + r3 GRAVE 2/3] LITERALIDAD ESTRICTA. Cada ancho, el alto y
+        // las alturas de las mitades tienen que ser numeros que el cliente ESCRIBIO; toman la unidad
+        // del par del texto donde aparecen (un texto puede mezclar cm y mm), y el alto tiene que ser
+        // la medida COMUN a todos los pares. Lo convertido, redondeado o inventado por el LLM se
+        // rechaza con un texto que le dice que copie los numeros del cliente. Decidir la unidad por
+        // tamaño (r1) o por un factor global (r2) adivinaba; esto no.
+        const pares = paresDelTexto(textoAutoridad);
+        esq = esquinaDesdePanos(input.panos_esquina, {
+          alto_mm: input.alto_mm, angulo: input.angulo_esquina,
+          exigir_literal: true, texto_cliente: textoAutoridad, pares,
+        });
+        if (esq.error) return noCotiza(esq.error);
+        if (!(esq.alto_mm >= MEDIDA_MIN_MM && esq.alto_mm <= MEDIDA_MAX_MM)) {
+          return noCotiza(`El alto ${esq.alto_mm} mm está fuera del rango plausible (${MEDIDA_MIN_MM}–${MEDIDA_MAX_MM} mm). `
+            + 'NO cotice: pídale al cliente que confirme el alto y la unidad.');
+        }
+      }
+      const med = esq ? { ok: true, ancho_mm: esq.ancho_max_mm, alto_mm: esq.alto_mm, corregido: false } : med0;
       if (!med.ok) return med; // medidas fuera de rango → el LLM pide confirmación, no cotiza
       const qty = Math.max(1, Number(input.cantidad) || 1);
       const d = {
@@ -841,7 +984,14 @@ export async function runTool(name, input = {}, ctx = {}) {
             return partesTodasIguales(ps) ? undefined : ps;
           })(),
           // [2026-08-25] El eje viaja con el item hasta el motor y hasta el dibujo del PDF.
-          orientacion: input.orientacion || undefined }],
+          orientacion: input.orientacion || undefined,
+          // [2026-09-26 · #947] La ventana en esquina YA ARMADA desde los paños del cliente.
+          // El pricer la toma antes que la notacion de tres medidas y antes que la etiqueta.
+          // El alto viaja ADENTRO (Codex r2 GRAVE 3): `measures` puede darse vuelta en el pre-pass
+          // de "alto por ancho" del pricer, y el alto de la esquina no depende de ese par.
+          esquina: esq
+            ? { partes: esq.partes, uniones: esq.uniones, angulo: esq.angulo, alto_mm: esq.alto_mm, derivado_de: esq.derivado_de }
+            : undefined }],
         comuna: input.comuna || '',
         default_color: input.color || '',
         // Las palabras del cliente: el motor las necesita para saber si la lista viene
@@ -882,13 +1032,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         // 🔴 [dueño, 2026-09-19] *"podemos dejarla solo como cotizacion mas economica"* +
         // *"pero indicandole a cliente eso"*. Un monorriel (una hoja que corre + un paño fijo)
         // se cotiza en la linea MAS ECONOMICA que lo tenga, y el cliente tiene que saberlo.
-        ...(it.nota_linea ? { nota_linea: it.nota_linea,
-          _decir_al_cliente: 'Mencionale al cliente, con tus palabras y en UNA linea, que esa '
-            + 'ventana quedo cotizada como corredera de una hoja con paño fijo —que es lo que '
-            + 'pidio— y con el mejor precio para ese formato. ⛔ NO le nombres la linea ("Andes", '
-            + '"monorriel"): no significan nada para el y suenan a otra cosa. ⛔ NO le digas "la '
-            + 'mas economica": abarata la marca. ⛔ NO le ofrezcas cambiarla de linea: abre una '
-            + 'negociacion que obliga a que entre un humano.' } : {}),
+        ...notaDeLineaParaElLLM(it),
         referencial: it.referencial || false,
         // 🔴 [2026-09-19] LA INSTRUCCION VA DONDE SE TOMA LA DECISION, NO 500 LINEAS ARRIBA.
         // Oliver recibia `referencial: true` a secas y lo leia como "esto hay que escalar":
@@ -990,13 +1134,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         // 🔴 [dueño, 2026-09-19] *"podemos dejarla solo como cotizacion mas economica"* +
         // *"pero indicandole a cliente eso"*. Un monorriel (una hoja que corre + un paño fijo)
         // se cotiza en la linea MAS ECONOMICA que lo tenga, y el cliente tiene que saberlo.
-        ...(it.nota_linea ? { nota_linea: it.nota_linea,
-          _decir_al_cliente: 'Mencionale al cliente, con tus palabras y en UNA linea, que esa '
-            + 'ventana quedo cotizada como corredera de una hoja con paño fijo —que es lo que '
-            + 'pidio— y con el mejor precio para ese formato. ⛔ NO le nombres la linea ("Andes", '
-            + '"monorriel"): no significan nada para el y suenan a otra cosa. ⛔ NO le digas "la '
-            + 'mas economica": abarata la marca. ⛔ NO le ofrezcas cambiarla de linea: abre una '
-            + 'negociacion que obliga a que entre un humano.' } : {}),
+        ...notaDeLineaParaElLLM(it),
         referencial: it.referencial || false,
         _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses precio_por_m2 ni otro campo.',
       };

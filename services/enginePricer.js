@@ -1266,7 +1266,7 @@ export async function priceAllEngine(d, customer_id = "") {
 
     // 4) Color / glass_id / comuna / cantidad
     const color = normColorLocal(item.color || d.default_color || "");
-    const glass_id = pickGlassId(m.ancho_mm, m.alto_mm, item.ambiente); // por área + baño
+    let glass_id = pickGlassId(m.ancho_mm, m.alto_mm, item.ambiente); // por área + baño (la ESQUINA lo re-elige abajo, por su paño mayor)
     item.glass_label = glass_id === GLASS_BANO ? "4+12+4 satén (baño)"
                      : glass_id === GLASS_LARGE ? "5+12+5"
                      : "4+12+4";
@@ -1284,14 +1284,28 @@ export async function priceAllEngine(d, customer_id = "") {
     // ventana de 2000x1500 y NO habia error ni aviso. Perder una medida que el cliente SI
     // escribio es peor que no entenderla: si no se entiende, alguien pregunta.
     let _esBow = false;
+    // Una sola forma para las tres fuentes de la esquina: {partes, angulo, alto_mm, origen}.
+    // Lo que sigue (medida para el cliente, nota, llamada al motor) no vuelve a preguntar de
+    // donde vino la ventana.
+    let _bow = null;
     // 🔴 [#884 r3] `medidas_texto` PRIMERO: es el texto CRUDO del cliente y el unico que
     // puede traer las tres medidas. `measures` lo arma la tool con el ancho y alto ya
     // resueltos, o sea siempre un PAR — ahi el tercer numero ya se perdio.
     const _triple = leerMedidaTriple(`${item.medidas_texto || ""}`)
       || leerMedidaTriple(`${item.measures || ""} ${item.medidas || ""}`);
+    // 🔴 [2026-09-26 · #947] LA VENTANA YA ARMADA MANDA. Llega asi por dos caminos: la tool,
+    // cuando el cliente describio CADA paño (`panos_esquina` -> esquinaDesdePanos), y la sonda
+    // de color (#888), que se lleva la ventana tal cual. Va ANTES que la notacion de tres
+    // medidas a proposito: la lista es lo que el cliente dijo paño por paño; la notacion solo
+    // describe la simetrica. MEDIDO (26-sep, sesion del dueño): pidio una de 4 paños —330 F +
+    // 1830 F + 1830 F + 325 mitad y mitad— y Oliver, sin este camino, la forzo a 3 ("Compuesto
+    // 325 + Fijo 1830 + Compuesto 325", 2.480 mm en vez de 4.315) y despues la escalo sin
+    // cotizar: 10 llamadas al motor en 3 turnos y ninguna cotizacion.
+    const _yaArmada = (Array.isArray(item?.esquina?.partes) && item.esquina.partes.length >= 2)
+      ? item.esquina : null;
     // Se reusa el `_txtItem` de arriba a proposito: una sola definicion de "el texto de ESTE
     // item", que ademas ya cubre `producto_label`. Declarar otro era pedir que se separaran.
-    if (_triple || esBowPorForma(_txtItem)) {
+    if (_yaArmada || _triple || esBowPorForma(_txtItem)) {
       // La apertura de los laterales SALE DEL TEXTO. No se inventa: es el producto que se
       // fabrica y la diferencia de plata entre un fijo y un proyectante no es chica.
       const _mitadYMitad = /mitad\s+fij[ao][\s\S]{0,30}mitad\s+(?:proyect|abat|oscilo)/i.test(_txtItem)
@@ -1310,38 +1324,58 @@ export async function priceAllEngine(d, customer_id = "") {
       // ⚠️ La ALTURA no esta en la etiqueta: sale de `m.alto_mm`, que es la medida ya
       // resuelta del item. Es la misma altura para todos los paños, que es como el motor
       // modela la esquina.
-      // Si el item YA trae la ventana armada (la sonda de color se la lleva tal cual), se usa
-      // esa: es la misma ventana, solo cambia el material. Reconstruir seria trabajo de mas.
-      const _yaArmada = (Array.isArray(item?.esquina?.partes) && item.esquina.partes.length >= 2)
-        ? { partes: item.esquina.partes } : null;
-      const _porLabel = _triple ? null : (_yaArmada || esquinaDesdeLabel(item));
-      if (!_triple && !_porLabel) {
-        // Ni tres medidas ni etiqueta legible: NO se adivina el reparto. El ancho de cada
-        // paño lo define donde cae el muro — el motor ya se niega a suponerlo
-        // (`partes_invalidas`), y aca se escala pidiendo exactamente lo que falta.
+      const _porLabel = (_yaArmada || _triple) ? null : esquinaDesdeLabel(item);
+      if (!_yaArmada && !_triple && !_porLabel) {
+        // Ni paños armados, ni tres medidas, ni etiqueta legible: NO se adivina el reparto.
+        // El ancho de cada paño lo define donde cae el muro — el motor ya se niega a
+        // suponerlo (`partes_invalidas`), y aca se escala pidiendo exactamente lo que falta.
         item.price_warning = "Es una ventana en esquina: necesito el ancho del paño central, "
           + "el alto, y el ancho de cada lateral (por ejemplo 2000x1500x400). Marcelo te confirma.";
         item.source = "activa_engine"; item.confidence = "manual"; item.fuera_de_alcance = true;
         return { escalada: true };
       }
       // ⚠️ EL ANGULO: 90° es el caso que el dueño describio (*"el poste de union es 90 grados"*)
-      // y el unico que aparece en sus dos referencias de Winart. Si el cliente dice otro, el
-      // motor lo lee igual por `angulo`; aca solo se fija el default declarado.
-      // Por etiqueta ya vienen los paños armados; por notacion se construyen.
-      if (_porLabel) {
-        item.esquina = {
-          partes: _porLabel.partes.map((pt) => (pt.tipo === "COMPUESTA"
-            ? { tipo: "COMPUESTA", ancho_mm: pt.ancho_mm, orientacion: "vertical",
-                partes: (pt.compuesta?.partes || []).map((x) => ({
-                  tipo: x.tipo,
-                  alto_mm: Number(x.alto_mm) > 0 ? Number(x.alto_mm) : Math.round(m.alto_mm / 2),
-                })) }
-            : { tipo: pt.tipo, ancho_mm: pt.ancho_mm })),
-          uniones: _porLabel.partes.length - 1, angulo: 90, derivado_de: "label",
+      // y el unico que aparece en sus dos referencias de Winart. Si el cliente dice otro, viaja
+      // con la ventana armada (tool) o en la etiqueta (#947); aca solo se fija el default.
+      // [tridente, Codex r2 GRAVE 4] Una etiqueta con uniones de angulos DISTINTOS ("union 90° y
+      // 45°") no se puede volver a armar con un solo angulo: se escala, no se adivina 90.
+      if (_porLabel && _porLabel.angulo_ambiguo) {
+        item.price_warning = "Esta ventana en esquina tiene uniones con ángulos distintos; "
+          + "la revisa Marcelo para darte el precio exacto.";
+        item.source = "activa_engine"; item.confidence = "manual"; item.fuera_de_alcance = true;
+        return { escalada: true };
+      }
+      if (_yaArmada) {
+        _bow = {
+          partes: _yaArmada.partes,
+          // [Codex r2 GRAVE 3] El alto viene ADENTRO de la ventana armada cuando lo valido la
+          // tool: `m` puede haberse dado vuelta en el pre-pass de "alto por ancho".
+          alto_mm: Number(_yaArmada.alto_mm) > 0 ? Number(_yaArmada.alto_mm) : m.alto_mm,
+          angulo: Number(_yaArmada.angulo) > 0 ? Number(_yaArmada.angulo) : 90,
+          origen: _yaArmada.derivado_de || "item",
         };
+      } else if (_triple) {
+        const _lateral = _mitadYMitad
+          ? { tipo: "COMPUESTA", ancho_mm: _triple.lateral_mm, orientacion: "vertical",
+              partes: [{ tipo: "PROYECTANTE", alto_mm: Math.round(_triple.alto_mm / 2) },
+                       { tipo: "FIJA", alto_mm: _triple.alto_mm - Math.round(_triple.alto_mm / 2) }] }
+          : { tipo: "FIJA", ancho_mm: _triple.lateral_mm };
+        _bow = {
+          partes: [_lateral, { tipo: "FIJA", ancho_mm: _triple.central_mm }, _lateral],
+          alto_mm: _triple.alto_mm, angulo: 90, origen: "notacion_triple",
+        };
+      } else {
+        // Por etiqueta los paños ya vienen armados; se normalizan al formato del motor.
+        const partes = _porLabel.partes.map((pt) => (pt.tipo === "COMPUESTA"
+          ? { tipo: "COMPUESTA", ancho_mm: pt.ancho_mm, orientacion: "vertical",
+              partes: (pt.compuesta?.partes || []).map((x) => ({
+                tipo: x.tipo,
+                alto_mm: Number(x.alto_mm) > 0 ? Number(x.alto_mm) : Math.round(m.alto_mm / 2),
+              })) }
+          : { tipo: pt.tipo, ancho_mm: pt.ancho_mm }));
         // Los sub-paños sin alto declarado se reparten el vano en dos, que es el default del
         // motor de compuestas: asi el precio coincide con el dibujo.
-        for (const pt of item.esquina.partes) {
+        for (const pt of partes) {
           if (pt.tipo !== "COMPUESTA" || !Array.isArray(pt.partes) || pt.partes.length !== 2) continue;
           const suma = pt.partes.reduce((a, x) => a + (Number(x.alto_mm) || 0), 0);
           if (suma !== Math.round(m.alto_mm)) {
@@ -1350,21 +1384,33 @@ export async function priceAllEngine(d, customer_id = "") {
             pt.partes[1].alto_mm = Math.round(m.alto_mm) - mitad;
           }
         }
+        // [#947] El angulo tambien se lee de la etiqueta: sin esto una esquina de 45° volvia a
+        // cotizarse a 90° cada vez que se re-armaba (sonda de color, PDF).
+        _bow = { partes, alto_mm: m.alto_mm, angulo: _porLabel.angulo || 90, origen: "label" };
       }
-      const _lateral = !_triple ? null : (_mitadYMitad
-        ? { tipo: "COMPUESTA", ancho_mm: _triple.lateral_mm, orientacion: "vertical",
-            partes: [{ tipo: "PROYECTANTE", alto_mm: Math.round(_triple.alto_mm / 2) },
-                     { tipo: "FIJA", alto_mm: _triple.alto_mm - Math.round(_triple.alto_mm / 2) }] }
-        : { tipo: "FIJA", ancho_mm: _triple.lateral_mm });
       // El PDF dibuja la esquina a partir de este MISMO dato (#883): una sola fuente para el
       // precio y para el dibujo, que es la leccion que dejo el #880.
-      if (_triple) {
-        item.esquina = {
-          partes: [_lateral, { tipo: "FIJA", ancho_mm: _triple.central_mm }, _lateral],
-          uniones: 2, angulo: 90,
-        };
-      }
+      item.esquina = {
+        partes: _bow.partes, uniones: _bow.partes.length - 1, angulo: _bow.angulo,
+        derivado_de: _bow.origen,
+      };
       _esBow = true;
+      // 🔴 [#947 · tridente, Gemini r1 GRAVE 1] EL VIDRIO DE UNA ESQUINA SE ELIGE POR EL PAÑO
+      // MAS GRANDE, VENGA DE DONDE VENGA LA VENTANA. Arriba `glass_id` salio de `m`, y `m` es
+      // distinto segun el camino: por paños del cliente y por notacion triple es el paño mayor
+      // (o el central); por ETIQUETA —la sonda de color del #888, el PDF, el informe termico—
+      // `measures` YA es el TOTAL de la ventana, asi que el area se inflaba: una bow de
+      // 400+1200+400 x 1200 (paño mayor 1,44 m2 -> 4+12+4) se re-cotizaba con 5+12+5 y el PDF
+      // salia mas caro que lo que Oliver dijo en el chat. Existia desde el #887 (24-sep).
+      // La regla del dueño (06-jun) es por area de la ventana; una esquina son N ventanas
+      // unidas por postes y el motor pone el MISMO vidrio en todas, asi que manda el paño mayor
+      // —que es lo que el camino del chat ya hacia—. 💰 Si el dueño prefiere otra regla para la
+      // esquina (por paño, o por total), se cambia ACA, en un solo lugar.
+      const _panoMayor = Math.max(..._bow.partes.map((x) => Number(x.ancho_mm) || 0));
+      glass_id = pickGlassId(_panoMayor, _bow.alto_mm, item.ambiente);
+      item.glass_label = glass_id === GLASS_BANO ? "4+12+4 satén (baño)"
+                       : glass_id === GLASS_LARGE ? "5+12+5"
+                       : "4+12+4";
       // 🔴 [2026-09-24 · #888] EL LIMITE DE FABRICACION NO SE APLICA AL ANCHO TOTAL DE UNA
       // ESQUINA. El chequeo de medidas corre mas arriba, sobre el par ya resuelto, y una bow
       // window de 2800 mm lo pasaba a llevar: "Medida 2800×1500 excede limite S60 (max 1930)".
@@ -1387,32 +1433,44 @@ export async function priceAllEngine(d, customer_id = "") {
       // ⚠️ Se pisa `measures` DESPUES de que el pricer ya resolvio ancho/alto para el motor:
       // el motor recibe los paños por `partes`, no por esta cadena, asi que cambiarla no
       // mueve ni un peso del precio. Solo cambia lo que se LEE.
-      if (_triple) {
-        const _anchoTotal = _triple.central_mm + _triple.lateral_mm * 2;
-        item.measures = `${_anchoTotal}x${_triple.alto_mm}mm`;
-        item.measures_original = item.measures;
-      }
+      // [#947] Vale para las tres fuentes: por etiqueta y por sonda `measures` YA era el total
+      // (se escribio aca la primera vez), asi que reescribirlo igual no cambia nada; por paños
+      // del cliente era el par del paño mas grande (el del vidrio) y aca pasa a ser la ventana.
+      const _anchoTotal = _bow.partes.reduce((a, x) => a + (Number(x.ancho_mm) || 0), 0);
+      item.measures = `${_anchoTotal}x${_bow.alto_mm}mm`;
+      item.measures_original = item.measures;
       // Que el cliente sepa QUE se le cotizo, en su idioma, y pueda corregirlo. Mismo criterio
       // que la nota del monorriel (decision del dueño, 19-sep): se le dice la VENTANA, no la
       // linea ni el nombre tecnico.
-      item.nota_linea = !_triple ? item.nota_linea : _mitadYMitad
-        ? `Ventana en esquina: paño central de ${_triple.central_mm} mm y dos laterales de `
-          + `${_triple.lateral_mm} mm, cada lateral con la mitad de arriba que se abre y la de abajo fija.`
-        : `Ventana en esquina: paño central de ${_triple.central_mm} mm y dos laterales fijos de `
-          + `${_triple.lateral_mm} mm. Si querés que los laterales se abran, decímelo y lo ajusto.`;
+      if (_triple) {
+        item.nota_linea = _mitadYMitad
+          ? `Ventana en esquina: paño central de ${_triple.central_mm} mm y dos laterales de `
+            + `${_triple.lateral_mm} mm, cada lateral con la mitad de arriba que se abre y la de abajo fija.`
+          : `Ventana en esquina: paño central de ${_triple.central_mm} mm y dos laterales fijos de `
+            + `${_triple.lateral_mm} mm. Si querés que los laterales se abran, decímelo y lo ajusto.`;
+      } else if (_bow.origen === "panos_del_cliente") {
+        // [#947] Paño por paño, en el orden del cliente, para que compare contra su muro.
+        const _nombre = (t) => ({ FIJA: "fija", PROYECTANTE: "proyectante", BATIENTE: "batiente",
+          OSCILOBATIENTE: "oscilobatiente" })[t] || String(t || "").toLowerCase();
+        const _desc = (p) => (p.tipo === "COMPUESTA"
+          ? `${p.ancho_mm} mm con la mitad de arriba ${_nombre(p.partes?.[0]?.tipo)} y la de abajo ${_nombre(p.partes?.[1]?.tipo)}`
+          : `${p.ancho_mm} mm ${_nombre(p.tipo)}`);
+        item.nota_linea = `Ventana en esquina de ${_bow.partes.length} paños: `
+          + `${_bow.partes.map(_desc).join(" + ")}, uniones a ${_bow.angulo}°. `
+          + "Si algún paño no es así, se corrige antes del PDF.";
+      }
+      // (Por etiqueta o por sonda de color la nota no se toca: ya la tiene de la primera vez.)
     }
 
     // 5) Llamada al Engine — el fallo de ESTE ítem NO mata el resto (se marca y sigue)
     let r;
     try {
       r = _esBow ? await calcularCotizacion({
-        tipo: "ESQUINA", alto_mm: _triple ? _triple.alto_mm : m.alto_mm, angulo: item.esquina.angulo,
+        tipo: "ESQUINA", alto_mm: _bow.alto_mm, angulo: item.esquina.angulo,
         // ⚠️ `ancho_mm` es obligatorio para el cliente del motor aunque la ESQUINA calcule su
         // ancho de los paños. Se manda la SUMA DIRECTA, que es la misma regla del dueño
         // (*"se suma solamente lo que envian los clientes"*), asi los dos coinciden.
-        ancho_mm: _triple
-          ? _triple.central_mm + _triple.lateral_mm * 2
-          : item.esquina.partes.reduce((a, x) => a + (Number(x.ancho_mm) || 0), 0),
+        ancho_mm: _bow.partes.reduce((a, x) => a + (Number(x.ancho_mm) || 0), 0),
         partes: item.esquina.partes,
         color, glass_id, comuna, cantidad,
       }) : await calcularCotizacion({
