@@ -307,7 +307,7 @@ export const TOOL_DEFS = [
               '"bow window", "ventana en esquina", "en L", "paños en ángulo") cuando describe CADA paño ' +
               '(más de 3 paños, laterales de distinto ancho o aperturas distintas por paño). La lista ' +
               'de paños EN ORDEN, de un extremo al otro, cada uno con su tipo y su ancho (el número que ' +
-              'escribió el cliente, con su unidad convertida a mm si la sabes). Con este campo NO uses la ' +
+              'escribió el cliente, SIN convertir ni redondear: la unidad la resuelve el sistema). Con este campo NO uses la ' +
               'notación de tres medidas, y manda SIEMPRE alto_mm = el alto común a todos los paños, copiado ' +
               'del cliente. Entre 2 y 6 paños. NUNCA lo uses para una compuesta plana (paños sin ángulo).',
             items: {

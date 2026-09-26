@@ -597,3 +597,62 @@ test('🔴 #947 · Gemini r4 MEDIO 3 · la altura de una mitad dicha suelta en u
     assert.deepEqual(c.partes.map((x) => [x.tipo, x.alto_mm]), [['PROYECTANTE', 400], ['FIJA', 1100]], 'antes: 40 mm arriba');
   });
 });
+
+// ── Ronda 4 del tridente (Codex): lo barato y real ────────────────────────────────────────────
+
+test('🔒 #947 · Codex r4 GRAVE 2 · un ancho repetido MÁS veces que en el texto se rechaza (330,1830,1830,1830)', async () => {
+  const { runTool } = await import('../src/oliver-gpt/tools.js');
+  await conMotorStub(async (enviados) => {
+    const panos = PEDIDO_DUENO.panos_esquina.map((p, i) => (i === 3 ? { tipo: 'FIJA', ancho_mm: 1830 } : p));
+    const r = await runTool('calcular_cotizacion', { ...PEDIDO_DUENO, panos_esquina: panos }, { textoCliente: TEXTO_DUENO });
+    assert.equal(r.ok, false);
+    assert.match(String(r.error), /1830 aparece 3 veces/);
+    assert.equal(enviados.length, 0, 'antes cotizaba 5820 mm en vez de 4315');
+  });
+});
+
+test('🔴 #947 · Codex r4 GRAVE 5 · "todo en mm" antes de la lista vale para los pares sin sufijo', async () => {
+  const { runTool } = await import('../src/oliver-gpt/tools.js');
+  const texto = 'bow window, todo en mm: fija 450x600 y fija 500x600, angulo 90';
+  await conMotorStub(async (enviados) => {
+    await runTool('calcular_cotizacion', { tipo: 'FIJA', descripcion_producto: 'bow window', medidas_texto: texto,
+      alto_mm: 600, angulo_esquina: 90, color: 'BLANCO', comuna: 'Temuco', cantidad: 1,
+      panos_esquina: [{ tipo: 'FIJA', ancho_mm: 450 }, { tipo: 'FIJA', ancho_mm: 500 }] }, { textoCliente: texto });
+    assert.equal(enviados.length, 1);
+    assert.deepEqual(enviados[0].partes.map((p) => p.ancho_mm), [450, 500], 'antes: 4500 y 5000 por el umbral (max <= 600 -> cm)');
+    assert.equal(enviados[0].alto_mm, 600);
+  });
+});
+
+test('🔴 #947 · Codex r4 GRAVE 6 · por ETIQUETA con "alto por ancho" en el texto, el alto sigue siendo 1540', async () => {
+  // El pre-pass de "alto por ancho" puede dar vuelta el par total (4315x1540 no esta entre los del
+  // cliente); la rama de etiqueta tomaba m.alto_mm y salia 4315x4315. El alto se reconoce como el
+  // elemento del par que NO es la suma de los paños.
+  await conMotorStub(async (enviados) => {
+    const items = [{ measures: '4315x1540mm', qty: 1, color: 'BLANCO',
+      product: 'Bow window · ventana en esquina (4 paños, union 90°): Fijo 330mm + Fijo 1830mm + Fijo 1830mm + Compuesto 325mm (Proyectante 770mm (arriba) + Fijo 770mm (abajo))' }];
+    await priceAllEngine({ comuna: 'Temuco', items,
+      texto_cliente: 'alto por ancho: 1540x330, 1540x1830, 1540x1830, 1540x325, angulo 90' });
+    assert.equal(enviados.length, 1);
+    assert.equal(enviados[0].alto_mm, 1540);
+    assert.equal(enviados[0].ancho_mm, 4315);
+    assert.equal(items[0].measures, '4315x1540mm');
+    assert.equal(enviados[0].glass_id, 61);
+  });
+});
+
+test('🔴 #947 · MEDIDO con la ventana del dueño · la re-cotización por ETIQUETA (4315 de total) llega al motor, no escala', async () => {
+  // Las opciones por color (#888) y el informe termico re-cotizan por etiqueta con `measures` =
+  // "total x alto". El chequeo duro de fabricacion corre ANTES del bloque de la esquina y media
+  // el total (4315) como si fuera un paño: "excede todos los limites" y la ventana del dueño no
+  // se re-cotizaba. Una esquina no se mide por su total: cada paño se valida aparte.
+  await conMotorStub(async (enviados) => {
+    const items = [{ measures: '4315x1540mm', qty: 1, color: 'BLANCO',
+      product: 'Bow window · ventana en esquina (4 paños, union 90°): Fijo 330mm + Fijo 1830mm + Fijo 1830mm + Compuesto 325mm (Proyectante 770mm (arriba) + Fijo 770mm (abajo))' }];
+    await priceAllEngine({ comuna: 'Temuco', items });
+    assert.equal(enviados.length, 1, `escalo: ${items[0].price_warning}`);
+    assert.equal(enviados[0].alto_mm, 1540);
+    assert.equal(enviados[0].ancho_mm, 4315);
+    assert.equal(items[0].fuera_de_alcance, undefined);
+  });
+});

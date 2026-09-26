@@ -214,13 +214,17 @@ export function anguloFabricable(grados) {
 export function paresDelTexto(texto) {
   const t = String(texto || "");
   const re = /(\d+(?:[.,]\d+)?)\s*(?:[x×X]|por)\s*(\d+(?:[.,]\d+)?)(?:\s*(mm|cm|mts?|m)\b)?/g;
+  const unidadGlobal = /\bcm\b/i.test(t) && !/\bmm\b/i.test(t) ? 10 : (/\bmm\b/i.test(t) && !/\bcm\b/i.test(t) ? 1 : null);
   const pares = [];
   for (const m of t.matchAll(re)) {
     const a = num(m[1]), b = num(m[2]);
     if (!(a > 0 && b > 0)) continue;
     const u = String(m[3] || "").toLowerCase();
+    // [Codex r4] La unidad NOMBRADA en el texto ("todo en mm", "en cm") vale para los pares que
+    // no llevan sufijo pegado: sin esto "todo en mm: fija 200x450" caia en el umbral (<= 600 -> cm).
     const factor = u === "mm" ? 1 : u === "cm" ? 10 : (u === "m" || u === "mt" || u === "mts") ? 1000
-      : (Math.max(a, b) <= 6 ? 1000 : Math.max(a, b) <= 600 ? 10 : 1);
+      : (unidadGlobal !== null ? unidadGlobal
+      : (Math.max(a, b) <= 6 ? 1000 : Math.max(a, b) <= 600 ? 10 : 1));
     pares.push({ a, b, factor, crudo: m[0] });
   }
   return pares;
@@ -329,6 +333,22 @@ export function esquinaDesdePanos(panos, {
       const f = factorDelNumero(raw);
       if (f.error) return { error: f.error };
       anchosMm.push(raw * f.factor);
+    }
+    // [Codex r4] MULTIPLICIDAD: si el cliente escribio un par por paño, un ancho no puede
+    // aparecer en la lista mas veces que en sus pares ([330,1830,1830,1830] con "330x1540,
+    // 1830x1540, 1830x1540, 325x1540" cotizaba 5820 mm en vez de 4315).
+    // Solo cuando el cliente escribio al menos un par por paño: "dos de 1830x1540" (un par, dos
+    // paños) no se puede contar y no se bloquea.
+    if (ps.length >= anchos.length) {
+      for (const x of new Set(anchos)) {
+        const enLista = anchos.filter((a) => casi(a, x)).length;
+        const enTexto = ps.filter((p) => casi(p.a, x) || casi(p.b, x)).length;
+        if (enTexto === 0) continue;
+        if (enLista > enTexto) {
+          return { error: `El ancho ${x} aparece ${enLista} veces en la lista de paños pero el cliente lo escribió ${enTexto}. `
+            + "Copie los paños tal como los escribió, en orden." };
+        }
+      }
     }
     // El alto: escrito por el cliente, y COMUN a todos los pares de ESTA ventana (en mm, para
     // textos que mezclan unidades).

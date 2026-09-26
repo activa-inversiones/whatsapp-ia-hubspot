@@ -970,7 +970,16 @@ export async function priceAllEngine(d, customer_id = "") {
 
     // 1) Medidas (normalizadas + orientación corregida en el pre-pass)
     const m = measured[i];
-    if (tableIsAltoAncho && m) {
+    // 🔴 [#947 · Codex r4 GRAVE 6, y MEDIDO con la ventana del dueño] UNA ESQUINA NO SE MIDE POR SU
+    // TOTAL. Su `measures` es "total x alto" (4315x1540): no es ningun paño. El pre-pass de "alto
+    // por ancho" la daba vuelta (1540x4315) y el chequeo duro de fabricacion de abajo —que corre
+    // ANTES del bloque 4b— la escalaba con "excede todos los limites": las opciones por color y el
+    // informe termico no volvian a cotizar la bow window de 4 paños. Los dos se saltan para la
+    // esquina: cada paño se valida por separado en 4b y en el motor.
+    const _esBowTemprano = (Array.isArray(item?.esquina?.partes) && item.esquina.partes.length >= 2)
+      || !!leerMedidaTriple(`${item.medidas_texto || ""}`) || !!leerMedidaTriple(`${item.measures || ""}`)
+      || esBowPorForma(`${item.descripcion || ""} ${item.product || ""} ${item.producto_label || ""} ${item.label || ""} ${item.producto || ""}`);
+    if (tableIsAltoAncho && m && !_esBowTemprano) {
       // 🔴 [2026-08-26] LA MEDIDA CORREGIDA TIENE QUE QUEDAR EN EL ITEM, NO SOLO EN EL PRECIO.
       // Hasta hoy el pre-pass daba vuelta las medidas para COTIZAR pero dejaba `item.measures`
       // con el texto original del cliente. Resultado medido en la propuesta de Paula: se cobro
@@ -1026,14 +1035,14 @@ export async function priceAllEngine(d, customer_id = "") {
     const dim = validateDimensionsLocal(
       esCompuestaVertical(_textoParaEje) ? _textoParaEje : `${_textoParaEje} ${d.texto_cliente || ""}`,
       m.ancho_mm, m.alto_mm);
-    if (dim && dim.escalate) {
+    if (dim && dim.escalate && !_esBowTemprano) {
       item.price_warning = dim.message;
       item.source = "activa_engine"; item.confidence = "manual";
       return { escalada: true };
     }
     // [2026-06-10 FIX #C/GT-06] Fuera de rango pero REFERENCIAL: acotar al máx y COTIZAR (no escalar)
     // → grand_total tiene valor → el PDF SÍ sale (antes: escalate → null → sin PDF). Marcelo valida la medida exacta.
-    if (dim && dim.referencial) {
+    if (dim && dim.referencial && !_esBowTemprano) {
       item.referencial = true;
       item.measures_original = `${m.ancho_mm}x${m.alto_mm}`;
       item.price_warning = dim.message;
@@ -1350,7 +1359,7 @@ export async function priceAllEngine(d, customer_id = "") {
           partes: _yaArmada.partes,
           // [Codex r2 GRAVE 3] El alto viene ADENTRO de la ventana armada cuando lo valido la
           // tool: `m` puede haberse dado vuelta en el pre-pass de "alto por ancho".
-          alto_mm: Number(_yaArmada.alto_mm) > 0 ? Number(_yaArmada.alto_mm) : m.alto_mm,
+          alto_mm: Number(_yaArmada.alto_mm) > 0 ? Number(_yaArmada.alto_mm) : (Number(_yaArmada.alto_total_mm) > 0 ? Number(_yaArmada.alto_total_mm) : m.alto_mm),
           angulo: Number(_yaArmada.angulo) > 0 ? Number(_yaArmada.angulo) : 90,
           origen: _yaArmada.derivado_de || "item",
         };
@@ -1366,11 +1375,17 @@ export async function priceAllEngine(d, customer_id = "") {
         };
       } else {
         // Por etiqueta los paños ya vienen armados; se normalizan al formato del motor.
+        // [Codex r4] EL ALTO DE LA ETIQUETA NO SALE DEL PAR A CIEGAS. `measures` es "total x alto", pero
+        // el pre-pass de "alto por ancho" puede haberlo dado vuelta (el par total no esta entre los
+        // del cliente). Se reconoce el alto como el elemento del par que NO es la suma de los paños.
+        const _sumaLabel = _porLabel.partes.reduce((a, pt) => a + (Number(pt.ancho_mm) || 0), 0);
+        const _altoLabel = Math.abs(m.ancho_mm - _sumaLabel) <= 1 ? m.alto_mm
+          : (Math.abs(m.alto_mm - _sumaLabel) <= 1 ? m.ancho_mm : m.alto_mm);
         const partes = _porLabel.partes.map((pt) => (pt.tipo === "COMPUESTA"
           ? { tipo: "COMPUESTA", ancho_mm: pt.ancho_mm, orientacion: "vertical",
               partes: (pt.compuesta?.partes || []).map((x) => ({
                 tipo: x.tipo,
-                alto_mm: Number(x.alto_mm) > 0 ? Number(x.alto_mm) : Math.round(m.alto_mm / 2),
+                alto_mm: Number(x.alto_mm) > 0 ? Number(x.alto_mm) : Math.round(_altoLabel / 2),
               })) }
           : { tipo: pt.tipo, ancho_mm: pt.ancho_mm }));
         // Los sub-paños sin alto declarado se reparten el vano en dos, que es el default del
@@ -1378,15 +1393,15 @@ export async function priceAllEngine(d, customer_id = "") {
         for (const pt of partes) {
           if (pt.tipo !== "COMPUESTA" || !Array.isArray(pt.partes) || pt.partes.length !== 2) continue;
           const suma = pt.partes.reduce((a, x) => a + (Number(x.alto_mm) || 0), 0);
-          if (suma !== Math.round(m.alto_mm)) {
-            const mitad = Math.round(m.alto_mm / 2);
+          if (suma !== Math.round(_altoLabel)) {
+            const mitad = Math.round(_altoLabel / 2);
             pt.partes[0].alto_mm = mitad;
-            pt.partes[1].alto_mm = Math.round(m.alto_mm) - mitad;
+            pt.partes[1].alto_mm = Math.round(_altoLabel) - mitad;
           }
         }
         // [#947] El angulo tambien se lee de la etiqueta: sin esto una esquina de 45° volvia a
         // cotizarse a 90° cada vez que se re-armaba (sonda de color, PDF).
-        _bow = { partes, alto_mm: m.alto_mm, angulo: _porLabel.angulo || 90, origen: "label" };
+        _bow = { partes, alto_mm: _altoLabel, angulo: _porLabel.angulo || 90, origen: "label" };
       }
       // El PDF dibuja la esquina a partir de este MISMO dato (#883): una sola fuente para el
       // precio y para el dibujo, que es la leccion que dejo el #880.

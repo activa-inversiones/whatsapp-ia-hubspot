@@ -1,0 +1,213 @@
+diff --git a/services/enginePricer.js b/services/enginePricer.js
+index aa93d7a..9b96047 100644
+--- a/services/enginePricer.js
++++ b/services/enginePricer.js
+@@ -970,7 +970,16 @@ export async function priceAllEngine(d, customer_id = "") {
+ 
+     // 1) Medidas (normalizadas + orientación corregida en el pre-pass)
+     const m = measured[i];
+-    if (tableIsAltoAncho && m) {
++    // 🔴 [#947 · Codex r4 GRAVE 6, y MEDIDO con la ventana del dueño] UNA ESQUINA NO SE MIDE POR SU
++    // TOTAL. Su `measures` es "total x alto" (4315x1540): no es ningun paño. El pre-pass de "alto
++    // por ancho" la daba vuelta (1540x4315) y el chequeo duro de fabricacion de abajo —que corre
++    // ANTES del bloque 4b— la escalaba con "excede todos los limites": las opciones por color y el
++    // informe termico no volvian a cotizar la bow window de 4 paños. Los dos se saltan para la
++    // esquina: cada paño se valida por separado en 4b y en el motor.
++    const _esBowTemprano = (Array.isArray(item?.esquina?.partes) && item.esquina.partes.length >= 2)
++      || !!leerMedidaTriple(`${item.medidas_texto || ""}`) || !!leerMedidaTriple(`${item.measures || ""}`)
++      || esBowPorForma(`${item.descripcion || ""} ${item.product || ""} ${item.producto_label || ""} ${item.label || ""} ${item.producto || ""}`);
++    if (tableIsAltoAncho && m && !_esBowTemprano) {
+       // 🔴 [2026-08-26] LA MEDIDA CORREGIDA TIENE QUE QUEDAR EN EL ITEM, NO SOLO EN EL PRECIO.
+       // Hasta hoy el pre-pass daba vuelta las medidas para COTIZAR pero dejaba `item.measures`
+       // con el texto original del cliente. Resultado medido en la propuesta de Paula: se cobro
+@@ -1026,14 +1035,14 @@ export async function priceAllEngine(d, customer_id = "") {
+     const dim = validateDimensionsLocal(
+       esCompuestaVertical(_textoParaEje) ? _textoParaEje : `${_textoParaEje} ${d.texto_cliente || ""}`,
+       m.ancho_mm, m.alto_mm);
+-    if (dim && dim.escalate) {
++    if (dim && dim.escalate && !_esBowTemprano) {
+       item.price_warning = dim.message;
+       item.source = "activa_engine"; item.confidence = "manual";
+       return { escalada: true };
+     }
+     // [2026-06-10 FIX #C/GT-06] Fuera de rango pero REFERENCIAL: acotar al máx y COTIZAR (no escalar)
+     // → grand_total tiene valor → el PDF SÍ sale (antes: escalate → null → sin PDF). Marcelo valida la medida exacta.
+-    if (dim && dim.referencial) {
++    if (dim && dim.referencial && !_esBowTemprano) {
+       item.referencial = true;
+       item.measures_original = `${m.ancho_mm}x${m.alto_mm}`;
+       item.price_warning = dim.message;
+@@ -1350,7 +1359,7 @@ export async function priceAllEngine(d, customer_id = "") {
+           partes: _yaArmada.partes,
+           // [Codex r2 GRAVE 3] El alto viene ADENTRO de la ventana armada cuando lo valido la
+           // tool: `m` puede haberse dado vuelta en el pre-pass de "alto por ancho".
+-          alto_mm: Number(_yaArmada.alto_mm) > 0 ? Number(_yaArmada.alto_mm) : m.alto_mm,
++          alto_mm: Number(_yaArmada.alto_mm) > 0 ? Number(_yaArmada.alto_mm) : (Number(_yaArmada.alto_total_mm) > 0 ? Number(_yaArmada.alto_total_mm) : m.alto_mm),
+           angulo: Number(_yaArmada.angulo) > 0 ? Number(_yaArmada.angulo) : 90,
+           origen: _yaArmada.derivado_de || "item",
+         };
+@@ -1366,11 +1375,17 @@ export async function priceAllEngine(d, customer_id = "") {
+         };
+       } else {
+         // Por etiqueta los paños ya vienen armados; se normalizan al formato del motor.
++        // [Codex r4] EL ALTO DE LA ETIQUETA NO SALE DEL PAR A CIEGAS. `measures` es "total x alto", pero
++        // el pre-pass de "alto por ancho" puede haberlo dado vuelta (el par total no esta entre los
++        // del cliente). Se reconoce el alto como el elemento del par que NO es la suma de los paños.
++        const _sumaLabel = _porLabel.partes.reduce((a, pt) => a + (Number(pt.ancho_mm) || 0), 0);
++        const _altoLabel = Math.abs(m.ancho_mm - _sumaLabel) <= 1 ? m.alto_mm
++          : (Math.abs(m.alto_mm - _sumaLabel) <= 1 ? m.ancho_mm : m.alto_mm);
+         const partes = _porLabel.partes.map((pt) => (pt.tipo === "COMPUESTA"
+           ? { tipo: "COMPUESTA", ancho_mm: pt.ancho_mm, orientacion: "vertical",
+               partes: (pt.compuesta?.partes || []).map((x) => ({
+                 tipo: x.tipo,
+-                alto_mm: Number(x.alto_mm) > 0 ? Number(x.alto_mm) : Math.round(m.alto_mm / 2),
++                alto_mm: Number(x.alto_mm) > 0 ? Number(x.alto_mm) : Math.round(_altoLabel / 2),
+               })) }
+           : { tipo: pt.tipo, ancho_mm: pt.ancho_mm }));
+         // Los sub-paños sin alto declarado se reparten el vano en dos, que es el default del
+@@ -1378,15 +1393,15 @@ export async function priceAllEngine(d, customer_id = "") {
+         for (const pt of partes) {
+           if (pt.tipo !== "COMPUESTA" || !Array.isArray(pt.partes) || pt.partes.length !== 2) continue;
+           const suma = pt.partes.reduce((a, x) => a + (Number(x.alto_mm) || 0), 0);
+-          if (suma !== Math.round(m.alto_mm)) {
+-            const mitad = Math.round(m.alto_mm / 2);
++          if (suma !== Math.round(_altoLabel)) {
++            const mitad = Math.round(_altoLabel / 2);
+             pt.partes[0].alto_mm = mitad;
+-            pt.partes[1].alto_mm = Math.round(m.alto_mm) - mitad;
++            pt.partes[1].alto_mm = Math.round(_altoLabel) - mitad;
+           }
+         }
+         // [#947] El angulo tambien se lee de la etiqueta: sin esto una esquina de 45° volvia a
+         // cotizarse a 90° cada vez que se re-armaba (sonda de color, PDF).
+-        _bow = { partes, alto_mm: m.alto_mm, angulo: _porLabel.angulo || 90, origen: "label" };
++        _bow = { partes, alto_mm: _altoLabel, angulo: _porLabel.angulo || 90, origen: "label" };
+       }
+       // El PDF dibuja la esquina a partir de este MISMO dato (#883): una sola fuente para el
+       // precio y para el dibujo, que es la leccion que dejo el #880.
+diff --git a/services/esquina-routing.test.js b/services/esquina-routing.test.js
+index 089306c..f037244 100644
+--- a/services/esquina-routing.test.js
++++ b/services/esquina-routing.test.js
+@@ -597,3 +597,62 @@ test('🔴 #947 · Gemini r4 MEDIO 3 · la altura de una mitad dicha suelta en u
+     assert.deepEqual(c.partes.map((x) => [x.tipo, x.alto_mm]), [['PROYECTANTE', 400], ['FIJA', 1100]], 'antes: 40 mm arriba');
+   });
+ });
++
++// ── Ronda 4 del tridente (Codex): lo barato y real ────────────────────────────────────────────
++
++test('🔒 #947 · Codex r4 GRAVE 2 · un ancho repetido MÁS veces que en el texto se rechaza (330,1830,1830,1830)', async () => {
++  const { runTool } = await import('../src/oliver-gpt/tools.js');
++  await conMotorStub(async (enviados) => {
++    const panos = PEDIDO_DUENO.panos_esquina.map((p, i) => (i === 3 ? { tipo: 'FIJA', ancho_mm: 1830 } : p));
++    const r = await runTool('calcular_cotizacion', { ...PEDIDO_DUENO, panos_esquina: panos }, { textoCliente: TEXTO_DUENO });
++    assert.equal(r.ok, false);
++    assert.match(String(r.error), /1830 aparece 3 veces/);
++    assert.equal(enviados.length, 0, 'antes cotizaba 5820 mm en vez de 4315');
++  });
++});
++
++test('🔴 #947 · Codex r4 GRAVE 5 · "todo en mm" antes de la lista vale para los pares sin sufijo', async () => {
++  const { runTool } = await import('../src/oliver-gpt/tools.js');
++  const texto = 'bow window, todo en mm: fija 450x600 y fija 500x600, angulo 90';
++  await conMotorStub(async (enviados) => {
++    await runTool('calcular_cotizacion', { tipo: 'FIJA', descripcion_producto: 'bow window', medidas_texto: texto,
++      alto_mm: 600, angulo_esquina: 90, color: 'BLANCO', comuna: 'Temuco', cantidad: 1,
++      panos_esquina: [{ tipo: 'FIJA', ancho_mm: 450 }, { tipo: 'FIJA', ancho_mm: 500 }] }, { textoCliente: texto });
++    assert.equal(enviados.length, 1);
++    assert.deepEqual(enviados[0].partes.map((p) => p.ancho_mm), [450, 500], 'antes: 4500 y 5000 por el umbral (max <= 600 -> cm)');
++    assert.equal(enviados[0].alto_mm, 600);
++  });
++});
++
++test('🔴 #947 · Codex r4 GRAVE 6 · por ETIQUETA con "alto por ancho" en el texto, el alto sigue siendo 1540', async () => {
++  // El pre-pass de "alto por ancho" puede dar vuelta el par total (4315x1540 no esta entre los del
++  // cliente); la rama de etiqueta tomaba m.alto_mm y salia 4315x4315. El alto se reconoce como el
++  // elemento del par que NO es la suma de los paños.
++  await conMotorStub(async (enviados) => {
++    const items = [{ measures: '4315x1540mm', qty: 1, color: 'BLANCO',
++      product: 'Bow window · ventana en esquina (4 paños, union 90°): Fijo 330mm + Fijo 1830mm + Fijo 1830mm + Compuesto 325mm (Proyectante 770mm (arriba) + Fijo 770mm (abajo))' }];
++    await priceAllEngine({ comuna: 'Temuco', items,
++      texto_cliente: 'alto por ancho: 1540x330, 1540x1830, 1540x1830, 1540x325, angulo 90' });
++    assert.equal(enviados.length, 1);
++    assert.equal(enviados[0].alto_mm, 1540);
++    assert.equal(enviados[0].ancho_mm, 4315);
++    assert.equal(items[0].measures, '4315x1540mm');
++    assert.equal(enviados[0].glass_id, 61);
++  });
++});
++
++test('🔴 #947 · MEDIDO con la ventana del dueño · la re-cotización por ETIQUETA (4315 de total) llega al motor, no escala', async () => {
++  // Las opciones por color (#888) y el informe termico re-cotizan por etiqueta con `measures` =
++  // "total x alto". El chequeo duro de fabricacion corre ANTES del bloque de la esquina y media
++  // el total (4315) como si fuera un paño: "excede todos los limites" y la ventana del dueño no
++  // se re-cotizaba. Una esquina no se mide por su total: cada paño se valida aparte.
++  await conMotorStub(async (enviados) => {
++    const items = [{ measures: '4315x1540mm', qty: 1, color: 'BLANCO',
++      product: 'Bow window · ventana en esquina (4 paños, union 90°): Fijo 330mm + Fijo 1830mm + Fijo 1830mm + Compuesto 325mm (Proyectante 770mm (arriba) + Fijo 770mm (abajo))' }];
++    await priceAllEngine({ comuna: 'Temuco', items });
++    assert.equal(enviados.length, 1, `escalo: ${items[0].price_warning}`);
++    assert.equal(enviados[0].alto_mm, 1540);
++    assert.equal(enviados[0].ancho_mm, 4315);
++    assert.equal(items[0].fuera_de_alcance, undefined);
++  });
++});
+diff --git a/services/formaEsquina.js b/services/formaEsquina.js
+index 247a4e6..9ebe699 100644
+--- a/services/formaEsquina.js
++++ b/services/formaEsquina.js
+@@ -214,13 +214,17 @@ export function anguloFabricable(grados) {
+ export function paresDelTexto(texto) {
+   const t = String(texto || "");
+   const re = /(\d+(?:[.,]\d+)?)\s*(?:[x×X]|por)\s*(\d+(?:[.,]\d+)?)(?:\s*(mm|cm|mts?|m)\b)?/g;
++  const unidadGlobal = /\bcm\b/i.test(t) && !/\bmm\b/i.test(t) ? 10 : (/\bmm\b/i.test(t) && !/\bcm\b/i.test(t) ? 1 : null);
+   const pares = [];
+   for (const m of t.matchAll(re)) {
+     const a = num(m[1]), b = num(m[2]);
+     if (!(a > 0 && b > 0)) continue;
+     const u = String(m[3] || "").toLowerCase();
++    // [Codex r4] La unidad NOMBRADA en el texto ("todo en mm", "en cm") vale para los pares que
++    // no llevan sufijo pegado: sin esto "todo en mm: fija 200x450" caia en el umbral (<= 600 -> cm).
+     const factor = u === "mm" ? 1 : u === "cm" ? 10 : (u === "m" || u === "mt" || u === "mts") ? 1000
+-      : (Math.max(a, b) <= 6 ? 1000 : Math.max(a, b) <= 600 ? 10 : 1);
++      : (unidadGlobal !== null ? unidadGlobal
++      : (Math.max(a, b) <= 6 ? 1000 : Math.max(a, b) <= 600 ? 10 : 1));
+     pares.push({ a, b, factor, crudo: m[0] });
+   }
+   return pares;
+@@ -330,6 +334,22 @@ export function esquinaDesdePanos(panos, {
+       if (f.error) return { error: f.error };
+       anchosMm.push(raw * f.factor);
+     }
++    // [Codex r4] MULTIPLICIDAD: si el cliente escribio un par por paño, un ancho no puede
++    // aparecer en la lista mas veces que en sus pares ([330,1830,1830,1830] con "330x1540,
++    // 1830x1540, 1830x1540, 325x1540" cotizaba 5820 mm en vez de 4315).
++    // Solo cuando el cliente escribio al menos un par por paño: "dos de 1830x1540" (un par, dos
++    // paños) no se puede contar y no se bloquea.
++    if (ps.length >= anchos.length) {
++      for (const x of new Set(anchos)) {
++        const enLista = anchos.filter((a) => casi(a, x)).length;
++        const enTexto = ps.filter((p) => casi(p.a, x) || casi(p.b, x)).length;
++        if (enTexto === 0) continue;
++        if (enLista > enTexto) {
++          return { error: `El ancho ${x} aparece ${enLista} veces en la lista de paños pero el cliente lo escribió ${enTexto}. `
++            + "Copie los paños tal como los escribió, en orden." };
++        }
++      }
++    }
+     // El alto: escrito por el cliente, y COMUN a todos los pares de ESTA ventana (en mm, para
+     // textos que mezclan unidades).
+     if (!numeroEscritoPorElCliente(alto, texto_cliente)) {
+diff --git a/src/oliver-gpt/tools.js b/src/oliver-gpt/tools.js
+index 29e9398..85d5130 100644
+--- a/src/oliver-gpt/tools.js
++++ b/src/oliver-gpt/tools.js
+@@ -307,7 +307,7 @@ export const TOOL_DEFS = [
+               '"bow window", "ventana en esquina", "en L", "paños en ángulo") cuando describe CADA paño ' +
+               '(más de 3 paños, laterales de distinto ancho o aperturas distintas por paño). La lista ' +
+               'de paños EN ORDEN, de un extremo al otro, cada uno con su tipo y su ancho (el número que ' +
+-              'escribió el cliente, con su unidad convertida a mm si la sabes). Con este campo NO uses la ' +
++              'escribió el cliente, SIN convertir ni redondear: la unidad la resuelve el sistema). Con este campo NO uses la ' +
+               'notación de tres medidas, y manda SIEMPRE alto_mm = el alto común a todos los paños, copiado ' +
+               'del cliente. Entre 2 y 6 paños. NUNCA lo uses para una compuesta plana (paños sin ángulo).',
+             items: {
