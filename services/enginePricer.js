@@ -978,6 +978,7 @@ export async function priceAllEngine(d, customer_id = "") {
     // esquina: cada paño se valida por separado en 4b y en el motor.
     const _esBowTemprano = (Array.isArray(item?.esquina?.partes) && item.esquina.partes.length >= 2)
       || !!leerMedidaTriple(`${item.medidas_texto || ""}`) || !!leerMedidaTriple(`${item.measures || ""}`)
+      || !!leerMedidaTriple(`${item.medidas || ""}`)  // [Codex r5] el campo heredado que 4b tambien lee
       || esBowPorForma(`${item.descripcion || ""} ${item.product || ""} ${item.producto_label || ""} ${item.label || ""} ${item.producto || ""}`);
     if (tableIsAltoAncho && m && !_esBowTemprano) {
       // 🔴 [2026-08-26] LA MEDIDA CORREGIDA TIENE QUE QUEDAR EN EL ITEM, NO SOLO EN EL PRECIO.
@@ -1379,8 +1380,9 @@ export async function priceAllEngine(d, customer_id = "") {
         // el pre-pass de "alto por ancho" puede haberlo dado vuelta (el par total no esta entre los
         // del cliente). Se reconoce el alto como el elemento del par que NO es la suma de los paños.
         const _sumaLabel = _porLabel.partes.reduce((a, pt) => a + (Number(pt.ancho_mm) || 0), 0);
-        const _altoLabel = Math.abs(m.ancho_mm - _sumaLabel) <= 1 ? m.alto_mm
-          : (Math.abs(m.alto_mm - _sumaLabel) <= 1 ? m.ancho_mm : m.alto_mm);
+        // [Gemini r6] El alto es el elemento del par MAS LEJOS de la suma de los paños: tolera que
+        // alguien haya retocado el total a mano (4310 en vez de 4315) sin caer al default.
+        const _altoLabel = Math.abs(m.ancho_mm - _sumaLabel) > Math.abs(m.alto_mm - _sumaLabel) ? m.ancho_mm : m.alto_mm;
         const partes = _porLabel.partes.map((pt) => (pt.tipo === "COMPUESTA"
           ? { tipo: "COMPUESTA", ancho_mm: pt.ancho_mm, orientacion: "vertical",
               partes: (pt.compuesta?.partes || []).map((x) => ({
@@ -1462,7 +1464,7 @@ export async function priceAllEngine(d, customer_id = "") {
           ? `Ventana en esquina: paño central de ${_triple.central_mm} mm y dos laterales de `
             + `${_triple.lateral_mm} mm, cada lateral con la mitad de arriba que se abre y la de abajo fija.`
           : `Ventana en esquina: paño central de ${_triple.central_mm} mm y dos laterales fijos de `
-            + `${_triple.lateral_mm} mm. Si querés que los laterales se abran, decímelo y lo ajusto.`;
+            + `${_triple.lateral_mm} mm. Si quiere que los laterales se abran, dígamelo y lo ajusto.`;
       } else if (_bow.origen === "panos_del_cliente") {
         // [#947] Paño por paño, en el orden del cliente, para que compare contra su muro.
         const _nombre = (t) => ({ FIJA: "fija", PROYECTANTE: "proyectante", BATIENTE: "batiente",

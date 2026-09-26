@@ -211,10 +211,22 @@ export function anguloFabricable(grados) {
  * Funcion pura.
  * @returns {Array<{a:number, b:number, factor:number, crudo:string}>}
  */
+/**
+ * [Codex r5] La unidad que el cliente NOMBRA para las medidas: "todo en mm", "en cm", "medidas en cm".
+ * Un "4 mm" suelto (el vidrio) NO es una unidad global: va pegado a otro numero. Si nombra las dos,
+ * no hay global (cada par con su sufijo o su tamaño).
+ */
+export function unidadNombrada(texto) {
+  const t = String(texto || "");
+  const frases = [...t.matchAll(/\b(?:todo\s+en|todas?\s+en|medidas?\s+en|en)\s+(mm|cm)\b/gi)].map((m) => m[1].toLowerCase());
+  const u = [...new Set(frases)];
+  return u.length === 1 ? (u[0] === "cm" ? 10 : 1) : null;
+}
+
 export function paresDelTexto(texto) {
   const t = String(texto || "");
   const re = /(\d+(?:[.,]\d+)?)\s*(?:[x×X]|por)\s*(\d+(?:[.,]\d+)?)(?:\s*(mm|cm|mts?|m)\b)?/g;
-  const unidadGlobal = /\bcm\b/i.test(t) && !/\bmm\b/i.test(t) ? 10 : (/\bmm\b/i.test(t) && !/\bcm\b/i.test(t) ? 1 : null);
+  const unidadGlobal = unidadNombrada(t);
   const pares = [];
   for (const m of t.matchAll(re)) {
     const a = num(m[1]), b = num(m[2]);
@@ -305,8 +317,7 @@ export function esquinaDesdePanos(panos, {
   // sobre TODOS los numeros de esta ventana, alto incluido: hasta 600 son centimetros.
   // [Gemini r4] Sin el paso (3), "alto 150 cm, paños de 40, 180 y 40" dejaba el 180 en milimetros.
   const factoresTexto = [...new Set(conjunto.map((p) => p.factor))];
-  const menciona = (re) => re.test(String(texto_cliente || ""));
-  const unidadGlobal = menciona(/\bcm\b/i) && !menciona(/\bmm\b/i) ? 10 : (menciona(/\bmm\b/i) && !menciona(/\bcm\b/i) ? 1 : null);
+  const unidadGlobal = unidadNombrada(texto_cliente);
   const factorSuelto = factoresTexto.length === 1 ? factoresTexto[0]
     : (unidadGlobal ?? (Math.max(...anchos, alto) <= 600 ? 10 : 1));
   // Los pares donde aparece un numero crudo, y el factor con que se lee ahi.
@@ -334,22 +345,6 @@ export function esquinaDesdePanos(panos, {
       if (f.error) return { error: f.error };
       anchosMm.push(raw * f.factor);
     }
-    // [Codex r4] MULTIPLICIDAD: si el cliente escribio un par por paño, un ancho no puede
-    // aparecer en la lista mas veces que en sus pares ([330,1830,1830,1830] con "330x1540,
-    // 1830x1540, 1830x1540, 325x1540" cotizaba 5820 mm en vez de 4315).
-    // Solo cuando el cliente escribio al menos un par por paño: "dos de 1830x1540" (un par, dos
-    // paños) no se puede contar y no se bloquea.
-    if (ps.length >= anchos.length) {
-      for (const x of new Set(anchos)) {
-        const enLista = anchos.filter((a) => casi(a, x)).length;
-        const enTexto = ps.filter((p) => casi(p.a, x) || casi(p.b, x)).length;
-        if (enTexto === 0) continue;
-        if (enLista > enTexto) {
-          return { error: `El ancho ${x} aparece ${enLista} veces en la lista de paños pero el cliente lo escribió ${enTexto}. `
-            + "Copie los paños tal como los escribió, en orden." };
-        }
-      }
-    }
     // El alto: escrito por el cliente, y COMUN a todos los pares de ESTA ventana (en mm, para
     // textos que mezclan unidades).
     if (!numeroEscritoPorElCliente(alto, texto_cliente)) {
@@ -363,6 +358,25 @@ export function esquinaDesdePanos(panos, {
       if (!comun) {
         return { error: `El alto ${alto} no es la medida común de los paños que escribió el cliente `
           + `(${relevantes.map((p) => p.crudo.trim()).join(", ")}). El alto de una esquina es el mismo en todos los paños: copie ese.` };
+      }
+    }
+    // [Codex r4 + r5] MULTIPLICIDAD, con el alto ya conocido: si el cliente escribio un par por
+    // paño, cada ancho tiene que aparecer como ANCHO (la coordenada que NO es el alto) en sus
+    // pares, y no mas veces que ahi. [330,1830,1830,1830] cotizaba 5820 mm en vez de 4315; y un
+    // ancho inventado igual al alto ([300,1500,1500] con "300x1500, 400x1500, 500x1500") pasaba
+    // porque se contaban las dos coordenadas. "Dos de 1830x1540" (un par, dos paños) no se puede
+    // contar y no se bloquea: solo aplica con al menos un par por paño.
+    if (ps.length >= anchos.length) {
+      // Un paño CUADRADO (1200x1200 con alto 1200) tiene su ancho igual al alto: cuenta una vez.
+      const anchosDelPar = (p) => { const w = [p.a, p.b].filter((v) => !casi(v * p.factor, altoMm)); return w.length ? w : [p.a]; };
+      for (const x of new Set(anchos)) {
+        const enLista = anchos.filter((a) => casi(a, x)).length;
+        const enTexto = ps.filter((p) => anchosDelPar(p).some((v) => casi(v, x))).length;
+        if (enLista > enTexto) {
+          return { error: enTexto === 0
+            ? `El ancho ${x} no aparece como ANCHO en los paños que escribió el cliente (${ps.map((p) => p.crudo.trim()).join(", ")}). Copie los paños tal como los escribió, en orden.`
+            : `El ancho ${x} aparece ${enLista} veces en la lista de paños pero el cliente lo escribió ${enTexto}. Copie los paños tal como los escribió, en orden.` };
+        }
       }
     }
     alto = altoMm;

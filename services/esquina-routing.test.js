@@ -656,3 +656,46 @@ test('🔴 #947 · MEDIDO con la ventana del dueño · la re-cotización por ETI
     assert.equal(items[0].fuera_de_alcance, undefined);
   });
 });
+
+// ── Ronda 5 del tridente (Codex) ─────────────────────────────────────────────────────────────
+
+test('🔒 #947 · Codex r5 GRAVE 1 · un ancho inventado igual al ALTO no pasa la multiplicidad', async () => {
+  const { runTool } = await import('../src/oliver-gpt/tools.js');
+  const texto = 'bow window: 300x1500, 400x1500, 500x1500, angulo 90';
+  await conMotorStub(async (enviados) => {
+    const r = await runTool('calcular_cotizacion', { tipo: 'FIJA', descripcion_producto: 'bow window', medidas_texto: texto,
+      alto_mm: 1500, angulo_esquina: 90, color: 'BLANCO', comuna: 'Temuco', cantidad: 1,
+      panos_esquina: [{ tipo: 'FIJA', ancho_mm: 300 }, { tipo: 'FIJA', ancho_mm: 1500 }, { tipo: 'FIJA', ancho_mm: 1500 }] }, { textoCliente: texto });
+    assert.equal(r.ok, false);
+    assert.match(String(r.error), /1500 no aparece como ANCHO/);
+    assert.equal(enviados.length, 0, 'antes cotizaba 3300 mm en vez de 1200');
+    // Y la lista correcta pasa.
+    await runTool('calcular_cotizacion', { tipo: 'FIJA', descripcion_producto: 'bow window', medidas_texto: texto,
+      alto_mm: 1500, angulo_esquina: 90, color: 'BLANCO', comuna: 'Temuco', cantidad: 1,
+      panos_esquina: [{ tipo: 'FIJA', ancho_mm: 300 }, { tipo: 'FIJA', ancho_mm: 400 }, { tipo: 'FIJA', ancho_mm: 500 }] }, { textoCliente: texto });
+    assert.deepEqual(enviados[0].partes.map((p) => p.ancho_mm), [300, 400, 500]);
+  });
+});
+
+test('🔒 #947 · Codex r5 GRAVE 2 · "vidrio de 4 mm" NO es la unidad de las medidas', async () => {
+  const { runTool } = await import('../src/oliver-gpt/tools.js');
+  const texto = 'bow window con vidrio de 4 mm: fija 200x150, fija 180x150 y fija 200x150, angulo 90';
+  await conMotorStub(async (enviados) => {
+    await runTool('calcular_cotizacion', { tipo: 'FIJA', descripcion_producto: 'bow window', medidas_texto: texto,
+      alto_mm: 150, angulo_esquina: 90, color: 'BLANCO', comuna: 'Temuco', cantidad: 1,
+      panos_esquina: [{ tipo: 'FIJA', ancho_mm: 200 }, { tipo: 'FIJA', ancho_mm: 180 }, { tipo: 'FIJA', ancho_mm: 200 }] }, { textoCliente: texto });
+    assert.equal(enviados.length, 1);
+    assert.deepEqual(enviados[0].partes.map((p) => p.ancho_mm), [2000, 1800, 2000], 'sin sufijo y con el 4 mm del vidrio: manda el tamaño (cm)');
+    assert.equal(enviados[0].alto_mm, 1500);
+  });
+});
+
+test('🔒 #947 · Codex r5 MEDIO 3 · la exención temprana de la esquina también lee el campo heredado `medidas`', async () => {
+  await conMotorStub(async (enviados) => {
+    const items = [{ measures: '4315x1540mm', medidas: '1831x1540x1242', product: 'FIJA', qty: 1, color: 'BLANCO' }];
+    await priceAllEngine({ comuna: 'Temuco', items });
+    assert.equal(enviados.length, 1, `escalo: ${items[0].price_warning}`);
+    assert.equal(enviados[0].tipo, 'ESQUINA');
+    assert.deepEqual(enviados[0].partes.map((p) => p.ancho_mm), [1242, 1831, 1242]);
+  });
+});
