@@ -37,7 +37,12 @@ const REF_RE = /\s*\[Ref:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 const REF_RE_G = new RegExp(REF_RE.source, 'gi');
 // Un tag que el cliente mutiló al editar (falta el ']', metió texto adentro, borró un carácter):
 // no se puede capturar con seguridad, pero SÍ se puede contar y quitar del texto.
-export const TAG_ROTO_RE = /\[\s*ref\s*:\s*[0-9a-f]{4}[^\]]{0,76}(\]|$)/i;   // [r3 · NIM] exige 4 hex tras «ref:»: «[ref: mi casa]» ya no cuenta como tag roto
+// Dos formas: con corchete inicial («[Ref:3fbf…» mutilado al final o con texto adentro) o SIN él («Ref:3fbf86b0-1234-…», el cliente
+// borró el «[»: uno de los 5 casos medidos — r4 · Codex A). La segunda exige ≥4 hex y un guion, sin espacios, para no comerse
+// un «ref: 1234» legítimo. [r3 · NIM] la primera exige 4 hex tras «ref:»: «[ref: mi casa]» no cuenta como tag roto.
+// Tres alternativas: cerrado con «]» (puede traer espacios adentro: «Balor venta») · abierto sin «]» (se corta en el primer espacio para
+// no comerse el texto que sigue) · sin «[» (uuid con guion, sin espacios).
+export const TAG_ROTO_RE = /\[\s*ref\s*:\s*[0-9a-f]{4}[^\]]{0,76}\]|\[\s*ref\s*:\s*[0-9a-f]{4}[^\]\s]{0,76}(?=\s|$)|(?:^|(?<=\s))ref\s*:\s*[0-9a-f]{4,8}-[0-9a-f-]{0,31}\]?/i;
 const TAG_ROTO_RE_G = new RegExp(TAG_ROTO_RE.source, 'gi');
 // Las frases prellenadas de los botones (landing V3 «Hola Activa, quiero cotizar…», WordPress
 // «Hola, vi su web y quiero cotizar…», y la variante «Hola, necesito cotizar…» vista 11 veces en BD).

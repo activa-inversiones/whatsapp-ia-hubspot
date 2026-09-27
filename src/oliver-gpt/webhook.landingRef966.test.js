@@ -211,3 +211,16 @@ test('#966 r3 · el system prompt sabe qué hacer con el marcador del botón sin
   const p = buildSystemBlocks();
   assert.ok(p.includes(BODY_SOLO_REF), 'el marcador exacto está en el prompt'); assert.match(p, /REGLA #33/); assert.match(p, /Nunca cite ni repita/);
 });
+
+test('#966 r4 · takeover con el CXM/bridge COLGADO: el turno termina igual (tope), el inbound ya quedó persistido y la captura sigue en background', async () => {
+  const { deps, r } = arnes({ aiPaused: true });
+  deps.landingRefCaptureTimeoutMs = 60;
+  let resolverLead; deps.bridge.pushLeadEvent = () => new Promise((res) => { resolverLead = res; });   // nunca contesta
+  deps.parseInbound = () => ({ ok: true, from: FROM, text: `Hola [Ref:${UUID}]`, msgId: 'wamid.966.11', type: 'text' });
+  const t0 = Date.now();
+  const terminado = await Promise.race([conFetchFalso(() => handleWebhook({ body: {} }, makeRes(), deps), r.fetches).then(() => true), new Promise((res) => setTimeout(() => res(false), 3000))]);
+  assert.equal(terminado, true, 'el webhook no queda colgado detrás de la captura'); assert.ok(Date.now() - t0 < 2500, 'soltó el turno en el tope, no a los 3 s');
+  assert.equal(r.conversationEvents.filter((e) => e.direction === 'inbound').length, 1, 'el operador ya ve el mensaje');
+  assert.ok(r.fetches.some((f) => f.method === 'POST' && f.url.endsWith('/api/lead-event')), 'quote_started salió antes del bridge colgado');
+  if (resolverLead) resolverLead({ ok: true });
+});

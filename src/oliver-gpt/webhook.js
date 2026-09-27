@@ -1313,7 +1313,8 @@ export async function handleWebhook(req, res, deps = {}) {
           await ingesta;
         });
         let _capRefTimer = null;
-        await Promise.race([_capRef, new Promise((resolve) => { _capRefTimer = setTimeout(resolve, 5000); })]).finally(() => { if (_capRefTimer) clearTimeout(_capRefTimer); });
+        // [r4 · Codex A ronda 2] el tope es inyectable (deps.landingRefCaptureTimeoutMs) para poder probar el CXM/bridge colgado; 5 s en prod.
+        await Promise.race([_capRef, new Promise((resolve) => { _capRefTimer = setTimeout(resolve, Number(deps.landingRefCaptureTimeoutMs) > 0 ? Number(deps.landingRefCaptureTimeoutMs) : 5000); })]).finally(() => { if (_capRefTimer) clearTimeout(_capRefTimer); });
       }
       // [FIX 2026-06-25 MEDIA-PAUSE] Capturar TAMBIÉN el adjunto cuando la IA está pausada (takeover humano).
       // BUG: este return salía ANTES de resolveUserText (↓ línea ~569) → downloadWaMedia + saveMedia NUNCA

@@ -69,4 +69,12 @@ test('#966 r3 · varios tags en un mensaje (Gemini A): se quitan TODOS los sanos
   assert.equal(tieneTagRoto('[ref: mi casa] tiene 3 ventanas'), false, '[r3 · NIM] un corchete con texto del cliente no es un tag roto (se exigen 4 hex tras «ref:»)');
   assert.equal(limpiarTagRoto('[ref: mi casa] tiene 3 ventanas'), '[ref: mi casa] tiene 3 ventanas');
   assert.equal(limpiarTagRoto(`a\u0000b [Ref:${UUID.slice(0, 20)}`), 'ab', 'un NUL en el texto no se confunde con el placeholder interno');
+  // [r4 · Codex A ronda 2] los CINCO casos medidos de tag roto se detectan y se limpian, incluido el que perdió el «[»
+  for (const roto of [`[Ref:${UUID}`, `[Ref:3fbf86b0-1234-Balor venta 4abc-9def-0123456789ab]`, `[Ref:3fbf86b0-1234-4abc-9def-0123456789a]`, `[Ref: ${UUID}]`, `Ref:${UUID}`]) {
+    assert.equal(tieneTagRoto(`Hola ${roto} gracias`), true, `se detecta: ${roto}`);
+    assert.equal(limpiarTagRoto(`Hola ${roto} gracias`), 'Hola gracias', `se limpia: ${roto}`);
+    assert.equal(clasificarPrimerMensaje(`Hola ${roto}`), 'ref_mutilada', `se clasifica: ${roto}`);
+  }
+  assert.equal(limpiarTagRoto('Hola, ref: 1234 es mi número de orden'), 'Hola, ref: 1234 es mi número de orden', 'sin guion no es un uuid mutilado: no se toca');
+  assert.equal(limpiarTagRoto('prefref:abcd-12 x'), 'prefref:abcd-12 x', 'la forma sin corchete exige inicio de palabra');
 });
