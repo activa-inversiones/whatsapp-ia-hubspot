@@ -8,7 +8,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { handleWebhook } from './webhook.js';
-import { TEXTO_SOLO_REF, BODY_SOLO_REF, quoteStartedEventId } from '../../services/landingRefParser.js';
+import { BODY_SOLO_REF, quoteStartedEventId } from '../../services/landingRefParser.js';
+import { buildSystemBlocks } from './system-prompt.js';
 
 const UUID = '3fbf86b0-1234-4abc-9def-0123456789ab';
 const FROM = '56911113333';
@@ -44,7 +45,7 @@ async function conFetchFalso(fn, fetches) {
   const originalFetch = global.fetch, key = process.env.DASHBOARD_API_KEY, so = process.env.SALES_OS_URL, tok = process.env.SALES_OS_OPERATOR_TOKEN;
   process.env.DASHBOARD_API_KEY = 'test-key'; process.env.SALES_OS_URL = 'https://sales-os.test'; process.env.SALES_OS_OPERATOR_TOKEN = 'tok';
   global.fetch = async (url, opts = {}) => {
-    const u = String(url); fetches.push({ url: u, method: opts.method || 'GET', body: opts.body ? JSON.parse(opts.body) : null });
+    const u = String(url); fetches.push({ url: u, method: opts.method || 'GET', body: opts.body ? JSON.parse(opts.body) : null, headers: opts.headers || {} });
     if (u.includes(`/api/lead-event/ref/${UUID}`)) return { ok: true, json: async () => ({ ok: true, lead: { lead_id: UUID, gclid: 'gclid-landing', landing_slug: 'ventanas-pvc-temuco' } }) };
     return { ok: true, status: 204, json: async () => ({ ok: true }) };
   };
@@ -68,6 +69,7 @@ test('#966 · primer mensaje con tag: el LLM y sales-os reciben el texto limpio;
   const qs = r.fetches.find((f) => f.method === 'POST' && f.url.endsWith('/api/lead-event'));
   assert.ok(qs, 'POST quote_started al collector'); assert.equal(qs.body.event_name, 'quote_started'); assert.equal(qs.body.lead_id, UUID); assert.equal(qs.body.fuente, 'oliver');
   assert.match(qs.body.event_id, UUID_V5, 'uuid, no oliver_wa_…'); assert.equal(qs.body.event_id, quoteStartedEventId(UUID), 'determinístico por lead');
+  assert.equal(qs.headers['x-api-key'], 'test-key', '[r3 · Codex B] el collector ya no acepta eventos de servidor anónimos');
   const lead = r.leadEvents.find((e) => e.source === 'landing_organic');
   assert.ok(lead); assert.equal(lead.landing_ref, UUID); assert.equal(lead.metadata.ref_status, 'con_ref'); assert.equal(lead.gclid, 'gclid-landing'); assert.equal(lead.ad_click_id_source, 'landing_ref');
   const inbound = r.conversationEvents.find((e) => e.direction === 'inbound');
@@ -92,11 +94,12 @@ test('#966 · re-clic con el MISMO tag en una sesión ya capturada: se limpia ig
   assert.equal(r.turnos[2].userText, 'Vengo de otro anuncio'); assert.equal(st.ref_status, 'con_ref', 'la clase del PRIMER texto no se re-escribe');
 });
 
-test('#966 · mensaje que es SOLO el tag (botón sin frase): Oliver contesta con la instrucción, ref_status = solo_ref', async () => {
+test('#966 · mensaje que es SOLO el tag (botón sin frase): Oliver contesta, el LLM recibe el MARCADOR NEUTRO (no una instrucción), ref_status = solo_ref', async () => {
   const { deps, r } = arnes();
   deps.parseInbound = () => ({ ok: true, from: FROM, text: ` [Ref:${UUID}]`, msgId: 'wamid.966.3', type: 'text' });
   await conFetchFalso(() => handleWebhook({ body: {} }, makeRes(), deps), r.fetches); await tick(); await tick();
-  assert.equal(r.turnos.length, 1, 'antes: return mudo sin pasar por el LLM'); assert.equal(r.turnos[0].userText, TEXTO_SOLO_REF);
+  assert.equal(r.turnos.length, 1, 'antes: return mudo sin pasar por el LLM'); assert.equal(r.turnos[0].userText, BODY_SOLO_REF, '[r3] el mismo marcador que ve el operador');
+  assert.doesNotMatch(r.turnos[0].userText, /salúdelo|pregúntele/i, 'ninguna instrucción con rol user en el historial (Codex A + Gemini A: el modelo podía citarla)');
   assert.equal(r.enviados.length, 1, 'el cliente recibe respuesta');
   const st = deps.conv.get(FROM).state;
   assert.equal(st.ref_status, 'solo_ref'); assert.equal(st.ref_solo_tag, true); assert.equal(st.landingRefCaptured, true); assert.equal(st.landing_lead_id, UUID);
@@ -119,13 +122,32 @@ test('#966 · frase de la web SIN tag y texto propio: se clasifican y no se capt
   assert.equal(d2.conv.get(FROM).state.ref_status, 'otro_texto');
 });
 
-test('#966 · takeover humano: el tag no se espeja crudo al operador y queda anotado que venía', async () => {
+test('#966 r3 · takeover humano: el tag no se espeja crudo, la referencia SE CAPTURA (quote_started + lead) sin invocar la IA; solo-tag ⇒ marcador; roto ⇒ limpio', async () => {
   const { deps, r } = arnes({ aiPaused: true });
   deps.parseInbound = () => ({ ok: true, from: FROM, text: `Quiero hablar con alguien [Ref:${UUID}]`, msgId: 'wamid.966.5', type: 'text' });
-  await conFetchFalso(() => handleWebhook({ body: {} }, makeRes(), deps), r.fetches); await tick();
-  assert.equal(r.turnos.length, 0, 'la IA no interviene en takeover');
+  await conFetchFalso(() => handleWebhook({ body: {} }, makeRes(), deps), r.fetches); await tick(); await tick();
+  assert.equal(r.turnos.length, 0, 'la IA no interviene en takeover'); assert.equal(r.enviados.length, 0);
   const inbound = r.conversationEvents.find((e) => e.direction === 'inbound');
-  assert.ok(inbound, 'el inbound se persiste para el operador'); assert.equal(inbound.body, 'Quiero hablar con alguien'); assert.equal(inbound.metadata.ai_paused, true); assert.equal(inbound.metadata.landing_ref_visible, true);
+  assert.ok(inbound, 'el inbound se persiste para el operador'); assert.equal(inbound.body, 'Quiero hablar con alguien'); assert.equal(inbound.metadata.ai_paused, true); assert.equal(inbound.metadata.landing_ref_visible, true); assert.equal(inbound.metadata.landing_lead_id, UUID);
+  // [Codex A · cierra #969] antes el takeover salía por su return ANTES del bloque (4c): referencia y gclid perdidos para siempre
+  assert.ok(r.fetches.some((f) => f.url.includes(`/api/lead-event/ref/${UUID}`)), 'pide el contexto de la landing');
+  const qs = r.fetches.find((f) => f.method === 'POST' && f.url.endsWith('/api/lead-event'));
+  assert.ok(qs, 'quote_started viaja'); assert.equal(qs.body.event_name, 'quote_started'); assert.equal(qs.body.lead_id, UUID); assert.equal(qs.body.event_id, quoteStartedEventId(UUID)); assert.equal(qs.headers['x-api-key'], 'test-key');
+  const lead = r.leadEvents.find((e) => e.source === 'landing_organic');
+  assert.ok(lead, 'el lead llega a sales-os con la referencia'); assert.equal(lead.landing_ref, UUID); assert.equal(lead.gclid, 'gclid-landing'); assert.equal(lead.metadata.ref_status, 'con_ref');
+  // solo el tag en takeover: el operador ve el marcador, no un cuerpo vacío
+  const { deps: d2, r: r2 } = arnes({ aiPaused: true });
+  d2.parseInbound = () => ({ ok: true, from: FROM, text: ` [Ref:${UUID}]`, msgId: 'wamid.966.5b', type: 'text' });
+  await conFetchFalso(() => handleWebhook({ body: {} }, makeRes(), d2), r2.fetches); await tick(); await tick();
+  const in2 = r2.conversationEvents.find((e) => e.direction === 'inbound');
+  assert.equal(in2.body, BODY_SOLO_REF); assert.equal(in2.metadata.landing_ref_visible, true);
+  assert.equal(r2.leadEvents.find((e) => e.source === 'landing_organic')?.metadata.ref_status, 'solo_ref');
+  // tag MUTILADO en takeover: se limpia igual, no se captura (no hay uuid seguro)
+  const { deps: d3, r: r3 } = arnes({ aiPaused: true });
+  d3.parseInbound = () => ({ ok: true, from: FROM, text: `Hola [Ref:${UUID.slice(0, 20)}`, msgId: 'wamid.966.5c', type: 'text' });
+  await conFetchFalso(() => handleWebhook({ body: {} }, makeRes(), d3), r3.fetches); await tick();
+  const in3 = r3.conversationEvents.find((e) => e.direction === 'inbound');
+  assert.equal(in3.body, 'Hola'); assert.equal(in3.metadata.landing_ref_visible, undefined); assert.equal(r3.leadEvents.length, 0); assert.equal(r3.fetches.filter((f) => f.url.includes('/api/lead-event')).length, 0);
 });
 
 test('#966 r2 · tag MUTILADO: se clasifica ref_mutilada y NO llega al LLM ni al espejo', async () => {
@@ -161,4 +183,31 @@ test('#966 r2 · si el cerebro devuelve un state sin las claves nuevas, los merg
   assert.equal(st.name, 'Ana');
   assert.equal(st.ref_status, 'solo_ref', 'ref_status sobrevive un state del LLM que no la trae'); assert.equal(st.ref_solo_tag, true); assert.equal(st.landing_lead_id, UUID); assert.equal(st.landingRefCaptured, true);
   assert.ok(st.ref_status_at, 'ref_status_at también');
+});
+
+test('#966 r3 · tras 7 días, con atribución vieja y un uuid NUEVO: se re-clasifica la llegada pero NO se re-atribuye (D4, decisión del dueño) y el uuid nuevo queda anotado', async () => {
+  const { deps, r } = arnes();
+  deps.conv.set(FROM, { history: [], state: { landingRefCaptured: true, landing_lead_id: UUID, gclid: 'gclid-viejo', ref_status: 'solo_ref', ref_solo_tag: true, lastMessageAt: Date.now() - 8 * 86400000 } });
+  const otro = '00000000-0000-4000-8000-000000000000';
+  deps.parseInbound = () => ({ ok: true, from: FROM, text: `Hola, quiero cotizar [Ref:${otro}]`, msgId: 'wamid.966.9', type: 'text' });
+  await conFetchFalso(() => handleWebhook({ body: {} }, makeRes(), deps), r.fetches); await tick();
+  const st = deps.conv.get(FROM).state;
+  assert.equal(st.ref_status, 'con_ref', 'la LLEGADA nueva se clasifica'); assert.equal(st.ref_solo_tag, undefined);
+  assert.equal(st.landing_lead_id, UUID, 'la atribución NO cambia: re-atribuir es plata (tablero #972)'); assert.equal(st.gclid, 'gclid-viejo'); assert.equal(st.landing_ref_otro_uuid, otro, 'pero el uuid nuevo queda anotado para cuando el dueño decida');
+  assert.equal(r.fetches.filter((f) => f.url.includes('/api/lead-event/ref/')).length, 0, 'no se pide contexto: no hay re-captura');
+  assert.equal(r.turnos[0].userText, 'Hola, quiero cotizar');
+});
+
+test('#966 r3 · dos tags en el mismo mensaje: ninguno llega al LLM y se atribuye el primero', async () => {
+  const { deps, r } = arnes();
+  const otro = '00000000-0000-4000-8000-000000000000';
+  deps.parseInbound = () => ({ ok: true, from: FROM, text: `Hola [Ref:${UUID}] [Ref:${otro}]`, msgId: 'wamid.966.10', type: 'text' });
+  await conFetchFalso(() => handleWebhook({ body: {} }, makeRes(), deps), r.fetches); await tick(); await tick();
+  assert.equal(r.turnos[0].userText, 'Hola'); assert.equal(deps.conv.get(FROM).state.landing_lead_id, UUID);
+  assert.ok(!String(r.conversationEvents.find((e) => e.direction === 'inbound').body).includes('[Ref:'));
+});
+
+test('#966 r3 · el system prompt sabe qué hacer con el marcador del botón sin frase (REGLA #33) — la instrucción vive ahí, no en el historial', () => {
+  const p = buildSystemBlocks();
+  assert.ok(p.includes(BODY_SOLO_REF), 'el marcador exacto está en el prompt'); assert.match(p, /REGLA #33/); assert.match(p, /Nunca cite ni repita/);
 });

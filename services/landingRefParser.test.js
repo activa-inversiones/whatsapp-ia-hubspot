@@ -10,7 +10,7 @@ import { parseLandingRef, clasificarPrimerMensaje, esTextoDeLanding, tieneTagRot
 const UUID = '3fbf86b0-1234-4abc-9def-0123456789ab';
 
 test('#966 · parseLandingRef: acepta el tag completo en cualquier posición y con mayúsculas; rechaza lo mutilado', () => {
-  assert.equal(VERSION, '1.1.0');
+  assert.equal(VERSION, '1.2.0');
   assert.deepEqual(parseLandingRef(`Hola, vi su web y quiero cotizar ventanas pvc en Temuco [Ref:${UUID}]`), { hasRef: true, leadId: UUID, cleanText: 'Hola, vi su web y quiero cotizar ventanas pvc en Temuco' });
   assert.deepEqual(parseLandingRef(`[REF:${UUID.toUpperCase()}] hola`), { hasRef: true, leadId: UUID, cleanText: 'hola' }, 'insensible a mayúsculas, uuid en minúsculas');
   assert.deepEqual(parseLandingRef(` [Ref:${UUID}]`), { hasRef: true, leadId: UUID, cleanText: '' }, 'botón sin frase: solo el tag ⇒ texto vacío');
@@ -46,11 +46,27 @@ test('#966 · quoteStartedEventId: uuid válido, determinístico por lead, disti
   assert.ok(!a.startsWith('oliver_wa_'), 'el prefijo de texto que reventaba el cast quedó atrás');
 });
 
-test('#966 · TEXTO_SOLO_REF es una instrucción no vacía y buildLandingLeadPayload lleva landing_ref y ref_status', () => {
-  assert.ok(TEXTO_SOLO_REF.length > 40 && /salúdelo/i.test(TEXTO_SOLO_REF));
+test('#966 · el marcador del botón sin frase es NEUTRO (no una instrucción) y buildLandingLeadPayload lleva landing_ref y ref_status', () => {
+  // [r3 · Codex A + Gemini A] la instrucción en tercera persona quedaba en el historial con rol user y el LLM podía citarla
+  assert.equal(TEXTO_SOLO_REF, BODY_SOLO_REF, 'el LLM y el operador ven el MISMO marcador'); assert.ok(BODY_SOLO_REF.startsWith('[') && BODY_SOLO_REF.endsWith(']')); assert.doesNotMatch(BODY_SOLO_REF, /salúdelo|pregúntele/i, 'sin instrucción adentro: la instrucción vive en el system prompt (REGLA #33)');
   const p = buildLandingLeadPayload('56911112222', { lead_id: UUID, gclid: 'g1', landing_slug: 'ventanas-pvc-temuco' }, { name: 'Ana', ref_status: 'solo_ref' });
   assert.equal(p.landing_ref, UUID, 'landing_ref en la raíz: sales-os lo persiste en leads.landing_ref');
   assert.equal(p.metadata.landing_ref, UUID); assert.equal(p.metadata.ref_status, 'solo_ref'); assert.equal(p.ad_click_id_source, 'landing_ref'); assert.equal(p.gclid, 'g1'); assert.equal(p.name, 'Ana');
   const sinClick = buildLandingLeadPayload('56911112222', { lead_id: UUID }, {});
   assert.equal(sinClick.ad_click_id_source, undefined, 'sin click-id no se marca landing_ref como fuente de click-id'); assert.equal(sinClick.metadata.ref_status, undefined);
+});
+
+test('#966 r3 · varios tags en un mensaje (Gemini A): se quitan TODOS los sanos, se atribuye el primero, y el roto se limpia aunque haya uno sano', () => {
+  const otro = '00000000-0000-4000-8000-000000000000';
+  const dos = parseLandingRef(`Hola [Ref:${UUID}] y también [Ref:${otro}] gracias`);
+  assert.deepEqual(dos, { hasRef: true, leadId: UUID, cleanText: 'Hola y también gracias' }, 'antes el segundo tag viajaba crudo al LLM y al operador');
+  const mixto = `Hola [Ref:${UUID}] [Ref:${otro.slice(0, 20)}`;
+  assert.equal(tieneTagRoto(mixto), true, 'antes: con un tag sano presente, el roto no se detectaba');
+  assert.equal(limpiarTagRoto(mixto), `Hola [Ref:${UUID}]`, 'se va el roto, queda el sano para que parseLandingRef lo capture');
+  assert.deepEqual(parseLandingRef(limpiarTagRoto(mixto)), { hasRef: true, leadId: UUID, cleanText: 'Hola' });
+  assert.equal(clasificarPrimerMensaje(mixto), 'con_ref', 'con un uuid sano la clase es con_ref aunque venga basura al lado');
+  assert.equal(limpiarTagRoto('Hola, vi su web y quiero cotizar'), 'Hola, vi su web y quiero cotizar', 'sin tags no toca nada');
+  assert.equal(tieneTagRoto('[ref: mi casa] tiene 3 ventanas'), false, '[r3 · NIM] un corchete con texto del cliente no es un tag roto (se exigen 4 hex tras «ref:»)');
+  assert.equal(limpiarTagRoto('[ref: mi casa] tiene 3 ventanas'), '[ref: mi casa] tiene 3 ventanas');
+  assert.equal(limpiarTagRoto(`a\u0000b [Ref:${UUID.slice(0, 20)}`), 'ab', 'un NUL en el texto no se confunde con el placeholder interno');
 });

@@ -30,17 +30,24 @@
 // ═══════════════════════════════════════════════════════════════════════
 import crypto from 'node:crypto';
 
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 
 const REF_RE = /\s*\[Ref:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\]\s*/i;
+// [r3 · Gemini A] versión GLOBAL: un cliente que pega dos tags («[Ref:a] [Ref:b]») antes dejaba el segundo crudo al LLM.
+const REF_RE_G = new RegExp(REF_RE.source, 'gi');
 // Un tag que el cliente mutiló al editar (falta el ']', metió texto adentro, borró un carácter):
 // no se puede capturar con seguridad, pero SÍ se puede contar y quitar del texto.
-export const TAG_ROTO_RE = /\[\s*ref\s*:[^\]]{0,80}(\]|$)/i;
+export const TAG_ROTO_RE = /\[\s*ref\s*:\s*[0-9a-f]{4}[^\]]{0,76}(\]|$)/i;   // [r3 · NIM] exige 4 hex tras «ref:»: «[ref: mi casa]» ya no cuenta como tag roto
+const TAG_ROTO_RE_G = new RegExp(TAG_ROTO_RE.source, 'gi');
 // Las frases prellenadas de los botones (landing V3 «Hola Activa, quiero cotizar…», WordPress
 // «Hola, vi su web y quiero cotizar…», y la variante «Hola, necesito cotizar…» vista 11 veces en BD).
 export const FRASE_LANDING_RE = /^\s*[¡!]?\s*hola(\s+activa)?[\s,!.]*(vi\s+su\s+web\s+y\s+)?(quiero|necesito)\s+cotizar/i;
-// Instrucción para el LLM cuando el único texto era el tag (el cliente tocó un botón sin frase).
-export const TEXTO_SOLO_REF = 'El cliente abrió el chat desde la web sin escribir texto. Salúdelo de forma amable y pregúntele qué necesita cotizar (tipo de ventana, medidas, comuna).';
+// [r3 · Codex A + Gemini A] Cuando el único texto era el tag (botón sin frase), el LLM recibe ESTE MARCADOR NEUTRO —el mismo que ve
+// el operador— y no una instrucción en tercera persona con rol `user`: la instrucción quedaba en el historial y el modelo podía
+// citarla («¿qué fue lo primero que te escribí?»). Qué hacer con el marcador vive en el system prompt (REGLA #33), como los
+// marcadores de imagen. `TEXTO_SOLO_REF` se conserva como alias por compatibilidad: es el MISMO string.
+export const BODY_SOLO_REF = '[El cliente abrió el chat desde la web sin escribir texto]';
+export const TEXTO_SOLO_REF = BODY_SOLO_REF;
 
 /**
  * Extrae el lead_id (uuid) del texto si viene con [Ref:...].
@@ -51,7 +58,8 @@ export function parseLandingRef(text) {
   const t = String(text || '');
   const m = t.match(REF_RE);
   if (!m) return { hasRef: false, leadId: null, cleanText: t };
-  return { hasRef: true, leadId: m[1].toLowerCase(), cleanText: t.replace(REF_RE, ' ').replace(/\s{2,}/g, ' ').trim() };
+  // El PRIMER uuid es el que se atribuye; TODOS los tags sanos se quitan del texto (r3: antes solo el primero).
+  return { hasRef: true, leadId: m[1].toLowerCase(), cleanText: t.replace(REF_RE_G, ' ').replace(/\s{2,}/g, ' ').trim() };
 }
 
 /** ¿El texto es una de las frases prellenadas de los botones de la web? */
@@ -61,17 +69,18 @@ export function esTextoDeLanding(text) {
 
 /** ¿Trae un tag [Ref:…] que el regex estricto no acepta (mutilado por el cliente)? */
 export function tieneTagRoto(text) {
-  const t = String(text || '');
-  return !REF_RE.test(t) && TAG_ROTO_RE.test(t);
+  // [r3 · Gemini A] se evalúa sobre el texto SIN los tags sanos: «[Ref:uuid] [Ref:roto» antes devolvía false y el roto se colaba.
+  return TAG_ROTO_RE.test(String(text || '').replace(REF_RE_G, ' '));
 }
 
-/** Quita un tag mutilado del texto (no se captura, pero tampoco tiene que llegar al LLM ni al operador). */
+/** Quita los tags mutilados del texto (no se capturan, pero tampoco tienen que llegar al LLM ni al operador). Los sanos quedan. */
 export function limpiarTagRoto(text) {
-  const t = String(text || '');
+  const t = String(text || '').replace(/\u0000/g, '');   // [r3 · NIM] el placeholder de abajo no puede confundirse con texto del cliente
   if (!tieneTagRoto(t)) return t;
-  return t.replace(TAG_ROTO_RE, ' ').replace(/\s{2,}/g, ' ').trim();
+  const sanos = [];
+  const protegido = t.replace(REF_RE_G, (m) => { sanos.push(m); return `\u0000${sanos.length - 1}\u0000`; });
+  return protegido.replace(TAG_ROTO_RE_G, ' ').replace(/\u0000(\d+)\u0000/g, (_, i) => sanos[Number(i)]).replace(/\s{2,}/g, ' ').trim();
 }
-export const BODY_SOLO_REF = '[El cliente abrió el chat desde la web sin escribir texto]';   // lo que ve el operador en el cockpit (NO la instrucción al LLM)
 export const INACTIVIDAD_RECLASIFICAR_MS = 7 * 24 * 60 * 60 * 1000;   // mismo umbral que resetIfInactive: tras 7 días es una llegada nueva
 
 /**

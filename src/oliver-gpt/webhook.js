@@ -162,7 +162,49 @@ import {
 } from './session-store.js';
 import { parseReferral, buildCtwaLeadPayload } from '../../services/ctwaReferral.js'; // [F3b] CTWA
 import { saludoForReferral } from '../../services/ctwaSaludos.js'; // [2026-07-18] saludo por ángulo Ronda 1
-import { parseLandingRef, buildLandingLeadPayload, clasificarPrimerMensaje, quoteStartedEventId, limpiarTagRoto, TEXTO_SOLO_REF, BODY_SOLO_REF, INACTIVIDAD_RECLASIFICAR_MS } from '../../services/landingRefParser.js'; // [2026-07-02] atribución orgánica landing→WA
+import { parseLandingRef, buildLandingLeadPayload, clasificarPrimerMensaje, quoteStartedEventId, limpiarTagRoto, BODY_SOLO_REF, INACTIVIDAD_RECLASIFICAR_MS } from '../../services/landingRefParser.js'; // [2026-07-02] atribución orgánica landing→WA
+
+/**
+ * [#966 r3 · Codex A] La atribución de una referencia de landing, en UN solo lugar para los dos caminos (turno normal y takeover
+ * humano — antes el takeover salía por su `return` sin capturar: un cliente que tocaba el botón de la web mientras un humano
+ * atendía perdía la referencia y el gclid para siempre).
+ *   1) GET /api/lead-event/ref/:uuid (contexto: slug/servicio/comuna/click-ids) → `alContexto(ctx)` para que el turno copie al state;
+ *   2) POST quote_started al collector (event_id uuid determinístico, CON x-api-key: el collector ya no acepta eventos de servidor
+ *      anónimos — Codex B) y lead en sales-os con source=landing_organic. La ingesta es fire-and-forget (`ingesta` se devuelve para
+ *      quien necesite esperarla con tope, como el takeover) y fail-safe.
+ */
+export async function atribuirLandingRef({ from, leadId, refStatus = null, name = '', deps = {}, alContexto = null, log = () => {}, safe = (n, fn) => fn() }) {
+  const _bridge = deps.bridge || realBridge;
+  const _cxmBase = (process.env.UNIFIED_CXM_BASE_URL || 'https://unified-cxm-ads-flow-production.up.railway.app').replace(/\/$/, '');
+  const _apiKey = process.env.DASHBOARD_API_KEY || process.env.UNIFIED_CXM_DASHBOARD_API_KEY || '';
+  let ctx = { lead_id: leadId };
+  if (_apiKey) {
+    try {
+      const r = await fetch(`${_cxmBase}/api/lead-event/ref/${encodeURIComponent(leadId)}`, { headers: { 'x-api-key': _apiKey }, signal: AbortSignal.timeout(4000) });
+      if (r.ok) { const j = await r.json(); if (j?.lead || j?.ok) ctx = { ...ctx, ...(j.lead || j) }; }
+    } catch (e) { log('error', 'landing_ref.fetch', e); }
+  }
+  if (typeof alContexto === 'function') alContexto(ctx);
+  const ingesta = safe('landing_ref.ingest', async () => {
+    try {
+      await fetch(`${_cxmBase}/api/lead-event`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...(_apiKey ? { 'x-api-key': _apiKey } : {}) },
+        body: JSON.stringify({
+          lead_id: leadId, event_name: 'quote_started',
+          // [#966] uuid DETERMINÍSTICO: landing_events.event_id es tipo uuid y el texto 'oliver_wa_…' reventaba el INSERT
+          // (0 filas quote_started en toda la historia; leads_count por landing = 0 desde julio).
+          event_id: (deps.quoteStartedEventId || quoteStartedEventId)(leadId), fuente: 'oliver',
+          landing_slug: ctx.landing_slug || null,
+          landing_servicio: ctx.service || ctx.landing_servicio || null,
+          landing_comuna: ctx.comuna || ctx.landing_comuna || null,
+        }),
+        signal: AbortSignal.timeout(4000),
+      });
+    } catch (e) { log('error', 'landing_ref.event', e); }
+    await _bridge.pushLeadEvent((deps.buildLandingLeadPayload || buildLandingLeadPayload)(from, ctx, { name, ref_status: refStatus }));
+  });
+  return { ctx, ingesta };
+}
 import { isVisionUnreadable } from '../../services/oliverVision.js'; // [F3b] detector imagen ilegible
 import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from './escalation.js'; // [2026-06-18] escalación determinista compartida
 import { agregarCotizacionDelTurno, tieneMontoUtil } from './cotizacionDelTurno.js'; // [2026-09-15 tridente] contrato total_neto + agrega TODO el turno
@@ -1242,6 +1284,9 @@ export async function handleWebhook(req, res, deps = {}) {
         (effectiveControl.operator_status && effectiveControl.operator_status !== 'ai'));
 
     if (aiPaused) {
+      // [#966 r3] El texto del cliente se limpia UNA vez (tag roto fuera, tags sanos parseados) para el espejo y la captura de abajo.
+      const _textoTakeoverOriginal = inbound.text || '';
+      const _lrefTakeover = (deps.parseLandingRef || parseLandingRef)(limpiarTagRoto(_textoTakeoverOriginal));
       // Persistir el inbound para que el operador humano lo vea, y salir SIN
       // invocar a la IA (respetamos el takeover).
       await safe('control.persistInbound', () =>
@@ -1252,12 +1297,24 @@ export async function handleWebhook(req, res, deps = {}) {
           actor_type: 'customer',
           actor_name: 'Cliente',
           message_type: inbound.type || 'text',
-          // [#966] el tag [Ref:…] no se espeja crudo al operador/cockpit ni en takeover (3 casos/60 d); la captura en takeover
-          // queda como pendiente aparte (#969): acá solo se limpia y se anota que venía.
-          body: (deps.parseLandingRef || parseLandingRef)(inbound.text || '').cleanText,
-          metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, ai_paused: true, ...((deps.parseLandingRef || parseLandingRef)(inbound.text || '').hasRef ? { landing_ref_visible: true } : {}) },
+          // [#966] el tag [Ref:…] no se espeja crudo al operador/cockpit ni en takeover (3 casos/60 d). [r3 · Codex A] tampoco el
+          // tag MUTILADO, y si el mensaje era SOLO el tag el operador ve el marcador neutro, no un cuerpo vacío.
+          body: _lrefTakeover.cleanText || (_lrefTakeover.hasRef ? BODY_SOLO_REF : ''),
+          metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, ai_paused: true, ...(_lrefTakeover.hasRef ? { landing_ref_visible: true, landing_lead_id: _lrefTakeover.leadId } : {}) },
         })
       );
+      // [#966 r3 · Codex A · cierra #969] CAPTURAR la referencia TAMBIÉN en takeover: antes este `return` salía antes del bloque (4c)
+      // y un cliente que tocaba el botón de la web mientras un humano atendía perdía la referencia y el gclid para siempre. Mismo
+      // contrato que el ctwaCapture de abajo: solo ingesta (quote_started + lead con landing_ref, COALESCE en sales-os); NO toca la
+      // sesión ni invoca la IA. Con await y tope de 5 s (los retries del bridge no retienen el lock del teléfono).
+      if (_lrefTakeover.hasRef) {
+        const _capRef = safe('control.landingRefCapture', async () => {
+          const { ingesta } = await atribuirLandingRef({ from, leadId: _lrefTakeover.leadId, refStatus: (deps.clasificarPrimerMensaje || clasificarPrimerMensaje)(_textoTakeoverOriginal), deps, log, safe });
+          await ingesta;
+        });
+        let _capRefTimer = null;
+        await Promise.race([_capRef, new Promise((resolve) => { _capRefTimer = setTimeout(resolve, 5000); })]).finally(() => { if (_capRefTimer) clearTimeout(_capRefTimer); });
+      }
       // [FIX 2026-06-25 MEDIA-PAUSE] Capturar TAMBIÉN el adjunto cuando la IA está pausada (takeover humano).
       // BUG: este return salía ANTES de resolveUserText (↓ línea ~569) → downloadWaMedia + saveMedia NUNCA
       // corrían → el archivo del cliente se PERDÍA justo cuando un humano atiende (caso Nicolle: documento
@@ -1477,7 +1534,7 @@ export async function handleWebhook(req, res, deps = {}) {
         inbound.text = _lrefTurno.cleanText;
         // (c) Botón SIN frase (nav/menú móvil mandan solo ' [Ref:uuid]'): al quitar el tag el texto quedaba vacío y el turno
         // terminaba en el `return` mudo de (5) — 15-20 clientes/60 d sin respuesta. Oliver ahora los saluda.
-        if (!inbound.text) { inbound.text = TEXTO_SOLO_REF; state.ref_solo_tag = true; }
+        if (!inbound.text) { inbound.text = BODY_SOLO_REF; state.ref_solo_tag = true; }   // [r3] marcador neutro (REGLA #33), no una instrucción
         if (state.landingRefCaptured && state.landing_lead_id && _lrefTurno.leadId !== state.landing_lead_id) {
           // Un uuid DISTINTO al ya capturado: el cliente volvió por otra visita (¿otro anuncio?). Re-atribuir es decidir a qué
           // clic se le carga la cotización = carril plata (tablero #966/B). Se registra, no se cambia.
@@ -1487,50 +1544,14 @@ export async function handleWebhook(req, res, deps = {}) {
       }
       if (_lrefTurno.hasRef && !state.landingRefCaptured) {
         const _lref = _lrefTurno;
-        {
-          state.landingRefCaptured = true;
-          state.landing_lead_id = _lref.leadId;
-          const _bridge = deps.bridge || realBridge;
-          const _cxmBase = (process.env.UNIFIED_CXM_BASE_URL || 'https://unified-cxm-ads-flow-production.up.railway.app').replace(/\/$/, '');
-          const _apiKey = process.env.DASHBOARD_API_KEY || process.env.UNIFIED_CXM_DASHBOARD_API_KEY || '';
-          landingAttributionReady = safe('landing_ref.context', async () => {
-            // 1) contexto de la landing (slug/servicio/comuna) desde el collector del CXM
-            let ctx = { lead_id: _lref.leadId };
-            if (_apiKey) {
-              try {
-                const r = await fetch(`${_cxmBase}/api/lead-event/ref/${encodeURIComponent(_lref.leadId)}`, {
-                  headers: { 'x-api-key': _apiKey }, signal: AbortSignal.timeout(4000),
-                });
-                if (r.ok) { const j = await r.json(); if (j?.lead || j?.ok) ctx = { ...ctx, ...(j.lead || j) }; }
-              } catch (e) { log('error', 'landing_ref.fetch', e); }
-            }
-            copyAttributionState(state, ctx);
-            safe('landing_ref.ingest', async () => {
-              // 2) evento quote_started en landing_events (mismo collector público del beacon):
-              //    "el lead ESCRIBIÓ a Oliver desde esta landing" — cierra leads_count por slug.
-              try {
-                await fetch(`${_cxmBase}/api/lead-event`, {
-                  method: 'POST', headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    lead_id: _lref.leadId, event_name: 'quote_started',
-                    // [#966] uuid DETERMINÍSTICO: landing_events.event_id es tipo uuid y el texto 'oliver_wa_…' reventaba el INSERT
-                    // (0 filas quote_started en toda la historia; leads_count por landing = 0 desde julio).
-                    event_id: (deps.quoteStartedEventId || quoteStartedEventId)(_lref.leadId), fuente: 'oliver',
-                    landing_slug: ctx.landing_slug || null,
-                    landing_servicio: ctx.service || ctx.landing_servicio || null,
-                    landing_comuna: ctx.comuna || ctx.landing_comuna || null,
-                  }),
-                  signal: AbortSignal.timeout(4000),
-                });
-              } catch (e) { log('error', 'landing_ref.event', e); }
-              // 3) lead en sales-os con source=landing_organic (mismo bridge probado del CTWA)
-              await _bridge.pushLeadEvent(
-                (deps.buildLandingLeadPayload || buildLandingLeadPayload)(from, ctx, { name: state.name || '', ref_status: state.ref_status || null })
-              );
-            });
-          });
-          log('info', 'landing_ref_attribution', `Lead ORGÁNICO capturado tel=${from} lead_id=${_lref.leadId}`);
-        }
+        state.landingRefCaptured = true;
+        state.landing_lead_id = _lref.leadId;
+        // [r3] la misma atribución que usa el takeover (atribuirLandingRef, arriba): contexto → state; quote_started + lead, fire-and-forget.
+        landingAttributionReady = safe('landing_ref.context', () => atribuirLandingRef({
+          from, leadId: _lref.leadId, refStatus: state.ref_status || null, name: state.name || '', deps, log, safe,
+          alContexto: (ctx) => copyAttributionState(state, ctx),
+        }));
+        log('info', 'landing_ref_attribution', `Lead ORGÁNICO capturado tel=…${String(from).slice(-4)} lead_id=${_lref.leadId}`);   // [r3 · Codex A] sin teléfono completo
       }
     } catch (e) {
       log('error', 'landing_ref.capture', e);
@@ -5472,7 +5493,7 @@ Comuna: ${datos.comuna}`
         message_type: inbound.type || 'text',
         // [#966 r2] si el cliente mandó SOLO el código, lo que se persiste es un marcador neutro: la instrucción al LLM
         // (TEXTO_SOLO_REF) no es un mensaje del cliente y no puede aparecer como tal en el cockpit (NIM, 27-sep).
-        body: inbound.text === TEXTO_SOLO_REF ? BODY_SOLO_REF : (inbound.text || userText),
+        body: inbound.text || userText,   // [#966 r3] si era solo el tag, inbound.text ya es el marcador neutro BODY_SOLO_REF
         // [2026-08-08] enviado_at = hora REAL en que el cliente escribió, según Meta.
         // `created_at` es cuándo guardamos la fila, y el inbound y el outbound del mismo
         // turno se persisten juntos (~50 ms) ⇒ medir la respuesta con created_at daba
@@ -5480,7 +5501,7 @@ Comuna: ${datos.comuna}`
         metadata: {
           source: 'oliver_gpt_webhook',
           msg_id: msgId,
-          resolved_text: userText === TEXTO_SOLO_REF ? BODY_SOLO_REF : userText,
+          resolved_text: userText,
           ...(inbound.enviadoAt ? { enviado_at: inbound.enviadoAt } : {}),
           // [#966] la VERDAD de la referencia, sin regex sobre el texto (que viaja limpio): sales-os la persiste por conversación
           ref_status: state.ref_status || null,
