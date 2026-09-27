@@ -86,4 +86,9 @@ test('#966 r3 · varios tags en un mensaje (Gemini A): se quitan TODOS los sanos
   assert.equal(limpiarTagRoto('Hola [Ref:3fbf86b0-1234 4abc-9def-0123456789ab gracias'), 'Hola gracias', 'antes quedaba «4abc-9def-0123456789ab» crudo');
   assert.equal(limpiarTagRoto('Hola [Ref:3fbf86b0-1234 4abc 9def-0123456789ab'), 'Hola');
   assert.equal(clasificarPrimerMensaje('Hola [Ref:3fbf86b0-1234 4abc-9def-0123456789ab gracias'), 'ref_mutilada');
+  // [r6 · Codex A cierre] palabras hechas solo de letras a-f NO son fragmentos: un fragmento arrastrado necesita un dígito o un guion
+  assert.equal(limpiarTagRoto('[Ref:3fbf86b0-1234 cada ventana mide distinto'), 'cada ventana mide distinto', '«cada» se queda');
+  assert.equal(limpiarTagRoto('[Ref:3fbf86b0-1234 debe caber la face'), 'debe caber la face');
+  assert.equal(limpiarTagRoto('[Ref:3fbf86b0-1234 dead-beef sigue'), 'sigue', 'con guion sí es fragmento');
+  assert.equal(limpiarTagRoto(`[Ref:3fbf86b0 ${'a1'.repeat(18)} fin`), 'fin', 'fragmento de 36 exactos (borde) se arrastra'); assert.equal(limpiarTagRoto(`[Ref:3fbf86b0 ${'a1'.repeat(18)}c fin`), `${'a1'.repeat(18)}c fin`, 'de 37 ya no');
 });
