@@ -149,6 +149,8 @@ async function safe(label, fn) {
 const ATTRIBUTION_STATE_KEYS = [
   'ctwa_clid', 'ad_id', 'gclid', 'fbclid', 'ttclid',
   'landing_lead_id', 'landingRefCaptured', 'ctwaCaptured',
+  // [#966 2026-09-27] estado de la referencia de landing (medición): sobrevive los merges del turno y la persistencia
+  'ref_status', 'ref_status_at', 'ref_solo_tag', 'landing_ref_otro_uuid',
 ];
 
 function copyAttributionState(target, source) {
