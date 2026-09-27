@@ -40,9 +40,13 @@ const REF_RE_G = new RegExp(REF_RE.source, 'gi');
 // Dos formas: con corchete inicial («[Ref:3fbf…» mutilado al final o con texto adentro) o SIN él («Ref:3fbf86b0-1234-…», el cliente
 // borró el «[»: uno de los 5 casos medidos — r4 · Codex A). La segunda exige ≥4 hex y un guion, sin espacios, para no comerse
 // un «ref: 1234» legítimo. [r3 · NIM] la primera exige 4 hex tras «ref:»: «[ref: mi casa]» no cuenta como tag roto.
-// Tres alternativas: cerrado con «]» (puede traer espacios adentro: «Balor venta») · abierto sin «]» (se corta en el primer espacio para
-// no comerse el texto que sigue) · sin «[» (uuid con guion, sin espacios).
-export const TAG_ROTO_RE = /\[\s*ref\s*:\s*[0-9a-f]{4}[^\]]{0,76}\]|\[\s*ref\s*:\s*[0-9a-f]{4}[^\]\s]{0,76}(?=\s|$)|(?:^|(?<=\s))ref\s*:\s*[0-9a-f]{4,8}-[0-9a-f-]{0,31}\]?/i;
+// Tres alternativas (r5, ronda 3 de la compuerta):
+//   1) cerrado con «]» (puede traer espacios adentro: «Balor venta»);
+//   2) abierto sin «]»: el primer token sin espacios y, detrás, los fragmentos que siguen siendo hex/guion («[Ref:3fbf86b0-1234 4abc-9def-…»
+//      con un espacio en vez de guion): se corta en la primera palabra que no es hex, así no se come el texto del cliente;
+//   3) sin «[»: exige el PREFIJO CANÓNICO del uuid (8-4-4 hex) — «ref: cafe-3», «ref:abcd-1234», «ref: d101-b» son texto legítimo
+//      (Codex A + Gemini A, ronda 3) y ya no se tocan; un uuid mutilado que solo perdió el «[» sí.
+export const TAG_ROTO_RE = /\[\s*ref\s*:\s*[0-9a-f]{4}[^\]]{0,76}\]|\[\s*ref\s*:\s*[0-9a-f]{4}[^\]\s]{0,76}(?:\s+[0-9a-f-]{4,36})*(?=\s|$)|(?:^|(?<=\s))ref\s*:\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}[0-9a-f-]{0,23}\]?/i;
 const TAG_ROTO_RE_G = new RegExp(TAG_ROTO_RE.source, 'gi');
 // Las frases prellenadas de los botones (landing V3 «Hola Activa, quiero cotizar…», WordPress
 // «Hola, vi su web y quiero cotizar…», y la variante «Hola, necesito cotizar…» vista 11 veces en BD).

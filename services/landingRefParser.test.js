@@ -77,4 +77,13 @@ test('#966 r3 · varios tags en un mensaje (Gemini A): se quitan TODOS los sanos
   }
   assert.equal(limpiarTagRoto('Hola, ref: 1234 es mi número de orden'), 'Hola, ref: 1234 es mi número de orden', 'sin guion no es un uuid mutilado: no se toca');
   assert.equal(limpiarTagRoto('prefref:abcd-12 x'), 'prefref:abcd-12 x', 'la forma sin corchete exige inicio de palabra');
+  // [r5 · Codex A + Gemini A ronda 3] texto legítimo chileno con «ref» + hex + guion NO se toca: la forma sin «[» exige el prefijo 8-4-4 del uuid
+  for (const legit of ['Hola, la casa es de color ref: cafe-3', 'Transferí con ref:abcd-1234', 'Código ref: face-2 de la campaña', 'la ref: d101-b es el depto', 'Mi referencia es ref:cafe-2026, ¿la revisan?']) {
+    assert.equal(tieneTagRoto(legit), false, `no es tag roto: ${legit}`); assert.equal(limpiarTagRoto(legit), legit); assert.equal(clasificarPrimerMensaje(legit), 'otro_texto');
+  }
+  assert.equal(limpiarTagRoto(`Hola Ref:${UUID.slice(0, 30)} gracias`), 'Hola gracias', 'un uuid mutilado que solo perdió el «[» (prefijo 8-4-4 intacto) sí se limpia');
+  // [r5] abierto sin «]» Y con un espacio en vez de guion: arrastra los fragmentos hex que siguen y se corta en la primera palabra real
+  assert.equal(limpiarTagRoto('Hola [Ref:3fbf86b0-1234 4abc-9def-0123456789ab gracias'), 'Hola gracias', 'antes quedaba «4abc-9def-0123456789ab» crudo');
+  assert.equal(limpiarTagRoto('Hola [Ref:3fbf86b0-1234 4abc 9def-0123456789ab'), 'Hola');
+  assert.equal(clasificarPrimerMensaje('Hola [Ref:3fbf86b0-1234 4abc-9def-0123456789ab gracias'), 'ref_mutilada');
 });

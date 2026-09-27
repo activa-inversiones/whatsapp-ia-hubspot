@@ -173,6 +173,13 @@ import { parseLandingRef, buildLandingLeadPayload, clasificarPrimerMensaje, quot
  *      anónimos — Codex B) y lead en sales-os con source=landing_organic. La ingesta es fire-and-forget (`ingesta` se devuelve para
  *      quien necesite esperarla con tope, como el takeover) y fail-safe.
  */
+/** Tope de la captura en takeover: 5 s por defecto; inyectable para tests; finito y acotado a [50 ms, 30 s] (Codex A ronda 3: Infinity pasaba). */
+export const LANDING_REF_CAPTURE_TIMEOUT_MS = 5000;
+export function topeCapturaLandingRef(deps = {}) {
+  const v = Number(deps?.landingRefCaptureTimeoutMs);
+  if (!Number.isFinite(v) || v <= 0) return LANDING_REF_CAPTURE_TIMEOUT_MS;
+  return Math.min(30000, Math.max(50, v));
+}
 export async function atribuirLandingRef({ from, leadId, refStatus = null, name = '', deps = {}, alContexto = null, log = () => {}, safe = (n, fn) => fn() }) {
   const _bridge = deps.bridge || realBridge;
   const _cxmBase = (process.env.UNIFIED_CXM_BASE_URL || 'https://unified-cxm-ads-flow-production.up.railway.app').replace(/\/$/, '');
@@ -1314,7 +1321,7 @@ export async function handleWebhook(req, res, deps = {}) {
         });
         let _capRefTimer = null;
         // [r4 · Codex A ronda 2] el tope es inyectable (deps.landingRefCaptureTimeoutMs) para poder probar el CXM/bridge colgado; 5 s en prod.
-        await Promise.race([_capRef, new Promise((resolve) => { _capRefTimer = setTimeout(resolve, Number(deps.landingRefCaptureTimeoutMs) > 0 ? Number(deps.landingRefCaptureTimeoutMs) : 5000); })]).finally(() => { if (_capRefTimer) clearTimeout(_capRefTimer); });
+        await Promise.race([_capRef, new Promise((resolve) => { _capRefTimer = setTimeout(resolve, topeCapturaLandingRef(deps)); })]).finally(() => { if (_capRefTimer) clearTimeout(_capRefTimer); });
       }
       // [FIX 2026-06-25 MEDIA-PAUSE] Capturar TAMBIÉN el adjunto cuando la IA está pausada (takeover humano).
       // BUG: este return salía ANTES de resolveUserText (↓ línea ~569) → downloadWaMedia + saveMedia NUNCA

@@ -7,7 +7,7 @@
 //  5. en takeover humano el tag no se espeja crudo al operador.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { handleWebhook } from './webhook.js';
+import { handleWebhook, topeCapturaLandingRef, LANDING_REF_CAPTURE_TIMEOUT_MS } from './webhook.js';
 import { BODY_SOLO_REF, quoteStartedEventId } from '../../services/landingRefParser.js';
 import { buildSystemBlocks } from './system-prompt.js';
 
@@ -223,4 +223,12 @@ test('#966 r4 · takeover con el CXM/bridge COLGADO: el turno termina igual (top
   assert.equal(r.conversationEvents.filter((e) => e.direction === 'inbound').length, 1, 'el operador ya ve el mensaje');
   assert.ok(r.fetches.some((f) => f.method === 'POST' && f.url.endsWith('/api/lead-event')), 'quote_started salió antes del bridge colgado');
   if (resolverLead) resolverLead({ ok: true });
+});
+
+test('#966 r5 · el tope de la captura en takeover: 5 s por defecto en producción, inyectable en tests, finito y acotado (Codex A ronda 3: la mutación 5000→50000 sobrevivía)', () => {
+  assert.equal(LANDING_REF_CAPTURE_TIMEOUT_MS, 5000, 'el valor de producción: los retries del bridge no pueden retener el lock del teléfono más que esto');
+  assert.equal(topeCapturaLandingRef({}), 5000); assert.equal(topeCapturaLandingRef(undefined), 5000); assert.equal(topeCapturaLandingRef({ landingRefCaptureTimeoutMs: undefined }), 5000);
+  assert.equal(topeCapturaLandingRef({ landingRefCaptureTimeoutMs: 60 }), 60, 'inyectable (tests)');
+  for (const malo of [0, -1, NaN, Infinity, 'lento', null]) assert.equal(topeCapturaLandingRef({ landingRefCaptureTimeoutMs: malo }), 5000, `inválido ⇒ default: ${String(malo)}`);
+  assert.equal(topeCapturaLandingRef({ landingRefCaptureTimeoutMs: 999999 }), 30000, 'cota superior'); assert.equal(topeCapturaLandingRef({ landingRefCaptureTimeoutMs: 1 }), 50, 'cota inferior');
 });
