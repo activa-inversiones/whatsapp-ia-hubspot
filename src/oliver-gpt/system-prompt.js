@@ -1111,7 +1111,7 @@ export function buildSystemBlocks() {
  * @param {object} [state]
  * @returns {string}
  */
-import { TEXTO_MODO_INTERNO } from '../../services/internosEquipo.js'; // [#1059 b]
+import { TEXTO_MODO_INTERNO, TEXTO_SIN_CLIENTE_INTERNO } from '../../services/internosEquipo.js'; // [#1059 b]
 
 export function buildSessionContext(state = {}) {
   const s = state || {};
@@ -1177,6 +1177,8 @@ export function buildSessionContext(state = {}) {
   // Lo decide el webhook en cada turno (state.modo_interno), nunca el texto del mensaje.
   if (s.modo_interno === true) {
     lineas.push(TEXTO_MODO_INTERNO);
+    // [2026-09-30] Sin cliente fijado, la cotización quedaría a nombre del vendedor.
+    if (s.modo_interno_sin_cliente === true) lineas.push(TEXTO_SIN_CLIENTE_INTERNO);
   }
 
   // Va DESPUÉS de los datos y con el mayor énfasis del bloque: si el cliente ya

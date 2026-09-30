@@ -40,6 +40,8 @@ import {
   limpiar as limpiarAtribucion,
   registrarQueNosEscribio,
   normalizar as normalizarTel,
+  identidadCotizacion,          // [2026-09-30] vendedores del equipo cotizan a nombre del cliente
+  aislarSesionPorCliente,
 } from '../../services/atribucionCotizacion.js';
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
 import { leer as leerEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado } from '../../services/estadoPersistente.js';
@@ -223,7 +225,7 @@ import {
 } from '../../services/avisoCerebroRespaldo.js';
 import { pidioDeNuevo } from '../../services/pidioDeNuevo.js';
 import { clavePendiente, decidirConciliacion, mensajeConciliado } from '../../services/conciliacionDudosa.js'; // [2026-09-16 Kimi] la conciliacion es el mecanismo real, no la idempotencia // [2026-09-16, decision del dueño] el cliente destraba lo que no se reenvia solo // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
-import { modoInternoOliver } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
+import { modoInternoOliver, TEXTO_PEDIR_CLIENTE_INTERNO } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
 
 /* =========================================================================
@@ -1388,8 +1390,18 @@ export async function handleWebhook(req, res, deps = {}) {
     // suya (pasó de verdad con él): lo que cambia es de quién es el cliente y la venta.
     // Solo aplica a su propio número; para cualquier otro es null y no cambia nada.
     const esDuenio = normalizarTel(from) === normalizarTel(process.env.OWNER_PHONE || process.env.ADMIN_PHONE || '56957296035');
-    const atribucion = esDuenio ? obtenerAtribucion(from) : null;
-    const telefonoCliente = atribucion?.phone || from;
+    // [2026-09-30] Decisión del dueño: también los vendedores de /equipo con modo interno
+    // cotizan a nombre del cliente (el comando CLIENTE ya se les permite en index.js).
+    const esVendedorInterno = !esDuenio && modoInternoOliver(from);
+    const atribucion = (esDuenio || esVendedorInterno) ? obtenerAtribucion(from) : null;
+    // Con atribución: teléfono, external_id y cotizado_por (últimos 9 del vendedor) son del
+    // CLIENTE. Sin atribución: idéntico a antes (todo = from, cotizado_por null).
+    const _idCot = identidadCotizacion(from, atribucion);
+    const telefonoCliente = _idCot.telefonoCliente;
+    const cotizadoPor = _idCot.cotizadoPor;
+    // Clave de los guardias anti-duplicado de folio: por PAR vendedor+cliente, para que una
+    // cotización idéntica para otro cliente jamás devuelva el folio del anterior.
+    const claveCot = atribucion ? `${from}:${telefonoCliente}` : from;
     if (atribucion) {
       log('info', 'atribucion', `cotización atribuida a ${atribucion.phone} (${atribucion.name || 'sin nombre'}) en vez de ${from}`);
     }
@@ -1458,6 +1470,18 @@ export async function handleWebhook(req, res, deps = {}) {
     // de Postgres (vive en variable local este turno). Si una versión vieja lo persistió,
     // se descarta acá — mata el "saludo tardío fantasma" señalado en revisión cruzada.
     delete state.ctwa_saludo_pending;
+
+    // [2026-09-30] AISLAR LA SESIÓN AL CAMBIAR DE CLIENTE (decisión del dueño, 30-sep).
+    // La sesión es del número que escribe; si ahora cotiza para OTRO cliente, el folio, los
+    // datos confirmados, el nombre y el historial del anterior no pueden arrastrarse (reusar
+    // el folio pisaría la cotización del otro en sales-os). Ver aislarSesionPorCliente.
+    // Sin atribución y sin marca previa es un no-op: el cliente normal no cambia en nada.
+    try {
+      if (aislarSesionPorCliente(state, history, atribucion)) {
+        state.telefono = from;
+        log('info', 'atribucion', `${from}: sesión aislada para el cliente ${telefonoCliente}`);
+      }
+    } catch { /* nunca puede tumbar el turno */ }
 
     // ── (4b) CTWA — Captura atribución Meta Ads (Click-to-WhatsApp). ────────
     // Solo en el primer mensaje con referral de la sesión (flag ctwaCaptured,
@@ -2652,11 +2676,12 @@ Comuna: ${datos.comuna}`
             fbclid: atribucion ? null : (leadState.fbclid || state.fbclid || null),
             ttclid: atribucion ? null : (leadState.ttclid || state.ttclid || null),
             landing_ref: atribucion ? null : (leadState.landing_ref || leadState.landing_lead_id || state.landing_lead_id || null),
+            ...(atribucion ? { external_id: telefonoCliente, cotizado_por: cotizadoPor } : {}),
             // [2026-08-08] Trazabilidad ISO: queda escrito que este lead lo cargó el dueño
             // a nombre del cliente, y desde qué número. Sin esto, dentro de un mes nadie
             // sabría por qué hay un lead sin conversación asociada.
             metadata: atribucion
-              ? { source: 'oliver_gpt', atribuido_por: from, atribuido_at: new Date().toISOString(), via: 'comando_CLIENTE' }
+              ? { source: 'oliver_gpt', atribuido_por: esDuenio ? from : cotizadoPor, atribuido_at: new Date().toISOString(), via: 'comando_CLIENTE', cotizado_por: cotizadoPor }
               : { source: 'oliver_gpt', ref_status: state.ref_status || null },   // [#966]
           });
         }),
@@ -2750,6 +2775,14 @@ Comuna: ${datos.comuna}`
           // del cliente (4 de 16 ventanas mal numeradas) mudado a otro documento.
           // Numerando aca, arriba de todo, los tres heredan el mismo numero pase lo que pase.
           numerarVentanas(input.items);
+          // 🔒 [2026-09-30] Decisión del dueño: un vendedor del equipo NO emite propuestas a su
+          // propio nombre. Sin cliente fijado con el comando CLIENTE, no se quema folio ISO y
+          // se le recuerda el formato. El dueño queda afuera de esta guardia (puede cotizar
+          // para sí, como siempre).
+          if (esVendedorInterno && !atribucion) {
+            log('info', 'generarPdf.interno_sin_cliente', `${from}: vendedor interno sin CLIENTE fijado; no se emite`);
+            return { ok: false, reason: 'interno_sin_cliente', message: TEXTO_PEDIR_CLIENTE_INTERNO };
+          }
           const itemsBad = (input.items || []).filter((it) => !(Number(it.unit_price) > 0));
           if (!input.items?.length || itemsBad.length) {
             log('error', 'generarPdf.guard',
@@ -3371,8 +3404,10 @@ Comuna: ${datos.comuna}`
           // dedupe de msgId (arriba, `msg:${msgId}`) — este se habia quedado atras.
           // Mismo remedio y mismo fail-safe: se consulta el respaldo solo cuando la
           // memoria no sabe, y si la red se cae se degrada al comportamiento anterior.
-          const _claveQuote = `quotesig:${String(from).replace(/\D/g, '')}`;
-          let _prevQuote = RECENT_QUOTES.get(from);
+          // [2026-09-30] claveCot = from sin atribución (idéntico a antes); con atribución, el
+          // par vendedor+cliente: el dedup de un cliente nunca devuelve el folio de otro.
+          const _claveQuote = `quotesig:${String(claveCot).replace(/\D/g, '')}`;
+          let _prevQuote = RECENT_QUOTES.get(claveCot);
           if (!_prevQuote) {
             try { _prevQuote = (await (deps.leerEstado || leerEstado)(_claveQuote)) || null; }
             catch { /* red caida: se degrada al guardia en memoria */ }
@@ -3421,7 +3456,7 @@ Comuna: ${datos.comuna}`
             // el segundo quede bloqueado sin razón.
             const { createHash } = await import('node:crypto');
             const _huellaSig = createHash('sha1').update(String(_quoteSig)).digest('hex').slice(0, 16);
-            const _claveEmision = `quote_emision:${String(from).replace(/\D/g, '')}:${_huellaSig}`;
+            const _claveEmision = `quote_emision:${String(claveCot).replace(/\D/g, '')}:${_huellaSig}`;
             _claveEmisionActiva = _claveEmision;
             try {
               // ⚠️ TTL corto: esta reserva cubre SOLO la ventana en vuelo (el viaje HTTP por
@@ -3439,7 +3474,7 @@ Comuna: ${datos.comuna}`
               // Hay una emisión IDENTICA en vuelo. Si ya terminó, `RECENT_QUOTES` tiene el
               // folio y se le devuelve ese; si sigue en curso, se le dice que espere — nunca
               // se emite un segundo documento.
-              const _yaHecha = RECENT_QUOTES.get(from);
+              const _yaHecha = RECENT_QUOTES.get(claveCot);
               log('info', 'generarPdf.dedup',
                 `emisión IDÉNTICA en vuelo para ${from}: no se emite un segundo documento`);
               if (_yaHecha && _yaHecha.sig === _quoteSig) {
@@ -3541,7 +3576,7 @@ Comuna: ${datos.comuna}`
 
           // Correlativo quemado → registrar (con firma de contenido) para el guard anti-duplicado.
           const _marcaQuote = { quote_number: quoteNumber, at: Date.now(), sig: _quoteSig };
-          RECENT_QUOTES.set(from, _marcaQuote);
+          RECENT_QUOTES.set(claveCot, _marcaQuote);
           // La marca ya está: el dedup de 2 min toma la posta y la reserva en vuelo sobra.
           _soltarEmision();
           // El respaldo sobrevive al redeploy. TTL corto: solo tiene que cubrir la ventana
@@ -4730,8 +4765,11 @@ Comuna: ${datos.comuna}`
                     lead_name: clientName || null, name: clientName || null,
                     phone: clientPhone || from || null,
                     comuna: clientComuna || null, city: clientComuna || null,
-                    status: 'quoted', external_id: from || null,
+                    // [2026-09-30] telefonoCliente: con atribución el lead es del CLIENTE.
+                    status: 'quoted', external_id: telefonoCliente || from || null,
+                    ...(cotizadoPor ? { cotizado_por: cotizadoPor } : {}),
                   },
+                  ...(cotizadoPor ? { cotizado_por: cotizadoPor } : {}),
                   // ⛔ SIN click-ids. No los necesita (no dispara conversion) y mandarlos
                   // invitaria a que alguien "arregle" el status mañana y triplique el reporte.
                 }));
@@ -4916,6 +4954,7 @@ Comuna: ${datos.comuna}`
           // Se llama bridge.pushQuoteEvent con status 'sent'; el server.js (sales-os) llama
           // fireConversion → CXM /api/conversions/track con el canal correcto.
           await landingAttributionReady;
+          const _ck = atribucion ? {} : state;
           safe('generarPdf.conversion', () =>
             bridge.pushQuoteEvent({
               phone:           clientPhone,
@@ -4975,12 +5014,15 @@ Comuna: ${datos.comuna}`
               })),
               // [ajuste abogado] click-ids a NIVEL RAÍZ: fireConversion (sales-os) los lee de
               // body.fbclid/body.gclid de raíz, NO de payload. Anti-cross-inject: un lead → un canal.
-              fbclid:    state.fbclid    || null,
-              gclid:     state.gclid     || null,
-              ttclid:    state.ttclid    || null,
-              ctwa_clid: state.ctwa_clid || null,
-              ad_id:     state.ad_id     || null,
-              landing_ref: state.landing_lead_id || null,
+              // [2026-09-30] Con atribución (_ck = {}) NO viajan click-ids: serían de quien
+              // escribe (vendedor/dueño), no del cliente — mismo criterio que saveLead (08-ago).
+              fbclid:    _ck.fbclid    || null,
+              gclid:     _ck.gclid     || null,
+              ttclid:    _ck.ttclid    || null,
+              ctwa_clid: _ck.ctwa_clid || null,
+              ad_id:     _ck.ad_id     || null,
+              landing_ref: _ck.landing_lead_id || null,
+              ...(cotizadoPor ? { cotizado_por: cotizadoPor } : {}),
               // [2026-07-11 FIX lead_id NULL] sin este campo, quoteService.upsertQuote (sales-os)
               // no puede resolver lead_id → JOIN quotes→leads roto (auditoría BD viva confirmada).
               // Réplica de buildLeadPayload (index.js, ruta legacy) con los datos que el flujo
@@ -5002,23 +5044,25 @@ Comuna: ${datos.comuna}`
                 message: null,
                 status: 'quoted',
                 zoho_deal_id: null,
-                external_id: from || null,
-                fbclid:    state.fbclid    || null,
-                gclid:     state.gclid     || null,
-                ttclid:    state.ttclid    || null,
-                ctwa_clid: state.ctwa_clid || null,
-                ad_id:     state.ad_id     || null,
-                landing_ref: state.landing_lead_id || null,
+                external_id: telefonoCliente || from || null,
+                ...(cotizadoPor ? { cotizado_por: cotizadoPor } : {}),
+                fbclid:    _ck.fbclid    || null,
+                gclid:     _ck.gclid     || null,
+                ttclid:    _ck.ttclid    || null,
+                ctwa_clid: _ck.ctwa_clid || null,
+                ad_id:     _ck.ad_id     || null,
+                landing_ref: _ck.landing_lead_id || null,
               },
               payload: {
                 comuna:   clientComuna,
                 // Click ids — anti-cross-inject: solo el canal del lead.
-                ctwa_clid: state.ctwa_clid || null,
-                ad_id:     state.ad_id     || null,
-                landing_ref: state.landing_lead_id || null,
-                fbclid:    state.fbclid    || null,
-                gclid:     state.gclid     || null,
-                ttclid:    state.ttclid    || null,
+                ctwa_clid: _ck.ctwa_clid || null,
+                ad_id:     _ck.ad_id     || null,
+                landing_ref: _ck.landing_lead_id || null,
+                fbclid:    _ck.fbclid    || null,
+                gclid:     _ck.gclid     || null,
+                ttclid:    _ck.ttclid    || null,
+                ...(cotizadoPor ? { cotizado_por: cotizadoPor } : {}),
               },
             })
           );
@@ -5334,6 +5378,9 @@ Comuna: ${datos.comuna}`
     // TURNO: se recalcula cada vez y se borra antes de persistir (dar de baja = cliente normal).
     state.modo_interno = modoInternoOliver(from);
     if (state.modo_interno) log('info', 'modo_interno', `${from} es del equipo: turno en modo INTERNO`);
+    // [2026-09-30] Del turno también: vendedor interno sin CLIENTE fijado ⇒ el prompt le
+    // recuerda el comando (y generarPdf no emite). El dueño no entra en esta marca.
+    state.modo_interno_sin_cliente = esVendedorInterno && !atribucion;
 
     const turn = await handleTurn({ history, userText, state, toolCtx });
     let reply = turn?.reply || '';
@@ -5352,6 +5399,8 @@ Comuna: ${datos.comuna}`
     delete newState.ya_compro;
     delete newState.modo_interno; // [#1059 b] del turno, no de la sesión
     delete state.modo_interno;
+    delete newState.modo_interno_sin_cliente; // [2026-09-30] del turno
+    delete state.modo_interno_sin_cliente;
     // 🔴 [2026-08-25] LOS RELOJES DE LOS GATES, POR LA MISMA RAZON EXACTA QUE `last_quote`.
     // `agent.handleTurn` saca la foto del estado AL EMPEZAR (`{ ...state }`) y el webhook se
     // queda con esa copia, asi que todo lo que una tool escriba DURANTE el turno queda afuera.
@@ -5640,6 +5689,7 @@ Comuna: ${datos.comuna}`
     if (quote) {
       await landingAttributionReady;
       copyAttributionState(newState, state);
+      const _ckD = atribucion ? {} : newState; // [2026-09-30] sin click-ids de quien escribe
       await safe('persist.quote', () =>
         bridge.pushQuoteEvent({
           // [2026-08-08] Idem: si hay atribucion activa, el borrador es del cliente.
@@ -5649,12 +5699,13 @@ Comuna: ${datos.comuna}`
           amount_total: montoTurno,
           currency: 'CLP',
           status: 'draft',
-          fbclid:    newState.fbclid    || null,
-          gclid:     newState.gclid     || null,
-          ttclid:    newState.ttclid    || null,
-          ctwa_clid: newState.ctwa_clid || null,
-          ad_id:     newState.ad_id     || null,
-          landing_ref: newState.landing_lead_id || null,
+          fbclid:    _ckD.fbclid    || null,
+          gclid:     _ckD.gclid     || null,
+          ttclid:    _ckD.ttclid    || null,
+          ctwa_clid: _ckD.ctwa_clid || null,
+          ad_id:     _ckD.ad_id     || null,
+          landing_ref: _ckD.landing_lead_id || null,
+          ...(cotizadoPor ? { cotizado_por: cotizadoPor } : {}),
           // [2026-07-11 FIX lead_id NULL] sin este campo, quoteService.upsertQuote (sales-os)
           // no puede resolver lead_id → JOIN quotes→leads roto (auditoría BD viva confirmada).
           // Réplica de buildLeadPayload con los datos que este punto del flujo GPT v2 tiene a
@@ -5662,9 +5713,12 @@ Comuna: ${datos.comuna}`
           lead: {
             source: 'oliver_gpt',
             channel: 'whatsapp',
-            lead_name: newState.name || push_name || null,
-            name: newState.name || push_name || null,
-            phone: from || null,
+            // [2026-09-30] Con atribución el borrador es del CLIENTE: nombre, teléfono y
+            // external_id suyos (antes iban los de quien escribe — bug). Sin atribución,
+            // telefonoCliente === from y atribucion es null: idéntico a antes.
+            lead_name: atribucion?.name || newState.name || push_name || null,
+            name: atribucion?.name || newState.name || push_name || null,
+            phone: telefonoCliente || from || null,
             comuna: newState.comuna || null,
             city: newState.comuna || null,
             project_type: null,
@@ -5674,23 +5728,25 @@ Comuna: ${datos.comuna}`
             message: null,
             status: 'draft',
             zoho_deal_id: null,
-            external_id: from || null,
-            fbclid:    newState.fbclid    || null,
-            gclid:     newState.gclid     || null,
-            ttclid:    newState.ttclid    || null,
-            ctwa_clid: newState.ctwa_clid || null,
-            ad_id:     newState.ad_id     || null,
-            landing_ref: newState.landing_lead_id || null,
+            external_id: telefonoCliente || from || null,
+            ...(cotizadoPor ? { cotizado_por: cotizadoPor } : {}),
+            fbclid:    _ckD.fbclid    || null,
+            gclid:     _ckD.gclid     || null,
+            ttclid:    _ckD.ttclid    || null,
+            ctwa_clid: _ckD.ctwa_clid || null,
+            ad_id:     _ckD.ad_id     || null,
+            landing_ref: _ckD.landing_lead_id || null,
           },
           payload: {
             comuna: newState.comuna || '',
             quote,
-            ctwa_clid: newState.ctwa_clid || null,
-            ad_id: newState.ad_id || null,
-            landing_ref: newState.landing_lead_id || null,
-            fbclid: newState.fbclid || null,
-            gclid: newState.gclid || null,
-            ttclid: newState.ttclid || null,
+            ctwa_clid: _ckD.ctwa_clid || null,
+            ad_id: _ckD.ad_id || null,
+            landing_ref: _ckD.landing_lead_id || null,
+            fbclid: _ckD.fbclid || null,
+            gclid: _ckD.gclid || null,
+            ttclid: _ckD.ttclid || null,
+            ...(cotizadoPor ? { cotizado_por: cotizadoPor } : {}),
           },
         })
       );

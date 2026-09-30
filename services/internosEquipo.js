@@ -98,4 +98,16 @@ export const TEXTO_MODO_INTERNO = [
   '• NO ofrezcas seguimiento, visita, llamada ni "le escribo mañana": él maneja al cliente.',
   '• Trato directo y breve, de colega. Nada de saludos de bienvenida ni presentación de la empresa.',
   '• Si falta un dato para cotizar (medida, color, comuna), pídelo en una sola línea. No inventes datos.',
+  '• La cotización es del CLIENTE, no tuya: antes de cotizar tiene que haber un cliente fijado con el comando CLIENTE Nombre +569XXXXXXXX.',
+].join('\n');
+
+// [2026-09-30] Decisión del dueño: la cotización de un vendedor cuenta al CLIENTE. Lo que
+// el vendedor recibe si intenta cotizar sin haber fijado cliente.
+export const TEXTO_PEDIR_CLIENTE_INTERNO =
+  'Antes de emitir la propuesta, dime para qué cliente es (queda a su nombre, no al tuyo). ' +
+  'Escríbeme en un mensaje aparte: CLIENTE Nombre Apellido +569XXXXXXXX';
+
+export const TEXTO_SIN_CLIENTE_INTERNO = [
+  '⚠️ ESTE VENDEDOR NO TIENE CLIENTE FIJADO. Si pide cotizar, recuérdale en una línea que primero',
+  `envíe el comando, textual: "${TEXTO_PEDIR_CLIENTE_INTERNO}". Sin eso la propuesta formal no se emite.`,
 ].join('\n');

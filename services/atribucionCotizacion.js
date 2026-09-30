@@ -12,8 +12,8 @@
 //   2) la atribución de ads se ensuciaba (canal = WhatsApp del dueño),
 //   3) en /mi-agenda ese cliente no aparecía como cliente: aparecía el dueño.
 //
-// 🔒 SOLO EL DUEÑO. Quien llama a fijar() debe haber verificado que el remitente es
-// ADMIN_PHONE. Si cualquiera pudiera atribuir cotizaciones a terceros, se abre a que
+// 🔒 SOLO EL DUEÑO — y desde 2026-09-30 también los vendedores que el dueño autorizó en
+// /equipo con modo interno (ver puedeUsarComandoCliente). Si cualquiera pudiera atribuir cotizaciones a terceros, se abre a que
 // alguien cargue una cotización a nombre de otra persona.
 //
 // Vive en memoria a propósito: es una intención de minutos ("ahora estoy cotizando para
@@ -186,6 +186,99 @@ export async function sinConsentimientoAsync(phone) {
   const p = normalizar(phone);
   if (SIN_CONSENTIMIENTO.has(p)) return true;
   return (await leerEstado(CLAVE_CONSENT(p))) === true;
+}
+
+// ── [2026-09-30] Vendedores del equipo (decisión del dueño, 30-sep) ─────────────────────
+// Pedido del dueño: el teléfono del VENDEDOR lo carga solo el admin en /equipo (sales-os).
+// Cuando un vendedor con «Cotizar con Oliver en modo interno» cotiza por WhatsApp, puede
+// ratificar el teléfono del CLIENTE con el mismo comando CLIENTE; si el cliente no existe
+// como lead se crea, y la cotización cuenta al CLIENTE (no al vendedor), con su folio ISO.
+// Por eso el candado deja de ser "solo el dueño": pasa a ser "el dueño o un número que el
+// dueño autorizó en /equipo con modo interno". Cualquier otro número sigue sin poder.
+
+/**
+ * ¿Este número puede usar el comando CLIENTE?
+ * @param {string} waId
+ * @param {{adminPhone:string, esInterno:(p:string)=>boolean}} o
+ */
+export function puedeUsarComandoCliente(waId, { adminPhone = '', esInterno = () => false } = {}) {
+  const w = soloDigitos(waId);
+  if (!w) return false;
+  const a = soloDigitos(adminPhone);
+  if (a && w === a) return true;
+  try { return esInterno(w) === true; } catch { return false; }
+}
+
+/** Últimos 9 dígitos: identifica al vendedor sin exponer el número completo. */
+export const ultimos9 = (v) => { const d = soloDigitos(v); return d.length >= 8 ? d.slice(-9) : ''; };
+
+/**
+ * De quién es la cotización de este turno.
+ * Sin atribución: el cliente ES quien escribe (idéntico a antes, cotizadoPor null).
+ */
+export function identidadCotizacion(from, atribucion) {
+  if (!atribucion || !atribucion.phone) {
+    return { telefonoCliente: from, externalId: from, cotizadoPor: null, atribuida: false };
+  }
+  return {
+    telefonoCliente: atribucion.phone,
+    externalId: atribucion.phone,
+    cotizadoPor: ultimos9(from) || null,
+    atribuida: true,
+  };
+}
+
+/** Lead mínimo del cliente al fijar la atribución (upsertLead de sales-os deduplica por teléfono). */
+export function leadDeAtribucion(waIdVendedor, phone, name) {
+  const p = normalizar(phone);
+  return {
+    phone: p,
+    channel: 'whatsapp',
+    name: String(name || '').trim(),
+    external_id: p,
+    cotizado_por: ultimos9(waIdVendedor) || null,
+    metadata: { source: 'comando_CLIENTE', via: 'comando_CLIENTE', cotizado_por: ultimos9(waIdVendedor) || null },
+  };
+}
+
+// Campos de sesión que NO son del cliente y sobreviven al cambio de cliente.
+const SESION_CONSERVA = new Set(['telefono', 'fecha', 'lastMessageAt', 'lq_por_cliente']);
+const MAX_LQ_POR_CLIENTE = 20;
+
+/**
+ * 🔒 AISLAR LA SESIÓN POR CLIENTE (decisión del dueño, 30-sep).
+ * La sesión vive por el número de quien ESCRIBE (el vendedor). Si cambia el cliente para el
+ * que cotiza, lo del cliente anterior (last_quote con su folio, lockedData, name, historial)
+ * NO puede arrastrarse: el folio se reusaría y sales-os (upsertQuote deduplica por folio)
+ * PISARÍA la cotización del cliente anterior.
+ * Se elige reiniciar el estado y NO cambiar la clave de sesión: la clave `from` la usan ~20
+ * caminos (cache, Postgres, dedup, control del inbox); moverla es más riesgo que limpiar.
+ * El last_quote de cada cliente se guarda aparte (lq_por_cliente) y se RESTAURA solo si se
+ * vuelve a fijar ESE mismo cliente: así una corrección para Juan conserva el folio de Juan,
+ * y jamás el de Pedro.
+ * Muta `state` y `history` en el lugar. Sin atribución y sin marca previa, no toca nada.
+ * @returns {boolean} true si reinició
+ */
+export function aislarSesionPorCliente(state, history, atribucion) {
+  if (!state || typeof state !== 'object') return false;
+  const actual = atribucion?.phone ? normalizar(atribucion.phone) : '';
+  const previo = state.atrib_cliente ? String(state.atrib_cliente) : '';
+  if (actual === previo) return false;
+
+  const stash = (state.lq_por_cliente && typeof state.lq_por_cliente === 'object') ? { ...state.lq_por_cliente } : {};
+  // '_propio' = lo que cotizó quien escribe para sí mismo (sin atribución).
+  const clave = (p) => p || '_propio';
+  if (state.last_quote) stash[clave(previo)] = state.last_quote;
+  const claves = Object.keys(stash);
+  while (claves.length > MAX_LQ_POR_CLIENTE) delete stash[claves.shift()];
+
+  for (const k of Object.keys(state)) if (!SESION_CONSERVA.has(k)) delete state[k];
+  if (Array.isArray(history)) history.length = 0;
+
+  state.lq_por_cliente = stash;
+  if (actual) state.atrib_cliente = actual;
+  if (stash[clave(actual)]) state.last_quote = stash[clave(actual)];
+  return true;
 }
 
 /** Para tests. */

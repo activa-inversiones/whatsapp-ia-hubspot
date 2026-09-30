@@ -311,6 +311,8 @@ import {
   limpiar as limpiarAtribucion,
   marcarSinConsentimiento,
   sinConsentimientoAsync,
+  puedeUsarComandoCliente,   // [2026-09-30] dueño o vendedor de /equipo con modo interno
+  leadDeAtribucion,
 } from "./services/atribucionCotizacion.js";
 // [2026-08-08] Estado del bot que sobrevive a un redeploy (respaldo en Postgres).
 import { leer as leerEstado, escribir as escribirEstado } from "./services/estadoPersistente.js";
@@ -330,7 +332,7 @@ import { classifyProduct, warmHandoffMessage } from "./services/oliverProduct.js
 import { detectNoiseLoop, noiseLoopMessage } from "./services/oliverNoise.js"; // [2026-06-10 anti-loop] basura variada (caso 119 msgs)
 import { detectOutOfCatalog, outOfCatalogRetentionMessage } from "./services/oliverOutOfCatalog.js"; // [2026-06-10 GT-05] vidrio shower → ofrecer PVC, no competencia
 import { shouldSkipFollowup } from "./services/oliverFollowup.js";
-import { iniciarRefrescoInternos } from "./services/internosEquipo.js"; // [#1059 b] lista del equipo desde sales-os // [2026-06-10] no enviar follow-up a Marcelo/internos
+import { iniciarRefrescoInternos, modoInternoOliver } from "./services/internosEquipo.js"; // [#1059 b] lista del equipo desde sales-os // [2026-06-10] no enviar follow-up a Marcelo/internos
 import { parseAgendaVoz } from "./services/agendaVoz.js"; // [2026-07-07 ZL-F3] agenda por voz del CEO — parser determinista
 import { construirBloqueNumeros, REGLA_PERIODOS } from "./services/ceoContextoTexto.js"; // [2026-08-31 defecto-2] bloque de numeros del asistente CEO: 24h movil ≠ hoy
 import { addZohoNote as zohoAddNote } from "./services/zohoCommercial.js"; // [2026-07-07] "Salesforce reutilizando Zoho": nota en el Deal cuando sales-os marca un seguimiento hecho
@@ -5389,8 +5391,11 @@ app.post("/webhook", async (req, res) => {
   // Intercept temprano y determinista (mismo patrón que "comandos"): no pasa por el LLM.
   try {
     const _atInc = extractMsg(req.body);
+    // [2026-09-30] Decisión del dueño: además de él, los vendedores que ÉL cargó en /equipo
+    // con «Cotizar con Oliver en modo interno». Cualquier otro número sigue sin poder.
     if (_atInc?.ok && _atInc.type === "text" && verifySig(req) &&
-        normalizeWaId(_atInc.waId) === normalizeAdminPhone(ADMIN_PHONE) &&
+        puedeUsarComandoCliente(normalizeWaId(_atInc.waId), {
+          adminPhone: normalizeAdminPhone(ADMIN_PHONE), esInterno: modoInternoOliver }) &&
         // [2026-08-08] pareceComandoCliente y NO /^cliente\b/: interceptar todo lo que
         // empieza con "cliente" se comía mensajes reales del dueño ("Cliente me pidió otra
         // medida") que nunca llegaban a Oliver, sin explicación visible. Ahora solo entra
@@ -5410,7 +5415,13 @@ app.post("/webhook", async (req, res) => {
           // Ese cliente nunca le escribio al bot: queda marcado para que el re-enganche
           // automatico NO le mande una plantilla sin su consentimiento.
           marcarSinConsentimiento(r.phone);
-          msg = `✅ Cotizando para *${r.name}* (+${r.phone}).\n\n` +
+          // [2026-09-30] Si el cliente no existe como lead, se crea (upsertLead de sales-os
+          // deduplica por teléfono). Fire-and-forget: un fallo acá no rompe el comando.
+          try {
+            pushLeadEvent(leadDeAtribucion(_atInc.waId, r.phone, r.name))
+              .catch((e) => { try { logErr("cliente_atribucion_lead", e); } catch {} });
+          } catch (e) { try { logErr("cliente_atribucion_lead", e); } catch {} }
+          msg =`✅ Cotizando para *${r.name}* (+${r.phone}).\n\n` +
             `La próxima propuesta queda a su nombre: el lead, el seguimiento y el CRM. ` +
             `El PDF te llega a vos para que se lo mandes.\n\n` +
             `Se usa UNA vez: cuando salga el PDF vuelve solo a tu nombre. ` +
