@@ -7,7 +7,10 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "test": "node --test \"*.test.js\" \"services/**/*.test.js\" \"src/**/*.test.js\""
+    "test": "node --test \"*.test.js\" \"services/**/*.test.js\" \"src/**/*.test.js\"",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "prepare": "node .husky/install.mjs"
   },
   "engines": {
     "node": "22.x"
@@ -32,5 +35,10 @@
     "ventanas"
   ],
   "author": "Activa Inversiones",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "eslint": "^8.57.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.2"
+  }
 }

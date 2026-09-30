@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+# pre-commit (#1058): eslint SOLO sobre los archivos que se commitean (lint-staged).
+# Los errores frenan el commit; los avisos (complejidad, tamano, no-unused-vars) se muestran y siguen.
+# Asi el repo no queda bloqueado de golpe por la deuda vieja: se paga archivo por archivo al tocarlo.
+npx lint-staged
