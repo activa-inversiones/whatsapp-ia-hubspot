@@ -238,7 +238,7 @@ test('🔴 GEMINI: una comuna que THERMAL no reconoce NO puede dejar al cliente 
   // "Labranza", "Cajon", "Metrenco" y "Pedro de Valdivia" —todos sectores de Temuco y Padre
   // Las Casas— devolvian 404 y el modulo se quedaba MUDO, justo despues de que Oliver le
   // prometio un dato tecnico. Quedarse callado ahi es peor que no haber prometido nada.
-  let pedidas = [];
+  const pedidas = [];
   const m = await informeParaComuna('Labranza', {
     fetchFn: async (u) => {
       const c = decodeURIComponent(u).match(/comuna=([^&]+)/)[1];

@@ -60,7 +60,7 @@ test('parseManualConversion: solo keyword → NO completa (dispara guiado)', () 
 });
 
 test('flujo GUIADO: nombre → teléfono → monto → CANAL → done', () => {
-  let st = startGuided('venta');
+  const st = startGuided('venta');
   let r = advanceGuided(st, 'Juan Pérez');
   assert.equal(r.state.name, 'Juan Pérez');
   assert.match(r.ask, /tel/i);
@@ -77,7 +77,7 @@ test('flujo GUIADO: nombre → teléfono → monto → CANAL → done', () => {
 });
 
 test('flujo GUIADO: "no" en teléfono → phone null, sigue hasta canal', () => {
-  let st = startGuided('cotizacion');
+  const st = startGuided('cotizacion');
   let r = advanceGuided(st, 'Ana');
   r = advanceGuided(r.state, 'no');
   assert.equal(r.state.phone, null);

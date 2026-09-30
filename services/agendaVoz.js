@@ -151,7 +151,7 @@ export function parseAgendaVoz(texto, ahora = new Date()) {
   // ── agenda_snooze: "posterga a Pérez 3 días" / "corre a Juan 2 días" ──
   m = original.match(RE_SNOOZE);
   if (m) {
-    let rest = m[1].replace(/[.!?¡¿\s]+$/, '').trim();
+    const rest = m[1].replace(/[.!?¡¿\s]+$/, '').trim();
     // Tomar días al final: "Pérez 3 días" / "Pérez en 3 días"
     const diasMatch = rest.match(/\s+(?:en\s+)?(\d+)\s+d[ií]as?\s*$/i);
     let days = 7;
