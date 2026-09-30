@@ -10,7 +10,7 @@
     "test": "node --test \"*.test.js\" \"services/**/*.test.js\" \"src/**/*.test.js\"",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "prepare": "node .husky/install.mjs"
+    "prepare": "node -e \"import('./.husky/install.mjs').catch(()=>{})\""
   },
   "engines": {
     "node": "22.x"

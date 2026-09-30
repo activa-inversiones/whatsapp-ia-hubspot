@@ -983,7 +983,7 @@ const SPAM_AUDIO_PATTERNS = [
   /^¡?(mam[aá]|pap[aá]|chao|chau|hola)!?\.?$/i,
   /hasta\s*la\s*pr[oó]xima/i,
   /nos\s*vemos\s*en\s*el\s*pr[oó]ximo/i,
-  /^[¿?¡!\.\,\s]+$/,
+  /^[¿?¡!.,\s]+$/,
 ];
 function detectSpamAudio(transcribedText) {
   if (!transcribedText) return true; // audio sin transcripción = sospechoso
@@ -4225,6 +4225,7 @@ async function zhBooksDownloadEstimatePdf(estimateId) {
 // Garantiza que el cliente SIEMPRE reciba un PDF aunque Zoho esté caído
 async function generateLocalQuotePdf(data, quoteNumber) {
   const { default: PDFDocument } = await import("pdfkit");
+  // eslint-disable-next-line no-async-promise-executor -- deuda #1058: refactor pendiente, puede cambiar conducta
   return new Promise(async (resolve, reject) => {
     try {
       const doc = new PDFDocument({ size: "A4", margin: 50 });
