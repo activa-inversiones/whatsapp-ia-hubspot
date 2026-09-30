@@ -117,7 +117,7 @@ Escalación humana: Marcelo (dueño, Evaluador Energético Acreditado MINVU).
    "Lamento el problema, lo entiendo y lo vamos a resolver. Déjeme avisarle a Marcelo directamente para que le
     dé una mano personalmente."
 8. Post-cotización (cierre suave):
-   "Listo, ahí tiene su propuesta. Quedó en \$X. ¿Le hace sentido el rango? Si le sirve, agendamos una visita
+   "Listo, ahí tiene su propuesta. Quedó en $X. ¿Le hace sentido el rango? Si le sirve, agendamos una visita
     técnica de 15 minutos sin compromiso para medir exacto."
 
 ÁREA 4 — CALIFICACIÓN SPIN (adaptada a WhatsApp: una pregunta por mensaje, orden conversacional, NO interrogatorio)
@@ -339,7 +339,7 @@ La acreditación MINVU genera autoridad en: Subsidio Térmico (DS49/DS1/PPPF), R
 de vivienda y casos de eficiencia energética.
 
 ÁREA 14 — TONO EMOCIONAL (validar la emoción ANTES del dato técnico)
-ANTES (frío técnico, y ADEMÁS precio suelto = PROHIBIDO por Regla #13): "Su corredera 1.5×1.2 m cuesta \$321.593."
+ANTES (frío técnico, y ADEMÁS precio suelto = PROHIBIDO por Regla #13): "Su corredera 1.5×1.2 m cuesta $321.593."
 DESPUÉS (cálido profesional, SIN precio suelto — el precio va en el PDF formal del mismo turno): "Mire, esta corredera de 1.5×1.2 m en blanco con termopanel ya se la calculé y le dejé la propuesta formal acá mismo.
 Es una ventana sólida, fabricada acá en Temuco con precisión milimétrica. Le va a durar décadas. ¿Le calza con su proyecto?"
 Reglas de tono: frases cortas, no párrafos · conectores "Mire", "Le cuento", "Fíjese" · validar emoción/necesidad
@@ -1111,6 +1111,8 @@ export function buildSystemBlocks() {
  * @param {object} [state]
  * @returns {string}
  */
+import { TEXTO_MODO_INTERNO } from '../../services/internosEquipo.js'; // [#1059 b]
+
 export function buildSessionContext(state = {}) {
   const s = state || {};
   const data = s.data || s;
@@ -1170,6 +1172,12 @@ export function buildSessionContext(state = {}) {
     `  ni reemplazarlos por valores por defecto (ej. si la comuna es Vilcún, jamás la pongas como Temuco): ${lockedStr}`,
   ];
   if (consolidacion) lineas.push(`Resumen consolidado: ${consolidacion}`);
+
+  // [#1059 b] MODO INTERNO: escribe alguien del equipo que el dueño autorizó en /equipo.
+  // Lo decide el webhook en cada turno (state.modo_interno), nunca el texto del mensaje.
+  if (s.modo_interno === true) {
+    lineas.push(TEXTO_MODO_INTERNO);
+  }
 
   // Va DESPUÉS de los datos y con el mayor énfasis del bloque: si el cliente ya
   // compró, esto manda sobre el flujo de venta entero.

@@ -25,6 +25,8 @@
 // 100% testeable con mocks, sin red ni env vars reales en los tests.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { esNumeroDelEquipo } from './internosEquipo.js'; // [#1059 b]
+
 export const VERSION = '1.0.0';
 
 // Candado en memoria: phone -> timestamp del último re-engagement enviado.
@@ -120,6 +122,9 @@ export async function reengage({ phone, motivo, quote_number } = {}, deps = {}) 
   } = deps;
 
   if (!phone) return { ok: false, reason: 'phone_requerido' };
+
+  // [#1059 b] Un número del equipo (lista del dueño en /equipo) nunca se re-engancha.
+  if (esNumeroDelEquipo(phone)) return { ok: false, reason: 'numero_del_equipo' };
 
   // ── LLAVE 1: flag apagado (default) — el dueño aún no dio el OK ──
   if (!flagOn) return { ok: false, reason: 'flag_off' };

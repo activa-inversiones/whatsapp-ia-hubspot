@@ -222,6 +222,7 @@ import {
 } from '../../services/avisoCerebroRespaldo.js';
 import { pidioDeNuevo } from '../../services/pidioDeNuevo.js';
 import { clavePendiente, decidirConciliacion, mensajeConciliado } from '../../services/conciliacionDudosa.js'; // [2026-09-16 Kimi] la conciliacion es el mecanismo real, no la idempotencia // [2026-09-16, decision del dueño] el cliente destraba lo que no se reenvia solo // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
+import { modoInternoOliver } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
 
 /* =========================================================================
@@ -5282,6 +5283,12 @@ Comuna: ${datos.comuna}`
       log('info', 'postventa', `${from} ya compró (quote_status=won): turno en modo POSTVENTA`);
     }
 
+    // [#1059 b] MODO INTERNO: el número es del equipo (lista del dueño en /equipo de sales-os)
+    // y el dueño le prendió «Cotizar con Oliver en modo interno». Igual que `ya_compro`, es del
+    // TURNO: se recalcula cada vez y se borra antes de persistir (dar de baja = cliente normal).
+    state.modo_interno = modoInternoOliver(from);
+    if (state.modo_interno) log('info', 'modo_interno', `${from} es del equipo: turno en modo INTERNO`);
+
     const turn = await handleTurn({ history, userText, state, toolCtx });
     let reply = turn?.reply || '';
     const newHistory = Array.isArray(turn?.history) ? turn.history : history;
@@ -5297,6 +5304,8 @@ Comuna: ${datos.comuna}`
     // en la BD despues de que el dueño revierta la venta. Se borra antes de
     // persistir; el proximo turno la vuelve a pedir donde vive la verdad.
     delete newState.ya_compro;
+    delete newState.modo_interno; // [#1059 b] del turno, no de la sesión
+    delete state.modo_interno;
     // 🔴 [2026-08-25] LOS RELOJES DE LOS GATES, POR LA MISMA RAZON EXACTA QUE `last_quote`.
     // `agent.handleTurn` saca la foto del estado AL EMPEZAR (`{ ...state }`) y el webhook se
     // queda con esa copia, asi que todo lo que una tool escriba DURANTE el turno queda afuera.

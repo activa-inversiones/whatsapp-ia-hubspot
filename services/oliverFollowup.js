@@ -19,7 +19,9 @@
 // Solo decide si el envío debe saltarse.
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const VERSION = '1.0.0';
+import { esNumeroDelEquipo } from './internosEquipo.js'; // [#1059 b] la lista que el dueño mantiene en /equipo
+
+export const VERSION = '1.1.0';
 
 /**
  * Normaliza un número de teléfono a solo dígitos.
@@ -48,6 +50,9 @@ export function normalizePhone(phone) {
 export function shouldSkipFollowup(phone) {
   const candidate = normalizePhone(phone);
   if (!candidate) return false; // número vacío/inválido → no hay nada que saltarse
+
+  // [#1059 b] Números del equipo cargados por el dueño en sales-os (/equipo): nunca seguimiento.
+  if (esNumeroDelEquipo(candidate)) return true;
 
   // Construir set de números internos desde env (lectura en tiempo de llamada)
   const internalSet = new Set();

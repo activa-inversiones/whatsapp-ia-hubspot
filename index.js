@@ -329,7 +329,8 @@ import { isQuoteIntent } from "./services/oliverIntent.js"; // [2026-06-10 FIX #
 import { classifyProduct, warmHandoffMessage } from "./services/oliverProduct.js"; // [2026-06-10 FIX #A] handoff cálido productos especiales
 import { detectNoiseLoop, noiseLoopMessage } from "./services/oliverNoise.js"; // [2026-06-10 anti-loop] basura variada (caso 119 msgs)
 import { detectOutOfCatalog, outOfCatalogRetentionMessage } from "./services/oliverOutOfCatalog.js"; // [2026-06-10 GT-05] vidrio shower → ofrecer PVC, no competencia
-import { shouldSkipFollowup } from "./services/oliverFollowup.js"; // [2026-06-10] no enviar follow-up a Marcelo/internos
+import { shouldSkipFollowup } from "./services/oliverFollowup.js";
+import { iniciarRefrescoInternos } from "./services/internosEquipo.js"; // [#1059 b] lista del equipo desde sales-os // [2026-06-10] no enviar follow-up a Marcelo/internos
 import { parseAgendaVoz } from "./services/agendaVoz.js"; // [2026-07-07 ZL-F3] agenda por voz del CEO — parser determinista
 import { construirBloqueNumeros, REGLA_PERIODOS } from "./services/ceoContextoTexto.js"; // [2026-08-31 defecto-2] bloque de numeros del asistente CEO: 24h movil ≠ hoy
 import { addZohoNote as zohoAddNote } from "./services/zohoCommercial.js"; // [2026-07-07] "Salesforce reutilizando Zoho": nota en el Deal cuando sales-os marca un seguimiento hecho
@@ -6801,6 +6802,9 @@ app.listen(PORT, () => {
   console.log(
     `🚀 Oliver v11.8.2 (memoria x-api-key + comuna + engine gated) — Activa Imperium — port=${PORT} pricer=${PRICER_MODE} zoho_books=${ZOHO.ORG_ID ? "OK" : "NO"} escalation=${ESCALATION_PHONE ? "ON" : "OFF"} voice=${VOICE_ENABLED ? VOICE_TTS_PROVIDER : "OFF"} identity=${process.env.OLIVER_IDENTITY || "default"} marcelo=${process.env.MARCELO_PHONE ? "SET" : "MISSING"} ffmpeg=checking`
   );
+  // [#1059 b] lista del equipo (sales-os /equipo): sin seguimientos a esos números y modo interno.
+  // Se lee al arrancar y cada 5 min; si sales-os no contesta, queda la última lista buena.
+  try { iniciarRefrescoInternos({ url: SALES_OS_URL, token: SALES_OS_OPERATOR_TOKEN }); } catch (e) { logErr("internosEquipo", e); }
   // v11.5-4: cargar prompt overrides desde DB al arranque (no bloqueante)
   loadPromptOverrides().then(text => {
     if (text) console.log(`📋 Prompt override activo cargado (${text.length} chars)`);
