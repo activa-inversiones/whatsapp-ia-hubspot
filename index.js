@@ -313,7 +313,7 @@ import {
   sinConsentimientoAsync,
   puedeUsarComandoCliente,   // [2026-09-30] dueño o vendedor de /equipo con modo interno
   leadDeAtribucion,
-  debeMarcarSinConsentimiento,
+  yaNosEscribio,
 } from "./services/atribucionCotizacion.js";
 // [2026-08-08] Estado del bot que sobrevive a un redeploy (respaldo en Postgres).
 import { leer as leerEstado, escribir as escribirEstado } from "./services/estadoPersistente.js";
@@ -333,7 +333,7 @@ import { classifyProduct, warmHandoffMessage } from "./services/oliverProduct.js
 import { detectNoiseLoop, noiseLoopMessage } from "./services/oliverNoise.js"; // [2026-06-10 anti-loop] basura variada (caso 119 msgs)
 import { detectOutOfCatalog, outOfCatalogRetentionMessage } from "./services/oliverOutOfCatalog.js"; // [2026-06-10 GT-05] vidrio shower → ofrecer PVC, no competencia
 import { shouldSkipFollowup } from "./services/oliverFollowup.js";
-import { iniciarRefrescoInternos, modoInternoOliver } from "./services/internosEquipo.js"; // [#1059 b] lista del equipo desde sales-os // [2026-06-10] no enviar follow-up a Marcelo/internos
+import { iniciarRefrescoInternos, puedeComandoCliente } from "./services/internosEquipo.js"; // [#1059 b] lista del equipo desde sales-os // [2026-06-10] no enviar follow-up a Marcelo/internos
 import { parseAgendaVoz } from "./services/agendaVoz.js"; // [2026-07-07 ZL-F3] agenda por voz del CEO — parser determinista
 import { construirBloqueNumeros, REGLA_PERIODOS } from "./services/ceoContextoTexto.js"; // [2026-08-31 defecto-2] bloque de numeros del asistente CEO: 24h movil ≠ hoy
 import { addZohoNote as zohoAddNote } from "./services/zohoCommercial.js"; // [2026-07-07] "Salesforce reutilizando Zoho": nota en el Deal cuando sales-os marca un seguimiento hecho
@@ -5395,7 +5395,8 @@ app.post("/webhook", async (req, res) => {
     // [2026-09-30] Decisión del dueño: además de él, los vendedores que ÉL cargó en /equipo
     // con «Cotizar con Oliver en modo interno». Cualquier otro número sigue sin poder.
     if (_atInc?.ok && _atInc.type === "text" && verifySig(req) &&
-        puedeUsarComandoCliente(normalizeWaId(_atInc.waId), { esInterno: modoInternoOliver }) &&
+        // Vendedor: por número COMPLETO y fail-closed si la lista no cargó (puedeComandoCliente).
+        puedeUsarComandoCliente(normalizeWaId(_atInc.waId), { esInterno: puedeComandoCliente }) &&
         // [2026-08-08] pareceComandoCliente y NO /^cliente\b/: interceptar todo lo que
         // empieza con "cliente" se comía mensajes reales del dueño ("Cliente me pidió otra
         // medida") que nunca llegaban a Oliver, sin explicación visible. Ahora solo entra
@@ -5412,33 +5413,28 @@ app.post("/webhook", async (req, res) => {
           msg = "✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.";
         } else {
           fijarAtribucion(_atInc.waId, r.phone, r.name);
-          // [2026-09-30] Si el cliente no existe como lead, se crea (upsertLead de sales-os
-          // deduplica por teléfono; no_pisar: si existía, no se le cambia nada). Fire-and-forget:
+          // [2026-09-30] Si el cliente no existe como lead, se crea (upsertLead de sales-os lo
+          // busca por teléfono; no_pisar: si existía, no se le cambia nada). Fire-and-forget:
           // un fallo acá no rompe el comando.
-          // Marca de consentimiento (08-ago): ese cliente quizá nunca le escribió al bot, y el
-          // re-enganche NO puede mandarle una plantilla. [L1 · Thermos 30-sep] Si sales-os dice
-          // que el lead YA existía, no se marca (no se le bloquea el re-enganche a un cliente
-          // con historia). Ante la duda (error, sin respuesta) SÍ se marca: es el lado seguro
-          // de la Ley 21.719.
           try {
             pushLeadEvent(leadDeAtribucion(_atInc.waId, r.phone, r.name))
-              .then((res) => { if (debeMarcarSinConsentimiento(res)) marcarSinConsentimiento(r.phone); })
-              .catch((e) => {
-                try { marcarSinConsentimiento(r.phone); } catch {}
-                try { logErr("cliente_atribucion_lead", e); } catch {}
-              });
-          } catch (e) {
-            try { marcarSinConsentimiento(r.phone); } catch {}
-            try { logErr("cliente_atribucion_lead", e); } catch {}
-          }
+              .catch((e) => { try { logErr("cliente_atribucion_lead", e); } catch {} });
+          } catch (e) { try { logErr("cliente_atribucion_lead", e); } catch {} }
+          // Consentimiento (08-ago; F1 del 30-sep): se marca SIEMPRE, salvo que ese número le
+          // haya escrito al bot alguna vez (que exista como lead NO es consentimiento). Ante
+          // error de red, se marca: es el lado seguro de la Ley 21.719.
+          let _escribio = false;
+          try { _escribio = await yaNosEscribio(r.phone); } catch { _escribio = false; }
+          if (!_escribio) { try { marcarSinConsentimiento(r.phone); } catch {} }
           msg = `✅ Cotizando para *${r.name}* (+${r.phone}).\n\n` +
             `La próxima propuesta queda a su nombre: el lead, el seguimiento y el CRM. ` +
             `El PDF te llega a vos para que se lo mandes.\n\n` +
             `Se usa UNA vez: cuando salga el PDF vuelve solo a tu nombre. ` +
-            `Igual vence a las 2 h. Para cancelar antes: *CLIENTE OFF*.\n\n` +
-            `⚠️ Como nunca escribió al bot, el seguimiento automático NO le va a llegar ` +
-            `hasta que él te escriba por acá. Es a propósito: no podemos mandarle mensajes ` +
-            `sin que él haya iniciado la conversación.`;
+            `Igual vence a las 2 h. Para cancelar antes: *CLIENTE OFF*.` +
+            (_escribio ? "" :
+              `\n\n⚠️ Como nunca escribió al bot, el seguimiento automático NO le va a llegar ` +
+              `hasta que él te escriba por acá. Es a propósito: no podemos mandarle mensajes ` +
+              `sin que él haya iniciado la conversación.`);
         }
         try { await waSendH(_atInc.waId, msg, true); } catch (e) { try { logErr("cliente_atribucion_send", e); } catch {} }
       }

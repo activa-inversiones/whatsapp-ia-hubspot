@@ -40,7 +40,8 @@ import {
   limpiar as limpiarAtribucion,
   registrarQueNosEscribio,
   identidadCotizacion,          // [2026-09-30] vendedores del equipo cotizan a nombre del cliente
-  aislarSesionPorCliente,
+  cambiarCarpeta,               // [2026-09-30] carpeta por cliente (rediseño tras el tridente)
+  limpiarSiMisma,
   clickIdsDe,
   rolCotizador,
 } from '../../services/atribucionCotizacion.js';
@@ -226,7 +227,7 @@ import {
 } from '../../services/avisoCerebroRespaldo.js';
 import { pidioDeNuevo } from '../../services/pidioDeNuevo.js';
 import { clavePendiente, decidirConciliacion, mensajeConciliado } from '../../services/conciliacionDudosa.js'; // [2026-09-16 Kimi] la conciliacion es el mecanismo real, no la idempotencia // [2026-09-16, decision del dueño] el cliente destraba lo que no se reenvia solo // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
-import { modoInternoOliver, TEXTO_PEDIR_CLIENTE_INTERNO } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
+import { modoInternoOliver, puedeComandoCliente, TEXTO_PEDIR_CLIENTE_INTERNO } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
 
 /* =========================================================================
@@ -611,6 +612,17 @@ async function transcribeAudio(buffer, mime, deps) {
  *   mediaResolved=true cuando convertimos un adjunto en texto útil.
  *   Si el adjunto no se pudo resolver, devuelve un mensaje pidiendo texto.
  */
+/**
+ * [C · 30-sep] ¿Al Deal de QUIÉN va un adjunto (foto/audio/documento)? Si quien escribe es el
+ * dueño o un vendedor autorizado con un CLIENTE fijado, al del cliente; si no, al suyo.
+ */
+export function destinoAdjunto(from) {
+  try {
+    if (!rolCotizador(from, { esInterno: puedeComandoCliente })) return from;
+    return obtenerAtribucion(from)?.phone || from;
+  } catch { return from; }
+}
+
 async function resolveUserText(inbound, body, deps) {
   const { type, text } = inbound;
 
@@ -631,7 +643,7 @@ async function resolveUserText(inbound, body, deps) {
         filename: `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, buffer, waMediaId: mediaId,
         aiDescription: (desc && desc !== '[Imagen no legible]') ? desc : '[imagen recibida]' }).catch(() => {});
       // [B1 2026-06-25] Adjuntar la imagen al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
-      attachInboundToDeal(raw?.from, buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, mime).catch(() => {});
+      attachInboundToDeal(destinoAdjunto(raw?.from), buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, mime).catch(() => {});
       // [F3b] '[Imagen no legible]' NO es contenido válido → cae al fallback que pide
       // describir por texto (evita pasar una no-descripción como medidas reales).
       if (desc && desc !== '[Imagen no legible]') {
@@ -667,7 +679,7 @@ async function resolveUserText(inbound, body, deps) {
         filename: `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, buffer, waMediaId: mediaId,
         transcription: transcript || '', aiDescription: transcript || '[audio recibido]' }).catch(() => {});
       // [B1 2026-06-25] Adjuntar el audio al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
-      attachInboundToDeal(raw?.from, buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, mime).catch(() => {});
+      attachInboundToDeal(destinoAdjunto(raw?.from), buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, mime).catch(() => {});
       if (transcript) return { userText: transcript, mediaResolved: true };
     } catch (err) {
       log('error', 'media.audio', err);
@@ -691,7 +703,7 @@ async function resolveUserText(inbound, body, deps) {
         saveMedia({ phone: raw?.from, direction: 'inbound', mediaType: 'document', mimeType: mime,
           filename: fn, buffer, waMediaId: mediaId, aiDescription: `Documento/plano entrante: ${fn}` }).catch(() => {});
         // [B1 2026-06-25] Adjuntar el documento al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
-        attachInboundToDeal(raw?.from, buffer, fn, mime).catch(() => {});
+        attachInboundToDeal(destinoAdjunto(raw?.from), buffer, fn, mime).catch(() => {});
         // [2026-06-22 FIX] Si es Excel, LEER la lista de ventanas y cotizar (antes: pedía reescribir a mano → se perdían clientes).
         const esExcel = /\.xlsx?$/i.test(fn) || /spreadsheet|excel/i.test(mime || '');
         if (esExcel && buffer) {
@@ -883,6 +895,7 @@ export async function handleWebhook(req, res, deps = {}) {
   // no, la cotización siguiente se le carga al cliente equivocado.
   let atribucionConsumida = false;
   let _fromParaAtribucion = '';
+  let _genAtribucion = null; // [E · 30-sep] versión de la atribución que usó ESTE turno
   try {
     const parseInbound    = deps.parseInbound    || realParseInbound;
     // [2026-08-08] conPausaHumana: espera lo que un humano tardaría en tipear ese texto
@@ -1393,9 +1406,13 @@ export async function handleWebhook(req, res, deps = {}) {
     // [2026-09-30] UNA sola regla de quién es el dueño y quién vendedor: la misma función que
     // usa index.js para permitir el comando CLIENTE (rolCotizador). Decisión del dueño: los
     // vendedores de /equipo con modo interno también cotizan a nombre del cliente.
-    const _rol = rolCotizador(from, { esInterno: modoInternoOliver });
+    // El rol que habilita la ATRIBUCIÓN exige el número COMPLETO (puedeComandoCliente, igual que
+    // el comando en index.js). La guardia "vendedor sin cliente no emite a su nombre" usa
+    // además el modo interno por ult9: si el número completo aún no llegó de sales-os, el
+    // vendedor igual queda frenado en vez de cotizar a su propio nombre.
+    const _rol = rolCotizador(from, { esInterno: puedeComandoCliente });
     const esDuenio = _rol === 'duenio';
-    const esVendedorInterno = _rol === 'vendedor';
+    const esVendedorInterno = _rol === 'vendedor' || (!esDuenio && modoInternoOliver(from));
     const atribucion = _rol ? obtenerAtribucion(from) : null;
     // FUENTE ÚNICA de la identidad de la cotización (identidadCotizacion): con atribución,
     // teléfono/external_id del CLIENTE, cotizado_por = últimos 9 de quien cotizó, no_pisar y
@@ -1418,6 +1435,7 @@ export async function handleWebhook(req, res, deps = {}) {
     // No se borra al primer turno porque cotizar lleva varios (medidas, color, vidrio):
     // se borra cuando sale el PDF, que es el momento en que la cotización existe.
     _fromParaAtribucion = from;
+    _genAtribucion = atribucion ? atribucion.gen : null;
 
     // [2026-08-08] Si esta persona estaba marcada como "cargada por el dueño y nunca nos
     // escribió", el hecho de que ESTÉ ESCRIBIENDO AHORA levanta la restricción: ya hay una
@@ -1475,17 +1493,24 @@ export async function handleWebhook(req, res, deps = {}) {
     // se descarta acá — mata el "saludo tardío fantasma" señalado en revisión cruzada.
     delete state.ctwa_saludo_pending;
 
-    // [2026-09-30] AISLAR LA SESIÓN AL CAMBIAR DE CLIENTE (decisión del dueño, 30-sep).
-    // La sesión es del número que escribe; si ahora cotiza para OTRO cliente, el folio, los
-    // datos confirmados, el nombre y el historial del anterior no pueden arrastrarse (reusar
-    // el folio pisaría la cotización del otro en sales-os). Ver aislarSesionPorCliente.
-    // Sin atribución y sin marca previa es un no-op: el cliente normal no cambia en nada.
+    // [2026-09-30] AL CAMBIAR DE CLIENTE (decisión del dueño, 30-sep): la sesión es del número
+    // que escribe; si ahora cotiza para OTRO cliente, el folio, los datos confirmados, el
+    // nombre y el historial del anterior no pueden arrastrarse (reusar el folio pisaría la
+    // cotización del otro en sales-os). Sin atribución y sin carpeta previa es un no-op: el
+    // cliente normal no cambia en nada.
+    // [2026-09-30 · rediseño] CARPETA POR CLIENTE: se guarda la sesión del cliente anterior y se
+    // restaura la del actual (o la propia sin atribución). Ver cambiarCarpeta.
     try {
-      if (aislarSesionPorCliente(state, history, atribucion)) {
+      const _mov = await cambiarCarpeta({
+        from, state, history, atribucion,
+        leer: deps.leerEstado || leerEstado,
+        escribir: deps.escribirEstado || escribirEstado,
+      });
+      if (_mov !== 'igual') {
         state.telefono = from;
-        log('info', 'atribucion', `${from}: sesión aislada para el cliente ${telefonoCliente}`);
+        log('info', 'atribucion', `${from}: carpeta ${_mov} → ${state.carpeta_activa}`);
       }
-    } catch { /* nunca puede tumbar el turno */ }
+    } catch (e) { log('error', 'atribucion.carpeta', e?.message || e); /* nunca tumba el turno */ }
 
     // ── (4b) CTWA — Captura atribución Meta Ads (Click-to-WhatsApp). ────────
     // Solo en el primer mensaje con referral de la sesión (flag ctwaCaptured,
@@ -2413,7 +2438,7 @@ export async function handleWebhook(req, res, deps = {}) {
           catch { /* no bloquea: el mensaje ya llegó */ }
           // [2026-09-30] Marca de ENTREGA por cliente (no por huella): respaldo local del
           // selector de documentos si sales-os no contesta.
-          try { await marcarEntregaLocal(from, 'termico', deps.escribirEstado || escribirEstado); }
+          try { await marcarEntregaLocal(telefonoCliente, 'termico', deps.escribirEstado || escribirEstado); } // [C · 30-sep] por cliente
           catch { /* solo afecta al respaldo local */ }
 
           // El informe SALIO. Se suelta el token sin liberar la reserva: si el `finally` la
@@ -2536,7 +2561,7 @@ export async function handleWebhook(req, res, deps = {}) {
             // Si la propuesta no dejo Deal, NO se archiva. Mejor sin copia que con un
             // registro a medias: el cliente ya tiene su informe igual.
             let dealId = null;
-            try { dealId = await (deps.leerEstado || leerEstado)(`deal:${String(claveCot).replace(/\D/g, '')}`); } // [H3] mismo par que la escritura
+            try { dealId = await (deps.leerEstado || leerEstado)(`deal:${String(telefonoCliente).replace(/\D/g, '')}`); } // [F2 · 30-sep] por CLIENTE, igual que Zoho
             catch { /* sin Deal no se archiva */ }
             if (!dealId) return;
             await addZohoNote(dealId,
@@ -4009,7 +4034,7 @@ Comuna: ${datos.comuna}`
               }
               try { await (deps.escribirEstado || escribirEstado)(claveV, { at: Date.now() }, 30 * 24 * 3600); }
               catch { /* el candado largo es anti-spam, no entrega */ }
-              try { await marcarEntregaLocal(from, 'vientos', deps.escribirEstado || escribirEstado); }
+              try { await marcarEntregaLocal(telefonoCliente, 'vientos', deps.escribirEstado || escribirEstado); } // [C · 30-sep] por cliente
               catch { /* solo afecta al respaldo local del selector */ }
               tokenV = null;   // entregado: la reserva corta muere sola, sin reabrir ventana
               // 🔴 [P0 · Codex] `sendWaDocument` confirma el POST a Meta, NO la entrega: el
@@ -4115,9 +4140,11 @@ Comuna: ${datos.comuna}`
           // respaldo local usa las marcas de entrega que este mismo bot deja al entregar.
           let docsSel = { termico: true, vientos: true, propuesta: true, origen: 'sin_selector' };
           try {
-            const entregasLocales = await leerEntregasLocales(from, deps.leerEstado || leerEstado);
+            // [C · 30-sep] ¿ESTE CLIENTE ya recibió el informe? Por cliente, no por quien escribe:
+            // si no, cotizar para Juan hacía creer que Pedro ya lo tenía.
+            const entregasLocales = await leerEntregasLocales(telefonoCliente, deps.leerEstado || leerEstado);
             docsSel = await (deps.decidirDocumentosCotizacion || decidirDocumentosCotizacion)({
-              telefono: from, quoteNumber, ...entregasLocales,
+              telefono: telefonoCliente, quoteNumber, ...entregasLocales,
             });
           } catch (e) { log('error', 'generarPdf.docsSel', e?.message || e); }
           const docsForzar = docsSel?.origen === 'manual';
@@ -4916,7 +4943,7 @@ Comuna: ${datos.comuna}`
                 .map((it) => `${Number(it.qty) || 1}x ${(it.producto_label || it.product || 'Ventana')} ${it.measures || ''}`.trim())
                 .join(' · ').slice(0, 300);
               await notifyQuoteSent({
-                phone: from,
+                phone: telefonoCliente, // [C · 30-sep] el "LLAMAR AHORA" es al CLIENTE, no al vendedor
                 clientName,
                 quoteValue: _conIva,
                 itemsSummary: _resumen || `Propuesta ${quoteNumber}`,
@@ -4946,7 +4973,7 @@ Comuna: ${datos.comuna}`
               // [2026-08-24] Se publica el dealId para que el INFORME se cuelgue de ESTE
               // Deal en vez de hacer su propio upsert: el suyo iria sin los datos de la
               // propuesta y pisaria el nombre y la descripcion con un payload pobre.
-              try { await (deps.escribirEstado || escribirEstado)(`deal:${String(claveCot).replace(/\D/g, '')}`, dealId, 7 * 24 * 3600); } // [H3] claveCot
+              try { await (deps.escribirEstado || escribirEstado)(`deal:${String(telefonoCliente).replace(/\D/g, '')}`, dealId, 7 * 24 * 3600); } // [F2 · 30-sep] por CLIENTE, igual que Zoho (upsertZohoDeal busca por su teléfono)
               catch { /* el informe se las arregla sin archivar */ }
             }
           });
@@ -5779,8 +5806,12 @@ Comuna: ${datos.comuna}`
     // cliente). Dejarla viva sería peor: la siguiente cotización se le cargaría a él.
     try {
       if (atribucionConsumida && _fromParaAtribucion) {
-        limpiarAtribucion(_fromParaAtribucion);
-        log('info', 'atribucion', `consumida: la próxima cotización vuelve a nombre del dueño`);
+        // [E · 30-sep] compare-and-delete: si mientras se emitía entró "CLIENTE Pedro", la de
+        // Pedro (otra `gen`) NO se borra.
+        const _borro = limpiarSiMisma(_fromParaAtribucion, _genAtribucion);
+        log('info', 'atribucion', _borro
+          ? 'consumida: la próxima cotización vuelve a nombre de quien escribe'
+          : 'no se consume: ya hay OTRO cliente fijado (se respeta)');
       }
     } catch { /* no puede tumbar el turno */ }
   }

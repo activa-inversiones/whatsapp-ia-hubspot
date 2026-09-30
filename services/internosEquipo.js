@@ -22,7 +22,17 @@ export function ultimos9(v) {
   return d.length >= 8 ? d.slice(-9) : '';
 }
 
-let _estado = { at: 0, internos: new Set(), modoInterno: new Set() };
+/**
+ * [2026-09-30] Teléfono COMPLETO normalizado (mismo criterio que sales-os telefonoCompleto):
+ * celular chileno de 9 dígitos → 56 + número; menos de 10 dígitos en otro caso → ''.
+ */
+export function telefonoCompleto(v) {
+  const d = String(v ?? '').replace(/\D/g, '');
+  if (d.length === 9 && d.startsWith('9')) return `56${d}`;
+  return d.length >= 10 ? d : '';
+}
+
+let _estado = { at: 0, internos: new Set(), modoInterno: new Set(), clienteCompletos: new Set() };
 
 /** Aplica la respuesta de sales-os ({internos_ult9, vendedores:[{ult9, oliver_interno}]}). */
 export function aplicarLista(data, ahora = Date.now()) {
@@ -34,12 +44,32 @@ export function aplicarLista(data, ahora = Date.now()) {
       .map((v) => ultimos9(v.ult9))
       .filter(Boolean),
   );
-  _estado = { at: ahora, internos, modoInterno };
+  // [2026-09-30] Para el comando CLIENTE: solo vendedores con modo interno, por número COMPLETO.
+  // Si sales-os todavía no manda `telefono`, la lista queda vacía y nadie puede usar CLIENTE
+  // salvo el dueño (fail-closed).
+  const clienteCompletos = new Set(
+    (Array.isArray(data.vendedores) ? data.vendedores : [])
+      .filter((v) => v && v.oliver_interno === true)
+      .map((v) => telefonoCompleto(v.telefono))
+      .filter(Boolean),
+  );
+  _estado = { at: ahora, internos, modoInterno, clienteCompletos };
   return true;
 }
 
 /** Solo tests. */
-export function _reiniciarParaTests() { _estado = { at: 0, internos: new Set(), modoInterno: new Set() }; }
+export function _reiniciarParaTests() { _estado = { at: 0, internos: new Set(), modoInterno: new Set(), clienteCompletos: new Set() }; }
+
+/**
+ * [2026-09-30] ¿Este número (vendedor) puede usar el comando CLIENTE? Decisión del dueño 30-sep.
+ * Por número COMPLETO (con ult9, +34 912 345 678 pasaba por +56 9 1234 5678 — Codex).
+ * Fail-closed: si la lista nunca cargó, NO.
+ */
+export function puedeComandoCliente(phone) {
+  if (!_estado.at) return false;
+  const t = telefonoCompleto(phone);
+  return !!t && _estado.clienteCompletos.has(t);
+}
 
 /** ¿El número es del equipo (dueño, bot o vendedor activo con WhatsApp cargado)? Síncrono. */
 export function esNumeroDelEquipo(phone) {

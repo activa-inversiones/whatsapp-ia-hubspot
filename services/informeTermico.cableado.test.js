@@ -408,11 +408,11 @@ test('🔴 [Codex final] el informe NO hace upsert: se cuelga del Deal de la pro
   // y mencionarla ahi no es usarla.
   assert.doesNotMatch(bloque, /await upsertZohoDeal\(/, 'el informe no crea ni actualiza el Deal');
   // [2026-09-30] Aserción ACTUALIZADA (no invertida) por decisión del dueño 30-sep (vendedores
-  // cotizan a nombre del cliente, hallazgo H3 de Thermos): la clave pasó de `from` a `claveCot`,
-  // que es `from` sin atribución y el par quien-escribe+cliente con ella. Lectura y escritura
-  // usan la MISMA clave; lo que protege este test (leer el Deal que dejó la propuesta) sigue igual.
-  assert.match(bloque, /leerEstado\)\(`deal:\$\{String\(claveCot\)/, 'lo lee del que dejo la propuesta');
-  assert.match(wh, /escribirEstado\)\(`deal:\$\{String\(claveCot\)/, 'y la propuesta lo escribe con la misma clave');
+  // cotizan a nombre del cliente) y del coordinador (F2): la clave local del Deal pasó de `from`
+  // a `telefonoCliente` — el Deal es del CLIENTE, igual que en Zoho. Sin atribución es `from`.
+  // Lectura y escritura usan la MISMA clave; lo que protege este test sigue igual.
+  assert.match(bloque, /leerEstado\)\(`deal:\$\{String\(telefonoCliente\)/, 'lo lee del que dejo la propuesta');
+  assert.match(wh, /escribirEstado\)\(`deal:\$\{String\(telefonoCliente\)/, 'y la propuesta lo escribe con la misma clave');
   assert.match(bloque, /if \(!dealId\) return;/, 'y sin Deal no archiva: mejor sin copia que a medias');
 });
 

@@ -71,8 +71,35 @@ async function correr(deps) {
 function prepararVendedor() {
   _reiniciarParaTests();
   resetAtribucion();
-  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', oliver_interno: true }] });
+  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
 }
+
+test('B 30-sep: cotiza SIN cliente → Oliver pide cliente → CLIENTE → emite con las MISMAS ventanas, a nombre del cliente', async () => {
+  prepararVendedor();
+  const ITEMS = [{ producto_label: 'Corredera SLIDING H80', measures: '1500x1200', color: 'blanco', qty: 2, unit_price: 411000 }];
+  const ev = []; const pdf = [];
+  const deps = makeDeps(VENDEDOR, 'wamid.VEND.ADOPTA', ev, pdf);
+  // Turno anterior: el vendedor listó las ventanas sin haber fijado cliente (quedaron pendientes).
+  deps.loadSession = async () => ({
+    history: [{ role: 'user', content: 'corredera 1500x1200 blanca x2' }, { role: 'assistant', content: 'dime para qué cliente es' }],
+    state: { pending_quote: { items: ITEMS, at: Date.now() } },
+  });
+  deps.handleTurn = async ({ userText, state, toolCtx }) => {
+    const result = await toolCtx.generarPdf({ name: 'Juan Pérez', comuna: 'Temuco', items: state.pending_quote.items });
+    pdf.push(result);
+    return { reply: result?.message || 'ok', history: [{ role: 'user', content: userText }], toolCalls: [{ name: 'generar_pdf_cotizacion', result }], state: { ...state } };
+  };
+  fijar(VENDEDOR, CLIENTE, 'Juan Pérez');   // el vendedor mandó CLIENTE
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+
+  const sent = ev.find((e) => e.status === 'sent');
+  assert.ok(sent, `debe emitirse (resultado: ${JSON.stringify(pdf[0])})`);
+  assert.equal(sent.phone, CLIENTE);
+  assert.equal(sent.items.length, 1);
+  assert.equal(sent.items[0].medidas, '1500x1200', 'las ventanas adoptadas, no otras');
+  assert.equal(sent.items[0].cantidad, 2);
+});
 
 test('decisión dueño 30-sep: vendedor interno con CLIENTE fijado → la cotización va con el teléfono del cliente', async () => {
   prepararVendedor();
