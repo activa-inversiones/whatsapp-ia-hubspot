@@ -27,7 +27,7 @@
 // ESM, Node 18+.
 
 import { buildSystemBlocks, buildSessionContext } from './system-prompt.js';
-import { TOOL_DEFS, toolDefsConMcp, runTool } from './tools.js';
+import { toolDefsConMcp, runTool } from './tools.js';
 import { extractComuna, extraerColor, nombreDelMensaje, detectConfirmation, sanitizeChilean } from './normalizers.js';
 import * as realEngine from './engine.js';
 

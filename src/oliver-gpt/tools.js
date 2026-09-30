@@ -6,7 +6,6 @@
 // listarlo se usa listar_vidrios (donde 'tipo' SI es familia de vidrio).
 
 import {
-  calcularCotizacion,
   calcularPorArea,
   listarVidrios,
   generarLinkAprobacion,
@@ -14,12 +13,8 @@ import {
   FAMILIAS_VIDRIO,
 } from './engine-client.js';
 import { normMeasures } from './normalizers.js';
-import {
-  sendWhatsAppImageUrl,
-  sendWhatsAppVideoUrl,
-  sendWhatsAppDocumentUrl,
-} from '../sales-agent/whatsapp-adapter.js';
-import { generatePremiumQuotePdf } from '../../services/quotePdf.js';
+import '../sales-agent/whatsapp-adapter.js';
+import '../../services/quotePdf.js';
 import { priceAllEngine } from '../../services/enginePricer.js'; // [2026-06-14] pricer completo de V1 (serie SLIDING+hojas+vidrio auto)
 import { esquinaDesdePanos, esBowPorForma, paresDelTexto } from '../../services/formaEsquina.js'; // [2026-09-26 · #947] la bow window paño por paño
 import { detectarProductoFueraDeAlcance } from '../../services/productoFueraDeAlcance.js'; // [Ronda 2] guarda temprana en calcular_por_area
@@ -47,7 +42,7 @@ export function resolverMedidasMm({ ancho_mm, alto_mm, medidas_texto, unidad_con
   // de medidas_texto (lo que el cliente escribió) sobre los números del LLM, que tiende a manglear.
   const unidad = String(unidad_confirmada || '').toLowerCase();
   if (unidad === 'mm' || unidad === 'cm') {
-    const rawPair = String(medidas_texto || '').match(/(\d+(?:[.,]\d+)?)\s*(?:[x×X\/]|por)\s*(\d+(?:[.,]\d+)?)/i);
+    const rawPair = String(medidas_texto || '').match(/(\d+(?:[.,]\d+)?)\s*(?:[x×X/]|por)\s*(\d+(?:[.,]\d+)?)/i);
     if (!rawPair) {
       // [escéptico L2] SIN par verificable en el texto del cliente NO se confía en los números del LLM
       // (riesgo real: 1,80×2,40 m transcrito como 180/240 → sub-cotización silenciosa 10×). Se pide

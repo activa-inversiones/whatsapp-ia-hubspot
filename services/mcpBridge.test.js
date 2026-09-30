@@ -15,7 +15,7 @@
 //    y Oliver funciona exactamente como hoy. Encenderlo es decisión del dueño.
 //
 // Correr con: node --test services/mcpBridge.test.js
-import { describe, it, beforeEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 let bridge;

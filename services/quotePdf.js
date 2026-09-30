@@ -6,7 +6,7 @@
 //         measures, color, qty, unit_price, glass_label, ambiente }], quote_num }
 // NO inventa precios: usa it.unit_price tal cual viene del motor.
 
-import { dibujarVentana, medidas, claveColor, COLORES } from "./dibujoVentana.js";
+import { medidas, claveColor, COLORES } from "./dibujoVentana.js";
 import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
 import { dibujarVentanaIso } from "./dibujoIsometrico.js";
 // 🔴 [2026-08-30] EL RUT DEL CLIENTE. Alfredo Arias (conv 56952077379) lo pidio CUATRO veces
