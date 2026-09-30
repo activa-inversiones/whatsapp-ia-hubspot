@@ -14,14 +14,20 @@
 // La propuesta NUNCA se apaga desde acá (caso #778: salieron informes y no la propuesta).
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const ENTREGA_TTL_SEG = 90 * 24 * 3600;   // misma ventana que sales-os (COTIZACION_DOCS_VENTANA_DIAS)
+// MISMA variable y MISMO default que sales-os (cotizacionDocumentos.ventanaDias): si alguien la
+// cambia en Railway, el respaldo local no se queda con otra ventana.
+export const ventanaDias = () => {
+  const n = Number(process.env.COTIZACION_DOCS_VENTANA_DIAS);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 90;
+};
+export const entregaTtlSeg = () => ventanaDias() * 24 * 3600;
 const ult9 = (t) => { const d = String(t || '').replace(/\D/g, ''); return d.length >= 8 ? d.slice(-9) : ''; };
 export const claveEntrega = (telefono, tipo) => `docs_entregado:${tipo}:${ult9(telefono)}`;
 
 /** Deja constancia local de que el informe `tipo` LLEGÓ a este cliente. */
 export async function marcarEntregaLocal(telefono, tipo, escribirEstado) {
   if (!ult9(telefono) || typeof escribirEstado !== 'function') return;
-  await escribirEstado(claveEntrega(telefono, tipo), { at: Date.now() }, ENTREGA_TTL_SEG);
+  await escribirEstado(claveEntrega(telefono, tipo), { at: Date.now() }, entregaTtlSeg());
 }
 
 /** Lo que el bot sabe de sus propias entregas. Ante error: "no lo sé" = no entregado. */
@@ -55,7 +61,10 @@ export async function decidirDocumentosCotizacion({ telefono, quoteNumber, termi
     const r = await fetchImpl(`${base}/internal/cotizacion-documentos/decidir`, {
       method: 'POST',
       headers: { 'x-api-key': token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tenant_id: 'activa', telefono: String(telefono || ''), quote_number: String(quoteNumber) }),
+      // docs_entregado: lo que ESTE bot sabe que entregó (marcas locales). sales-os lo suma (OR)
+      // a su registro de entregas, por si la fila 'entregado' no alcanzó a quedar en la BD.
+      body: JSON.stringify({ tenant_id: 'activa', telefono: String(telefono || ''), quote_number: String(quoteNumber),
+        docs_entregado: { termico: Boolean(termicoEntregado), vientos: Boolean(vientosEntregado) } }),
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!r?.ok) return local;

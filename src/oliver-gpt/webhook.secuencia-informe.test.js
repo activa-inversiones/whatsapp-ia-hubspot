@@ -858,6 +858,35 @@ test('📑 sales-os que no contesta a tiempo ⇒ regla local (techo de tiempo)',
   assert.deepEqual([r.termico, r.vientos, r.origen], [false, true, 'local_falta_informe']);
 });
 
+test('📑 el bot le manda a sales-os sus marcas locales de entrega (docs_entregado)', async () => {
+  const { decidirDocumentosCotizacion } = await import('../../services/documentosCotizacion.js');
+  let body = null;
+  const fetchImpl = async (u, o) => { body = JSON.parse(o.body); return { ok: true, json: async () => ({ ok: true, termico: false, vientos: true, origen: 'default_falta_informe' }) }; };
+  const r = await decidirDocumentosCotizacion({ telefono: '56911112222', quoteNumber: 'X-2', termicoEntregado: true },
+    { fetchImpl, url: 'http://x', token: 't' });
+  assert.deepEqual(body.docs_entregado, { termico: true, vientos: false });
+  assert.deepEqual([r.termico, r.vientos], [false, true]);
+});
+
+test('📑 la ventana del respaldo local sale de COTIZACION_DOCS_VENTANA_DIAS (default 90, igual que sales-os)', async () => {
+  const { marcarEntregaLocal, ventanaDias } = await import('../../services/documentosCotizacion.js');
+  const antes = process.env.COTIZACION_DOCS_VENTANA_DIAS;
+  try {
+    delete process.env.COTIZACION_DOCS_VENTANA_DIAS;
+    assert.equal(ventanaDias(), 90);
+    let ttl = null;
+    await marcarEntregaLocal('56911112222', 'termico', async (k, v, t) => { ttl = t; });
+    assert.equal(ttl, 90 * 86400);
+    process.env.COTIZACION_DOCS_VENTANA_DIAS = '30';
+    await marcarEntregaLocal('56911112222', 'termico', async (k, v, t) => { ttl = t; });
+    assert.equal(ttl, 30 * 86400);
+    process.env.COTIZACION_DOCS_VENTANA_DIAS = 'basura';
+    assert.equal(ventanaDias(), 90);
+  } finally {
+    if (antes === undefined) delete process.env.COTIZACION_DOCS_VENTANA_DIAS; else process.env.COTIZACION_DOCS_VENTANA_DIAS = antes;
+  }
+});
+
 test('📑 bot SIN sales-os: la corrección no reenvía lo que el cliente YA RECIBIÓ (aunque cambie el proyecto)', async () => {
   const x = makeDeps({ modoOn: true });
   const corte = await dosTurnos(x);

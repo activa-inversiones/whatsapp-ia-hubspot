@@ -4063,9 +4063,8 @@ Comuna: ${datos.comuna}`
           // y al cliente no le gustaría que le enviemos los informes cada vez"*. Medido (30 d,
           // sin teléfonos internos): 26 clientes recibieron el térmico más de una vez (33
           // reenvíos) — el candado de 30 días es por HUELLA y una modificación la cambia.
-          // Primera cotización → los tres; versión posterior → solo la propuesta, salvo que
-          // en el cockpit se marque a mano (entonces se manda aunque el candado diga que ya
-          // lo tiene). La PROPUESTA no la apaga nada. Ante cualquier error: decisión local.
+          // La marca manual del cockpit manda (se envía aunque el candado diga que ya lo
+          // tiene). La PROPUESTA no la apaga nada. Ante cualquier error: decisión local.
           // [2026-09-30 · rediseño tras la compuerta] La regla es "¿este cliente YA RECIBIÓ este
           // informe?". sales-os lo sabe por el registro ISO de entregas; si no contesta, el
           // respaldo local usa las marcas de entrega que este mismo bot deja al entregar.
