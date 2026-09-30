@@ -63,7 +63,7 @@ import { elegirVideo, mensajeDelVideo, mediaIdsDisponibles } from '../../service
 // de la casa), Oliver arma el PDF y lo entrega como 2o documento.
 import { pedirVientos, ventanasParaVientos } from '../../services/vientosThermal.js';
 import { generarInformeVientosPdf } from '../../services/informeVientosPdf.js';
-import { decidirDocumentosCotizacion } from '../../services/documentosCotizacion.js'; // [2026-09-30] selector de documentos por cotización
+import { decidirDocumentosCotizacion, leerEntregasLocales, marcarEntregaLocal } from '../../services/documentosCotizacion.js'; // [2026-09-30] selector de documentos por cotización
 import { numerarVentanas } from '../../services/etiquetaVentana.js'; // [2026-09-19] el numero se congela antes de filtrar
 
 // Cuanto se espera antes de mandar el video. Cae DESPUES del informe termico (4 s + 35 s)
@@ -2381,6 +2381,10 @@ export async function handleWebhook(req, res, deps = {}) {
           }
           try { await (deps.escribirEstado || escribirEstado)(clave, { at: Date.now() }, 30 * 24 * 3600); }
           catch { /* no bloquea: el mensaje ya llegó */ }
+          // [2026-09-30] Marca de ENTREGA por cliente (no por huella): respaldo local del
+          // selector de documentos si sales-os no contesta.
+          try { await marcarEntregaLocal(from, 'termico', deps.escribirEstado || escribirEstado); }
+          catch { /* solo afecta al respaldo local */ }
 
           // El informe SALIO. Se suelta el token sin liberar la reserva: si el `finally` la
           // soltara ahora, se reabriria la ventana del duplicado justo despues de mandar.
@@ -3458,9 +3462,6 @@ Comuna: ${datos.comuna}`
           const SALES_OS_URL = (process.env.SALES_OS_URL || '').replace(/\/$/, '');
           const OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || '';
           let quoteNumber = null;
-          // [2026-09-30] Se mira ANTES de emitir: ¿este cliente ya tenía una cotización en la
-          // sesión? Es el respaldo local del selector de documentos si sales-os no contesta.
-          const _habiaCotizacionPrevia = Boolean(state?.last_quote?.quote_number);
           let descuentoMercadoPct = 0; // [2026-06-24] viene del correlativo → se muestra en el PDF
           // [2026-08-08] esRevision: ¿este PDF es la PRIMERA propuesta o una corrección de
           // una que el cliente YA recibió? Caso real del 08-ago (Jessica, +56965340471): en
@@ -3963,6 +3964,8 @@ Comuna: ${datos.comuna}`
               }
               try { await (deps.escribirEstado || escribirEstado)(claveV, { at: Date.now() }, 30 * 24 * 3600); }
               catch { /* el candado largo es anti-spam, no entrega */ }
+              try { await marcarEntregaLocal(from, 'vientos', deps.escribirEstado || escribirEstado); }
+              catch { /* solo afecta al respaldo local del selector */ }
               tokenV = null;   // entregado: la reserva corta muere sola, sin reabrir ventana
               // 🔴 [P0 · Codex] `sendWaDocument` confirma el POST a Meta, NO la entrega: el
               // acuse real llega despues por webhook. El termico deja este rastro para que un
@@ -4063,14 +4066,27 @@ Comuna: ${datos.comuna}`
           // Primera cotización → los tres; versión posterior → solo la propuesta, salvo que
           // en el cockpit se marque a mano (entonces se manda aunque el candado diga que ya
           // lo tiene). La PROPUESTA no la apaga nada. Ante cualquier error: decisión local.
+          // [2026-09-30 · rediseño tras la compuerta] La regla es "¿este cliente YA RECIBIÓ este
+          // informe?". sales-os lo sabe por el registro ISO de entregas; si no contesta, el
+          // respaldo local usa las marcas de entrega que este mismo bot deja al entregar.
           let docsSel = { termico: true, vientos: true, propuesta: true, origen: 'sin_selector' };
           try {
+            const entregasLocales = await leerEntregasLocales(from, deps.leerEstado || leerEstado);
             docsSel = await (deps.decidirDocumentosCotizacion || decidirDocumentosCotizacion)({
-              telefono: from, quoteNumber,
-              habiaCotizacionPrevia: Boolean(_habiaCotizacionPrevia),
+              telefono: from, quoteNumber, ...entregasLocales,
             });
           } catch (e) { log('error', 'generarPdf.docsSel', e?.message || e); }
           const docsForzar = docsSel?.origen === 'manual';
+          // El informe de vientos con su propio techo (motor + PDF + pausa + envío): regalo
+          // que jamás retiene la propuesta. Un solo lugar para los dos caminos que lo usan.
+          const enviarVientosConTecho = async (etiqueta) => {
+            const techoMs = Number(deps.seqVientosTimeoutMs ?? (SEQ_VIENTOS_MS + 30_000));
+            let vence = null;
+            return Promise.race([
+              safe(`generarPdf.vientos.${etiqueta}`, () => enviarInformeVientos({ forzar: docsForzar })),
+              new Promise((res) => { vence = setTimeout(() => res('timeout'), techoMs); }),
+            ]).finally(() => { if (vence) clearTimeout(vence); });
+          };
           log('info', 'generarPdf.docsSel',
             `${from}: ${quoteNumber} → térmico=${docsSel.termico} vientos=${docsSel.vientos} (${docsSel.origen})`);
 
@@ -4188,12 +4204,7 @@ Comuna: ${datos.comuna}`
                 // video. Con su propio techo: regalo que jamás retiene el precio.
                 // El techo cubre pausa + motor + PDF + envío: con la pausa de ritmo en
                 // 25 s, un techo fijo de 30 s la habría convertido en timeout permanente.
-                const techoVientosMs = Number(deps.seqVientosTimeoutMs ?? (SEQ_VIENTOS_MS + 30_000));
-                let venceVientos = null;
-                const resVientos = !docsSel.vientos ? 'no_seleccionado' : await Promise.race([
-                  safe('generarPdf.vientos.secuencia', () => enviarInformeVientos({ forzar: docsForzar })),
-                  new Promise((res) => { venceVientos = setTimeout(() => res('timeout'), techoVientosMs); }),
-                ]).finally(() => { if (venceVientos) clearTimeout(venceVientos); });
+                const resVientos = !docsSel.vientos ? 'no_seleccionado' : await enviarVientosConTecho('secuencia');
                 log('info', 'generarPdf.secuencia', `${from}: vientos → ${resVientos || 'sin_resultado'}`);
 
                 // Paso 6 de la secuencia: el video cae ENTRE el informe y la propuesta.
@@ -4216,12 +4227,7 @@ Comuna: ${datos.comuna}`
               } else if (resultadoInforme === 'no_seleccionado' && docsSel.vientos) {
                 // [2026-09-30] Térmico desmarcado pero vientos marcado a mano: sale solo el de
                 // vientos, con su techo, y sin video (el video acompaña a la secuencia completa).
-                const techoV2 = Number(deps.seqVientosTimeoutMs ?? (SEQ_VIENTOS_MS + 30_000));
-                let venceV2 = null;
-                const resV2 = await Promise.race([
-                  safe('generarPdf.vientos.solo', () => enviarInformeVientos({ forzar: docsForzar })),
-                  new Promise((res) => { venceV2 = setTimeout(() => res('timeout'), techoV2); }),
-                ]).finally(() => { if (venceV2) clearTimeout(venceV2); });
+                const resV2 = await enviarVientosConTecho('solo');
                 log('info', 'generarPdf.secuencia', `${from}: vientos (sin térmico) → ${resV2 || 'sin_resultado'}`);
               }
               // 'ya_enviado' / 'en_curso' / 'timeout' / 'fallo': se sigue derecho a la

@@ -802,13 +802,124 @@ test('📑 marcar el TÉRMICO a mano lo manda aunque el candado de 30 días diga
   assert.equal(pos(spy, 'vientos'), -1, 'vientos desmarcado ⇒ no sale');
 });
 
-test('📑 sales-os caído ⇒ decisión local: sin cotización previa en la sesión = los tres', async () => {
+/* ── 📑 [2026-09-30 · rediseño tras la compuerta] La regla es "¿este cliente YA RECIBIÓ
+ * este informe?", no "¿hubo cotización antes?". Los tres BLOQUEA que la originaron:
+ * marca manual que no se consumía, corrección con el mismo folio que reenviaba, y primer
+ * informe fallido que no salía nunca más. Estos tests fijan la conducta, no la forma. ── */
+
+// El proyecto con OTRO vidrio: cambia la huella del candado de 30 días. Si el test pasara
+// igual con el mismo proyecto, lo estaría defendiendo el candado, no el selector.
+const turnoConVidrio = (spy, vidrio, precio = 100000) => async ({ state, toolCtx }) => {
+  spy.pdfResults.push(await toolCtx.generarPdf({
+    items: VENTANAS.map((v) => ({
+      product: v.producto, producto_label: v.producto, measures: v.medidas,
+      measures_original: v.medidas, glass_label: vidrio, ambiente: v.ambiente,
+      qty: v.cantidad, unit_price: precio, total_price: precio, color: 'Nogal',
+      termico: v.uw === null ? null : { uw: v.uw },
+    })),
+    comuna: 'Temuco', name: 'Dady',
+  }));
+  return { reply: 'Listo', history: [], toolCalls: [], state: { ...state, name: 'Dady' } };
+};
+const cuenta = (spy, tipo, desde = 0) => spy.linea.slice(desde).filter((x) => x.tipo === tipo).length;
+async function dosTurnos(x, { antesDelSegundo = async () => {} } = {}) {
+  x.deps.handleTurn = turnoConVidrio(x.spy, 'DVH 5/12/5');
+  await handleWebhook({ body: {} }, makeRes(), x.deps);
+  assert.ok(await esperar(() => cuenta(x.spy, 'propuesta') >= 1), 'primera propuesta');
+  const corte = x.spy.linea.length;
+  await antesDelSegundo();
+  x.deps.seen = new Set();
+  x.deps.handleTurn = turnoConVidrio(x.spy, 'DVH 4/12/4 low-e', 130000);
+  await handleWebhook({ body: {} }, makeRes(), x.deps);
+  assert.ok(await esperar(() => cuenta(x.spy, 'propuesta', corte) >= 1), 'la propuesta de la corrección sale SIEMPRE');
+  return corte;
+}
+
+test('📑 sales-os caído ⇒ regla local por ENTREGAS: nada=los tres · térmico entregado=solo vientos · ambos=solo propuesta', async () => {
   const { decidirDocumentosCotizacion } = await import('../../services/documentosCotizacion.js');
   const caido = async () => { throw new Error('ECONNREFUSED'); };
-  const a = await decidirDocumentosCotizacion({ telefono: '56911112222', quoteNumber: 'CM-FR-004-2026-0700', habiaCotizacionPrevia: false },
-    { fetchImpl: caido, url: 'http://x', token: 't' });
+  const o = { fetchImpl: caido, url: 'http://x', token: 't' };
+  const q = { telefono: '56911112222', quoteNumber: 'CM-FR-004-2026-0700' };
+  const a = await decidirDocumentosCotizacion(q, o);
   assert.deepEqual([a.termico, a.vientos, a.propuesta], [true, true, true]);
-  const b = await decidirDocumentosCotizacion({ telefono: '56911112222', quoteNumber: 'CM-FR-004-2026-0701', habiaCotizacionPrevia: true },
-    { fetchImpl: caido, url: 'http://x', token: 't' });
-  assert.deepEqual([b.termico, b.vientos, b.propuesta], [false, false, true]);
+  const b = await decidirDocumentosCotizacion({ ...q, termicoEntregado: true }, o);
+  assert.deepEqual([b.termico, b.vientos, b.propuesta], [false, true, true]);
+  const c = await decidirDocumentosCotizacion({ ...q, termicoEntregado: true, vientosEntregado: true }, o);
+  assert.deepEqual([c.termico, c.vientos, c.propuesta], [false, false, true]);
+});
+
+test('📑 sales-os que no contesta a tiempo ⇒ regla local (techo de tiempo)', async () => {
+  const { decidirDocumentosCotizacion } = await import('../../services/documentosCotizacion.js');
+  const colgado = (u, { signal }) => new Promise((_, rej) => signal.addEventListener('abort', () => rej(new Error('abort'))));
+  const t0 = Date.now();
+  const r = await decidirDocumentosCotizacion({ telefono: '56911112222', quoteNumber: 'X-1', termicoEntregado: true },
+    { fetchImpl: colgado, url: 'http://x', token: 't', timeoutMs: 50 });
+  assert.ok(Date.now() - t0 < 2000);
+  assert.deepEqual([r.termico, r.vientos, r.origen], [false, true, 'local_falta_informe']);
+});
+
+test('📑 bot SIN sales-os: la corrección no reenvía lo que el cliente YA RECIBIÓ (aunque cambie el proyecto)', async () => {
+  const x = makeDeps({ modoOn: true });
+  const corte = await dosTurnos(x);
+  assert.ok(cuenta(x.spy, 'informe') >= 1 && cuenta(x.spy, 'vientos') >= 1, 'la primera lleva los informes');
+  assert.equal(cuenta(x.spy, 'informe', corte), 0, 'la corrección NO reenvía el térmico');
+  assert.equal(cuenta(x.spy, 'vientos', corte), 0, 'la corrección NO reenvía el de vientos');
+});
+
+test('📑 bot SIN sales-os: si el primer térmico FALLÓ, la corrección SÍ lo manda', async () => {
+  const x = makeDeps({ modoOn: true });
+  const enviar = x.deps.sendWaDocument;
+  let falla = true;
+  x.deps.sendWaDocument = async (to, m, filename, cap) => {
+    if (falla && /^Informe-Termico/.test(filename || '')) {
+      x.spy.linea.push({ tipo: 'informe_fallido', detalle: filename });
+      return { ok: false, error: 'Meta rechazo', status: 400, code: 131047 };
+    }
+    return enviar(to, m, filename, cap);
+  };
+  const corte = await dosTurnos(x, { antesDelSegundo: async () => { falla = false; } });
+  assert.ok(cuenta(x.spy, 'informe_fallido') >= 1, 'control: el primero falló de verdad');
+  assert.ok(cuenta(x.spy, 'informe', corte) >= 1, 'el térmico que nunca llegó sale con la corrección');
+});
+
+test('📑 camino feliz CONTRA sales-os (fetch espía): corrección con el MISMO folio no reenvía lo entregado', async () => {
+  // sales-os falso que aplica la regla real: un informe está "entregado" cuando el bot lo
+  // REGISTRÓ en /internal/informes/registrar (después del ok de Meta).
+  const fetchOriginal = global.fetch;
+  const envPrev = { u: process.env.SALES_OS_URL, t: process.env.SALES_OS_OPERATOR_TOKEN };
+  const entregados = new Set(); const decidir = [];
+  process.env.SALES_OS_URL = 'http://sos.test'; process.env.SALES_OS_OPERATOR_TOKEN = 'tok-test';
+  global.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    let body = {};
+    try { body = opts.body ? JSON.parse(opts.body) : {}; } catch { /* body no JSON */ }
+    if (u.endsWith('/internal/cotizacion-documentos/decidir')) {
+      decidir.push(body);
+      return { ok: true, status: 200, json: async () => ({ ok: true, quote_number: body.quote_number,
+        termico: !entregados.has('termico'), vientos: !entregados.has('vientos'), propuesta: true, origen: 'sos' }) };
+    }
+    if (u.endsWith('/internal/informes/registrar')) {
+      entregados.add(body.tipo || 'termico');
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }
+    return fetchOriginal(url, opts);
+  };
+  try {
+    const x = makeDeps({ modoOn: true });
+    const corte = await dosTurnos(x, {
+      antesDelSegundo: async () => { assert.ok(await esperar(() => entregados.size === 2), 'el bot registró las dos entregas'); },
+    });
+    assert.equal(decidir.length, 2, 'el bot le preguntó a sales-os en cada envío');
+    // Una corrección de un documento ya entregado lleva LETRA (0392 → 0392-B): mismo folio base.
+    const base = (f) => String(f).replace(/-[A-Z]$/, '');
+    assert.equal(base(decidir[0].quote_number), base(decidir[1].quote_number), 'mismo folio las dos veces');
+    assert.equal(decidir[0].telefono, x.telefono);
+    assert.ok(cuenta(x.spy, 'informe') >= 1 && cuenta(x.spy, 'vientos') >= 1, 'el primero lleva los informes');
+    assert.equal(cuenta(x.spy, 'informe', corte), 0, 'mismo folio, ya entregado ⇒ sin térmico');
+    assert.equal(cuenta(x.spy, 'vientos', corte), 0, 'mismo folio, ya entregado ⇒ sin vientos');
+  } finally {
+    global.fetch = fetchOriginal;
+    if (envPrev.u === undefined) delete process.env.SALES_OS_URL; else process.env.SALES_OS_URL = envPrev.u;
+    if (envPrev.t === undefined) delete process.env.SALES_OS_OPERATOR_TOKEN; else process.env.SALES_OS_OPERATOR_TOKEN = envPrev.t;
+  }
 });
