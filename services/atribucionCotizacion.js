@@ -201,48 +201,97 @@ export async function sinConsentimientoAsync(phone) {
  * @param {string} waId
  * @param {{adminPhone:string, esInterno:(p:string)=>boolean}} o
  */
-export function puedeUsarComandoCliente(waId, { adminPhone = '', esInterno = () => false } = {}) {
-  const w = soloDigitos(waId);
-  if (!w) return false;
-  const a = soloDigitos(adminPhone);
-  if (a && w === a) return true;
-  try { return esInterno(w) === true; } catch { return false; }
+export function puedeUsarComandoCliente(waId, opciones = {}) {
+  return rolCotizador(waId, opciones) !== null;
 }
 
-/** Últimos 9 dígitos: identifica al vendedor sin exponer el número completo. */
-export const ultimos9 = (v) => { const d = soloDigitos(v); return d.length >= 8 ? d.slice(-9) : ''; };
+/**
+ * Teléfono del dueño: UNA sola regla para index.js y webhook.js (antes cada uno tenía la suya).
+ * ADMIN_PHONE primero (es la que usaba el comando CLIENTE en index.js), OWNER_PHONE de respaldo.
+ */
+export function telefonoDuenio() {
+  return soloDigitos(process.env.ADMIN_PHONE || process.env.OWNER_PHONE || '56957296035');
+}
 
 /**
- * De quién es la cotización de este turno.
- * Sin atribución: el cliente ES quien escribe (idéntico a antes, cotizadoPor null).
+ * ¿Quién cotiza? 'duenio' · 'vendedor' (de /equipo con modo interno) · null (cualquier otro).
+ * @param {string} waId
+ * @param {{adminPhone?:string, esInterno?:(p:string)=>boolean}} [o]
+ */
+export function rolCotizador(waId, { adminPhone = telefonoDuenio(), esInterno = () => false } = {}) {
+  const w = soloDigitos(waId);
+  if (!w) return null;
+  const a = soloDigitos(adminPhone);
+  if (a && w === a) return 'duenio';
+  try { return esInterno(w) === true ? 'vendedor' : null; } catch { return null; }
+}
+
+/** Últimos 9 dígitos: identifica a quien cotizó sin exponer el número completo. */
+export const ultimos9 = (v) => { const d = soloDigitos(v); return d.length >= 8 ? d.slice(-9) : ''; };
+
+const CLICK_IDS = ['fbclid', 'gclid', 'ttclid', 'ctwa_clid', 'ad_id'];
+
+/**
+ * Click-ids a mandar. Con atribución TODOS null: los de la sesión son de quien escribe
+ * (vendedor/dueño), no del cliente — criterio de saveLead desde el 08-ago.
+ * `landing_ref` sale de `landing_lead_id` de la sesión.
+ */
+export function clickIdsDe(src, atribucion) {
+  const s = (!atribucion && src && typeof src === 'object') ? src : {};
+  const out = {};
+  for (const k of CLICK_IDS) out[k] = s[k] || null;
+  out.landing_ref = s.landing_lead_id || null;
+  return out;
+}
+
+/**
+ * De quién es la cotización de este turno. FUENTE ÚNICA para todos los payloads.
+ * Sin atribución: el cliente ES quien escribe (idéntico a antes: sin cotizado_por, sin extras).
+ * `cotizado_por` va en la RAÍZ del objeto que se ingesta: sales-os guarda la raíz entera en
+ * `quotes.payload` (quoteService.upsertQuote) y en `lead_events.payload` (leadService.upsertLead).
  */
 export function identidadCotizacion(from, atribucion) {
   if (!atribucion || !atribucion.phone) {
-    return { telefonoCliente: from, externalId: from, cotizadoPor: null, atribuida: false };
+    return { telefonoCliente: from, claveCot: from, cotizadoPor: null, atribuida: false, extraLead: {} };
   }
+  const cotizadoPor = ultimos9(from) || null;
   return {
     telefonoCliente: atribucion.phone,
-    externalId: atribucion.phone,
-    cotizadoPor: ultimos9(from) || null,
+    claveCot: `${from}:${atribucion.phone}`,
+    cotizadoPor,
     atribuida: true,
+    // no_pisar: si el cliente ya es lead, sales-os solo completa lo vacío (no cambia su
+    // origen, canal, nombre ni score). source marca que lo cargó alguien del equipo.
+    extraLead: { external_id: atribucion.phone, cotizado_por: cotizadoPor, no_pisar: true, source: 'vendedor_equipo' },
   };
 }
 
 /** Lead mínimo del cliente al fijar la atribución (upsertLead de sales-os deduplica por teléfono). */
 export function leadDeAtribucion(waIdVendedor, phone, name) {
   const p = normalizar(phone);
+  const { extraLead } = identidadCotizacion(soloDigitos(waIdVendedor), { phone: p });
   return {
     phone: p,
     channel: 'whatsapp',
     name: String(name || '').trim(),
-    external_id: p,
-    cotizado_por: ultimos9(waIdVendedor) || null,
-    metadata: { source: 'comando_CLIENTE', via: 'comando_CLIENTE', cotizado_por: ultimos9(waIdVendedor) || null },
+    ...extraLead,
+    metadata: { via: 'comando_CLIENTE', cotizado_por: extraLead.cotizado_por },
   };
 }
 
+/**
+ * [L1 · Thermos 30-sep] ¿Marcar "sin consentimiento" tras el push del lead al fijar CLIENTE?
+ * Solo NO se marca si sales-os confirmó que el lead YA existía (action 'updated'). Ante
+ * cualquier duda se marca: mandarle una plantilla a quien no consintió no se arregla después.
+ */
+export function debeMarcarSinConsentimiento(resultadoPush) {
+  return !(resultadoPush && resultadoPush.ok === true && resultadoPush.json?.action === 'updated');
+}
+
 // Campos de sesión que NO son del cliente y sobreviven al cambio de cliente.
-const SESION_CONSERVA = new Set(['telefono', 'fecha', 'lastMessageAt', 'lq_por_cliente']);
+// Exportada para que un test documente la lista: agregar algo acá es decidir que se arrastra
+// de un cliente al siguiente.
+export const SESION_CONSERVA = new Set(['telefono', 'fecha', 'lastMessageAt', 'lq_por_cliente']);
 const MAX_LQ_POR_CLIENTE = 20;
 
 /**
@@ -268,16 +317,42 @@ export function aislarSesionPorCliente(state, history, atribucion) {
   const stash = (state.lq_por_cliente && typeof state.lq_por_cliente === 'object') ? { ...state.lq_por_cliente } : {};
   // '_propio' = lo que cotizó quien escribe para sí mismo (sin atribución).
   const clave = (p) => p || '_propio';
-  if (state.last_quote) stash[clave(previo)] = state.last_quote;
-  const claves = Object.keys(stash);
-  while (claves.length > MAX_LQ_POR_CLIENTE) delete stash[claves.shift()];
+  const guardar = () => {
+    if (state.last_quote) stash[clave(previo)] = state.last_quote;
+    const claves = Object.keys(stash);
+    while (claves.length > MAX_LQ_POR_CLIENTE) delete stash[claves.shift()];
+  };
+  const restaurar = (p) => { if (stash[clave(p)]) state.last_quote = stash[clave(p)]; else delete state.last_quote; };
 
+  // [M1 · Thermos 30-sep] La atribución se CONSUMIÓ al emitir (o se soltó): NO se borra la
+  // sesión —el dueño sigue su conversación—, solo se aparta el FOLIO del cliente para que lo
+  // que cotice ahora a su nombre no lo reuse.
+  if (!actual) {
+    guardar();
+    state.lq_por_cliente = stash;
+    delete state.atrib_cliente;
+    state.atrib_ultimo = previo;
+    restaurar('');
+    return false;
+  }
+  // Vuelve a fijar el MISMO cliente de recién (p.ej. para corregir): no es cambio de cliente.
+  const ultimo = previo || (state.atrib_ultimo ? String(state.atrib_ultimo) : '');
+  if (actual === ultimo) {
+    guardar();
+    state.lq_por_cliente = stash;
+    state.atrib_cliente = actual;
+    delete state.atrib_ultimo;
+    restaurar(actual);
+    return false;
+  }
+
+  // Cliente DISTINTO: se aísla todo.
+  guardar();
   for (const k of Object.keys(state)) if (!SESION_CONSERVA.has(k)) delete state[k];
   if (Array.isArray(history)) history.length = 0;
-
   state.lq_por_cliente = stash;
-  if (actual) state.atrib_cliente = actual;
-  if (stash[clave(actual)]) state.last_quote = stash[clave(actual)];
+  state.atrib_cliente = actual;
+  restaurar(actual);
   return true;
 }
 

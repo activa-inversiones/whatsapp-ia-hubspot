@@ -313,6 +313,7 @@ import {
   sinConsentimientoAsync,
   puedeUsarComandoCliente,   // [2026-09-30] dueño o vendedor de /equipo con modo interno
   leadDeAtribucion,
+  debeMarcarSinConsentimiento,
 } from "./services/atribucionCotizacion.js";
 // [2026-08-08] Estado del bot que sobrevive a un redeploy (respaldo en Postgres).
 import { leer as leerEstado, escribir as escribirEstado } from "./services/estadoPersistente.js";
@@ -5394,8 +5395,7 @@ app.post("/webhook", async (req, res) => {
     // [2026-09-30] Decisión del dueño: además de él, los vendedores que ÉL cargó en /equipo
     // con «Cotizar con Oliver en modo interno». Cualquier otro número sigue sin poder.
     if (_atInc?.ok && _atInc.type === "text" && verifySig(req) &&
-        puedeUsarComandoCliente(normalizeWaId(_atInc.waId), {
-          adminPhone: normalizeAdminPhone(ADMIN_PHONE), esInterno: modoInternoOliver }) &&
+        puedeUsarComandoCliente(normalizeWaId(_atInc.waId), { esInterno: modoInternoOliver }) &&
         // [2026-08-08] pareceComandoCliente y NO /^cliente\b/: interceptar todo lo que
         // empieza con "cliente" se comía mensajes reales del dueño ("Cliente me pidió otra
         // medida") que nunca llegaban a Oliver, sin explicación visible. Ahora solo entra
@@ -5412,16 +5412,26 @@ app.post("/webhook", async (req, res) => {
           msg = "✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.";
         } else {
           fijarAtribucion(_atInc.waId, r.phone, r.name);
-          // Ese cliente nunca le escribio al bot: queda marcado para que el re-enganche
-          // automatico NO le mande una plantilla sin su consentimiento.
-          marcarSinConsentimiento(r.phone);
           // [2026-09-30] Si el cliente no existe como lead, se crea (upsertLead de sales-os
-          // deduplica por teléfono). Fire-and-forget: un fallo acá no rompe el comando.
+          // deduplica por teléfono; no_pisar: si existía, no se le cambia nada). Fire-and-forget:
+          // un fallo acá no rompe el comando.
+          // Marca de consentimiento (08-ago): ese cliente quizá nunca le escribió al bot, y el
+          // re-enganche NO puede mandarle una plantilla. [L1 · Thermos 30-sep] Si sales-os dice
+          // que el lead YA existía, no se marca (no se le bloquea el re-enganche a un cliente
+          // con historia). Ante la duda (error, sin respuesta) SÍ se marca: es el lado seguro
+          // de la Ley 21.719.
           try {
             pushLeadEvent(leadDeAtribucion(_atInc.waId, r.phone, r.name))
-              .catch((e) => { try { logErr("cliente_atribucion_lead", e); } catch {} });
-          } catch (e) { try { logErr("cliente_atribucion_lead", e); } catch {} }
-          msg =`✅ Cotizando para *${r.name}* (+${r.phone}).\n\n` +
+              .then((res) => { if (debeMarcarSinConsentimiento(res)) marcarSinConsentimiento(r.phone); })
+              .catch((e) => {
+                try { marcarSinConsentimiento(r.phone); } catch {}
+                try { logErr("cliente_atribucion_lead", e); } catch {}
+              });
+          } catch (e) {
+            try { marcarSinConsentimiento(r.phone); } catch {}
+            try { logErr("cliente_atribucion_lead", e); } catch {}
+          }
+          msg = `✅ Cotizando para *${r.name}* (+${r.phone}).\n\n` +
             `La próxima propuesta queda a su nombre: el lead, el seguimiento y el CRM. ` +
             `El PDF te llega a vos para que se lo mandes.\n\n` +
             `Se usa UNA vez: cuando salga el PDF vuelve solo a tu nombre. ` +

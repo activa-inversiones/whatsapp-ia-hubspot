@@ -87,6 +87,9 @@ test('decisión dueño 30-sep: vendedor interno con CLIENTE fijado → la cotiza
   assert.equal(sent.lead.phone, CLIENTE);
   assert.equal(sent.lead.external_id, CLIENTE);
   assert.equal(sent.cotizado_por, '911110000');
+  assert.equal(sent.lead.no_pisar, true, 'H1: si el cliente ya es lead, sales-os no lo pisa');
+  assert.equal(sent.lead.source, 'vendedor_equipo');
+  assert.equal(sent.gclid, null, 'sin click-ids de quien escribe');
   assert.equal(sent.quote_number, 'CM-FR-004-2026-0777', 'folio ISO normal');
   assert.ok(!JSON.stringify(sent).includes(VENDEDOR), 'el número completo del vendedor no viaja');
   for (const e of ev) {
@@ -96,10 +99,17 @@ test('decisión dueño 30-sep: vendedor interno con CLIENTE fijado → la cotiza
 
 test('decisión dueño 30-sep: vendedor interno SIN CLIENTE no emite propuesta a su nombre', async () => {
   prepararVendedor();
-  const ev = []; const pdf = [];
-  try { await correr(makeDeps(VENDEDOR, 'wamid.VEND.SIN', ev, pdf)); }
+  const ev = []; const pdf = []; const leads = [];
+  const deps = makeDeps(VENDEDOR, 'wamid.VEND.SIN', ev, pdf);
+  deps.bridge.pushLeadEvent = async (p) => { leads.push(p); return { ok: true }; };
+  const turnoOriginal = deps.handleTurn;
+  deps.handleTurn = async (args) => { await args.toolCtx.saveLead({ name: 'Vendedor' }); return turnoOriginal(args); };
+  try { await correr(deps); }
   finally { _reiniciarParaTests(); resetAtribucion(); }
 
+  // [M2 · Thermos 30-sep] ni lead ni borrador a nombre del vendedor
+  assert.equal(leads.filter((l) => l.phone === VENDEDOR).length, 0, 'saveLead no guarda al vendedor como lead');
+  assert.equal(ev.filter((e) => e.phone === VENDEDOR).length, 0, 'ningún quote-event a su número');
   assert.equal(pdf[0]?.reason, 'interno_sin_cliente');
   assert.match(pdf[0]?.message || '', /CLIENTE Nombre/);
   assert.equal(ev.find((e) => e.status === 'sent'), undefined, 'no se quema folio a nombre del vendedor');
@@ -119,4 +129,6 @@ test('decisión dueño 30-sep: sin atribución (cliente normal) el payload queda
   assert.equal('cotizado_por' in sent, false);
   assert.equal('cotizado_por' in sent.lead, false);
   assert.equal('cotizado_por' in sent.payload, false);
+  assert.equal('no_pisar' in sent.lead, false, 'un cliente normal sigue actualizando su lead como siempre');
+  assert.equal(sent.lead.source, 'oliver_gpt');
 });

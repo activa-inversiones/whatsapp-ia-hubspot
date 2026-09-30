@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   puedeUsarComandoCliente, identidadCotizacion, aislarSesionPorCliente, leadDeAtribucion,
+  clickIdsDe, rolCotizador, debeMarcarSinConsentimiento, SESION_CONSERVA,
 } from './atribucionCotizacion.js';
 import { aplicarLista, modoInternoOliver, _reiniciarParaTests } from './internosEquipo.js';
 
@@ -38,16 +39,66 @@ test('decisión dueño 30-sep: index.js usa el candado compartido para el comand
   const dir = path.dirname(fileURLToPath(import.meta.url));
   const src = fs.readFileSync(path.join(dir, '..', 'index.js'), 'utf8');
   assert.match(src, /puedeUsarComandoCliente\(normalizeWaId\(_atInc\.waId\)/);
+  // Y webhook.js decide dueño/vendedor con la MISMA regla (sin número propio).
+  const wh = fs.readFileSync(path.join(dir, '..', 'src', 'oliver-gpt', 'webhook.js'), 'utf8');
+  assert.match(wh, /rolCotizador\(from, \{ esInterno: modoInternoOliver \}\)/);
+  assert.doesNotMatch(wh, /const esDuenio = normalizarTel/);
   assert.match(src, /esInterno: modoInternoOliver/);
 });
 
 test('decisión dueño 30-sep: con atribución la identidad es del CLIENTE y cotizado_por = últimos 9 del vendedor', () => {
   const id = identidadCotizacion(VENDEDOR, { phone: '56987654321', name: 'Juan' });
   assert.equal(id.telefonoCliente, '56987654321');
-  assert.equal(id.externalId, '56987654321');
+  assert.equal(id.claveCot, `${VENDEDOR}:56987654321`);
   assert.equal(id.cotizadoPor, '911110000');
+  assert.deepEqual(id.extraLead, {
+    external_id: '56987654321', cotizado_por: '911110000', no_pisar: true, source: 'vendedor_equipo',
+  });
   const sin = identidadCotizacion(VENDEDOR, null);
-  assert.deepEqual(sin, { telefonoCliente: VENDEDOR, externalId: VENDEDOR, cotizadoPor: null, atribuida: false });
+  assert.deepEqual(sin, { telefonoCliente: VENDEDOR, claveCot: VENDEDOR, cotizadoPor: null, atribuida: false, extraLead: {} });
+});
+
+test('decisión dueño 30-sep: con atribución no viajan los click-ids de quien escribe', () => {
+  const s = { fbclid: 'f', gclid: 'g', ttclid: 't', ctwa_clid: 'c', ad_id: 'a', landing_lead_id: 'l' };
+  assert.deepEqual(clickIdsDe(s, null), { fbclid: 'f', gclid: 'g', ttclid: 't', ctwa_clid: 'c', ad_id: 'a', landing_ref: 'l' });
+  assert.deepEqual(clickIdsDe(s, { phone: '56987654321' }),
+    { fbclid: null, gclid: null, ttclid: null, ctwa_clid: null, ad_id: null, landing_ref: null });
+});
+
+test('decisión dueño 30-sep: UNA regla de rol (dueño / vendedor / nadie)', () => {
+  const esInterno = (p) => p === VENDEDOR;
+  assert.equal(rolCotizador(ADMIN, { adminPhone: ADMIN, esInterno }), 'duenio');
+  assert.equal(rolCotizador(VENDEDOR, { adminPhone: ADMIN, esInterno }), 'vendedor');
+  assert.equal(rolCotizador(OTRO, { adminPhone: ADMIN, esInterno }), null);
+});
+
+test('L1 Thermos 30-sep: solo NO se marca sin-consentimiento si sales-os confirma que el lead ya existía', () => {
+  assert.equal(debeMarcarSinConsentimiento({ ok: true, json: { action: 'updated' } }), false);
+  assert.equal(debeMarcarSinConsentimiento({ ok: true, json: { action: 'created' } }), true);
+  assert.equal(debeMarcarSinConsentimiento({ ok: false, error: 'timeout' }), true);
+  assert.equal(debeMarcarSinConsentimiento(undefined), true);
+});
+
+test('decisión dueño 30-sep: la lista de lo que sobrevive a un cambio de cliente está documentada', () => {
+  // Agregar un campo acá es decidir que se ARRASTRA de un cliente al siguiente. last_quote,
+  // lockedData, name, click-ids NO pueden estar.
+  assert.deepEqual([...SESION_CONSERVA].sort(), ['fecha', 'lastMessageAt', 'lq_por_cliente', 'telefono']);
+});
+
+test('M1 Thermos 30-sep: consumir la atribución al emitir NO borra la sesión, pero aparta el folio del cliente', () => {
+  const history = [{ role: 'user', content: 'medidas…' }];
+  const lqJuan = { quote_number: 'CM-FR-004-2026-0600', at: Date.now() };
+  const state = { telefono: ADMIN, atrib_cliente: '56987654321', name: 'Marcelo', lockedData: { comuna: 'Temuco' }, last_quote: lqJuan };
+  assert.equal(aislarSesionPorCliente(state, history, null), false, 'no es un aislamiento');
+  assert.equal(history.length, 1, 'el historial sigue');
+  assert.equal(state.name, 'Marcelo');
+  assert.deepEqual(state.lockedData, { comuna: 'Temuco' });
+  assert.equal(state.last_quote, undefined, 'el folio de Juan no queda para lo que cotice a su nombre');
+  // Re-fijar el MISMO cliente (para corregir) no borra nada y le devuelve SU folio.
+  assert.equal(aislarSesionPorCliente(state, history, { phone: '56987654321' }), false);
+  assert.equal(history.length, 1);
+  assert.equal(state.last_quote, lqJuan);
+  assert.equal(state.atrib_cliente, '56987654321');
 });
 
 test('decisión dueño 30-sep: al fijar cliente se crea su lead con su teléfono (no el del vendedor)', () => {
@@ -56,6 +107,8 @@ test('decisión dueño 30-sep: al fijar cliente se crea su lead con su teléfono
   assert.equal(l.external_id, '56987654321');
   assert.equal(l.name, 'Juan Pérez');
   assert.equal(l.cotizado_por, '911110000');
+  assert.equal(l.no_pisar, true, 'si ya existía, sales-os no le pisa origen/nombre/score (H1)');
+  assert.equal(l.source, 'vendedor_equipo');
   assert.ok(!JSON.stringify(l).includes(VENDEDOR), 'no expone el número completo del vendedor');
 });
 
