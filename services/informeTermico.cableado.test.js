@@ -376,8 +376,10 @@ test('🔴 el informe se despacha con la PROPUESTA y con el proyecto completo', 
   // [2026-08-27 · #524] La condicion crecio: en modo informe-primero el despacho ya
   // ocurrio ANTES de la propuesta, asi que este camino clasico ademas exige NO estar
   // en esa secuencia. El requisito original (docSent) sigue adentro, intacto.
-  assert.match(bloque, /if \(docSent && !modoInformePrimero\) \{/,
-    'solo si la propuesta se entrego (y no se despacho ya en la secuencia informe-primero)');
+  // [2026-09-30 · dueño] Y ADEMÁS solo si el selector de documentos de ESTA cotización lo
+  // incluye: una modificación no reenvía el informe (ver webhook.selector-documentos.test.js).
+  assert.match(bloque, /if \(docSent && !modoInformePrimero && docsSel\.termico\) \{/,
+    'solo si la propuesta se entrego, no se despacho ya en la secuencia, y el selector lo incluye');
   assert.match(bloque, /const ventanasProyecto = \(input\.items \|\| \[\]\)\.map/,
     'las ventanas salen de los items de la propuesta, que es donde esta el proyecto entero');
   assert.match(bloque, /uw: it\.termico\?\.uw \?\? null/,

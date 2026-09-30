@@ -512,12 +512,16 @@ test('🔴 [dueño 28-ago] un cambio de proyecto minutos después NO repite el d
 
   assert.equal(spy.textos.filter((t) => /warm-edge/.test(String(t))).length, 1,
     'el discurso completo NO se repite en la segunda ronda');
-  assert.ok(spy.textos.some((t) => /informes del proyecto al día/.test(String(t))),
-    'en su lugar sale la variante corta');
   assert.ok(!spy.textos.some((t) => /enseguida/.test(String(t))),
     '[Copilot] la variante corta no promete "enseguida": la secuencia toma minutos a propósito');
-  assert.equal(tipos(spy).filter((t) => t === 'informe').length, 2,
-    'los DOCUMENTOS sí se reenvían: el proyecto cambió y el contenido es nuevo');
+  // 🔁 ASERCIÓN DADA VUELTA A PROPÓSITO — 2026-09-30, orden del dueño, textual resumido:
+  // *"le podemos modificar 2, 3, 4 veces a un cliente la cotización y al cliente no le
+  // gustaría que le enviemos los informes cada vez que modificamos algo"*.
+  // Antes (28-ago) esto fijaba lo contrario: "los DOCUMENTOS sí se reenvían: el proyecto
+  // cambió". Ahora una versión posterior lleva SOLO la propuesta, salvo que en el cockpit
+  // se marque a mano el informe (eso se prueba en webhook.selector-documentos.test.js).
+  assert.equal(tipos(spy).filter((t) => t === 'informe').length, 1,
+    'una MODIFICACIÓN no reenvía el informe: solo sale la propuesta actualizada');
 });
 
 test('🔴 [dueño 28-ago] piso de ritmo: entre el mensaje de valor y el térmico se espera lo que falte', async () => {
@@ -743,4 +747,68 @@ test('🔴 [Kimi] si el CORRELATIVO falla, la reserva se suelta: el cliente pued
   } finally {
     global.fetch = fetchOriginal;
   }
+});
+
+/* =========================================================================
+ * 📑 SELECTOR DE DOCUMENTOS POR COTIZACIÓN (dueño, 30-sep):
+ * "le podemos modificar 2, 3, 4 veces a un cliente la cotización y al cliente no le
+ * gustaría que le enviemos los informes cada vez que modificamos algo".
+ * Guardia de la DECISIÓN: si una modificación vuelve a reenviar informes, esto se pone rojo.
+ * ========================================================================= */
+
+test('📑 la PRIMERA cotización manda los tres: térmico, vientos y propuesta', async () => {
+  const { deps, spy } = makeDeps({ modoOn: true });
+  deps.decidirDocumentosCotizacion = async () => ({ termico: true, vientos: true, propuesta: true, origen: 'default_primera' });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  assert.ok(pos(spy, 'informe') >= 0, 'sale el térmico');
+  assert.ok(pos(spy, 'vientos') >= 0, 'sale el de vientos');
+});
+
+test('📑 una MODIFICACIÓN (selector sin informes) NO reenvía informes: solo la propuesta', async () => {
+  const { deps, spy } = makeDeps({ modoOn: true });
+  deps.decidirDocumentosCotizacion = async () => ({ termico: false, vientos: false, propuesta: true, origen: 'default_modificacion' });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta sale SIEMPRE');
+  assert.equal(pos(spy, 'informe'), -1, 'sin térmico');
+  assert.equal(pos(spy, 'vientos'), -1, 'sin vientos');
+  assert.ok(!spy.textos.some((t) => /warm-edge|informes del proyecto/.test(String(t))),
+    'y sin anunciar informes que no van a llegar');
+});
+
+test('📑 marcar el TÉRMICO a mano lo manda aunque el candado de 30 días diga que ya lo tiene', async () => {
+  // Control: con los candados de 30 días puestos (hace 2 h) para la huella REAL del
+  // proyecto, el default NO manda nada. Marcado a mano, sí.
+  const huella = huellaDelInforme({
+    comuna: 'Temuco', producto: 'Ventana PVC H98 corredera 3 hojas', glassLabel: 'DVH 5/12/5',
+  });
+  const hace2h = Date.now() - 2 * 3600 * 1000;
+  const conCandados = async () => {
+    const x = makeDeps({ modoOn: true });
+    await x.deps.escribirEstado(`informe_termico:${x.telefono}:${huella}`, { at: hace2h }, 3000);
+    await x.deps.escribirEstado(`informe_vientos:${x.telefono}:${huella}`, { at: hace2h }, 3000);
+    return x;
+  };
+  const control = await conCandados();
+  await handleWebhook({ body: {} }, makeRes(), control.deps);
+  assert.ok(await esperar(() => pos(control.spy, 'propuesta') >= 0));
+  assert.equal(pos(control.spy, 'informe'), -1, 'control: candado vigente ⇒ sin térmico');
+
+  const { deps, spy } = await conCandados();
+  deps.decidirDocumentosCotizacion = async () => ({ termico: true, vientos: false, propuesta: true, origen: 'manual' });
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  assert.ok(pos(spy, 'informe') >= 0, 'marcado a mano ⇒ el térmico sale aunque ya lo tenga');
+  assert.equal(pos(spy, 'vientos'), -1, 'vientos desmarcado ⇒ no sale');
+});
+
+test('📑 sales-os caído ⇒ decisión local: sin cotización previa en la sesión = los tres', async () => {
+  const { decidirDocumentosCotizacion } = await import('../../services/documentosCotizacion.js');
+  const caido = async () => { throw new Error('ECONNREFUSED'); };
+  const a = await decidirDocumentosCotizacion({ telefono: '56911112222', quoteNumber: 'CM-FR-004-2026-0700', habiaCotizacionPrevia: false },
+    { fetchImpl: caido, url: 'http://x', token: 't' });
+  assert.deepEqual([a.termico, a.vientos, a.propuesta], [true, true, true]);
+  const b = await decidirDocumentosCotizacion({ telefono: '56911112222', quoteNumber: 'CM-FR-004-2026-0701', habiaCotizacionPrevia: true },
+    { fetchImpl: caido, url: 'http://x', token: 't' });
+  assert.deepEqual([b.termico, b.vientos, b.propuesta], [false, false, true]);
 });

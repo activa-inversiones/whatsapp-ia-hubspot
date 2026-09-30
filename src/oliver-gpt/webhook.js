@@ -63,6 +63,7 @@ import { elegirVideo, mensajeDelVideo, mediaIdsDisponibles } from '../../service
 // de la casa), Oliver arma el PDF y lo entrega como 2o documento.
 import { pedirVientos, ventanasParaVientos } from '../../services/vientosThermal.js';
 import { generarInformeVientosPdf } from '../../services/informeVientosPdf.js';
+import { decidirDocumentosCotizacion } from '../../services/documentosCotizacion.js'; // [2026-09-30] selector de documentos por cotización
 import { numerarVentanas } from '../../services/etiquetaVentana.js'; // [2026-09-19] el numero se congela antes de filtrar
 
 // Cuanto se espera antes de mandar el video. Cae DESPUES del informe termico (4 s + 35 s)
@@ -3457,6 +3458,9 @@ Comuna: ${datos.comuna}`
           const SALES_OS_URL = (process.env.SALES_OS_URL || '').replace(/\/$/, '');
           const OPERATOR_TOKEN = process.env.SALES_OS_OPERATOR_TOKEN || '';
           let quoteNumber = null;
+          // [2026-09-30] Se mira ANTES de emitir: ¿este cliente ya tenía una cotización en la
+          // sesión? Es el respaldo local del selector de documentos si sales-os no contesta.
+          const _habiaCotizacionPrevia = Boolean(state?.last_quote?.quote_number);
           let descuentoMercadoPct = 0; // [2026-06-24] viene del correlativo → se muestra en el PDF
           // [2026-08-08] esRevision: ¿este PDF es la PRIMERA propuesta o una corrección de
           // una que el cliente YA recibió? Caso real del 08-ago (Jessica, +56965340471): en
@@ -3796,7 +3800,7 @@ Comuna: ${datos.comuna}`
           // cliente no nota ningún hueco. Candado de 30 días por huella del proyecto
           // (mismo criterio anti-spam que el térmico). Folio serie LOCAL propia INF-V
           // mientras sales-os no tenga la serie CM-FR de vientos (tablero #541).
-          const enviarInformeVientos = async () => {
+          const enviarInformeVientos = async ({ forzar = false } = {}) => {
             // 🔴 [2026-09-03] SEGUNDO CORTE DE LA RAFAGA: el informe de vientos es el TERCER
             // documento de la secuencia y llega ~25 s despues del anterior. Si el cliente ya
             // escribio, se lo guarda para el turno siguiente en vez de encimarselo.
@@ -3817,7 +3821,8 @@ Comuna: ${datos.comuna}`
             try {
               const _cand = await (deps.leerEstado || leerEstado)(claveV);
               const _resetAt = Number(await (deps.leerEstado || leerEstado)(`informe_reset:${_tel}`)) || 0;
-              if (candadoVigente(_cand, _resetAt)) return 'ya_enviado';
+              // [2026-09-30] Marcado a mano en el cockpit ⇒ se manda aunque ya lo tenga.
+              if (!forzar && candadoVigente(_cand, _resetAt)) return 'ya_enviado';
             } catch { /* sin estado se sigue: mejor un posible repetido que ninguno */ }
             let tokenV = null;
             try {
@@ -4050,6 +4055,25 @@ Comuna: ${datos.comuna}`
           // 🔴 [Codex, compuerta] El gate va DENTRO de un try propio: si el hook inyectable
           // lanzara, el safe('generarPdf') exterior devolvería null y el cliente se
           // quedaría SIN propuesta — exactamente lo que esta secuencia jura no hacer.
+          // ── 📑 [2026-09-30] SELECTOR DE DOCUMENTOS POR COTIZACIÓN ──────────────────
+          // Pedido del dueño: *"le podemos modificar 2, 3, 4 veces a un cliente la cotización
+          // y al cliente no le gustaría que le enviemos los informes cada vez"*. Medido (30 d,
+          // sin teléfonos internos): 26 clientes recibieron el térmico más de una vez (33
+          // reenvíos) — el candado de 30 días es por HUELLA y una modificación la cambia.
+          // Primera cotización → los tres; versión posterior → solo la propuesta, salvo que
+          // en el cockpit se marque a mano (entonces se manda aunque el candado diga que ya
+          // lo tiene). La PROPUESTA no la apaga nada. Ante cualquier error: decisión local.
+          let docsSel = { termico: true, vientos: true, propuesta: true, origen: 'sin_selector' };
+          try {
+            docsSel = await (deps.decidirDocumentosCotizacion || decidirDocumentosCotizacion)({
+              telefono: from, quoteNumber,
+              habiaCotizacionPrevia: Boolean(_habiaCotizacionPrevia),
+            });
+          } catch (e) { log('error', 'generarPdf.docsSel', e?.message || e); }
+          const docsForzar = docsSel?.origen === 'manual';
+          log('info', 'generarPdf.docsSel',
+            `${from}: ${quoteNumber} → térmico=${docsSel.termico} vientos=${docsSel.vientos} (${docsSel.origen})`);
+
           let modoInformePrimero = false;
           try { modoInformePrimero = Boolean((deps.secuenciaInformePrimero || secuenciaInformePrimero)(from)); }
           catch (e) { log('error', 'generarPdf.secuencia.gate', e?.message || e); }
@@ -4136,8 +4160,9 @@ Comuna: ${datos.comuna}`
               // Inyectable en test (120 s reales harian imposible probar el camino del techo).
               const techoInformeMs = Number(deps.seqInformeTimeoutMs ?? SEQ_INFORME_TIMEOUT_MS);
               let venceTimeout = null;
-              const resultadoInforme = await Promise.race([
+              const resultadoInforme = !docsSel.termico ? 'no_seleccionado' : await Promise.race([
                 despacharInforme(clientComuna || state.comuna || '', {
+                  forzar: docsForzar,
                   ventanas: ventanasProyecto,
                   glassLabel: ultima.glass_label || '',
                   uw: ultima.termico?.uw ?? null,
@@ -4165,8 +4190,8 @@ Comuna: ${datos.comuna}`
                 // 25 s, un techo fijo de 30 s la habría convertido en timeout permanente.
                 const techoVientosMs = Number(deps.seqVientosTimeoutMs ?? (SEQ_VIENTOS_MS + 30_000));
                 let venceVientos = null;
-                const resVientos = await Promise.race([
-                  safe('generarPdf.vientos.secuencia', () => enviarInformeVientos()),
+                const resVientos = !docsSel.vientos ? 'no_seleccionado' : await Promise.race([
+                  safe('generarPdf.vientos.secuencia', () => enviarInformeVientos({ forzar: docsForzar })),
                   new Promise((res) => { venceVientos = setTimeout(() => res('timeout'), techoVientosMs); }),
                 ]).finally(() => { if (venceVientos) clearTimeout(venceVientos); });
                 log('info', 'generarPdf.secuencia', `${from}: vientos → ${resVientos || 'sin_resultado'}`);
@@ -4188,6 +4213,16 @@ Comuna: ${datos.comuna}`
                 // tenía la propuesta encima. Solo en el camino 'enviado': un informe
                 // repetido o caído no gana demora.
                 await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: SEQ_PRECIO_MS });
+              } else if (resultadoInforme === 'no_seleccionado' && docsSel.vientos) {
+                // [2026-09-30] Térmico desmarcado pero vientos marcado a mano: sale solo el de
+                // vientos, con su techo, y sin video (el video acompaña a la secuencia completa).
+                const techoV2 = Number(deps.seqVientosTimeoutMs ?? (SEQ_VIENTOS_MS + 30_000));
+                let venceV2 = null;
+                const resV2 = await Promise.race([
+                  safe('generarPdf.vientos.solo', () => enviarInformeVientos({ forzar: docsForzar })),
+                  new Promise((res) => { venceV2 = setTimeout(() => res('timeout'), techoV2); }),
+                ]).finally(() => { if (venceV2) clearTimeout(venceV2); });
+                log('info', 'generarPdf.secuencia', `${from}: vientos (sin térmico) → ${resV2 || 'sin_resultado'}`);
               }
               // 'ya_enviado' / 'en_curso' / 'timeout' / 'fallo': se sigue derecho a la
               // propuesta. En timeout el informe puede llegar después por su cuenta —
@@ -4310,7 +4345,12 @@ Comuna: ${datos.comuna}`
           // la propuesta y fire-and-forget: no puede demorar ni tumbar el PDF.
           // [2026-08-27 · #524] En modo informe-primero el despacho ya ocurrió ANTES de la
           // propuesta (y sus candados cubrirían igual un doble disparo): no se repite.
-          if (docSent && !modoInformePrimero) {
+          // [2026-09-30] Una modificación NO reenvía el informe (selector de documentos).
+          if (docSent && !modoInformePrimero && docsSel.vientos && docsForzar) {
+            // El camino clásico nunca mandó vientos; solo si alguien lo marcó a mano.
+            safe('generarPdf.vientos.clasico', () => enviarInformeVientos({ forzar: true }));
+          }
+          if (docSent && !modoInformePrimero && docsSel.termico) {
             try {
               const ventanasProyecto = (input.items || []).map((it) => ({
                 // 🔴 [2026-09-19] EL MISMO NUMERO DE VENTANA EN LOS TRES DOCUMENTOS.
@@ -4331,6 +4371,7 @@ Comuna: ${datos.comuna}`
               }));
               const ultima = (input.items || []).at(-1) || {};
               despacharInforme(input.comuna || state.comuna || '', {
+                forzar: docsForzar,
                 ventanas: ventanasProyecto,
                 // El resumen sale de la ULTIMA ventana del proyecto, los tres campos
                 // juntos: tomarlos por separado dejaba `producto` de una y `uw` de otra.
