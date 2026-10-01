@@ -61,21 +61,12 @@ export function parseComandoCliente(texto) {
   // [Tridente r3 #5, 30-sep] Con dos bloques de 9+ dígitos (p. ej. RUT + celular) "el más largo"
   // es una adivinanza: un RUT de 9 dígitos y un celular de 9 empatan. Si alguno empieza con
   // 56/+56 se toma ESE; si no, se rechaza y se pide el formato inequívoco.
-  // Un bloque de MÁS de 12 dígitos tampoco es un teléfono: son dos números separados por
-  // espacios que la tolerancia a "+56 9 1234 5678" juntó (p. ej. "123456789 987654321").
-  const largos = candidatos.filter((c) => soloDigitos(c).length >= 9);
-  const pegados = candidatos.some((c) => soloDigitos(c).length > 12);
-  let crudo = '';
-  if (largos.length > 1 || pegados) {
-    const con56 = largos.filter((c) => /^\+?\s*56/.test(c.trim()));
-    if (con56.length !== 1) {
-      return { ok: false, error: 'Hay más de un número en el mensaje y no sé cuál es el WhatsApp. ' +
-        'Escríbelo con el código de país: CLIENTE Juan Pérez +56912345678' };
-    }
-    crudo = con56[0];
-  } else {
-    for (const c of candidatos) if (soloDigitos(c).length > soloDigitos(crudo).length) crudo = c;
+  const elegido = elegirTelefono(candidatos);
+  if (!elegido.ok) {
+    return { ok: false, error: 'Hay más de un número en el mensaje y no sé cuál es el WhatsApp. ' +
+      'Escríbelo solo, con el código de país: CLIENTE Juan Pérez +56912345678' };
   }
+  const crudo = elegido.crudo;
   const phone = soloDigitos(crudo);
   // ⚠️ 9 dígitos mínimo, NO 8. La primera versión aceptaba 8 y les anteponía "569" sola:
   // un typo se convertía en el teléfono de OTRA persona, y la cotización le llegaba a un
@@ -99,6 +90,28 @@ export function parseComandoCliente(texto) {
     };
   }
   return { ok: true, phone: normalizar(phone), name };
+}
+
+/**
+ * [Tridente r3 #5 / Thermos r6] Elige el teléfono entre los bloques de dígitos del comando. Pura.
+ *  · Un bloque de MÁS de 12 dígitos no es un teléfono: son dos números que la tolerancia a
+ *    espacios ("+56 9 1234 5678") juntó — se rechaza SIEMPRE, empiece o no con 56
+ *    ("+56912345678 987654321" son 20 dígitos).
+ *  · Con dos o más bloques de 9+ dígitos (RUT + celular), solo vale si exactamente uno empieza
+ *    con 56/+56; si no, es ambiguo.
+ *  · Con uno solo, el más largo (como siempre).
+ * @returns {{ok:true, crudo:string}|{ok:false}}
+ */
+export function elegirTelefono(candidatos = []) {
+  if (candidatos.some((c) => soloDigitos(c).length > 12)) return { ok: false };
+  const largos = candidatos.filter((c) => soloDigitos(c).length >= 9);
+  if (largos.length > 1) {
+    const con56 = largos.filter((c) => /^\+?\s*56/.test(c.trim()));
+    return con56.length === 1 ? { ok: true, crudo: con56[0] } : { ok: false };
+  }
+  let crudo = '';
+  for (const c of candidatos) if (soloDigitos(c).length > soloDigitos(crudo).length) crudo = c;
+  return { ok: true, crudo };
 }
 
 /**
@@ -314,7 +327,9 @@ export function identidadCotizacion(from, atribucion) {
   const cotizadoPor = ultimos9(from) || null;
   return {
     telefonoCliente: atribucion.phone,
-    externalId: atribucion.phone,     // [r3 #6] los payloads lo toman de acá, no de un spread
+    // [r3 #6] los payloads de lead lo toman de acá, no de un spread. Excepción documentada:
+    // saveLead lo manda SOLO con atribución (sin ella nunca lo mandó; ver webhook saveLead).
+    externalId: atribucion.phone,
     claveCot: `${from}:${atribucion.phone}`,
     cotizadoPor,
     atribuida: true,

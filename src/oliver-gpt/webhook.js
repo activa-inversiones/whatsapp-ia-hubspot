@@ -1419,6 +1419,9 @@ export async function handleWebhook(req, res, deps = {}) {
     // sin click-ids de quien escribe; y claveCot = par quien-escribe+cliente para TODAS las
     // claves por cotización (dedup de folio, informes, deal). Sin atribución, todo = from.
     const _idCot = identidadCotizacion(from, atribucion);
+    // 📌 REGLA: el teléfono de QUIEN ESCRIBE es `from` (chat, acuses, sesión, envíos de WhatsApp);
+    // el DUEÑO DEL REGISTRO es `telefonoCliente` (lead, cotización, informes, archivos, espejos,
+    // Deal). Sin atribución son el mismo número.
     const telefonoCliente = _idCot.telefonoCliente;
     const cotizadoPor = _idCot.cotizadoPor;
     const claveCot = _idCot.claveCot;
@@ -2728,7 +2731,9 @@ Comuna: ${datos.comuna}`
               landing_lead_id: leadState.landing_ref || leadState.landing_lead_id || state.landing_lead_id,
             }, atribucion),
             // [2026-09-30] Con atribución: external_id del cliente (identidad), cotizado_por, no_pisar
-            // y source. Sin atribución no se agrega nada (como antes).
+            // y source. Sin atribución NO se agrega external_id, a diferencia de los otros payloads:
+            // saveLead nunca lo mandó y agregarlo cambiaría el lead_events.payload de todo cliente
+            // normal (Thermos r6: se deja así a propósito; ver identidadCotizacion).
             ...(atribucion ? { external_id: _idCot.externalId } : {}),
             ...extraLead,
             // [2026-08-08] Trazabilidad ISO: queda escrito que este lead lo cargó alguien del

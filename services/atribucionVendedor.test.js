@@ -167,6 +167,10 @@ test('Tridente r3 #5 (30-sep): CLIENTE con dos números de 9+ dígitos (RUT + ce
   assert.equal(r.ok, true);
   assert.equal(r.phone, '56987654321');
   assert.equal(r.name.includes('12.345.678-9'), true, 'el otro número queda en el texto, no se toma como teléfono');
+  // [Thermos r6] Bloque pegado que EMPIEZA con 56 pero trae dos números (20 dígitos): no se acepta crudo.
+  const pegado = parseComandoCliente('CLIENTE Juan +56912345678 987654321');
+  assert.equal(pegado.ok, false, 'no acepta un "teléfono" de 20 dígitos');
+  assert.match(pegado.error, /más de un número/);
   // Un solo número: como siempre.
   assert.equal(parseComandoCliente('CLIENTE Juan 987654321').phone, '56987654321');
 });
