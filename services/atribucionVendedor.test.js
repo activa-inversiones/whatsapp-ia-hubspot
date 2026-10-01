@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   puedeUsarComandoCliente, identidadCotizacion, leadDeAtribucion, clickIdsDe, rolCotizador,
-  clavesCotizacion, procesarComandoCliente, avisoSigueCotizandoPara, telefonoDuenio, DUENIO_DEFAULT,
+  clavesCotizacion, procesarComandoCliente, mensajeTrasPdf, telefonoDuenio, DUENIO_DEFAULT,
   fijar, obtener, limpiarSiMisma, yaNosEscribio, VIGENCIA_MS, _reset,
 } from './atribucionCotizacion.js';
 import { aplicarLista, puedeComandoCliente, _reiniciarParaTests } from './internosEquipo.js';
@@ -87,7 +87,8 @@ test('decisión 30-sep: de quién es cada clave de estado (informes/entregas/dea
   assert.equal(c.letraVientos, `informe_letra:${JUAN}:vientos`);
   assert.equal(c.reset, `informe_reset:${JUAN}`, 'el reset del dueño destraba los candados del cliente');
   assert.equal(c.deal, `deal:${JUAN}`, 'un Deal por cliente, igual que Zoho');
-  assert.equal(c.entrega, JUAN);
+  assert.equal(c.cliente, JUAN);
+  assert.equal(c.entrega, JUAN, 'alias de compatibilidad');
   assert.equal(c.quotesig, `quotesig:${VENDEDOR}${JUAN}`, 'el dedup de folio es del par quien-escribe+cliente');
   assert.equal(c.emision('x'), `quote_emision:${VENDEDOR}${JUAN}:x`);
   // Sin atribución: todo es de quien escribe, como siempre.
@@ -132,30 +133,49 @@ test('E 30-sep: limpiarSiMisma solo borra la MISMA versión (carrera CLIENTE Jua
   _reset();
 });
 
-test('decisión 30-sep (Thermos r2): la atribución NO se consume sola; termina con OFF, otro CLIENTE o TTL sin uso', async () => {
+test('«Cliente explícito» 30-sep: CLIENTE fija; CLIENTE OFF termina; el TTL cuenta desde que se fijó (usarla NO la renueva)', async () => {
   _reset();
   const pushes = [];
   const msg = await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Juan Pérez +${JUAN}`,
-    pushLead: async (p) => { pushes.push(p); }, escribio: async () => false, marcar: () => {} });
+    pushLead: async (p) => { pushes.push(p); }, escribio: async () => false, marcar: () => {}, esDelEquipo: () => false });
   assert.match(msg, /Cotizando para \*Juan Pérez\*/);
-  assert.match(msg, /CLIENTE OFF/);
   assert.equal(pushes[0].phone, JUAN);
   assert.equal(obtener(VENDEDOR).phone, JUAN);
-  assert.equal(obtener(VENDEDOR).phone, JUAN, 'usarla no la consume');
-  assert.match(avisoSigueCotizandoPara(obtener(VENDEDOR)), /Sigues cotizando para \*Juan Pérez\*.*CLIENTE OFF/s);
+  assert.match(mensajeTrasPdf(obtener(VENDEDOR)), /Propuesta de \*Juan Pérez\* emitida\. Para corregirla manda CLIENTE Juan Pérez \+56987654321/);
   await procesarComandoCliente({ waId: VENDEDOR, texto: 'CLIENTE OFF', pushLead: async () => {} });
   assert.equal(obtener(VENDEDOR), null, 'CLIENTE OFF la termina');
 
-  // TTL: vence sin uso; el uso la renueva.
   const realNow = Date.now;
   try {
     let t = realNow();
     Date.now = () => t;
     fijar(VENDEDOR, JUAN, 'Juan');
     t += VIGENCIA_MS - 1000; assert.ok(obtener(VENDEDOR), 'dentro de la vigencia');
-    t += VIGENCIA_MS - 1000; assert.ok(obtener(VENDEDOR), 'renovada por el uso anterior');
-    t += VIGENCIA_MS + 1;    assert.equal(obtener(VENDEDOR), null, 'sin uso, vence');
+    t += 2000;               assert.equal(obtener(VENDEDOR), null, 'usarla no la renovó: vence a las 2 h de fijada');
   } finally { Date.now = realNow; _reset(); }
+});
+
+test('5 · CLIENTE rechaza el propio número de quien escribe y cualquier número del equipo', async () => {
+  _reset();
+  const r1 = await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Yo Mismo +${VENDEDOR}`,
+    pushLead: async () => {}, escribio: async () => false, marcar: () => {}, esDelEquipo: () => false });
+  assert.match(r1, /^⚠️/);
+  assert.equal(obtener(VENDEDOR), null);
+  const r2 = await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Colega +${OTRO}`,
+    pushLead: async () => {}, escribio: async () => false, marcar: () => {}, esDelEquipo: (p) => p === OTRO });
+  assert.match(r2, /^⚠️/);
+  assert.equal(obtener(VENDEDOR), null);
+  _reset();
+});
+
+test('10 · si la lista del equipo no se refrescó con éxito en 30 min, CLIENTE se rechaza (fail-closed por antigüedad)', () => {
+  _reiniciarParaTests();
+  const hace31 = Date.now() - 31 * 60 * 1000;
+  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] }, hace31);
+  assert.equal(puedeComandoCliente(VENDEDOR), false);
+  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
+  assert.equal(puedeComandoCliente(VENDEDOR), true);
+  _reiniciarParaTests();
 });
 
 test('F1 30-sep: "ya nos escribió" solo si ese número escribió al bot (ser lead no cuenta)', async () => {
@@ -166,9 +186,9 @@ test('F1 30-sep: "ya nos escribió" solo si ese número escribió al bot (ser le
   // Y el comando marca "sin consentimiento" salvo que haya escrito.
   const marcados = [];
   await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Juan +${JUAN}`, pushLead: async () => {},
-    escribio: async () => false, marcar: (p) => marcados.push(p) });
+    escribio: async () => false, marcar: (p) => marcados.push(p), esDelEquipo: () => false });
   await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Pedro +${PEDRO}`, pushLead: async () => {},
-    escribio: async () => true, marcar: (p) => marcados.push(p) });
+    escribio: async () => true, marcar: (p) => marcados.push(p), esDelEquipo: () => false });
   assert.deepEqual(marcados, [JUAN]);
   _reset();
 });

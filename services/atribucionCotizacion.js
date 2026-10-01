@@ -27,7 +27,7 @@ import {
   escribir as escribirEstado,
   borrar as borrarEstado,
 } from './estadoPersistente.js';
-import { ultimos9 } from './internosEquipo.js'; // una sola copia en el bot
+import { ultimos9, esNumeroDelEquipo } from './internosEquipo.js'; // una sola copia en el bot
 export { ultimos9 };
 
 const ATRIBUCIONES = new Map(); // telefonoDelDuenio -> { phone, name, ts, gen }
@@ -130,16 +130,14 @@ export function fijar(telefonoDuenio, phone, name) {
 
 /**
  * @returns {{phone:string,name:string,gen:number}|null} null si no hay o si ya venció.
- * [2026-09-30] La vigencia se RENUEVA con cada uso: la atribución ya no se consume al emitir el
- * PDF (las correcciones siguen yendo al cliente); vence a las VIGENCIA_MS sin usarse, o con
- * otro CLIENTE / CLIENTE OFF.
+ * [2026-09-30 · «Cliente explícito»] Vence a las VIGENCIA_MS desde que se FIJÓ (usarla no la
+ * renueva); además se consume al emitir el PDF (limpiarSiMisma), con otro CLIENTE o CLIENTE OFF.
  */
 export function obtener(telefonoDuenio) {
   const key = soloDigitos(telefonoDuenio);
   const d = ATRIBUCIONES.get(key);
   if (!d) return null;
   if (Date.now() - d.ts > VIGENCIA_MS) { ATRIBUCIONES.delete(key); return null; }
-  d.ts = Date.now();
   return { phone: d.phone, name: d.name, gen: d.gen };
 }
 
@@ -327,7 +325,8 @@ export function clavesCotizacion({ from, telefonoCliente, claveCot }) {
     letraVientos: `informe_letra:${cli}:vientos`,
     reset: `informe_reset:${cli}`,
     deal: `deal:${cli}`,
-    entrega: cli,                       // lo que recibe marcar/leerEntregasLocales
+    cliente: cli,                       // dígitos del cliente (entregas locales, logs, informe_valor)
+    entrega: cli,                       // alias de compatibilidad de `cliente`
     quotesig: `quotesig:${cot}`,
     emision: (huella) => `quote_emision:${cot}:${huella}`,
   };
@@ -355,12 +354,21 @@ export function leadDeAtribucion(waIdVendedor, phone, name) {
  *          escribio?:(p:string)=>Promise<boolean>, marcar?:(p:string)=>any, logErr?:Function}} o
  * @returns {Promise<string>} el mensaje para quien mandó el comando
  */
-export async function procesarComandoCliente({ waId, texto, pushLead, escribio = yaNosEscribio, marcar = marcarSinConsentimiento, logErr = () => {} }) {
+export async function procesarComandoCliente({ waId, texto, pushLead, escribio = yaNosEscribio, marcar = marcarSinConsentimiento, logErr = () => {}, esDelEquipo = esNumeroDelEquipo }) {
   const r = parseComandoCliente(texto || '');
   if (!r.ok) return `⚠️ ${r.error}`;
   if (r.limpiar) {
     limpiar(waId);
     return '✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.';
+  }
+  // [5 · 30-sep] El cliente no puede ser quien escribe, el dueño ni nadie del equipo: eso sería
+  // cargarle una cotización a un número interno (y que cuente como venta de un cliente que no es).
+  const cli = normalizar(r.phone);
+  let esInterno = false;
+  try { esInterno = esDelEquipo(cli) === true; } catch { esInterno = false; }
+  if (cli === soloDigitos(waId) || cli === telefonoDuenio() || esInterno) {
+    return '⚠️ Ese número es tuyo o de alguien del equipo, no de un cliente. Escribe el WhatsApp del cliente: ' +
+      'CLIENTE Juan Pérez +56912345678';
   }
   fijar(waId, r.phone, r.name);
   // Si el cliente no existe como lead, se crea (sales-os lo busca por teléfono; no_pisar: si
@@ -377,19 +385,22 @@ export async function procesarComandoCliente({ waId, texto, pushLead, escribio =
   return `✅ Cotizando para *${r.name}* (+${r.phone}).\n\n` +
     'Lo que cotices desde ahora queda a su nombre: el lead, el seguimiento y el CRM. ' +
     'El PDF te llega a vos para que se lo mandes.\n\n' +
-    'Sigue a su nombre también después del PDF (para correcciones), hasta que mandes otro ' +
-    `*CLIENTE* o *CLIENTE OFF*. Si no lo usas, vence solo a las ${Math.round(VIGENCIA_MS / 3600000)} h.` +
+    'Vale para UNA propuesta: cuando salga el PDF vuelve a tu nombre (para corregirla, manda ' +
+    `de nuevo este mismo comando). Para cancelar antes: *CLIENTE OFF*. Vence a las ${Math.round(VIGENCIA_MS / 3600000)} h.` +
     (_escribio ? '' :
       '\n\n⚠️ Como nunca escribió al bot, el seguimiento automático NO le va a llegar ' +
       'hasta que él te escriba por acá. Es a propósito: no podemos mandarle mensajes ' +
       'sin que él haya iniciado la conversación.');
 }
 
-/** Aviso a quien cotiza, tras emitir la propuesta con un cliente fijado. */
-export function avisoSigueCotizandoPara(atribucion) {
+/**
+ * «Cliente explícito» (dueño, 30-sep): tras emitir, la atribución se CONSUME. Se le dice a quien
+ * cotiza cómo volver a ese cliente para corregir (re-fijarlo restaura su carpeta y su folio).
+ */
+export function mensajeTrasPdf(atribucion) {
   if (!atribucion?.phone) return '';
-  return `ℹ️ Sigues cotizando para *${atribucion.name || 'el cliente'}* (+${atribucion.phone}). ` +
-    'Las correcciones quedan a su nombre. *CLIENTE OFF* para terminar.';
+  const nombre = atribucion.name || 'el cliente';
+  return `✅ Propuesta de *${nombre}* emitida. Para corregirla manda CLIENTE ${atribucion.name || 'Nombre'} +${atribucion.phone}`;
 }
 
 /** Para tests. */

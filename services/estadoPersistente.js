@@ -82,6 +82,27 @@ export async function leer(clave) {
   return valor ?? null;
 }
 
+/**
+ * [2026-09-30] Como `leer`, pero distingue «no existe» de «no se pudo leer»: `leer` devuelve null
+ * en los dos casos, y para la carpeta por cliente confundirlos es pisar trabajo guardado con una
+ * carpeta vacía. sales-os responde 200 {valor:null} cuando la clave no existe; cualquier otra
+ * cosa (timeout, 5xx, caído) es «no se pudo».
+ * @returns {Promise<{ok:true, valor:any}|{ok:false}>}
+ */
+export async function leerConEstado(clave) {
+  const e = MEMORIA.get(clave);
+  if (vigente(e)) return { ok: true, valor: e.valor };
+  if (e) MEMORIA.delete(clave);
+  if (!PERSISTENCIA_ACTIVA) return { ok: true, valor: null };   // solo memoria: lo que no está, no existe
+  const j = await pedir('GET', clave);
+  if (j === null) return { ok: false };
+  const yaEnMemoria = MEMORIA.get(clave);                         // mismo re-chequeo que `leer`
+  if (vigente(yaEnMemoria)) return { ok: true, valor: yaEnMemoria.valor };
+  const valor = Object.prototype.hasOwnProperty.call(j, 'valor') ? j.valor : null;
+  if (valor !== null && valor !== undefined) MEMORIA.set(clave, { valor, expira: null });
+  return { ok: true, valor: valor ?? null };
+}
+
 /** Lee SOLO memoria — para caminos calientes donde no se puede pagar una ida a la red. */
 export function leerLocal(clave) {
   const e = MEMORIA.get(clave);
@@ -196,4 +217,4 @@ export function borrar(clave) {
 /** Para tests. */
 export function _reset() { MEMORIA.clear(); }
 
-export default { leer, leerLocal, escribir, escribirDurable, reservar, liberarReserva, borrar, PERSISTENCIA_ACTIVA };
+export default { leer, leerConEstado, leerLocal, escribir, escribirDurable, reservar, liberarReserva, borrar, PERSISTENCIA_ACTIVA };

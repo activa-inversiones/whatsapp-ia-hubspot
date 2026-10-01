@@ -40,13 +40,14 @@ import {
   registrarQueNosEscribio,
   identidadCotizacion,          // [2026-09-30] vendedores del equipo cotizan a nombre del cliente
   clavesCotizacion,             // [2026-09-30] todas las claves de estado de una cotización
-  avisoSigueCotizandoPara,
+  mensajeTrasPdf,
+  limpiarSiMisma,
   clickIdsDe,
   rolCotizador,
 } from '../../services/atribucionCotizacion.js';
 import { cambiarCarpeta } from '../../services/sesionCarpetas.js'; // [2026-09-30] carpeta por cliente
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
-import { leer as leerEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado } from '../../services/estadoPersistente.js';
+import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS, datosDelInforme } from '../../services/informeTermico.js';
 import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
@@ -639,7 +640,7 @@ async function resolveUserText(inbound, body, deps) {
       try { desc = await (deps.describeImage || describeImage)(buffer, mime, deps); }
       catch (e) { log('error', 'media.image.vision', e); }
       // [#5] Persistir la imagen ENTRANTE (aunque sea ilegible o la visión falle) para que el operador la vea. Fire-and-forget.
-      saveMedia({ phone: raw?.from, direction: 'inbound', mediaType: 'image', mimeType: mime,
+      saveMedia({ phone: destinoAdjunto(raw?.from), direction: 'inbound', mediaType: 'image', mimeType: mime, // [7 · 30-sep]
         filename: `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, buffer, waMediaId: mediaId,
         aiDescription: (desc && desc !== '[Imagen no legible]') ? desc : '[imagen recibida]' }).catch(() => {});
       // [B1 2026-06-25] Adjuntar la imagen al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
@@ -675,7 +676,7 @@ async function resolveUserText(inbound, body, deps) {
       try { transcript = await (deps.transcribeAudio || transcribeAudio)(buffer, mime, deps); }
       catch (e) { log('error', 'media.audio.stt', e); }
       // [#5] Persistir el audio ENTRANTE + su transcripción para el cockpit. Fire-and-forget.
-      saveMedia({ phone: raw?.from, direction: 'inbound', mediaType: 'audio', mimeType: mime,
+      saveMedia({ phone: destinoAdjunto(raw?.from), direction: 'inbound', mediaType: 'audio', mimeType: mime, // [7 · 30-sep]
         filename: `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, buffer, waMediaId: mediaId,
         transcription: transcript || '', aiDescription: transcript || '[audio recibido]' }).catch(() => {});
       // [B1 2026-06-25] Adjuntar el audio al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
@@ -700,7 +701,7 @@ async function resolveUserText(inbound, body, deps) {
     if (mediaId) {
       try {
         const { buffer, mime } = await downloadWaMedia(mediaId, deps);
-        saveMedia({ phone: raw?.from, direction: 'inbound', mediaType: 'document', mimeType: mime,
+        saveMedia({ phone: destinoAdjunto(raw?.from), direction: 'inbound', mediaType: 'document', mimeType: mime, // [7 · 30-sep]
           filename: fn, buffer, waMediaId: mediaId, aiDescription: `Documento/plano entrante: ${fn}` }).catch(() => {});
         // [B1 2026-06-25] Adjuntar el documento al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
         attachInboundToDeal(destinoAdjunto(raw?.from), buffer, fn, mime).catch(() => {});
@@ -890,9 +891,6 @@ export async function handleWebhook(req, res, deps = {}) {
   // corte el "escribiendo…" ante cualquier return intermedio o excepción. Si no, el cliente
   // ve a Oliver "escribiendo" hasta que Meta lo apaga a los 25 s — peor que no mostrarlo.
   let _detenerEscribiendo = () => {};
-  // [2026-08-08] Mismo motivo que releaseLock: el finally tiene que verlas. Si el turno se
-  // cae después de emitir el PDF, la atribución ya se gastó y hay que borrarla igual — si
-  // no, la cotización siguiente se le carga al cliente equivocado.
   try {
     const parseInbound    = deps.parseInbound    || realParseInbound;
     // [2026-08-08] conPausaHumana: espera lo que un humano tardaría en tipear ese texto
@@ -1356,12 +1354,12 @@ export async function handleWebhook(req, res, deps = {}) {
           const ext = inbound.type === 'image' ? 'jpg' : inbound.type === 'audio' ? 'ogg' : 'bin';
           const filename = node?.filename || `inbound_${from}_${mediaId}.${ext}`;
           await saveMedia({
-            phone: from, direction: 'inbound', mediaType: inbound.type, mimeType: mime,
+            phone: destinoAdjunto(from), direction: 'inbound', mediaType: inbound.type, mimeType: mime, // [7 · 30-sep]
             filename, buffer, waMediaId: mediaId,
             aiDescription: `Adjunto recibido con IA pausada (operador): ${filename}`,
           });
           // [B1 2026-06-25] Adjuntar al Deal de Zoho CRM si ya existe (operador atendiendo un deal activo).
-          attachInboundToDeal(from, buffer, filename, mime).catch(() => {});
+          attachInboundToDeal(destinoAdjunto(from), buffer, filename, mime).catch(() => {});
         });
       }
       // [Ronda 2 2026-07-20] Capturar la atribución CTWA TAMBIÉN durante takeover: el primer
@@ -1430,12 +1428,18 @@ export async function handleWebhook(req, res, deps = {}) {
     if (atribucion) {
       log('info', 'atribucion', `cotización atribuida a ${atribucion.phone} (${atribucion.name || 'sin nombre'}) en vez de ${from}`);
     }
-    // [2026-09-30] La atribución YA NO se consume al emitir el PDF (antes sí, desde el 08-ago).
-    // Decisión del coordinador tras Thermos: las correcciones post-PDF ("cámbialo a blanco")
-    // tienen que seguir yendo al cliente, también para el dueño. Termina con otro CLIENTE,
-    // CLIENTE OFF, o 2 h sin usarse (se renueva en cada uso). El riesgo que motivó consumirla
-    // (cotizar para Pedro con Juan fijado) lo cubren el aviso tras cada PDF ("sigues cotizando
-    // para Juan") y la carpeta por cliente.
+    // [2026-09-30 · «Cliente explícito», decisión del dueño] La atribución vale para UNA
+    // propuesta: se CONSUME al emitir el PDF (compare-and-delete por `gen`, ver generarPdf).
+    // Para corregir, se re-fija el mismo cliente y su carpeta trae su folio.
+
+    // [2026-09-30 · «Cliente explícito»] Un vendedor SIN cliente fijado no cotiza: Oliver no
+    // adivina de quién es un mensaje. Se le pide el comando y se corta ANTES del LLM (no toma
+    // medidas ni guarda nada a su nombre). El dueño queda afuera: puede cotizar para sí.
+    if (esVendedorInterno && !atribucion) {
+      log('info', 'atribucion', `${String(from).slice(-4)}: vendedor sin CLIENTE fijado; se le pide el comando`);
+      await safe('atribucion.pedirCliente', () => sendWhatsAppText(from, TEXTO_PEDIR_CLIENTE_INTERNO));
+      return; // el finally suelta el lock
+    }
 
     // [2026-08-08] Si esta persona estaba marcada como "cargada por el dueño y nunca nos
     // escribió", el hecho de que ESTÉ ESCRIBIENDO AHORA levanta la restricción: ya hay una
@@ -1493,40 +1497,31 @@ export async function handleWebhook(req, res, deps = {}) {
     // se descarta acá — mata el "saludo tardío fantasma" señalado en revisión cruzada.
     delete state.ctwa_saludo_pending;
 
-    // [2026-09-30] AL CAMBIAR DE CLIENTE (decisión del dueño, 30-sep): la sesión es del número
-    // que escribe; si ahora cotiza para OTRO cliente, el folio, los datos confirmados, el
-    // nombre y el historial del anterior no pueden arrastrarse (reusar el folio pisaría la
-    // cotización del otro en sales-os). Sin atribución y sin carpeta previa es un no-op: el
-    // cliente normal no cambia en nada.
-    // [2026-09-30 · rediseño] CARPETA POR CLIENTE: se guarda la sesión del cliente anterior y se
-    // restaura la del actual (o la propia sin atribución). Ver cambiarCarpeta.
-    // Escritura DURABLE: si no se confirma el guardado de la carpeta saliente, no se toca el
-    // estado activo (cambiarCarpeta devuelve 'error') y se avisa a quien escribe.
-    try {
-      const _mov = await cambiarCarpeta({
-        from, state, history, cliente: atribucion ? telefonoCliente : null,
-        leer: deps.leerEstado || leerEstado,
-        escribir: deps.escribirEstadoDurable || deps.escribirEstado || escribirEstadoDurable,
-      });
-      if (_mov.mov !== 'igual') {
-        state.telefono = from;
-        log(_mov.mov === 'error' ? 'error' : 'info', 'atribucion', `${String(from).slice(-4)}: carpeta ${_mov.mov} → ${state.carpeta_activa || 'propia'}${_mov.error ? ` (${_mov.error})` : ''}`);
-      }
-      if (_mov.mov === 'fusion' && _mov.agregados > 0) {
-        await safe('atribucion.fusion', () => sendWhatsAppText(from,
-          `ℹ️ ${atribucion?.name || 'Este cliente'} ya tenía una cotización en curso: le agregué ` +
-          `${_mov.agregados} ventana(s) que habías listado antes de fijarlo. Revisa que corresponda.`));
-      }
-      if (_mov.mov === 'error') {
-        // El estado activo sigue siendo el del cliente ANTERIOR, pero la atribución ya apunta
-        // al nuevo: seguir el turno mezclaría los dos. Se corta acá (el finally suelta el lock)
-        // y el próximo mensaje reintenta el cambio solo.
-        await safe('atribucion.carpeta.aviso', () => sendWhatsAppText(from,
-          '⚠️ No pude guardar la cotización anterior antes de cambiar de cliente. No perdí nada: ' +
-          'vuelve a escribirme en un momento y sigo con el cliente nuevo.'));
-        return;
-      }
-    } catch (e) { log('error', 'atribucion.carpeta', e?.message || e); /* nunca tumba el turno */ }
+    // [2026-09-30] CARPETA POR CLIENTE (decisión del dueño, «Cliente explícito»): la sesión es del
+    // número que escribe; al cambiar el cliente activo se guarda la sesión del anterior y se
+    // restaura la del actual (o la propia sin atribución). Reusar el folio de otro pisaría su
+    // cotización en sales-os. Sin atribución y sin carpeta previa es un no-op.
+    // UN solo camino de lectura/escritura (deps.carpetas en tests; estadoPersistente en prod) y
+    // UN solo canal de error: cambiarCarpeta no lanza, devuelve {mov:'error'} y ya lo registró.
+    const _carpetas = deps.carpetas || { leer: leerConEstado, escribir: escribirEstadoDurable };
+    const _mov = await cambiarCarpeta({
+      from, state, history, cliente: atribucion ? telefonoCliente : null,
+      leer: _carpetas.leer, escribir: _carpetas.escribir,
+      log: (nivel, msg) => log(nivel, 'atribucion', `${String(from).slice(-4)}: ${msg}`),
+    });
+    if (_mov.mov === 'cambio') {
+      state.telefono = from;
+      log('info', 'atribucion', `${String(from).slice(-4)}: carpeta → ${state.carpeta_activa}`);
+    }
+    if (_mov.mov === 'error') {
+      // El estado activo sigue siendo el del cliente ANTERIOR, pero la atribución ya apunta al
+      // nuevo: seguir el turno mezclaría los dos. Se corta acá (el finally suelta el lock) y el
+      // próximo mensaje reintenta el cambio solo.
+      await safe('atribucion.carpeta.aviso', () => sendWhatsAppText(from,
+        '⚠️ No pude abrir la cotización de ese cliente. No perdí nada: vuelve a escribirme en un ' +
+        'momento y sigo.'));
+      return;
+    }
 
     // ── (4b) CTWA — Captura atribución Meta Ads (Click-to-WhatsApp). ────────
     // Solo en el primer mensaje con referral de la sesión (flag ctwaCaptured,
@@ -1705,16 +1700,16 @@ export async function handleWebhook(req, res, deps = {}) {
     if (DESTRABE_CLIENTE_ON && userText) {
       const _pidio = pidioDeNuevo(userText);
       if (_pidio.pidio) {
-        const _telR = String(from).replace(/\D/g, '');
+        // [9 · 30-sep] Mismas claves que el resto (clavesCotizacion): reset del cliente, firma del par.
         await safe('destrabe.pidioDeNuevo', async () => {
           await (deps.escribirEstado || escribirEstado)(
-            `informe_reset:${_telR}`, Date.now(), 30 * 24 * 3600);
+            claves.reset, Date.now(), 30 * 24 * 3600);
           // La propuesta no mira `informe_reset` sino su firma de 15 min: se borra para que
           // el mismo folio pueda volver a emitirse en este turno.
           // ⚠️ `borrar` es SINCRÓNICO (estadoPersistente.js:157). Un `.catch()` acá tiraba
           // "catch is not a function" en producción — `node --check` lo deja pasar, igual
           // que el `fireAndForget` de septiembre. Por eso va en try/catch, no encadenado.
-          try { (deps.borrarEstado || borrarEstado)(`quotesig:${_telR}`); }
+          try { (deps.borrarEstado || borrarEstado)(claves.quotesig); }
           catch { /* la firma vence sola a los 15 min */ }
         });
         log('info', 'destrabe.pidioDeNuevo',
@@ -1940,7 +1935,7 @@ export async function handleWebhook(req, res, deps = {}) {
         // vendedor que escribe (claves.informeTermico; sin atribución = from).
         const _huella = huellaDelInforme({ comuna, producto, glassLabel });
         const clave = claves.informeTermico(_huella);
-        const _tel = claves.entrega; // dígitos del CLIENTE (logs e informe_valor)
+        const _tel = claves.cliente; // dígitos del CLIENTE (logs e informe_valor)
         return safe('informeTermico', async () => {
           // 🔴 [2026-08-24 · Codex, compuerta cruzada] LA MEMORIA VA ANTES QUE TODO CANDADO.
           // Primer intento la puse despues, y Codex cazo el agujero: si el cliente YA recibio
@@ -2263,7 +2258,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // registra sin confirmacion. El emisor real siempre devuelve {ok:boolean}.
           if (avisoEnviado?.ok === true) {
           safe('informeTermico.espejo.aviso', () => bridge.pushConversationEvent({
-            channel: 'whatsapp', external_id: from, direction: 'outbound',
+            channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound', // [7 · 30-sep] ficha del cliente
             actor_type: 'ai', actor_name: 'Oliver', message_type: 'text',
             body: avisoTxt,
             metadata: { source: 'oliver_gpt_informe_termico', informe_number: numeroInforme },
@@ -2454,7 +2449,7 @@ export async function handleWebhook(req, res, deps = {}) {
           catch { /* no bloquea: el mensaje ya llegó */ }
           // [2026-09-30] Marca de ENTREGA por cliente (no por huella): respaldo local del
           // selector de documentos si sales-os no contesta.
-          try { await marcarEntregaLocal(claves.entrega, 'termico', deps.escribirEstado || escribirEstado); } // [C · 30-sep] por cliente
+          try { await marcarEntregaLocal(claves.cliente, 'termico', deps.escribirEstado || escribirEstado); } // [C · 30-sep] por cliente
           catch { /* solo afecta al respaldo local */ }
 
           // El informe SALIO. Se suelta el token sin liberar la reserva: si el `finally` la
@@ -2491,7 +2486,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // Va DESPUES de confirmar la entrega, nunca antes: mostrarle al operador un
           // documento que Meta rechazo es la version cockpit de mentirle a la auditoria.
           safe('informeTermico.espejo', () => bridge.pushConversationEvent({
-            channel: 'whatsapp', external_id: from, direction: 'outbound',
+            channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound', // [7 · 30-sep]
             actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
             body: `📄 Informe térmico ${numeroInforme} (${datos.comuna}) enviado al cliente`,
             metadata: {
@@ -3410,7 +3405,7 @@ Comuna: ${datos.comuna}`
             if (!_yaRegistrada) {
               await safe('generarPdf.eleccion.registro', () => bridge.pushConversationEvent({
                 channel:      'whatsapp',
-                external_id:  from,
+                external_id:  telefonoCliente, // [7 · 30-sep]
                 direction:    'outbound',
                 actor_type:   'ai',
                 actor_name:   'Oliver',
@@ -4053,7 +4048,7 @@ Comuna: ${datos.comuna}`
               }
               try { await (deps.escribirEstado || escribirEstado)(claveV, { at: Date.now() }, 30 * 24 * 3600); }
               catch { /* el candado largo es anti-spam, no entrega */ }
-              try { await marcarEntregaLocal(claves.entrega, 'vientos', deps.escribirEstado || escribirEstado); } // [C · 30-sep] por cliente
+              try { await marcarEntregaLocal(claves.cliente, 'vientos', deps.escribirEstado || escribirEstado); } // [C · 30-sep] por cliente
               catch { /* solo afecta al respaldo local del selector */ }
               tokenV = null;   // entregado: la reserva corta muere sola, sin reabrir ventana
               // 🔴 [P0 · Codex] `sendWaDocument` confirma el POST a Meta, NO la entrega: el
@@ -4073,7 +4068,7 @@ Comuna: ${datos.comuna}`
                 } catch { /* solo se pierde el diagnostico, no la entrega */ }
               }
               safe('generarPdf.vientos.espejo', () => bridge.pushConversationEvent({
-                channel: 'whatsapp', external_id: from, direction: 'outbound',
+                channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound', // [7 · 30-sep]
                 actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
                 body: `📄 Informe de vientos ${folioV} (${clientComuna || 'proyecto'}) enviado al cliente`,
                 metadata: { source: 'oliver_gpt_informe_vientos', informe_number: folioV,
@@ -4161,7 +4156,7 @@ Comuna: ${datos.comuna}`
           try {
             // [C · 30-sep] ¿ESTE CLIENTE ya recibió el informe? Por cliente, no por quien escribe:
             // si no, cotizar para Juan hacía creer que Pedro ya lo tenía.
-            const entregasLocales = await leerEntregasLocales(claves.entrega, deps.leerEstado || leerEstado);
+            const entregasLocales = await leerEntregasLocales(claves.cliente, deps.leerEstado || leerEstado);
             docsSel = await (deps.decidirDocumentosCotizacion || decidirDocumentosCotizacion)({
               telefono: telefonoCliente, quoteNumber, ...entregasLocales,
             });
@@ -4352,7 +4347,7 @@ Comuna: ${datos.comuna}`
               const antEnv = await enviarSinPausa(from, anticipo);
               if (antEnv?.ok === true) {
                 safe('generarPdf.espejo.anticipo', () => bridge.pushConversationEvent({
-                  channel: 'whatsapp', external_id: from, direction: 'outbound',
+                  channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound', // [7 · 30-sep]
                   actor_type: 'ai', actor_name: 'Oliver', message_type: 'text',
                   body: anticipo,
                   metadata: { source: 'oliver_gpt_anticipo_propuesta', quote_number: quoteNumber },
@@ -4392,10 +4387,12 @@ Comuna: ${datos.comuna}`
               && _clProp.resultado === RESULTADO_META.DESCONOCIDO;
             if (propuestaDudosa) propuestaDudosaMotivo = _clProp.motivo;
             if (docSent) {
-              // [2026-09-30] La propuesta salió y la atribución SIGUE (ya no se consume): se le
-              // confirma a quien cotiza a nombre de quién sigue, y cómo terminar.
+              // [2026-09-30 · «Cliente explícito»] La propuesta salió: la atribución se CONSUME
+              // (solo si sigue siendo la misma versión: un CLIENTE nuevo entrado mientras tanto no
+              // se borra) y se le dice a quien cotiza cómo volver a ese cliente para corregir.
               if (atribucion) {
-                await safe('atribucion.aviso', () => sendWhatsAppText(from, avisoSigueCotizandoPara(atribucion)));
+                limpiarSiMisma(from, atribucion.gen);
+                await safe('atribucion.trasPdf', () => sendWhatsAppText(from, mensajeTrasPdf(atribucion)));
               }
               log('info', 'generarPdf.wa', `PDF enviado a ${from} media_id=${waDocMediaId} msgId=${sendRes.msgId || '?'}`);
             } else {
@@ -4417,7 +4414,7 @@ Comuna: ${datos.comuna}`
               method: 'POST',
               headers: { 'x-api-key': OPERATOR_TOKEN, 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                phone: from, direction: 'outbound', media_type: 'document', mime_type: 'application/pdf',
+                phone: telefonoCliente, direction: 'outbound', media_type: 'document', mime_type: 'application/pdf', // [7 · 30-sep] ficha del cliente
                 filename, wa_media_id: waDocMediaId || '', media_base64: pdfBuffer.toString('base64'),
                 file_size: pdfBuffer.length, ai_description: `Propuesta ${quoteNumber}`,
               }),
@@ -4564,7 +4561,7 @@ Comuna: ${datos.comuna}`
           // PDF SEA VISIBLE en el CRM (Oliver), con el estado real de entrega.
           safe('generarPdf.mirror', () => bridge.pushConversationEvent({
             channel:      'whatsapp',
-            external_id:  from,
+            external_id:  telefonoCliente, // [7 · 30-sep] el documento va a la ficha del cliente
             direction:    'outbound',
             actor_type:   'ai',
             actor_name:   'Oliver',
@@ -4736,7 +4733,7 @@ Comuna: ${datos.comuna}`
                     method: 'POST',
                     headers: { 'x-api-key': OPERATOR_TOKEN, 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                      phone: from, direction: 'outbound', media_type: 'document', mime_type: 'application/pdf',
+                      phone: telefonoCliente, direction: 'outbound', media_type: 'document', mime_type: 'application/pdf', // [7 · 30-sep]
                       filename: _fileOp, wa_media_id: _mediaOp || '', media_base64: _bufOp.toString('base64'),
                       file_size: _bufOp.length, ai_description: `Propuesta ${_numOp} · opción ${_letraOp} ${_colorOp}`,
                     }),
@@ -4744,7 +4741,7 @@ Comuna: ${datos.comuna}`
                   });
                 });
                 safe('generarPdf.opcion.mirror', () => bridge.pushConversationEvent({
-                  channel: 'whatsapp', external_id: from, direction: 'outbound',
+                  channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound', // [7 · 30-sep]
                   actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
                   body: _sentOp
                     ? `📄 Propuesta ${_fileOp} (opción ${_letraOp} · ${_colorOp}) enviada al cliente`
@@ -5823,8 +5820,8 @@ Comuna: ${datos.comuna}`
     // [2026-08-08] Cortar el "escribiendo…" pase lo que pase. Si el turno se cae, Oliver
     // no puede quedar "escribiendo" un mensaje que nunca va a llegar.
     try { _detenerEscribiendo(); } catch { /* ya detenido */ }
-    // [2026-09-30] Aquí se CONSUMÍA la atribución al emitir. Ya no: sigue viva para las
-    // correcciones hasta otro CLIENTE, CLIENTE OFF o 2 h sin uso (decisión tras Thermos r2).
+    // [2026-09-30] La atribución se consume en generarPdf apenas se confirma la entrega del PDF
+    // (limpiarSiMisma por `gen`), no acá.
   }
 }
 
