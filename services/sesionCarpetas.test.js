@@ -25,7 +25,8 @@ test('la lista de claves que se comparten entre clientes está documentada', () 
   // Agregar algo acá es decidir que pasa de un cliente al siguiente. last_quote, lockedData,
   // name, pending_quote e historial NO pueden estar.
   assert.deepEqual([...CLAVES_INFRA_SESION].sort(), [
-    'ad_id', 'carpeta_activa', 'ctwaCaptured', 'ctwa_clid', 'fbclid', 'fecha', 'gclid',
+    // carpeta_gen/nombre/cerrada (reordenamiento 30-sep): marcas de la carpeta activa, no datos del cliente.
+    'ad_id', 'carpeta_activa', 'carpeta_cerrada', 'carpeta_gen', 'carpeta_nombre', 'ctwaCaptured', 'ctwa_clid', 'fbclid', 'fecha', 'gclid',
     'landingRefCaptured', 'landing_lead_id', 'lastMessageAt', 'ref_status', 'telefono', 'ttclid',
   ]);
 });

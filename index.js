@@ -304,13 +304,16 @@ import {
 import { textoDeReaccion } from "./services/reactionText.js";
 import { partirEnBurbujas } from "./services/burbujas.js";
 // [2026-08-08] Cotizar a nombre de un cliente que le habló directo al dueño.
+// [2026-09-30 · reordenamiento] El comando CLIENTE, el consentimiento y el lock por teléfono viven
+// en sus servicios; index.js ya no importa webhook.js para nada de esto.
 import {
   pareceComando as pareceComandoCliente,
-  sinConsentimientoAsync,
-  autorizaComandoCliente,    // [2026-09-30] dueño o vendedor de /equipo; OFF sin exigir lista fresca
-  procesarComandoCliente,    // [2026-09-30] el comando CLIENTE entero vive en el servicio
-  DUENIO_DEFAULT,            // [2026-09-30] el número del dueño por defecto, una sola copia
-} from "./services/atribucionCotizacion.js";
+  autorizaComandoCliente,    // dueño o vendedor de /equipo; OFF sin exigir lista fresca (perfilEquipo)
+  procesarComandoCliente,    // el comando CLIENTE entero
+} from "./services/comandoCliente.js";
+import { sinConsentimientoAsync } from "./services/consentimiento.js";
+import { DUENIO_DEFAULT } from "./services/internosEquipo.js"; // el número del dueño por defecto, una sola copia
+import { conLockDeTelefono } from "./services/lockTelefono.js";  // el MISMO lock que los turnos de Oliver
 // [2026-08-08] Estado del bot que sobrevive a un redeploy (respaldo en Postgres).
 import { leer as leerEstado, escribir as escribirEstado } from "./services/estadoPersistente.js";
 import { estadoReporteCosto } from "./services/reporteCosto.js";
@@ -803,7 +806,7 @@ const ESCALATION_EMAIL = process.env.ESCALATION_EMAIL || "";
 // ═══════════════════════════════════════════════════════════════════
 // [ADMIN] OLIVER MODE — Control remoto + Cubicación Automática
 // ═══════════════════════════════════════════════════════════════════
-const ADMIN_PHONE = process.env.ADMIN_PHONE || DUENIO_DEFAULT; // misma regla que telefonoDuenio()
+const ADMIN_PHONE = process.env.ADMIN_PHONE || DUENIO_DEFAULT; // misma regla que telefonoDuenio() (OWNER_PHONE no existe en este servicio)
 const ADMIN_PIN = (process.env.ADMIN_PIN || process.env.OLIVER_ADMIN_PIN || "").trim(); // fail-closed: sin env, modo admin deshabilitado; alias = mismo contrato que los callers internos (#134)
 
 // ═══ Reglas dinámicas admin (editables desde WhatsApp) ═══
@@ -5407,7 +5410,6 @@ app.post("/webhook", async (req, res) => {
         try {
           // [Tridente r4 #1] Con el MISMO lock por teléfono que el turno de Oliver: el comando no
           // puede cambiar la atribución a mitad de un turno (espera a que termine).
-          const { conLockDeTelefono } = await import("./src/oliver-gpt/webhook.js");
           msg = await conLockDeTelefono(normalizeWaId(_atInc.waId), () => procesarComandoCliente({
             waId: _atInc.waId, texto: _atInc.text || "", pushLead: pushLeadEvent, logErr,
           }));

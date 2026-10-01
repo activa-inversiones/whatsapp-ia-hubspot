@@ -6,9 +6,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import * as wh from './webhook.js';
-const { handleWebhook } = wh;
-const conLockDeTelefono = (...a) => wh.conLockDeTelefono(...a); // r4: rojo "is not a function" si falta
+import { handleWebhook } from './webhook.js';
+import { conLockDeTelefono } from '../../services/lockTelefono.js'; // el MISMO lock que usa index.js
 import { fijar, obtener, _reset as resetAtribucion } from '../../services/atribucionCotizacion.js';
 import { aplicarLista, _reiniciarParaTests } from '../../services/internosEquipo.js';
 
@@ -23,6 +22,9 @@ function makeDeps(from, msgId, quoteEvents, pdfResults, extra = {}) {
   const textos = extra.textos || [];
   return {
     conv: new Map(), seen: new Set(), locks: new Map(),
+    // Carpetas aisladas por test: sin esto viven en el estado del módulo y un test le hereda a otro
+    // la carpeta de Juan (con su folio), y la "propuesta nueva" sale como corrección -B.
+    carpetas: kvCarpetas(),
     leerEstado: async (k) => _kv.get(k) ?? null,
     escribirEstado: (k, v) => _kv.set(k, v),
     parseInbound: () => ({ ok: true, from, text: 'cotiza una corredera 1200x1000 blanca', msgId, type: 'text' }),
@@ -186,6 +188,81 @@ test('Tridente r4 #3 (30-sep): antes de consumir la atribución, el folio del cl
   assert.ok(deJuan, `se guardó la carpeta de Juan (escrituras: ${JSON.stringify(escrituras.map((e) => e.k))})`);
   assert.equal(deJuan.v.state.last_quote?.quote_number, sent.quote_number, 'con SU folio');
   assert.ok(deJuan.atribucionAlEscribir, 'y ANTES de consumir la atribución');
+});
+
+// ── Thermos sobre el CONJUNTO (30-sep), bugs 1, 2, 4 y 5 ───────────────────────────────────
+function kvCarpetas(inicial = {}) {
+  const m = new Map(Object.entries(inicial));
+  return {
+    m,
+    leer: async (k) => ({ ok: true, valor: m.has(k) ? structuredClone(m.get(k)) : null }),
+    escribir: async (k, v) => { m.set(k, structuredClone(v)); return { ok: true }; },
+  };
+}
+
+test('Thermos conjunto #1: re-fijar al MISMO cliente tras un redeploy recupera SU folio de la carpeta (no pide uno nuevo)', async () => {
+  prepararVendedor();
+  const FOLIO = 'CM-FR-004-2026-0501';
+  const kv = kvCarpetas({ [`sesion_cliente:${VENDEDOR}:${CLIENTE}`]: {
+    state: { last_quote: { quote_number: FOLIO, at: Date.now(), pdf_sent: true, sig: 'x', quote_base: FOLIO } }, history: [],
+  } });
+  const ev = []; const pdf = [];
+  const deps = makeDeps(VENDEDOR, 'wamid.VEND.REFIJA', ev, pdf, { medida: '1900x1000' });
+  deps.carpetas = kv;
+  // La sesión recargada tras el redeploy: dice que Juan está activo, pero vino SIN el folio.
+  deps.loadSession = async () => ({ history: [{ role: 'user', content: 'x' }], state: { carpeta_activa: CLIENTE, carpeta_gen: -1 } });
+  fijar(VENDEDOR, CLIENTE, 'Juan Pérez');
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  const sent = ev.find((e) => e.status === 'sent');
+  assert.ok(sent, `debe emitirse (resultado: ${JSON.stringify(pdf[0])})`);
+  assert.equal(sent.quote_number.replace(/-[A-Z]$/, ''), FOLIO, 'la corrección conserva el folio de Juan (con o sin letra)');
+});
+
+test('Thermos conjunto #2: una sesión VACÍA no pisa una carpeta propia con trabajo', async () => {
+  prepararVendedor();
+  const clavePropia = `sesion_cliente:${VENDEDOR}:propia`;
+  const kv = kvCarpetas({ [clavePropia]: { state: { pending_quote: { items: [{ product: 'x' }] } }, history: [{ role: 'user', content: 'lo mío' }] } });
+  const ev = []; const pdf = [];
+  const deps = makeDeps(VENDEDOR, 'wamid.VEND.VACIA', ev, pdf, { medida: '1910x1000' });
+  deps.carpetas = kv;
+  deps.loadSession = async () => null; // la sesión llegó vacía (redeploy)
+  fijar(VENDEDOR, CLIENTE, 'Juan Pérez');
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.deepEqual(kv.m.get(clavePropia).history, [{ role: 'user', content: 'lo mío' }], 'la carpeta propia sigue con su trabajo');
+});
+
+test('Thermos conjunto #4: el dueño con la carpeta de un cliente activa y SIN atribución (redeploy) recibe cómo retomarla', async () => {
+  _reiniciarParaTests(); resetAtribucion();
+  const DUENO = '56957296035';
+  const ev = []; const pdf = []; const textos = [];
+  const deps = makeDeps(DUENO, 'wamid.DUENO.REDEPLOY', ev, pdf, { textos });
+  deps.carpetas = kvCarpetas();
+  deps.loadSession = async () => ({ history: [{ role: 'user', content: 'para Juan' }], state: { carpeta_activa: CLIENTE, carpeta_nombre: 'Juan Pérez', name: 'Juan Pérez' } });
+  deps.handleTurn = async ({ state }) => ({ reply: 'ok', history: [], toolCalls: [], state: { ...state } });
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.ok(textos.some((x) => x.to === DUENO && /quedó guardada.*CLIENTE Juan Pérez \+56987654321/s.test(x.t)),
+    `textos: ${JSON.stringify(textos.map((x) => x.t))}`);
+});
+
+test('Thermos conjunto #5: si en un turno salen DOS propuestas, el mensaje "Propuesta de…" sale UNA vez', async () => {
+  prepararVendedor();
+  fijar(VENDEDOR, CLIENTE, 'Juan Pérez');
+  const ev = []; const pdf = []; const textos = [];
+  const deps = makeDeps(VENDEDOR, 'wamid.VEND.DOS', ev, pdf, { textos });
+  deps.handleTurn = async ({ state, toolCtx }) => {
+    for (const medida of ['1920x1000', '1930x1000']) {
+      pdf.push(await toolCtx.generarPdf({ name: 'Juan Pérez', comuna: 'Temuco',
+        items: [{ producto_label: 'Corredera SLIDING H80', measures: medida, color: 'blanco', qty: 1, unit_price: 324573 }] }));
+    }
+    return { reply: 'ok', history: [], toolCalls: [], state: { ...state } };
+  };
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  const avisos = textos.filter((x) => /Propuesta de \*Juan Pérez\* emitida/.test(x.t));
+  assert.equal(avisos.length, 1, `avisos: ${avisos.length}`);
 });
 
 test('decisión dueño 30-sep: vendedor interno con CLIENTE fijado → la cotización va con el teléfono del cliente', async () => {

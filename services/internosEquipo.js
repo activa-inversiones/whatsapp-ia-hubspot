@@ -7,137 +7,111 @@
 //   · si el dueño le prendió «Cotizar con Oliver en modo interno», Oliver les responde en
 //     modo interno: cotización rápida, sin calificar ni ofrecer seguimiento.
 //
-// FUENTE ÚNICA: sales-os (GET /internal/equipo/internos, token operador — el mismo que ya usa
-// el bot para /internal/agenda/*). El bot NO tiene lista propia: la lee cada 5 min.
-// Si sales-os no contesta, se queda con la ÚLTIMA lista buena (nunca la vacía por un error),
-// y mientras no haya ninguna, nadie es interno por esta vía — el comportamiento de siempre
-// (oliverFollowup ya excluye al dueño por env).
+// FUENTE ÚNICA: sales-os (GET /internal/equipo/internos, token operador). El bot NO tiene lista
+// propia: la lee cada 5 min. Si sales-os no contesta, se queda con la ÚLTIMA lista buena (nunca la
+// vacía por un error), y mientras no haya ninguna, nadie es interno por esta vía.
+//
+// [2026-09-30 · reordenamiento] Toda pregunta "¿quién es este número para el equipo?" se responde
+// con UNA función: perfilEquipo(waId). Reemplaza a las 7 funciones sueltas de las rondas anteriores.
 //
 // NO decide qué se reporta a Meta/Google (eso vive en sales-os, numerosInternos.js).
 
-export const REFRESCO_MS = 5 * 60 * 1000;
+import { digitos, completo, ult9 } from './telefono.js';
 
-export function ultimos9(v) {
-  const d = String(v ?? '').replace(/\D/g, '');
-  return d.length >= 8 ? d.slice(-9) : '';
-}
+export const REFRESCO_MS = 5 * 60 * 1000;
+/** Con la lista más vieja que esto, un vendedor puede TERMINAR (CLIENTE OFF) pero no FIJAR clientes. */
+export const MAX_ANTIGUEDAD_LISTA_CLIENTE_MS = 30 * 60 * 1000;
+
+/** El ÚNICO literal del número del dueño en el bot (index.js y webhook.js lo toman de acá). */
+export const DUENIO_DEFAULT = '+56957296035';
 
 /**
- * [2026-09-30] Teléfono COMPLETO normalizado (mismo criterio que sales-os telefonoCompleto):
- * celular chileno de 9 dígitos → 56 + número; menos de 10 dígitos en otro caso → ''.
+ * Teléfono del dueño (solo dígitos). Regla: ADMIN_PHONE y, si no está, el número por defecto.
+ * ⚠️ OWNER_PHONE NO existe en el servicio del bot en Railway (verificado por el coordinador el
+ * 30-sep): por eso no se consulta acá. index.js usaba ADMIN_PHONE para el comando CLIENTE.
  */
-export function telefonoCompleto(v) {
-  const d = String(v ?? '').replace(/\D/g, '');
-  if (d.length === 9 && d.startsWith('9')) return `56${d}`;
-  return d.length >= 10 ? d : '';
+export function telefonoDuenio() {
+  return digitos(process.env.ADMIN_PHONE || DUENIO_DEFAULT);
 }
 
-let _estado = { at: 0, internos: new Set(), modoInterno: new Set(), clienteCompletos: new Set(), completoPorUlt9: new Map() };
+const VACIO = () => ({ at: 0, internos: new Set(), modoInterno: new Set(), completosModoInterno: new Set(), completoPorUlt9: new Map() });
+let _estado = VACIO();
 
-/** Aplica la respuesta de sales-os ({internos_ult9, vendedores:[{ult9, oliver_interno}]}). */
+/** Aplica la respuesta de sales-os ({internos_ult9, vendedores:[{ult9, telefono, oliver_interno}]}). */
 export function aplicarLista(data, ahora = Date.now()) {
   if (!data || !Array.isArray(data.internos_ult9)) return false;
-  const internos = new Set(data.internos_ult9.map(ultimos9).filter(Boolean));
-  const modoInterno = new Set(
-    (Array.isArray(data.vendedores) ? data.vendedores : [])
-      .filter((v) => v && v.oliver_interno === true)
-      .map((v) => ultimos9(v.ult9))
-      .filter(Boolean),
-  );
-  // [2026-09-30] Para el comando CLIENTE: solo vendedores con modo interno, por número COMPLETO.
-  // Si sales-os todavía no manda `telefono`, la lista queda vacía y nadie puede usar CLIENTE
-  // salvo el dueño (fail-closed).
-  const clienteCompletos = new Set(
-    (Array.isArray(data.vendedores) ? data.vendedores : [])
-      .filter((v) => v && v.oliver_interno === true)
-      .map((v) => telefonoCompleto(v.telefono))
-      .filter(Boolean),
-  );
-  // [Tridente r4 #6] ult9 → número completo de cada vendedor que lo tiene cargado: con esto, un
-  // número que comparte la cola de 9 con un vendedor pero NO es el suyo (+34 912 345 678 vs
-  // +56 9 1234 5678) se reconoce como cliente.
-  const completoPorUlt9 = new Map(
-    (Array.isArray(data.vendedores) ? data.vendedores : [])
-      .map((v) => [ultimos9(v?.ult9 || v?.telefono), telefonoCompleto(v?.telefono)])
-      .filter(([k, t]) => k && t),
-  );
-  _estado = { at: ahora, internos, modoInterno, clienteCompletos, completoPorUlt9 };
+  const vendedores = Array.isArray(data.vendedores) ? data.vendedores.filter(Boolean) : [];
+  _estado = {
+    at: ahora,
+    internos: new Set(data.internos_ult9.map(ult9).filter(Boolean)),
+    modoInterno: new Set(vendedores.filter((v) => v.oliver_interno === true).map((v) => ult9(v.ult9)).filter(Boolean)),
+    // Para el comando CLIENTE: solo vendedores con modo interno, por número COMPLETO. Si sales-os
+    // no manda `telefono`, queda vacío y ningún vendedor puede fijar clientes (fail-closed).
+    completosModoInterno: new Set(vendedores.filter((v) => v.oliver_interno === true).map((v) => completo(v.telefono)).filter(Boolean)),
+    // cola de 9 → número completo, para distinguir un +34 912 345 678 de un +56 9 1234 5678.
+    completoPorUlt9: new Map(vendedores.map((v) => [ult9(v.ult9 || v.telefono), completo(v.telefono)]).filter(([k, t]) => k && t)),
+  };
   return true;
 }
 
-/**
- * ¿Está en modo interno por la cola de 9 y su vendedor NO tiene número completo cargado? Solo ahí
- * no se puede distinguir vendedor de cliente y se corta. Si el vendedor tiene número completo y
- * no es este, este es un cliente (camino normal).
- */
-export function esInternoSinNumeroCompleto(phone) {
-  const k = ultimos9(phone);
-  if (!k || !_estado.modoInterno.has(k) || !_estado.internos.has(k)) return false;
-  return !_estado.completoPorUlt9?.has(k);
-}
-
-/**
- * ¿Este número es del equipo, para RECHAZARLO como cliente en el comando CLIENTE? Si el integrante
- * con esa cola tiene número completo, se compara el completo; si no, la cola (no se distingue).
- */
-export function esDelEquipoParaCliente(phone) {
-  const k = ultimos9(phone);
-  if (!k || !_estado.internos.has(k)) return false;
-  const completo = _estado.completoPorUlt9?.get(k);
-  return completo ? completo === telefonoCompleto(phone) : true;
-}
-
 /** Solo tests. */
-export function _reiniciarParaTests() { _estado = { at: 0, internos: new Set(), modoInterno: new Set(), clienteCompletos: new Set(), completoPorUlt9: new Map() }; }
+export function _reiniciarParaTests() { _estado = VACIO(); }
 
 /**
- * [2026-09-30] ¿Este número (vendedor) puede usar el comando CLIENTE? Decisión del dueño 30-sep.
- * Por número COMPLETO (con ult9, +34 912 345 678 pasaba por +56 9 1234 5678 — Codex).
- * Fail-closed: si la lista nunca cargó, NO.
+ * ¿Quién es este número para el equipo? UNA sola respuesta para index.js y webhook.js.
+ * @returns {{rol:'duenio'|'vendedor'|'vendedor_ambiguo'|null, puedeFijar:boolean, puedeTerminar:boolean,
+ *            motivoBloqueo:null|'no_habilitado'|'lista_desactualizada', esEquipo:boolean}}
+ *  · 'vendedor'          → número COMPLETO de un vendedor con modo interno (última lista conocida,
+ *                          sin mirar antigüedad: una atribución ya fijada sigue valiendo).
+ *                          puedeFijar exige además lista con ≤30 min; puedeTerminar no.
+ *  · 'vendedor_ambiguo'  → en modo interno por la cola de 9, pero su vendedor NO tiene número
+ *                          completo cargado: no se distingue de un cliente → no cotiza ni fija.
+ *  · esEquipo            → para RECHAZAR este número como cliente del comando CLIENTE: el dueño, o
+ *                          un integrante (por número completo si lo tiene; si no, por la cola).
  */
-/**
- * [Thermos r4, 30-sep] ¿Es un vendedor con modo interno según la ÚLTIMA lista conocida (número
- * completo)? Decide el ROL en el webhook. NO mira la antigüedad: con sales-os caído un rato, un
- * vendedor con Juan fijado tiene que seguir cotizando para Juan, no pasar a cotizar a su nombre.
- */
-export function esVendedorConfirmado(phone) {
-  if (!_estado.at) return false;
-  const t = telefonoCompleto(phone);
-  return !!t && _estado.clienteCompletos.has(t);
+export function perfilEquipo(waId, ahora = Date.now()) {
+  const nada = { rol: null, puedeFijar: false, puedeTerminar: false, motivoBloqueo: null, esEquipo: false };
+  const d = digitos(waId);
+  if (!d) return nada;
+  if (d === telefonoDuenio()) return { rol: 'duenio', puedeFijar: true, puedeTerminar: true, motivoBloqueo: null, esEquipo: true };
+  const k = ult9(waId);
+  const deLaLista = !!k && _estado.internos.has(k);
+  const completoDeLaCola = k ? _estado.completoPorUlt9.get(k) : '';
+  const esEquipo = deLaLista && (completoDeLaCola ? completoDeLaCola === completo(waId) : true);
+  if (_estado.at && _estado.completosModoInterno.has(completo(waId))) {
+    const fresca = ahora - _estado.at <= MAX_ANTIGUEDAD_LISTA_CLIENTE_MS;
+    return { rol: 'vendedor', puedeFijar: fresca, puedeTerminar: true, motivoBloqueo: fresca ? null : 'lista_desactualizada', esEquipo: true };
+  }
+  if (deLaLista && _estado.modoInterno.has(k) && !completoDeLaCola) {
+    return { rol: 'vendedor_ambiguo', puedeFijar: false, puedeTerminar: false, motivoBloqueo: 'no_habilitado', esEquipo };
+  }
+  return { ...nada, esEquipo };
 }
 
 /**
- * [Tridente r3 #3, 30-sep] Qué decirle a un vendedor que quiere cotizar SIN cliente fijado. Si su
- * comando CLIENTE iba a ser rechazado, pedírselo lo deja en bucle: se le dice la CAUSA real.
+ * Qué decirle a un vendedor que quiere cotizar SIN cliente fijado. Si su comando CLIENTE iba a ser
+ * rechazado, pedírselo lo deja en bucle: se le dice la CAUSA real (perfil.motivoBloqueo).
  */
-export function textoCorteVendedor(phone, ahora = Date.now()) {
-  if (!esVendedorConfirmado(phone)) {
+export function textoCorteVendedor(perfil) {
+  if (perfil?.motivoBloqueo === 'no_habilitado') {
     return '⚠️ Tu número no está habilitado como vendedor en /equipo (falta tu WhatsApp completo o el permiso ' +
       'de cotizar con Oliver). Avísale al administrador para que lo revise.';
   }
-  if (!puedeComandoCliente(phone, ahora)) {
+  if (perfil?.motivoBloqueo === 'lista_desactualizada') {
     return '⚠️ La lista del equipo está desactualizada y por ahora no puedo fijar clientes. Intenta en unos minutos.';
   }
   return TEXTO_PEDIR_CLIENTE_INTERNO;
 }
 
-export const MAX_ANTIGUEDAD_LISTA_CLIENTE_MS = 30 * 60 * 1000;
-/** ¿Puede FIJAR un CLIENTE nuevo? Como esVendedorConfirmado, y además la lista no puede tener
- *  más de 30 min sin refresco exitoso (un vendedor dado de baja no carga clientes nuevos). */
-export function puedeComandoCliente(phone, ahora = Date.now()) {
-  if (!esVendedorConfirmado(phone)) return false;
-  return ahora - _estado.at <= MAX_ANTIGUEDAD_LISTA_CLIENTE_MS;
-}
-
-/** ¿El número es del equipo (dueño, bot o vendedor activo con WhatsApp cargado)? Síncrono. */
+/** ¿El número es del equipo (dueño, bot o vendedor activo con WhatsApp cargado)? Para seguimientos. */
 export function esNumeroDelEquipo(phone) {
-  const k = ultimos9(phone);
+  const k = ult9(phone);
   return !!k && _estado.internos.has(k);
 }
 
-/** ¿Oliver le responde en modo interno? Solo si es del equipo Y el dueño lo autorizó. */
+/** ¿Oliver le responde en modo interno (texto del prompt)? Si es del equipo Y el dueño lo autorizó. */
 export function modoInternoOliver(phone) {
-  const k = ultimos9(phone);
+  const k = ult9(phone);
   return !!k && _estado.internos.has(k) && _estado.modoInterno.has(k);
 }
 
@@ -190,7 +164,12 @@ export const TEXTO_MODO_INTERNO = [
 ].join('\n');
 
 // [2026-09-30] Decisión del dueño: la cotización de un vendedor cuenta al CLIENTE. Lo que
-// el vendedor recibe si intenta cotizar sin haber fijado cliente.
+// el vendedor recibe si intenta cotizar sin haber fijado cliente. [Thermos conjunto #6] Fotos y
+// audios DESPUÉS de la confirmación: lo que llega antes no tiene cliente al que asignarse.
 export const TEXTO_PEDIR_CLIENTE_INTERNO =
   'Antes de emitir la propuesta, dime para qué cliente es (queda a su nombre, no al tuyo). ' +
-  'Escríbeme en un mensaje aparte: CLIENTE Nombre Apellido +569XXXXXXXX';
+  'Escríbeme en un mensaje aparte: CLIENTE Nombre Apellido +569XXXXXXXX — y espera mi confirmación ' +
+  'antes de mandar fotos o audios.';
+
+/** Compatibilidad: algunos módulos/tests llaman así a la cola de 9. */
+export { ult9 as ultimos9, completo as telefonoCompleto };

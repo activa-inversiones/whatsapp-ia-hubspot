@@ -11,18 +11,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  puedeUsarComandoCliente, identidadCotizacion, leadDeAtribucion, clickIdsDe, rolCotizador,
+  identidadCotizacion, leadDeAtribucion, clickIdsDe,
   clavesCotizacion, procesarComandoCliente, mensajeTrasPdf, telefonoDuenio, DUENIO_DEFAULT,
   fijar, obtener, limpiarSiMisma, yaNosEscribio, VIGENCIA_MS, _reset, parseComandoCliente,
+  autorizaComandoCliente,
 } from './atribucionCotizacion.js';
-import * as internos from './internosEquipo.js';
-import * as atrib from './atribucionCotizacion.js';
-import { destinoAdjunto } from '../src/oliver-gpt/webhook.js';
-const { aplicarLista, puedeComandoCliente, _reiniciarParaTests } = internos;
-// Funciones nuevas de r4: si no existen, el test cae con "is not a function" (rojo) en vez de no cargar.
-const esInternoSinNumeroCompleto = (...a) => internos.esInternoSinNumeroCompleto(...a);
-const esDelEquipoParaCliente = (...a) => internos.esDelEquipoParaCliente(...a);
-const autorizaComandoCliente = (...a) => atrib.autorizaComandoCliente(...a);
+import { aplicarLista, perfilEquipo, _reiniciarParaTests } from './internosEquipo.js';
+import { resolverTurno } from './identidadCotizacion.js';
+// [reordenamiento 30-sep] Las 7 funciones sueltas de rol/permiso pasaron a UNA: perfilEquipo.
+const puedeFijar = (p) => perfilEquipo(p).puedeFijar;
 
 const ADMIN = '56957296035';
 const VENDEDOR = '56911110000';
@@ -32,25 +29,29 @@ const PEDRO = '56912345678';
 
 test('decisión dueño 30-sep: solo el dueño o un vendedor con oliver_interno (número COMPLETO) usan CLIENTE', () => {
   _reiniciarParaTests();
-  const o = { adminPhone: ADMIN, esInterno: puedeComandoCliente };
-  assert.equal(puedeUsarComandoCliente(VENDEDOR, o), false, 'lista nunca cargada ⇒ fail-closed');
-  assert.equal(puedeUsarComandoCliente(ADMIN, o), true, 'el dueño sigue pudiendo');
-  aplicarLista({ internos_ult9: ['911110000', '922220000'], vendedores: [
-    { ult9: '911110000', telefono: VENDEDOR, oliver_interno: true },
-    { ult9: '922220000', telefono: OTRO, oliver_interno: false },   // del equipo, sin modo interno
-  ] });
-  assert.equal(puedeUsarComandoCliente(VENDEDOR, o), true, 'vendedor con oliver_interno puede');
-  assert.equal(puedeUsarComandoCliente('+56 9 1111 0000', o), true, 'mismo número, otro formato');
-  assert.equal(puedeUsarComandoCliente(OTRO, o), false, 'del equipo sin modo interno NO puede');
-  assert.equal(puedeUsarComandoCliente('34911110000', o), false, 'misma cola de 9, otro país: NO (Codex)');
-  assert.equal(puedeUsarComandoCliente('56933334444', o), false, 'un cliente cualquiera NO puede');
-  _reiniciarParaTests();
+  const prev = process.env.ADMIN_PHONE; process.env.ADMIN_PHONE = ADMIN;
+  try {
+    assert.equal(puedeFijar(VENDEDOR), false, 'lista nunca cargada ⇒ fail-closed');
+    assert.equal(puedeFijar(ADMIN), true, 'el dueño sigue pudiendo');
+    aplicarLista({ internos_ult9: ['911110000', '922220000'], vendedores: [
+      { ult9: '911110000', telefono: VENDEDOR, oliver_interno: true },
+      { ult9: '922220000', telefono: OTRO, oliver_interno: false },   // del equipo, sin modo interno
+    ] });
+    assert.equal(puedeFijar(VENDEDOR), true, 'vendedor con oliver_interno puede');
+    assert.equal(puedeFijar('+56 9 1111 0000'), true, 'mismo número, otro formato');
+    assert.equal(puedeFijar(OTRO), false, 'del equipo sin modo interno NO puede');
+    assert.equal(puedeFijar('34911110000'), false, 'misma cola de 9, otro país: NO (Codex)');
+    assert.equal(puedeFijar('56933334444'), false, 'un cliente cualquiera NO puede');
+  } finally {
+    if (prev === undefined) delete process.env.ADMIN_PHONE; else process.env.ADMIN_PHONE = prev;
+    _reiniciarParaTests();
+  }
 });
 
 test('decisión dueño 30-sep: si sales-os no manda el teléfono completo, ningún vendedor usa CLIENTE', () => {
   _reiniciarParaTests();
   aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', oliver_interno: true }] });
-  assert.equal(puedeComandoCliente(VENDEDOR), false);
+  assert.equal(puedeFijar(VENDEDOR), false);
   _reiniciarParaTests();
 });
 
@@ -62,9 +63,22 @@ test('decisión dueño 30-sep: index.js y webhook.js usan la MISMA regla de auto
   assert.match(src, /conLockDeTelefono\(normalizeWaId\(_atInc\.waId\), \(\) => procesarComandoCliente\(/);
   assert.match(src, /const ADMIN_PHONE = process\.env\.ADMIN_PHONE \|\| DUENIO_DEFAULT;/);
   const wh = fs.readFileSync(path.join(dir, '..', 'src', 'oliver-gpt', 'webhook.js'), 'utf8');
-  // [Thermos r4] El ROL usa la última lista conocida por número COMPLETO (sin antigüedad);
-  // la antigüedad solo frena FIJAR (index.js usa puedeComandoCliente).
-  assert.match(wh, /rolCotizador\(from, \{ esInterno: esVendedorConfirmado \}\)/);
+  // [reordenamiento 30-sep] El rol y la atribución del turno salen de UNA foto (resolverTurno →
+  // perfilEquipo), la misma función que usa index.js vía autorizaComandoCliente.
+  assert.match(wh, /const turno = resolverTurno\(from, Date\.now\(\)\);/);
+  assert.doesNotMatch(src, /import\("\.\/src\/oliver-gpt\/webhook\.js"\)[\s\S]{0,80}conLockDeTelefono/, 'index.js no toma el lock de webhook.js');
+});
+
+test('reordenamiento 30-sep: index.js y webhook.js usan el MISMO lock (misma clave con cualquier formato)', async () => {
+  const { acquireLock } = await import('./lockTelefono.js');
+  const locks = new Map();
+  const r1 = await acquireLock('+56 9 1111 0000', locks);
+  let segundo = false;
+  const p = acquireLock('56911110000', locks).then((r) => { segundo = true; r(); });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(segundo, false, 'el mismo teléfono en otro formato espera al primero');
+  r1(); await p;
+  assert.equal(segundo, true);
 });
 
 test('telefonoDuenio: ADMIN_PHONE, y si no está, el número por defecto (mismo orden que index.js)', () => {
@@ -115,10 +129,22 @@ test('decisión dueño 30-sep: con atribución no viajan los click-ids de quien 
 });
 
 test('decisión dueño 30-sep: UNA regla de rol (dueño / vendedor / nadie)', () => {
-  const esInterno = (p) => p === VENDEDOR;
-  assert.equal(rolCotizador(ADMIN, { adminPhone: ADMIN, esInterno }), 'duenio');
-  assert.equal(rolCotizador(VENDEDOR, { adminPhone: ADMIN, esInterno }), 'vendedor');
-  assert.equal(rolCotizador(OTRO, { adminPhone: ADMIN, esInterno }), null);
+  _reiniciarParaTests();
+  const prev = process.env.ADMIN_PHONE; process.env.ADMIN_PHONE = ADMIN;
+  try {
+    aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
+    assert.equal(perfilEquipo(ADMIN).rol, 'duenio');
+    assert.equal(perfilEquipo(VENDEDOR).rol, 'vendedor');
+    assert.equal(perfilEquipo(OTRO).rol, null);
+    // [Thermos r4] El ROL usa la última lista conocida (sin antigüedad); la antigüedad solo frena FIJAR.
+    aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] },
+      Date.now() - 60 * 60 * 1000);
+    const p = perfilEquipo(VENDEDOR);
+    assert.deepEqual([p.rol, p.puedeFijar, p.puedeTerminar, p.motivoBloqueo], ['vendedor', false, true, 'lista_desactualizada']);
+  } finally {
+    if (prev === undefined) delete process.env.ADMIN_PHONE; else process.env.ADMIN_PHONE = prev;
+    _reiniciarParaTests();
+  }
 });
 
 test('decisión dueño 30-sep: al fijar cliente se crea su lead con su teléfono, sin pisar uno existente', () => {
@@ -166,11 +192,18 @@ test('«Cliente explícito» 30-sep: CLIENTE fija; CLIENTE OFF termina; el TTL c
 });
 
 test('Tridente r3 #5 (30-sep): CLIENTE con dos números de 9+ dígitos (RUT + celular) y ninguno con 56 → ambiguo, se rechaza', () => {
+  // [Reordenamiento 30-sep, regla H decidida por el dueño] CAMBIO DECIDIDO: regla simple — se saca
+  // el RUT y se acepta solo si queda EXACTAMENTE un celular chileno. "123456789" no es celular
+  // (no empieza con 9), así que el único celular es 987654321 y se acepta (en r3 se rechazaba).
   for (const t of ['CLIENTE Juan Pérez 123456789 987654321', 'CLIENTE Juan Pérez 123456789, 987654321']) {
     const r = parseComandoCliente(t);
-    assert.equal(r.ok, false, t);
-    assert.match(r.error, /\+569/, 'pide el formato +569…');
+    assert.equal(r.ok, true, t);
+    assert.equal(r.phone, '56987654321');
   }
+  // Dos celulares: ambiguo, se rechaza con el formato de ejemplo.
+  const dos = parseComandoCliente('CLIENTE Juan Pérez 912345678 987654321');
+  assert.equal(dos.ok, false);
+  assert.match(dos.error, /\+569/, 'pide el formato +569…');
   // [Tridente r4 #7] CAMBIO DECIDIDO: un RUT escrito como RUT (con guion) se reconoce y NO cuenta
   // como número; el celular que queda es inequívoco. (En r3 este caso se rechazaba.)
   const conRut = parseComandoCliente('CLIENTE Juan Pérez 12.345.678-9 9 8765 4321');
@@ -214,21 +247,38 @@ test('Tridente r4 #5 (30-sep): CLIENTE OFF funciona aunque la lista tenga >30 mi
 test('Tridente r4 #6 (30-sep): un +34 con la misma cola que un vendedor con número completo es CLIENTE, no equipo', () => {
   _reiniciarParaTests();
   aplicarLista({ internos_ult9: ['912345678'], vendedores: [{ ult9: '912345678', telefono: '56912345678', oliver_interno: true }] });
-  assert.equal(esInternoSinNumeroCompleto('34912345678'), false, 'el vendedor tiene número completo y es otro');
-  assert.equal(esDelEquipoParaCliente('34912345678'), false, 'se le puede fijar como cliente');
-  assert.equal(esDelEquipoParaCliente('56912345678'), true, 'el vendedor sí es del equipo');
+  assert.notEqual(perfilEquipo('34912345678').rol, 'vendedor_ambiguo', 'el vendedor tiene número completo y es otro');
+  assert.equal(perfilEquipo('34912345678').esEquipo, false, 'se le puede fijar como cliente');
+  assert.equal(perfilEquipo('56912345678').esEquipo, true, 'el vendedor sí es del equipo');
   // Vendedor SIN número completo cargado: por la cola no se puede distinguir → se trata como equipo.
   aplicarLista({ internos_ult9: ['912345678'], vendedores: [{ ult9: '912345678', oliver_interno: true }] });
-  assert.equal(esInternoSinNumeroCompleto('34912345678'), true);
-  assert.equal(esDelEquipoParaCliente('34912345678'), true);
+  assert.equal(perfilEquipo('34912345678').rol, 'vendedor_ambiguo');
+  assert.equal(perfilEquipo('34912345678').esEquipo, true);
+  assert.equal(perfilEquipo('34912345678').motivoBloqueo, 'no_habilitado');
   _reiniciarParaTests();
 });
 
-test('Tridente r4 #1 (30-sep): destinoAdjunto usa la FOTO de la atribución del turno, no la relee', () => {
+test('Tridente r4 #1 (30-sep): la FOTO del turno (resolverTurno) no se relee aunque cambie la atribución', () => {
   _reset();
-  fijar(VENDEDOR, PEDRO, 'Pedro');     // entró CLIENTE Pedro a mitad del turno de Juan
-  assert.equal(destinoAdjunto(VENDEDOR, { phone: JUAN }), JUAN, 'la foto del turno (Juan) manda');
-  assert.equal(destinoAdjunto(VENDEDOR, null), VENDEDOR, 'sin atribución en la foto: quien escribe');
+  let actual = { phone: JUAN, name: 'Juan', gen: 1 };
+  const turno = resolverTurno(VENDEDOR, Date.now(), {
+    perfil: () => ({ rol: 'vendedor', puedeFijar: true, puedeTerminar: true, motivoBloqueo: null }),
+    leerAtribucion: () => actual,
+  });
+  actual = { phone: PEDRO, name: 'Pedro', gen: 2 };     // entró CLIENTE Pedro a mitad del turno de Juan
+  assert.equal(turno.cliente, JUAN, 'la foto del turno (Juan) manda');
+  const sin = resolverTurno(OTRO, Date.now(), { perfil: () => ({ rol: null }), leerAtribucion: () => actual });
+  assert.equal(sin.cliente, OTRO, 'sin permiso no hay atribución: quien escribe');
+  _reset();
+});
+
+test('Thermos conjunto #6: el texto dice mandar CLIENTE y ESPERAR la confirmación antes de las fotos', async () => {
+  const { TEXTO_PEDIR_CLIENTE_INTERNO } = await import('./internosEquipo.js');
+  assert.match(TEXTO_PEDIR_CLIENTE_INTERNO, /espera mi confirmación antes de mandar fotos/);
+  _reset();
+  const msg = await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Juan +${JUAN}`,
+    pushLead: async () => {}, escribio: async () => true, marcar: () => {}, esDelEquipo: () => false });
+  assert.match(msg, /fotos o audios del cliente mándalos DESPUÉS de esta confirmación/);
   _reset();
 });
 
@@ -249,9 +299,9 @@ test('10 · si la lista del equipo no se refrescó con éxito en 30 min, CLIENTE
   _reiniciarParaTests();
   const hace31 = Date.now() - 31 * 60 * 1000;
   aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] }, hace31);
-  assert.equal(puedeComandoCliente(VENDEDOR), false);
+  assert.equal(puedeFijar(VENDEDOR), false);
   aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
-  assert.equal(puedeComandoCliente(VENDEDOR), true);
+  assert.equal(puedeFijar(VENDEDOR), true);
   _reiniciarParaTests();
 });
 

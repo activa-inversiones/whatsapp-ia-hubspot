@@ -34,18 +34,12 @@ import { handleTurn as realHandleTurn } from './agent.js';
 // [2026-08-08] Quien contesto el turno (Claude o GPT) — ver engine.js ultimoProveedor().
 import { ultimoProveedor } from './engine.js';
 import { mantenerEscribiendo, conPausaHumana, enviarComoPersona } from '../../services/presenciaHumana.js';
-// [2026-08-08] Cotizar a nombre de un cliente que le hablo directo al duenio.
-import {
-  obtener as obtenerAtribucion,
-  registrarQueNosEscribio,
-  identidadCotizacion,          // [2026-09-30] vendedores del equipo cotizan a nombre del cliente
-  clavesCotizacion,             // [2026-09-30] todas las claves de estado de una cotización
-  mensajeTrasPdf,
-  limpiarSiMisma,
-  clickIdsDe,
-  rolCotizador,
-} from '../../services/atribucionCotizacion.js';
-import { cambiarCarpeta, guardarCarpeta } from '../../services/sesionCarpetas.js'; // [2026-09-30] carpeta por cliente
+// [2026-08-08 · reordenado 30-sep] Cotizar a nombre de un cliente (dueño o vendedor del equipo).
+// REGLA: `from` = quien escribe (chat, acuses, sesión); `turno.cliente` = dueño de TODO registro.
+import { registrarQueNosEscribio } from '../../services/consentimiento.js';
+import { resolverTurno, payloadLeadCotizacion, payloadQuote, payloadSaveLead } from '../../services/identidadCotizacion.js';
+import { alEntrar as atribucionAlEntrar, trasEmitir as atribucionTrasEmitir } from '../../services/atribucionTurno.js';
+import { acquireLock, LOCKS } from '../../services/lockTelefono.js';
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
 import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
@@ -228,7 +222,7 @@ import {
 } from '../../services/avisoCerebroRespaldo.js';
 import { pidioDeNuevo } from '../../services/pidioDeNuevo.js';
 import { clavePendiente, decidirConciliacion, mensajeConciliado } from '../../services/conciliacionDudosa.js'; // [2026-09-16 Kimi] la conciliacion es el mecanismo real, no la idempotencia // [2026-09-16, decision del dueño] el cliente destraba lo que no se reenvia solo // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
-import { modoInternoOliver, esVendedorConfirmado, esInternoSinNumeroCompleto, textoCorteVendedor, TEXTO_PEDIR_CLIENTE_INTERNO } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
+import { modoInternoOliver, textoCorteVendedor } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
 
 /* =========================================================================
@@ -453,30 +447,7 @@ function rateOk(waId, rateMap = RATE_MAP) {
     : { ok: true };
 }
 
-/* =========================================================================
- * MUTEX — serializa mensajes concurrentes del mismo waId (doble-tap).
- * Porteado de index.js acquireLock (~L2558).
- * Map<waId, Promise> — la promesa encadenada actúa como cola FIFO de 1.
- * ========================================================================= */
-const LOCKS = new Map();
-
-/**
- * Adquiere el lock para waId. Retorna una función release().
- * @param {string} waId
- * @param {Map} [locks] — inyectable para tests.
- * @returns {Promise<Function>}
- */
-async function acquireLock(waId, locks = LOCKS) {
-  const prev = locks.get(waId) || Promise.resolve();
-  let release;
-  const next = new Promise((r) => (release = r));
-  locks.set(waId, next);
-  await prev;
-  return () => {
-    release();
-    if (locks.get(waId) === next) locks.delete(waId);
-  };
-}
+/* MUTEX por teléfono: services/lockTelefono.js (el MISMO que usa el comando CLIENTE en index.js). */
 
 /* =========================================================================
  * MEDIA — Resolución de imagen/audio entrantes a userText útil.
@@ -613,27 +584,11 @@ async function transcribeAudio(buffer, mime, deps) {
  *   mediaResolved=true cuando convertimos un adjunto en texto útil.
  *   Si el adjunto no se pudo resolver, devuelve un mensaje pidiendo texto.
  */
-/**
- * [C · 30-sep] ¿A la ficha / Deal de QUIÉN va un adjunto (foto/audio/documento)?
- * [Tridente r4 #1] Recibe la FOTO de la atribución tomada al entrar el turno (una sola lectura):
- * NO la relee, porque un "CLIENTE Pedro" que entrara a mitad del turno de Juan mandaría la foto de
- * Juan a Pedro. Sin atribución en la foto, va a quien escribe.
- */
-export function destinoAdjunto(from, atribucion) {
-  return atribucion?.phone || from;
-}
-
-/**
- * [Tridente r4 #1] Corre `fn` con el MISMO lock por teléfono que el turno del webhook. Lo usa el
- * comando CLIENTE (index.js): así no puede cambiar la atribución a mitad de un turno.
- */
-export async function conLockDeTelefono(waId, fn, locks = LOCKS) {
-  const release = await acquireLock(String(waId || '').replace(/\D/g, '') || waId, locks);
-  try { return await fn(); } finally { release(); }
-}
-
-async function resolveUserText(inbound, body, deps, atribucionDelTurno = null) {
+// Los adjuntos (foto/audio/documento) van a la ficha de turno.cliente: la FOTO del turno, tomada
+// una sola vez tras el lock (Tridente r4 #1). Sin turno (no debería pasar), a quien escribe.
+async function resolveUserText(inbound, body, deps, turno = null) {
   const { type, text } = inbound;
+  const destinoAdjunto = (quienEscribe) => (turno ? turno.cliente : quienEscribe);
 
   if (type === 'image') {
     const raw = rawMessage(body);
@@ -648,11 +603,11 @@ async function resolveUserText(inbound, body, deps, atribucionDelTurno = null) {
       try { desc = await (deps.describeImage || describeImage)(buffer, mime, deps); }
       catch (e) { log('error', 'media.image.vision', e); }
       // [#5] Persistir la imagen ENTRANTE (aunque sea ilegible o la visión falle) para que el operador la vea. Fire-and-forget.
-      saveMedia({ phone: destinoAdjunto(raw?.from, atribucionDelTurno), direction: 'inbound', mediaType: 'image', mimeType: mime, // [7 · 30-sep]
+      saveMedia({ phone: destinoAdjunto(raw?.from), direction: 'inbound', mediaType: 'image', mimeType: mime, // [7 · 30-sep]
         filename: `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, buffer, waMediaId: mediaId,
         aiDescription: (desc && desc !== '[Imagen no legible]') ? desc : '[imagen recibida]' }).catch(() => {});
       // [B1 2026-06-25] Adjuntar la imagen al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
-      attachInboundToDeal(destinoAdjunto(raw?.from, atribucionDelTurno), buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, mime).catch(() => {});
+      attachInboundToDeal(destinoAdjunto(raw?.from), buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, mime).catch(() => {});
       // [F3b] '[Imagen no legible]' NO es contenido válido → cae al fallback que pide
       // describir por texto (evita pasar una no-descripción como medidas reales).
       if (desc && desc !== '[Imagen no legible]') {
@@ -684,11 +639,11 @@ async function resolveUserText(inbound, body, deps, atribucionDelTurno = null) {
       try { transcript = await (deps.transcribeAudio || transcribeAudio)(buffer, mime, deps); }
       catch (e) { log('error', 'media.audio.stt', e); }
       // [#5] Persistir el audio ENTRANTE + su transcripción para el cockpit. Fire-and-forget.
-      saveMedia({ phone: destinoAdjunto(raw?.from, atribucionDelTurno), direction: 'inbound', mediaType: 'audio', mimeType: mime, // [7 · 30-sep]
+      saveMedia({ phone: destinoAdjunto(raw?.from), direction: 'inbound', mediaType: 'audio', mimeType: mime, // [7 · 30-sep]
         filename: `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, buffer, waMediaId: mediaId,
         transcription: transcript || '', aiDescription: transcript || '[audio recibido]' }).catch(() => {});
       // [B1 2026-06-25] Adjuntar el audio al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
-      attachInboundToDeal(destinoAdjunto(raw?.from, atribucionDelTurno), buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, mime).catch(() => {});
+      attachInboundToDeal(destinoAdjunto(raw?.from), buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, mime).catch(() => {});
       if (transcript) return { userText: transcript, mediaResolved: true };
     } catch (err) {
       log('error', 'media.audio', err);
@@ -709,10 +664,10 @@ async function resolveUserText(inbound, body, deps, atribucionDelTurno = null) {
     if (mediaId) {
       try {
         const { buffer, mime } = await downloadWaMedia(mediaId, deps);
-        saveMedia({ phone: destinoAdjunto(raw?.from, atribucionDelTurno), direction: 'inbound', mediaType: 'document', mimeType: mime, // [7 · 30-sep]
+        saveMedia({ phone: destinoAdjunto(raw?.from), direction: 'inbound', mediaType: 'document', mimeType: mime, // [7 · 30-sep]
           filename: fn, buffer, waMediaId: mediaId, aiDescription: `Documento/plano entrante: ${fn}` }).catch(() => {});
         // [B1 2026-06-25] Adjuntar el documento al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
-        attachInboundToDeal(destinoAdjunto(raw?.from, atribucionDelTurno), buffer, fn, mime).catch(() => {});
+        attachInboundToDeal(destinoAdjunto(raw?.from), buffer, fn, mime).catch(() => {});
         // [2026-06-22 FIX] Si es Excel, LEER la lista de ventanas y cotizar (antes: pedía reescribir a mano → se perdían clientes).
         const esExcel = /\.xlsx?$/i.test(fn) || /spreadsheet|excel/i.test(mime || '');
         if (esExcel && buffer) {
@@ -1278,20 +1233,21 @@ export async function handleWebhook(req, res, deps = {}) {
     // siempre en el bloque finally al final del handler.
     releaseLock = await acquireLock(from, locks);
 
-    // ── (2b·bis) [Tridente r4 #1] FOTO DE LA ATRIBUCIÓN DEL TURNO — UNA sola lectura ──
-    // Se toma apenas el turno tiene el lock, y es la que usan TODOS los caminos del turno
-    // (adjuntos, carpeta, propuesta, informes). El comando CLIENTE toma el mismo lock
-    // (conLockDeTelefono), así que no puede cambiarla a mitad de turno; y nadie la relee.
-    const _rol = rolCotizador(from, { esInterno: esVendedorConfirmado });
-    const esDuenio = _rol === 'duenio';
-    // Vendedor = rol confirmado, o en modo interno (ult9) cuyo vendedor NO tiene número completo
-    // cargado (no se puede distinguir de un cliente): se corta (r4 #6). Si el vendedor de esa
-    // cola tiene número completo y no es este, este es un cliente: camino normal.
-    const esVendedorInterno = _rol === 'vendedor' || (!_rol && esInternoSinNumeroCompleto(from));
-    if (!_rol && esVendedorInterno) {
+    // ── (2b·bis) LA FOTO DEL TURNO — resolverTurno, UNA sola lectura tras el lock ──
+    // Rol, atribución, cliente, claves, click-ids e identidad de los registros salen de acá y de
+    // ningún otro lado. El comando CLIENTE toma el mismo lock (lockTelefono), así que no puede
+    // cambiarla a mitad de turno; y nadie la relee.
+    // 📌 REGLA: `from` (= turno.quienEscribe) SOLO para el chat: envíos, acuses, sesión. Todo
+    // registro (lead, cotización, informes, archivos, espejos, Deal, entregas) usa turno.cliente.
+    // Una guardia (webhook.turno-registros.test.js) falla si un registro vuelve a usar `from`.
+    const turno = resolverTurno(from, Date.now());
+    const { atribucion, claves, esDuenio } = turno;
+    const esVendedorInterno = turno.esVendedor;
+    if (turno.rol === 'vendedor_ambiguo') {
       log('warn', 'atribucion', `${String(from).slice(-4)}: en modo interno sin número completo confirmado; no cotiza sin CLIENTE`);
     }
-    const atribucion = _rol ? obtenerAtribucion(from) : null;
+    const telefonoCliente = turno.cliente;
+    const claveCot = turno.claveCot;
 
     // ── (2c) RATE-LIMIT — 18 msg/min por waId ───────────────────────────
     const rate = rateOk(from, rateMap);
@@ -1335,7 +1291,7 @@ export async function handleWebhook(req, res, deps = {}) {
       await safe('control.persistInbound', () =>
         bridge.pushConversationEvent({
           channel: 'whatsapp',
-          external_id: from,
+          external_id: from, // [chat] mensaje del chat
           direction: 'inbound',
           actor_type: 'customer',
           actor_name: 'Cliente',
@@ -1377,12 +1333,12 @@ export async function handleWebhook(req, res, deps = {}) {
           const ext = inbound.type === 'image' ? 'jpg' : inbound.type === 'audio' ? 'ogg' : 'bin';
           const filename = node?.filename || `inbound_${from}_${mediaId}.${ext}`;
           await saveMedia({
-            phone: destinoAdjunto(from, atribucion), direction: 'inbound', mediaType: inbound.type, mimeType: mime, // [7 · 30-sep]
+            phone: turno.cliente, direction: 'inbound', mediaType: inbound.type, mimeType: mime, // [7 · 30-sep]
             filename, buffer, waMediaId: mediaId,
             aiDescription: `Adjunto recibido con IA pausada (operador): ${filename}`,
           });
           // [B1 2026-06-25] Adjuntar al Deal de Zoho CRM si ya existe (operador atendiendo un deal activo).
-          attachInboundToDeal(destinoAdjunto(from, atribucion), buffer, filename, mime).catch(() => {});
+          attachInboundToDeal(turno.cliente, buffer, filename, mime).catch(() => {});
         });
       }
       // [Ronda 2 2026-07-20] Capturar la atribución CTWA TAMBIÉN durante takeover: el primer
@@ -1417,33 +1373,9 @@ export async function handleWebhook(req, res, deps = {}) {
     }
 
     // ── (3a·bis) ¿ESTA COTIZACIÓN ES PARA OTRO? ─────────────────────────
-    // [2026-08-08] Si el dueño escribió antes "CLIENTE Juan Pérez +569…", el lead y la
-    // cotización de este turno se atribuyen a Juan, no a él. La CONVERSACIÓN sigue siendo
-    // suya (pasó de verdad con él): lo que cambia es de quién es el cliente y la venta.
-    // Solo aplica a su propio número; para cualquier otro es null y no cambia nada.
-    // [2026-09-30] UNA sola regla de quién es el dueño y quién vendedor: la misma función que
-    // usa index.js para permitir el comando CLIENTE (rolCotizador). Decisión del dueño: los
-    // vendedores de /equipo con modo interno también cotizan a nombre del cliente.
-    // El rol exige el número COMPLETO según la ÚLTIMA lista conocida (esVendedorConfirmado), sin
-    // mirar su antigüedad: la antigüedad >30 min solo impide FIJAR un cliente nuevo (index.js,
-    // puedeComandoCliente). Así, con sales-os caído un rato, una atribución ya fijada sigue
-    // valiendo y el vendedor no pasa a cotizar a su propio número (Thermos r4, 30-sep).
-    // (rol y atribución: FOTO tomada al entrar al lock, ver (2b·bis))
-    // FUENTE ÚNICA de la identidad de la cotización (identidadCotizacion): con atribución,
-    // teléfono/external_id del CLIENTE, cotizado_por = últimos 9 de quien cotizó, no_pisar y
-    // sin click-ids de quien escribe; y claveCot = par quien-escribe+cliente para TODAS las
-    // claves por cotización (dedup de folio, informes, deal). Sin atribución, todo = from.
-    const _idCot = identidadCotizacion(from, atribucion);
-    // 📌 REGLA: el teléfono de QUIEN ESCRIBE es `from` (chat, acuses, sesión, envíos de WhatsApp);
-    // el DUEÑO DEL REGISTRO es `telefonoCliente` (lead, cotización, informes, archivos, espejos,
-    // Deal). Sin atribución son el mismo número.
-    const telefonoCliente = _idCot.telefonoCliente;
-    const cotizadoPor = _idCot.cotizadoPor;
-    const claveCot = _idCot.claveCot;
-    const extraLead = _idCot.extraLead;
-    // [2026-09-30] Todas las claves de estado de la cotización salen de UN helper
-    // (clavesCotizacion): del CLIENTE las de informes/entregas/deal/reset, del par las de folio.
-    const claves = clavesCotizacion({ from, telefonoCliente, claveCot });
+    // [2026-08-08] Si el dueño (o un vendedor del equipo, desde el 30-sep) escribió antes
+    // "CLIENTE Juan Pérez +569…", el lead y la cotización de este turno son de Juan. La
+    // CONVERSACIÓN sigue siendo de quien escribe. Todo eso ya está en `turno` (2b·bis).
     if (atribucion) {
       log('info', 'atribucion', `cotización atribuida a ${atribucion.phone} (${atribucion.name || 'sin nombre'}) en vez de ${from}`);
     }
@@ -1458,7 +1390,7 @@ export async function handleWebhook(req, res, deps = {}) {
     if (esVendedorInterno && !atribucion) {
       log('info', 'atribucion', `${String(from).slice(-4)}: vendedor sin CLIENTE fijado; se le pide el comando`);
       // [r3 #3] Si su CLIENTE iba a ser rechazado, se le dice la causa real (no se le pide en bucle).
-      await safe('atribucion.pedirCliente', () => sendWhatsAppText(from, textoCorteVendedor(from)));
+      await safe('atribucion.pedirCliente', () => sendWhatsAppText(from, textoCorteVendedor(turno.perfil)));
       return; // el finally suelta el lock
     }
 
@@ -1528,15 +1460,13 @@ export async function handleWebhook(req, res, deps = {}) {
     // UN solo camino de lectura/escritura (deps.carpetas en tests; estadoPersistente en prod) y
     // UN solo canal de error: cambiarCarpeta no lanza, devuelve {mov:'error'} y ya lo registró.
     const _carpetas = deps.carpetas || { leer: leerConEstado, escribir: escribirEstadoDurable };
-    const _mov = await cambiarCarpeta({
-      from, state, history, cliente: atribucion ? telefonoCliente : null,
-      leer: _carpetas.leer, escribir: _carpetas.escribir,
-      log: (nivel, msg) => log(nivel, 'atribucion', `${String(from).slice(-4)}: ${msg}`),
-    });
+    const _logAtrib = (nivel, msg) => log(nivel, 'atribucion', `${String(from).slice(-4)}: ${msg}`);
+    const _mov = await atribucionAlEntrar({ turno, state, history, kv: _carpetas, log: _logAtrib });
     if (_mov.mov === 'cambio') {
       state.telefono = from;
       log('info', 'atribucion', `${String(from).slice(-4)}: carpeta → ${state.carpeta_activa}`);
     }
+    if (_mov.aviso) await safe('atribucion.carpetaGuardada', () => sendWhatsAppText(from, _mov.aviso));
     if (_mov.mov === 'error') {
       // El estado activo sigue siendo el del cliente ANTERIOR, pero la atribución ya apunta al
       // nuevo: seguir el turno mezclaría los dos. Se corta acá (el finally suelta el lock) y el
@@ -1656,7 +1586,7 @@ export async function handleWebhook(req, res, deps = {}) {
     }
 
     // ── (5) MEDIA → userText útil (vision / STT). Resuelve la ceguera V2. ─
-    const { userText, mediaResolved } = await resolveUserText(inbound, req.body, deps, atribucion); // [r4 #1] la foto del turno
+    const { userText, mediaResolved } = await resolveUserText(inbound, req.body, deps, turno); // la foto del turno
     if (!userText) {
       await landingAttributionReady;
       // [Ronda 2 2026-07-20] También persistir cuando la captura fue CTWA (antes solo
@@ -1685,7 +1615,7 @@ export async function handleWebhook(req, res, deps = {}) {
       const resetMsg = 'Listo, partimos de cero 🙌 ¿En qué te ayudo con tus ventanas?';
       await safe('reset.send', () => sendWhatsAppText(from, resetMsg));
       await safe('reset.persistIn', () => bridge.pushConversationEvent({
-        channel: 'whatsapp', external_id: from, direction: 'inbound', actor_type: 'customer',
+        channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'inbound', actor_type: 'customer',
         actor_name: 'Cliente', message_type: inbound.type || 'text', body: userText,
         metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, command: 'reset' },
       }));
@@ -1789,7 +1719,7 @@ export async function handleWebhook(req, res, deps = {}) {
       // [escéptico L2] SIEMPRE persistir el inbound en el timeline del panel (como reset/escalación) —
       // sin esto, las fotos de los turnos silenciosos desaparecen del hilo que el operador reconstruye.
       await safe('imgloop.persistIn', () => bridge.pushConversationEvent({
-        channel: 'whatsapp', external_id: from, direction: 'inbound', actor_type: 'customer',
+        channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'inbound', actor_type: 'customer',
         actor_name: 'Cliente', message_type: 'image', body: '[imagen no legible por IA]',
         metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, img_unreadable_streak: state.unreadable_streak },
       }));
@@ -1807,7 +1737,7 @@ export async function handleWebhook(req, res, deps = {}) {
       if (imgLoopMsg) {
         await safe('imgloop.send', () => sendWhatsAppText(from, imgLoopMsg));
         await safe('imgloop.persistOut', () => bridge.pushConversationEvent({
-          channel: 'whatsapp', external_id: from, direction: 'outbound', actor_type: 'ai',
+          channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'outbound', actor_type: 'ai',
           actor_name: 'Oliver IA', message_type: 'text', body: imgLoopMsg,
           metadata: { source: 'oliver_gpt_webhook', img_unreadable_streak: state.unreadable_streak },
         }));
@@ -1893,7 +1823,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // Queda en la conversación, que es lo que se mira desde el panel: un console.error en Railway
           // se pierde entre miles de líneas y nadie lo revisa.
           await safe('escalate.marcarAvisoFallido', () => bridge.pushConversationEvent({
-            channel: 'whatsapp', external_id: from, direction: 'outbound', actor_type: 'system',
+            channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'outbound', actor_type: 'system',
             actor_name: 'Sistema', message_type: 'text',
             body: '⚠️ El cliente pidió hablar con una persona y el aviso a Marcelo NO salió. '
               + 'Al cliente se le dijo que sí. Hay que llamarlo a mano.',
@@ -1909,12 +1839,12 @@ export async function handleWebhook(req, res, deps = {}) {
       const escMsg = escalationMessage();
       await safe('escalate.send', () => sendWhatsAppText(from, escMsg));
       await safe('escalate.persistIn', () => bridge.pushConversationEvent({
-        channel: 'whatsapp', external_id: from, direction: 'inbound', actor_type: 'customer',
+        channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'inbound', actor_type: 'customer',
         actor_name: 'Cliente', message_type: inbound.type || 'text', body: inbound.text || userText,
         metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, escalation: true },
       }));
       await safe('escalate.persistOut', () => bridge.pushConversationEvent({
-        channel: 'whatsapp', external_id: from, direction: 'outbound', actor_type: 'ai',
+        channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'outbound', actor_type: 'ai',
         actor_name: 'Oliver', message_type: 'text', body: escMsg,
         metadata: { source: 'oliver_gpt_webhook', escalation: true },
       }));
@@ -2488,7 +2418,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // termino figurando "entregado" con hora mientras el cliente no tenia nada.
           try {
             await (deps.escribirEstado || escribirEstado)(`wamsg:${envio.msgId}`, {
-              msgId: envio.msgId, tipo: 'informe_termico', folio: numeroInforme, telefono: String(from),
+              msgId: envio.msgId, tipo: 'informe_termico', folio: numeroInforme, telefono: String(from) /* [chat] acuse del envío al chat */,
               // La clave viaja con el rastro: sin esto, un acuse de fallo intentaria soltar
               // `informe_termico:{tel}` y dejaria puesto el candado real (que ahora lleva
               // huella) — el cliente quedaria un mes sin informe por un envio que no llego.
@@ -2718,50 +2648,11 @@ Comuna: ${datos.comuna}`
       // saveLead → pushLeadEvent (persistencia real del lead).
       saveLead: (leadState = {}) =>
         safe('saveLead', async () => {
-          // [M2 · Thermos 30-sep] Vendedor del equipo sin CLIENTE fijado: el lead sería él
-          // mismo. No se guarda (la decisión del dueño es que cuente al cliente).
-          if (esVendedorInterno && !atribucion) return { ok: false, skipped: true, reason: 'interno_sin_cliente' };
           await landingAttributionReady;
-          return bridge.pushLeadEvent({
-            // [2026-08-08] telefonoCliente, no `from`: si el dueño fijó "CLIENTE Juan
-            // +569…", el lead es de Juan. Sin atribución activa, telefonoCliente === from
-            // y esto se comporta exactamente igual que antes.
-            phone: telefonoCliente,
-            channel: 'whatsapp',
-            // El nombre del comando manda: el dueño lo escribió a propósito.
-            name: atribucion?.name || leadState.name || state.name || '',
-            comuna: leadState.comuna || state.comuna || '',
-            stage: leadState.stageKey || 'oliver_gpt',
-            items: leadState.items || [],
-            value: leadState.grand_total || null,
-            // [2026-08-08] Con atribución activa NO se copian los click-id de la sesión.
-            // Son del DUEÑO —de cómo llegó él a su propio chat—, no del cliente. Pegárselos
-            // al lead de un recomendado le atribuiría esa venta a un anuncio que nunca vio,
-            // y el ROAS con el que se decide el gasto quedaría inflado.
-            // Es el problema opuesto al que este comando vino a resolver. (Codex, 08-ago.)
-            // [2026-09-30] Mismo helper que los otros payloads (clickIdsDe): lo que trae el
-            // leadState manda sobre la sesión; con atribución, todos null.
-            ...clickIdsDe({
-              ctwa_clid: leadState.ctwa_clid || state.ctwa_clid,
-              ad_id: leadState.ad_id || state.ad_id,
-              gclid: leadState.gclid || state.gclid,
-              fbclid: leadState.fbclid || state.fbclid,
-              ttclid: leadState.ttclid || state.ttclid,
-              landing_lead_id: leadState.landing_ref || leadState.landing_lead_id || state.landing_lead_id,
-            }, atribucion),
-            // [2026-09-30] Con atribución: external_id del cliente (identidad), cotizado_por, no_pisar
-            // y source. Sin atribución NO se agrega external_id, a diferencia de los otros payloads:
-            // saveLead nunca lo mandó y agregarlo cambiaría el lead_events.payload de todo cliente
-            // normal (Thermos r6: se deja así a propósito; ver identidadCotizacion).
-            ...(atribucion ? { external_id: _idCot.externalId } : {}),
-            ...extraLead,
-            // [2026-08-08] Trazabilidad ISO: queda escrito que este lead lo cargó alguien del
-            // equipo a nombre del cliente. [2026-09-30] atribuido_por en formato ÚNICO: los
-            // últimos 9 dígitos de quien cotizó (dueño o vendedor), igual que cotizado_por.
-            metadata: atribucion
-              ? { source: 'oliver_gpt', atribuido_por: cotizadoPor, atribuido_at: new Date().toISOString(), via: 'comando_CLIENTE' }
-              : { source: 'oliver_gpt', ref_status: state.ref_status || null },   // [#966]
-          });
+          // El lead es de turno.cliente (con atribución, el cliente; sin ella, quien escribe —
+          // como siempre). Con atribución NO viajan los click-ids de quien escribe (le atribuirían
+          // la venta a un anuncio que el cliente nunca vio — Codex 08-ago). Ver payloadSaveLead.
+          return bridge.pushLeadEvent(payloadSaveLead(turno, leadState, state));
         }),
 
       // notifyMarcelo → escalación REAL (highValueNotifier a ESCALATION_PHONE).
@@ -2853,13 +2744,11 @@ Comuna: ${datos.comuna}`
           // del cliente (4 de 16 ventanas mal numeradas) mudado a otro documento.
           // Numerando aca, arriba de todo, los tres heredan el mismo numero pase lo que pase.
           numerarVentanas(input.items);
-          // 🔒 [2026-09-30] Decisión del dueño: un vendedor del equipo NO emite propuestas a su
-          // propio nombre. Sin cliente fijado con el comando CLIENTE, no se quema folio ISO y
-          // se le recuerda el formato. El dueño queda afuera de esta guardia (puede cotizar
-          // para sí, como siempre).
-          if (esVendedorInterno && !atribucion) {
-            log('info', 'generarPdf.interno_sin_cliente', `${from}: vendedor interno sin CLIENTE fijado; no se emite`);
-            return { ok: false, reason: 'interno_sin_cliente', message: TEXTO_PEDIR_CLIENTE_INTERNO };
+          // 🔒 [2026-09-30] Un vendedor del equipo NO emite a su propio nombre. El corte de verdad es
+          // el temprano (antes del LLM); esto es solo la ASERCIÓN de que nunca se llega acá así.
+          if (!turno.puedeEmitir) {
+            log('error', 'generarPdf.interno_sin_cliente', `${String(from).slice(-4)}: llegó a generarPdf sin poder emitir (no debería)`);
+            return { ok: false, reason: 'interno_sin_cliente', message: textoCorteVendedor(turno.perfil) };
           }
           const itemsBad = (input.items || []).filter((it) => !(Number(it.unit_price) > 0));
           if (!input.items?.length || itemsBad.length) {
@@ -4091,7 +3980,7 @@ Comuna: ${datos.comuna}`
                 try {
                   await (deps.escribirEstado || escribirEstado)(`wamsg:${envioV.msgId}`, {
                     msgId: envioV.msgId, tipo: 'informe_vientos', folio: folioV,
-                    telefono: String(from), clave: claveV,
+                    telefono: String(from) /* [chat] acuse del envío al chat */, clave: claveV,
                   }, 3 * 24 * 3600);
                 } catch { /* solo se pierde el diagnostico, no la entrega */ }
               }
@@ -4509,7 +4398,7 @@ Comuna: ${datos.comuna}`
           if (docSent && waDocMsgId) {
             try {
               await (deps.escribirEstado || escribirEstado)(`wamsg:${waDocMsgId}`, {
-                msgId: waDocMsgId, tipo: 'propuesta', folio: quoteNumber, telefono: String(from),
+                msgId: waDocMsgId, tipo: 'propuesta', folio: quoteNumber, telefono: String(from) /* [chat] acuse del envío al chat */,
               }, 3 * 24 * 3600);
             } catch { /* solo se pierde el diagnostico */ }
 
@@ -4795,7 +4684,7 @@ Comuna: ${datos.comuna}`
                 //    Doble red: `upsertConversation` tiene el guardia "el embudo no retrocede"
                 //    (conversationService.js:112) y 'alternativa' puntua 0, asi que aunque el
                 //    orden se invirtiera nunca podria pisar un 'sent'. Se await a proposito.
-                await safe('generarPdf.opcion.registro', () => bridge.pushQuoteEvent({
+                await safe('generarPdf.opcion.registro', () => bridge.pushQuoteEvent(payloadQuote(turno, {
                   phone:         clientPhone,
                   channel:       'whatsapp',
                   customer_name: clientName,
@@ -4839,18 +4728,15 @@ Comuna: ${datos.comuna}`
                   // El MISMO lead que la opcion A: es un solo cliente. Sin `lead`,
                   // `quoteService.upsertQuote` deja `lead_id` NULL y el JOIN quotes→leads
                   // se rompe para estas filas.
-                  lead: {
-                    source: 'oliver_gpt', channel: 'whatsapp',
+                  lead: payloadLeadCotizacion(turno, {
                     lead_name: clientName || null, name: clientName || null,
-                    phone: clientPhone || from || null,
+                    phone: clientPhone || null,   // clientPhone nunca es vacío (cae a quien escribe sin atribución)
                     comuna: clientComuna || null, city: clientComuna || null,
-                    status: 'quoted', external_id: _idCot.externalId || null, // [r3 #6] de la identidad
-                    ...extraLead,   // [2026-09-30] con atribución: cotizado_por, no_pisar, source
-                  },
-                  ...(cotizadoPor ? { cotizado_por: cotizadoPor } : {}),
+                    status: 'quoted',
+                  }),
                   // ⛔ SIN click-ids. No los necesita (no dispara conversion) y mandarlos
                   // invitaria a que alguien "arregle" el status mañana y triplique el reporte.
-                }));
+                })));
               } catch (e) {
                 log('error', 'generarPdf.opcion.err', `${_letraOp} (${_colorOp}) ${_numOp}: ${e?.message || e}`);
               }
@@ -5033,9 +4919,9 @@ Comuna: ${datos.comuna}`
           // fireConversion → CXM /api/conversions/track con el canal correcto.
           await landingAttributionReady;
           // [2026-09-30] Con atribución los click-ids van null: serían de quien escribe.
-          const _ck = clickIdsDe(state, atribucion);
+          const _ck = turno.clickIds(state);
           safe('generarPdf.conversion', () =>
-            bridge.pushQuoteEvent({
+            bridge.pushQuoteEvent(payloadQuote(turno, {
               phone:           clientPhone,
               channel:         'whatsapp',
               customer_name:   clientName,
@@ -5096,17 +4982,14 @@ Comuna: ${datos.comuna}`
               // [2026-09-30] Con atribución (_ck = {}) NO viajan click-ids: serían de quien
               // escribe (vendedor/dueño), no del cliente — mismo criterio que saveLead (08-ago).
               ..._ck,
-              ...(cotizadoPor ? { cotizado_por: cotizadoPor } : {}),
               // [2026-07-11 FIX lead_id NULL] sin este campo, quoteService.upsertQuote (sales-os)
               // no puede resolver lead_id → JOIN quotes→leads roto (auditoría BD viva confirmada).
               // Réplica de buildLeadPayload (index.js, ruta legacy) con los datos que el flujo
               // GPT v2 (WhatsApp) tiene a mano en este punto; lo no disponible queda null.
-              lead: {
-                source: 'oliver_gpt',
-                channel: 'whatsapp',
+              lead: payloadLeadCotizacion(turno, {
                 lead_name: clientName || null,
                 name: clientName || null,
-                phone: clientPhone || from || null,
+                phone: clientPhone || null,   // clientPhone nunca es vacío (cae a quien escribe sin atribución)
                 comuna: clientComuna || null,
                 city: clientComuna || null,
                 project_type: null,
@@ -5118,16 +5001,14 @@ Comuna: ${datos.comuna}`
                 message: null,
                 status: 'quoted',
                 zoho_deal_id: null,
-                external_id: _idCot.externalId || null, // [r3 #6] de la identidad
                 ..._ck,
-                ...extraLead,   // [2026-09-30] con atribución: cotizado_por, no_pisar, source
-              },
+              }),
               payload: {
                 comuna:   clientComuna,
                 // Click ids — anti-cross-inject: solo el canal del lead.
                 ..._ck,
               },
-            })
+            }))
           );
 
           // ── [2026-07-07] ESCALACIÓN por VENTANA FUERA DE ESTÁNDAR (instrucción del dueño) ──────
@@ -5220,12 +5101,11 @@ Comuna: ${datos.comuna}`
           // proceso cae antes del próximo turno, re-fijar al cliente igual recupera el folio y la
           // corrección no pide uno nuevo. Se consume solo si sigue siendo la misma versión (un
           // CLIENTE nuevo entrado mientras tanto no se borra) y se dice cómo volver para corregir.
-          if (atribucion) {
-            const _g = await guardarCarpeta({ from, state, history, carpeta: telefonoCliente, escribir: _carpetas.escribir });
-            if (!_g.ok) log('warn', 'atribucion', `${String(from).slice(-4)}: carpeta del cliente sin guardar antes de consumir (${_g.error})`);
-            limpiarSiMisma(from, atribucion.gen);
-            await safe('atribucion.trasPdf', () => sendWhatsAppText(from, mensajeTrasPdf(atribucion)));
-          }
+          // Una vez por turno aunque salgan varios PDF; si el folio no se pudo guardar, NO consume.
+          await atribucionTrasEmitir({
+            turno, state, history, kv: _carpetas, log: _logAtrib,
+            enviar: (texto) => sendWhatsAppText(from, texto),
+          });
           // 🔴 [2026-09-03] LO QUE HACE FALTA PARA REEMITIRLA CUANDO LLEGUE EL NOMBRE.
           // Decision del dueño: *"SOLO ACTUALIZAR SI DESPUES VIENE EL DATO CORRECTO"*. Para
           // poder actualizar hay que poder RE-COTIZAR lo mismo, y `last_quote` guarda el folio
@@ -5358,12 +5238,12 @@ Comuna: ${datos.comuna}`
         || `Listo${_nombreReal ? `, ${_nombreReal}` : ''} ✅ Le reemití la Propuesta Técnica Económica N° ${_np.quote_number} con esos datos. Es la misma propuesta corregida, no una nueva.`;
       await safe('pdf.nombre.send', () => sendWhatsAppText(from, replyMsg));
       await safe('pdf.nombre.persistIn', () => bridge.pushConversationEvent({
-        channel: 'whatsapp', external_id: from, direction: 'inbound', actor_type: 'customer',
+        channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'inbound', actor_type: 'customer',
         actor_name: _nombreReal, message_type: 'text', body: userText,
         metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, nombre_tardio: true },
       }));
       await safe('pdf.nombre.persistOut', () => bridge.pushConversationEvent({
-        channel: 'whatsapp', external_id: from, direction: 'outbound', actor_type: 'ai',
+        channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'outbound', actor_type: 'ai',
         actor_name: 'Oliver', message_type: 'text', body: replyMsg,
         metadata: { source: 'oliver_gpt_webhook', nombre_tardio: true, quote_number: pdfRes?.quote_number },
       }));
@@ -5396,12 +5276,12 @@ Comuna: ${datos.comuna}`
         `Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?`;
       await safe('pdf.det.send', () => sendWhatsAppText(from, replyMsg));
       await safe('pdf.det.persistIn', () => bridge.pushConversationEvent({
-        channel: 'whatsapp', external_id: from, direction: 'inbound', actor_type: 'customer',
+        channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'inbound', actor_type: 'customer',
         actor_name: 'Cliente', message_type: 'text', body: userText,
         metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, pdf_confirm: true },
       }));
       await safe('pdf.det.persistOut', () => bridge.pushConversationEvent({
-        channel: 'whatsapp', external_id: from, direction: 'outbound', actor_type: 'ai',
+        channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'outbound', actor_type: 'ai',
         actor_name: 'Oliver', message_type: 'text', body: replyMsg,
         metadata: { source: 'oliver_gpt_webhook', pdf_deterministic: true, quote_number: pdfRes?.quote_number },
       }));
@@ -5463,6 +5343,8 @@ Comuna: ${datos.comuna}`
     // [PDF-RACE 2026-07-01] sin este merge se perdería el last_quote (folio de la sesión, estado
     // real de entrega) que generarPdf escribió DURANTE este turno vía toolCalls del LLM.
     if (state.last_quote) newState.last_quote = state.last_quote;
+    // [2026-09-30] Lo mismo con la marca de carpeta cerrada que deja atribucionTrasEmitir DURANTE el turno.
+    if (state.carpeta_cerrada) newState.carpeta_cerrada = state.carpeta_cerrada;
     // 🔴 [compuerta cruzada · Codex #3] `ya_compro` ES DEL TURNO, NO DE LA SESION.
     // Se recalcula del control en CADA turno, asi que guardarla no aporta nada y
     // si puede confundir: una sesion vieja quedaria con «ya_compro: true» escrito
@@ -5661,7 +5543,7 @@ Comuna: ${datos.comuna}`
     await safe('persist.inbound', () =>
       bridge.pushConversationEvent({
         channel: 'whatsapp',
-        external_id: from,
+        external_id: from, // [chat] mensaje del chat
         // [#703 2026-09-10] EL PERFIL MANDA: customer_name ya no recibe la
         // extraccion del GPT (asi nacian "Ay Le Estare Avisando" y compania).
         // La extraccion viaja APARTE como nombre_detectado y sales-os la
@@ -5701,7 +5583,7 @@ Comuna: ${datos.comuna}`
       await safe('persist.outbound', () =>
         bridge.pushConversationEvent({
           channel: 'whatsapp',
-          external_id: from,
+          external_id: from, // [chat] mensaje del chat
           customer_name: push_name || '',   // [#703] perfil, no extraccion
           nombre_wsp: push_name || '',
           nombre_detectado: newState.name || '',
@@ -5756,14 +5638,14 @@ Comuna: ${datos.comuna}`
     } else if (quoteDto?.parcial) {
       console.warn(`[oliver-gpt] monto PARCIAL: ${quoteDto.sin_monto} de ${quoteDto.items.length} ítems sin precio`);
     }
-    // [M2 · Thermos 30-sep] Vendedor del equipo sin CLIENTE: el borrador quedaría a SU nombre.
-    if (quote && !(esVendedorInterno && !atribucion)) {
+    // (Un vendedor sin cliente nunca llega acá: lo corta el paso temprano.)
+    if (quote) {
       await landingAttributionReady;
       copyAttributionState(newState, state);
-      const _ckD = clickIdsDe(newState, atribucion); // [2026-09-30] sin click-ids de quien escribe
+      const _ckD = turno.clickIds(newState); // sin click-ids de quien escribe si hay atribución
       await safe('persist.quote', () =>
-        bridge.pushQuoteEvent({
-          // [2026-08-08] Idem: si hay atribucion activa, el borrador es del cliente.
+        bridge.pushQuoteEvent(payloadQuote(turno, {
+          // El borrador es de turno.cliente (con atribución, el cliente).
           phone: telefonoCliente,
           channel: 'whatsapp',
           customer_name: atribucion?.name || newState.name || push_name || 'Cliente WhatsApp',
@@ -5771,20 +5653,12 @@ Comuna: ${datos.comuna}`
           currency: 'CLP',
           status: 'draft',
           ..._ckD,
-          ...(cotizadoPor ? { cotizado_por: cotizadoPor } : {}),
           // [2026-07-11 FIX lead_id NULL] sin este campo, quoteService.upsertQuote (sales-os)
           // no puede resolver lead_id → JOIN quotes→leads roto (auditoría BD viva confirmada).
-          // Réplica de buildLeadPayload con los datos que este punto del flujo GPT v2 tiene a
-          // mano (draft, antes del PDF); lo no disponible queda null.
-          lead: {
-            source: 'oliver_gpt',
-            channel: 'whatsapp',
-            // [2026-09-30] Con atribución el borrador es del CLIENTE: nombre, teléfono y
-            // external_id suyos (antes iban los de quien escribe — bug). Sin atribución,
-            // telefonoCliente === from y atribucion es null: idéntico a antes.
+          lead: payloadLeadCotizacion(turno, {
             lead_name: atribucion?.name || newState.name || push_name || null,
             name: atribucion?.name || newState.name || push_name || null,
-            phone: telefonoCliente || from || null,
+            phone: telefonoCliente || null,
             comuna: newState.comuna || null,
             city: newState.comuna || null,
             project_type: null,
@@ -5794,16 +5668,14 @@ Comuna: ${datos.comuna}`
             message: null,
             status: 'draft',
             zoho_deal_id: null,
-            external_id: _idCot.externalId || null, // [r3 #6] de la identidad
             ..._ckD,
-            ...extraLead,   // [2026-09-30] con atribución: cotizado_por, no_pisar, source
-          },
+          }),
           payload: {
             comuna: newState.comuna || '',
             quote,
             ..._ckD,
           },
-        })
+        }))
       );
     }
 
@@ -5821,7 +5693,7 @@ Comuna: ${datos.comuna}`
     if (typeof bridge.logOliverEvent === 'function') {
       Promise.resolve(
         bridge.logOliverEvent('turn_completed', {
-          phone: from,
+          phone: from, // [chat] telemetría del turno de quien escribe
           tool_calls: toolCalls.map((t) => t.name),
           has_quote: !!quote,
         })
