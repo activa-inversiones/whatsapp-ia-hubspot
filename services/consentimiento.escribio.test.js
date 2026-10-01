@@ -4,7 +4,7 @@
 // consentimiento" y el re-enganche lo ignoraba.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { yaNosEscribio, _reset } from './atribucionCotizacion.js';
+import { yaNosEscribio, _resetConsentimiento as _reset } from './consentimiento.js';
 
 test('Thermos conjunto #3: sin marca local pero con mensajes entrantes en sales-os = YA nos escribió', async () => {
   _reset();

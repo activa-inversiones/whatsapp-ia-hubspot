@@ -10,7 +10,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleWebhook } from './webhook.js';
-import { fijar, _reset as resetAtribucion } from '../../services/atribucionCotizacion.js';
+import { fijar, _resetAtribuciones } from '../../services/atribucionStore.js';
+import { _resetConsentimiento } from '../../services/consentimiento.js';
+const resetAtribucion = () => { _resetAtribuciones(); _resetConsentimiento(); };
 import { aplicarLista, _reiniciarParaTests } from '../../services/internosEquipo.js';
 
 const VENDEDOR = '56911110000';

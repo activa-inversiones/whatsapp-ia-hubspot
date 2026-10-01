@@ -8,7 +8,9 @@ import assert from 'node:assert/strict';
 
 import { handleWebhook } from './webhook.js';
 import { conLockDeTelefono } from '../../services/lockTelefono.js'; // el MISMO lock que usa index.js
-import { fijar, obtener, _reset as resetAtribucion } from '../../services/atribucionCotizacion.js';
+import { fijar, obtener, _resetAtribuciones } from '../../services/atribucionStore.js';
+import { _resetConsentimiento } from '../../services/consentimiento.js';
+const resetAtribucion = () => { _resetAtribuciones(); _resetConsentimiento(); };
 import { aplicarLista, _reiniciarParaTests } from '../../services/internosEquipo.js';
 
 const VENDEDOR = '56911110000';
@@ -286,6 +288,63 @@ test('decisión dueño 30-sep: vendedor interno con CLIENTE fijado → la cotiza
   for (const e of ev) {
     if (e.lead) assert.equal(e.lead.external_id, CLIENTE, `evento ${e.status}: external_id del cliente`);
   }
+});
+
+// ── Ronda de cierre r10 (01-oct): L2, L3, L4 ────────────────────────────────────────────────
+const textoDe = (deps, texto) => {
+  const orig = deps.parseInbound;
+  deps.parseInbound = (...a) => ({ ...orig(...a), text: texto });
+  return deps;
+};
+
+test('L2 r10: RESET con cliente fijado vacía TAMBIÉN la carpeta de ese cliente', async () => {
+  prepararVendedor();
+  const claveJuan = `sesion_cliente:${VENDEDOR}:${CLIENTE}`;
+  const kv = kvCarpetas({ [claveJuan]: { state: { pending_quote: { items: [{ product: 'x' }] } }, history: [{ role: 'user', content: 'de Juan' }] } });
+  const ev = []; const pdf = []; const textos = [];
+  const deps = textoDe(makeDeps(VENDEDOR, 'wamid.VEND.RESET.JUAN', ev, pdf, { textos }), 'reset');
+  deps.carpetas = kv;
+  fijar(VENDEDOR, CLIENTE, 'Juan Pérez');
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.ok(textos.some((x) => /partimos de cero/.test(x.t)), `textos: ${JSON.stringify(textos.map((x) => x.t))}`);
+  assert.deepEqual(kv.m.get(claveJuan), { state: {}, history: [] }, 'la carpeta de Juan quedó vacía (no se restaura después)');
+});
+
+test('L3 r10: un vendedor SIN cliente fijado puede usar RESET (no lo corta el pedido de CLIENTE)', async () => {
+  prepararVendedor();
+  const ev = []; const pdf = []; const textos = [];
+  const deps = textoDe(makeDeps(VENDEDOR, 'wamid.VEND.RESET.SIN', ev, pdf, { textos }), 'reset');
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.ok(textos.some((x) => /partimos de cero/.test(x.t)), `textos: ${JSON.stringify(textos.map((x) => x.t))}`);
+});
+
+test('L4 r10: tras emitir, la carpeta del cliente queda con el turno COMPLETO (no la foto de mitad de generarPdf)', async () => {
+  prepararVendedor();
+  const kv = kvCarpetas();
+  const ev = []; const pdf = [];
+  const deps = makeDeps(VENDEDOR, 'wamid.VEND.CIERRE', ev, pdf, { medida: '1950x1000' });
+  deps.carpetas = kv;
+  fijar(VENDEDOR, CLIENTE, 'Juan Pérez');
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  const deJuan = kv.m.get(`sesion_cliente:${VENDEDOR}:${CLIENTE}`);
+  assert.ok(deJuan, 'hay carpeta de Juan');
+  assert.ok(deJuan.history.some((h) => h.role === 'user' && /corredera/.test(h.content)),
+    `el historial del turno quedó en la carpeta: ${JSON.stringify(deJuan.history)}`);
+  assert.ok(deJuan.state.last_quote?.quote_number, 'con su folio');
+});
+
+test('calidad 1 r10: index.js y webhook.js usan la MISMA instancia de lock (services/lockTelefono.js)', async () => {
+  const fs = await import('node:fs');
+  const idx = fs.readFileSync(new URL('../../index.js', import.meta.url), 'utf8');
+  const wh = fs.readFileSync(new URL('./webhook.js', import.meta.url), 'utf8');
+  assert.match(idx, /import \{ conLockDeTelefono, acquireLock \} from "\.\/services\/lockTelefono\.js"/);
+  assert.doesNotMatch(idx, /const locks = new Map\(\)/, 'index.js no tiene locks propios');
+  assert.doesNotMatch(idx, /function acquireLock\(/, 'ni su propio acquireLock');
+  assert.match(wh, /const locks\s+= deps\.locks\s+\|\| LOCKS;/, 'webhook usa LOCKS de lockTelefono por defecto');
+  assert.match(wh, /import \{ acquireLock, LOCKS \} from '\.\.\/\.\.\/services\/lockTelefono\.js'/);
 });
 
 test('«Cliente explícito» 30-sep: tras el PDF la atribución se CONSUME y se dice cómo corregir', async () => {

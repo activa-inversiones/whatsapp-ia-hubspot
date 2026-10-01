@@ -26,9 +26,19 @@ test('la lista de claves que se comparten entre clientes está documentada', () 
   // name, pending_quote e historial NO pueden estar.
   assert.deepEqual([...CLAVES_INFRA_SESION].sort(), [
     // carpeta_gen/nombre/cerrada (reordenamiento 30-sep): marcas de la carpeta activa, no datos del cliente.
-    'ad_id', 'carpeta_activa', 'carpeta_cerrada', 'carpeta_gen', 'carpeta_nombre', 'ctwaCaptured', 'ctwa_clid', 'fbclid', 'fecha', 'gclid',
-    'landingRefCaptured', 'landing_lead_id', 'lastMessageAt', 'ref_status', 'telefono', 'ttclid',
+    // [L6 r10] ctwa_angle, ref_status_at, ref_solo_tag, landing_ref_otro_uuid: atribución de quien escribe.
+    'ad_id', 'carpeta_activa', 'carpeta_cerrada', 'carpeta_gen', 'carpeta_nombre', 'ctwaCaptured', 'ctwa_angle', 'ctwa_clid', 'fbclid', 'fecha', 'gclid',
+    'landingRefCaptured', 'landing_lead_id', 'landing_ref_otro_uuid', 'lastMessageAt', 'ref_solo_tag', 'ref_status', 'ref_status_at', 'telefono', 'ttclid',
   ]);
+});
+
+test('L6 r10: toda clave de atribución que el webhook copia (ATTRIBUTION_STATE_KEYS) es infraestructura', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../src/oliver-gpt/webhook.js', import.meta.url), 'utf8');
+  const bloque = /const ATTRIBUTION_STATE_KEYS = \[([\s\S]*?)\];/.exec(src)[1].replace(/\/\/.*$/gm, '');
+  const claves = [...bloque.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.ok(claves.length >= 8);
+  for (const k of [...claves, 'ctwa_angle']) assert.ok(CLAVES_INFRA_SESION.includes(k), `falta ${k} en CLAVES_INFRA_SESION`);
 });
 
 test('6 · la clave de carpeta usa el número COMPLETO normalizado (no la cola de 9)', () => {

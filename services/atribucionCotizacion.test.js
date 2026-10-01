@@ -5,10 +5,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  parseComandoCliente, pareceComando, normalizar, fijar, obtener, limpiar,
-  marcarSinConsentimiento, sinConsentimiento, registrarQueNosEscribio, _reset,
-} from './atribucionCotizacion.js';
+// [r10 01-oct] El shim atribucionCotizacion.js se borró: cada cosa se importa de su módulo.
+import { parseComandoCliente, pareceComando } from './comandoCliente.js';
+import { normalizarChileno as normalizar } from './telefono.js';
+import { fijar, obtener, limpiar, _resetAtribuciones } from './atribucionStore.js';
+import { marcarSinConsentimiento, sinConsentimiento, registrarQueNosEscribio, _resetConsentimiento } from './consentimiento.js';
+const _reset = () => { _resetAtribuciones(); _resetConsentimiento(); };
 
 test('parsea nombre y teléfono en cualquier formato chileno', () => {
   const casos = [
@@ -78,8 +80,16 @@ test('pareceComando NO se traga mensajes normales que empiezan con "cliente"', (
   ];
   for (const t of normales) assert.equal(pareceComando(t), false, `se tragó: ${t}`);
 
-  const comandos = ['CLIENTE Juan Pérez +56912345678', 'CLIENTE', 'cliente off', '/CLIENTE Ana 912345678'];
+  const comandos = ['CLIENTE Juan Pérez +56912345678', 'CLIENTE', 'cliente off', '/CLIENTE Ana 912345678',
+    'CLIENTE Juan +56 9 8765 4321', 'CLIENTE Juan 9-8765-4321'];
   for (const t of comandos) assert.equal(pareceComando(t), true, `no reconoció: ${t}`);
+});
+
+test('M1 r10: pareceComando exige un BLOQUE de teléfono, no dígitos sueltos sumados', () => {
+  // «Cliente quiere 2 ventanas de 1500x1200» suma 9 dígitos repartidos: NO es el comando.
+  for (const t of ['Cliente quiere 2 ventanas de 1500x1200', 'cliente pide 3 de 1200x1000 y 1 de 800x600']) {
+    assert.equal(pareceComando(t), false, `se tragó: ${t}`);
+  }
 });
 
 test('consentimiento: se marca al cargar y se levanta cuando la persona escribe', () => {
@@ -121,11 +131,10 @@ test('vence sola: una atribución vieja NO se aplica', async () => {
   // irse al cliente equivocado. Ese error es peor que pedirle que repita el comando.
   _reset();
   process.env.ATRIBUCION_VIGENCIA_MS = '30';
-  const mod = await import('./atribucionCotizacion.js?vencimiento=1');
-  mod.fijar('56957296035', '911111111', 'Uno');
-  assert.ok(mod.obtener('56957296035'), 'debería estar vigente recién fijada');
+  fijar('56957296035', '911111111', 'Uno');
+  assert.ok(obtener('56957296035'), 'debería estar vigente recién fijada');
   await new Promise((r) => setTimeout(r, 60));
-  assert.equal(mod.obtener('56957296035'), null, 'pasada la vigencia debe devolver null');
+  assert.equal(obtener('56957296035'), null, 'pasada la vigencia debe devolver null');
   delete process.env.ATRIBUCION_VIGENCIA_MS;
 });
 

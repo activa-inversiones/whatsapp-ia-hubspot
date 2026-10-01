@@ -27,6 +27,8 @@ export const CLAVES_INFRA_SESION = Object.freeze([
   // atribución de anuncios de QUIEN ESCRIBE (con atribución a un cliente no viaja: clickIdsDe)
   'ctwa_clid', 'ad_id', 'gclid', 'fbclid', 'ttclid', 'ctwaCaptured',
   'landing_lead_id', 'landingRefCaptured', 'ref_status',
+  // [L6 r10] hermanas que faltaban (las copia el webhook con copyAttributionState o las fija al llegar).
+  'ref_status_at', 'ref_solo_tag', 'landing_ref_otro_uuid', 'ctwa_angle',
 ]);
 export const CARPETA_PROPIA = 'propia';
 export const TTL_CARPETA_S = 30 * 24 * 3600;

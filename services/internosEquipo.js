@@ -34,6 +34,12 @@ export function telefonoDuenio() {
   return digitos(process.env.ADMIN_PHONE || DUENIO_DEFAULT);
 }
 
+/** ¿Este número es el dueño? EL único lugar (index.js y perfilEquipo lo usan). */
+export function esDuenio(waId) {
+  const d = digitos(waId);
+  return !!d && d === telefonoDuenio();
+}
+
 const VACIO = () => ({ at: 0, internos: new Set(), modoInterno: new Set(), completosModoInterno: new Set(), completoPorUlt9: new Map() });
 let _estado = VACIO();
 
@@ -73,7 +79,7 @@ export function perfilEquipo(waId, ahora = Date.now()) {
   const nada = { rol: null, puedeFijar: false, puedeTerminar: false, motivoBloqueo: null, esEquipo: false };
   const d = digitos(waId);
   if (!d) return nada;
-  if (d === telefonoDuenio()) return { rol: 'duenio', puedeFijar: true, puedeTerminar: true, motivoBloqueo: null, esEquipo: true };
+  if (esDuenio(d)) return { rol: 'duenio', puedeFijar: true, puedeTerminar: true, motivoBloqueo: null, esEquipo: true };
   const k = ult9(waId);
   const deLaLista = !!k && _estado.internos.has(k);
   const completoDeLaCola = k ? _estado.completoPorUlt9.get(k) : '';
@@ -170,6 +176,3 @@ export const TEXTO_PEDIR_CLIENTE_INTERNO =
   'Antes de emitir la propuesta, dime para qué cliente es (queda a su nombre, no al tuyo). ' +
   'Escríbeme en un mensaje aparte: CLIENTE Nombre Apellido +569XXXXXXXX — y espera mi confirmación ' +
   'antes de mandar fotos o audios.';
-
-/** Compatibilidad: algunos módulos/tests llaman así a la cola de 9. */
-export { ult9 as ultimos9, completo as telefonoCompleto };

@@ -9,6 +9,10 @@ import { cambiarCarpeta, escribirCarpeta, leerCarpeta, CARPETA_PROPIA } from './
 import { limpiarSiMisma } from './atribucionStore.js';
 import { mensajeTrasPdf } from './comandoCliente.js';
 
+/** Lo que se le dice a quien escribe si no se pudo abrir/guardar la carpeta al cambiar de cliente. */
+export const TEXTO_ERROR_CARPETA =
+  '⚠️ No pude abrir la cotización de ese cliente. No perdí nada: vuelve a escribirme en un momento y sigo.';
+
 /**
  * @param {{turno:object, state:object, history:Array, kv:{leer,escribir}, log?:Function}} o
  * @returns {Promise<{mov:'igual'|'cambio'|'error', error?:string, aviso?:string}>}
@@ -30,7 +34,9 @@ export async function alEntrar({ turno, state, history, kv, log = () => {} }) {
     from: turno.quienEscribe, state, history, cliente: a ? turno.cliente : null,
     leer: kv.leer, escribir: kv.escribir, log,
   });
-  if (mov.mov === 'error') return mov;
+  if (mov.mov === 'error') return { ...mov, texto: TEXTO_ERROR_CARPETA };
+  // La sesión es de quien escribe: tras restaurar la carpeta, el teléfono de la sesión es el suyo.
+  if (mov.mov === 'cambio') state.telefono = turno.quienEscribe;
 
   if (a) {
     // [Thermos conjunto #1] Re-fijar al MISMO cliente (gen nueva) con la carpeta ya activa: tras un
@@ -71,6 +77,35 @@ export async function trasEmitir({ turno, state, history, kv, enviar, log = () =
   }
   limpiarSiMisma(turno.quienEscribe, a.gen);
   state.carpeta_cerrada = turno.cliente;
+  turno._carpetaPorCerrar = true;   // [L4 r10] al final del turno se reescribe completa (alCerrarTurno)
   try { await enviar(mensajeTrasPdf(a)); } catch { /* el aviso no tumba el turno */ }
   return { hecho: true, consumida: true };
+}
+
+/**
+ * [L4 r10] trasEmitir guarda la carpeta A MITAD de generarPdf, sin lo que el resto del turno agrega
+ * (respuesta, historial, estado que el cerebro devuelve). Al terminar un turno con emisión, se
+ * reescribe la carpeta COMPLETA del cliente. Si falla, el folio ya quedó guardado: solo se registra.
+ */
+export async function alCerrarTurno({ turno, state, history, kv, log = () => {} }) {
+  if (!turno._carpetaPorCerrar) return { hecho: false };
+  const g = await escribirCarpeta({ from: turno.quienEscribe, carpeta: turno.cliente, state, history, escribir: kv.escribir });
+  if (!g.ok) log('warn', `carpeta del cliente sin reescribir al cerrar el turno (${g.error}); el folio ya estaba guardado`);
+  return { hecho: true, ok: g.ok };
+}
+
+/**
+ * [L2 r10] RESET con atribución activa: se vacía TAMBIÉN la carpeta de ese cliente. Si no, el turno
+ * siguiente la restauraba (la sesión vacía no tiene carpeta_activa → cambio → se lee la de Juan).
+ */
+export async function alResetear({ turno, kv, log = () => {} }) {
+  if (!turno.atribucion) return { hecho: false };
+  const g = await escribirCarpeta({ from: turno.quienEscribe, carpeta: turno.cliente, state: {}, history: [], escribir: kv.escribir });
+  if (!g.ok) log('warn', `RESET: no pude vaciar la carpeta del cliente (${g.error})`);
+  return { hecho: true, ok: g.ok };
+}
+
+/** Marcas de carpeta que se escriben DURANTE el turno y el estado que devuelve el cerebro no trae. */
+export function conservarMarcas(newState, state) {
+  if (state.carpeta_cerrada) newState.carpeta_cerrada = state.carpeta_cerrada;
 }

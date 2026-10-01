@@ -37,10 +37,12 @@ export function identidadCotizacion(from, atribucion) {
     return { telefonoCliente: from, externalId: from, claveCot: from, cotizadoPor: null, atribuida: false, extraLead: {} };
   }
   const cotizadoPor = ult9(from) || null;
+  // [r10] Normaliza ADENTRO: nadie de afuera tiene que acordarse de pasar el teléfono limpio.
+  const cliente = normalizarChileno(atribucion.phone);
   return {
-    telefonoCliente: atribucion.phone,
-    externalId: atribucion.phone,
-    claveCot: `${from}:${atribucion.phone}`,
+    telefonoCliente: cliente,
+    externalId: cliente,
+    claveCot: `${from}:${cliente}`,
     cotizadoPor,
     atribuida: true,
     // no_pisar: si el cliente ya es lead, sales-os solo completa lo vacío. source = lo cargó el equipo.
@@ -76,10 +78,11 @@ export function clavesCotizacion({ from, telefonoCliente, claveCot }) {
  *   externalId:string, extraLead:object, clickIds:(src:object)=>object, puedeEmitir:boolean,
  *   _trasEmitirHecho:boolean}}
  */
-export function resolverTurno(from, ahora = Date.now(), { perfil = perfilEquipo, leerAtribucion = obtener } = {}) {
+export function resolverTurno(from, ahora = Date.now(), { perfil = perfilEquipo, leerAtribucion = obtener, tsMensaje = null } = {}) {
   const p = perfil(from, ahora);
   const conPermiso = p.rol === 'duenio' || p.rol === 'vendedor';
-  const atribucion = conPermiso ? leerAtribucion(from) : null;
+  // [M2 r10] La atribución que regía cuando se MANDÓ el mensaje (hora WhatsApp), no la de ahora.
+  const atribucion = conPermiso ? leerAtribucion(from, { tsMensaje }) : null;
   const id = identidadCotizacion(from, atribucion);
   const esVendedor = p.rol === 'vendedor' || p.rol === 'vendedor_ambiguo';
   return {
@@ -116,9 +119,26 @@ export function payloadLeadCotizacion(turno, datos = {}) {
   };
 }
 
-/** Quote-event: cotizado_por en la raíz (y solo ahí, en el nivel del quote). */
-export function payloadQuote(turno, base = {}) {
-  return { ...base, ...(turno.cotizadoPor ? { cotizado_por: turno.cotizadoPor } : {}) };
+/**
+ * Quote-event. cotizado_por en la raíz. Con `clickSrc`, los click-ids se calculan UNA vez
+ * (turno.clickIds: null con atribución) y el builder los pone en los tres lugares donde sales-os
+ * los lee hoy (raíz, lead y payload) — mismo formato de cable que antes; ningún llamador los esparce.
+ */
+export function payloadQuote(turno, base = {}, { clickSrc } = {}) {
+  const ck = clickSrc ? turno.clickIds(clickSrc) : null;
+  const out = { ...base };
+  if (ck) {
+    Object.assign(out, ck);
+    if (base.lead) out.lead = { ...base.lead, ...ck };
+    if (base.payload) out.payload = { ...base.payload, ...ck };
+  }
+  if (turno.cotizadoPor) out.cotizado_por = turno.cotizadoPor;
+  return out;
+}
+
+/** Nombre del borrador: el del comando CLIENTE manda; si no, el de la sesión, el de perfil o ''. */
+export function nombreBorrador(turno, state = {}, pushName = '') {
+  return turno.atribucion?.name || state.name || pushName || '';
 }
 
 /**
@@ -154,10 +174,9 @@ export function payloadSaveLead(turno, leadState = {}, state = {}) {
 
 /** Lead mínimo del cliente al fijar la atribución (upsertLead de sales-os lo busca por teléfono). */
 export function leadDeAtribucion(quienEscribe, phoneCrudo, name) {
-  const phone = normalizarChileno(phoneCrudo);
-  const { extraLead, externalId } = identidadCotizacion(digitos(quienEscribe), { phone });
+  const { extraLead, externalId, telefonoCliente } = identidadCotizacion(digitos(quienEscribe), { phone: phoneCrudo });
   return {
-    phone,
+    phone: telefonoCliente,
     channel: 'whatsapp',
     name: String(name || '').trim(),
     external_id: externalId,

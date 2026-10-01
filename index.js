@@ -312,8 +312,10 @@ import {
   procesarComandoCliente,    // el comando CLIENTE entero
 } from "./services/comandoCliente.js";
 import { sinConsentimientoAsync } from "./services/consentimiento.js";
-import { DUENIO_DEFAULT } from "./services/internosEquipo.js"; // el número del dueño por defecto, una sola copia
-import { conLockDeTelefono } from "./services/lockTelefono.js";  // el MISMO lock que los turnos de Oliver
+import { DUENIO_DEFAULT, esDuenio } from "./services/internosEquipo.js"; // el dueño en UN lugar
+import { conLockDeTelefono, acquireLock } from "./services/lockTelefono.js";  // el MISMO lock (instancia y clave) que los turnos de Oliver
+import { digitos as digitosTel } from "./services/telefono.js";
+import { msDeMensaje } from "./services/atribucionStore.js";
 // [2026-08-08] Estado del bot que sobrevive a un redeploy (respaldo en Postgres).
 import { leer as leerEstado, escribir as escribirEstado } from "./services/estadoPersistente.js";
 import { estadoReporteCosto } from "./services/reporteCosto.js";
@@ -1336,12 +1338,13 @@ async function handleManualConversion(waId, text, ses) {
 }
 
 // Normalizar el waId para comparación
+// [r10] Delegan en services/telefono.js (una sola normalización). ¿Es el dueño? → esDuenio().
 function normalizeWaId(waId) {
-  return String(waId || "").replace(/[^\d]/g, "");
+  return digitosTel(waId);
 }
 
 function normalizeAdminPhone(phone) {
-  return String(phone || "").replace(/[^\d]/g, "");
+  return digitosTel(phone);
 }
 
 // Map de cubicaciones pendientes por entrega automática en 60s
@@ -1349,9 +1352,7 @@ const cubicacionPendientes = new Map(); // { waId: { items, timestamp, tries } }
 
 function adminCheckAuth(phone, pin) {
   if (!ADMIN_PIN) return false; // fail-closed (#134)
-  const phoneNorm = normalizeWaId(phone);
-  const adminNorm = normalizeAdminPhone(ADMIN_PHONE);
-  return phoneNorm === adminNorm && String(pin ?? "").trim() === ADMIN_PIN;
+  return esDuenio(phone) && String(pin ?? "").trim() === ADMIN_PIN;
 }
 
 // [2026-07-06] Chuleta de comandos del dueño (pedido de Marcelo: "no sabía qué palabras existen").
@@ -2722,18 +2723,8 @@ setInterval(() => {
   }
 }, CLEANUP_INTERVAL);
 
-const locks = new Map();
-async function acquireLock(waId) {
-  const prev = locks.get(waId) || Promise.resolve();
-  let release;
-  const next = new Promise((r) => (release = r));
-  locks.set(waId, next);
-  await prev;
-  return () => {
-    release();
-    if (locks.get(waId) === next) locks.delete(waId);
-  };
-}
+// [r10] El lock por teléfono es UNO para todo el bot (services/lockTelefono.js): el turno v1 de
+// abajo, el turno de Oliver (webhook.js) y el comando CLIENTE comparten instancia y clave.
 
 /* =========================
    13) EXTRACT MESSAGE
@@ -2763,6 +2754,7 @@ function extractMsg(body) {
     docId: msg.document?.id || null,
     docMime: msg.document?.mime_type || null,
     referral: msg.referral || null, // [2026-06-11 CTWA] atribución de anuncio Click-to-WhatsApp
+    enviadoAtMs: msDeMensaje(msg.timestamp), // [M2 r10] hora WhatsApp: ordena CLIENTE contra los mensajes en vuelo
   };
 }
 
@@ -5371,7 +5363,7 @@ app.post("/webhook", async (req, res) => {
   try {
     const _cmInc = extractMsg(req.body);
     if (_cmInc?.ok && _cmInc.type === "text" && verifySig(req) &&
-        normalizeWaId(_cmInc.waId) === normalizeAdminPhone(ADMIN_PHONE) &&
+        esDuenio(_cmInc.waId) &&
         /^\s*\/?comandos?\s*$/i.test(_cmInc.text || "")) {
       res.sendStatus(200);
       if (!isDup(_cmInc.msgId)) {
@@ -5412,6 +5404,7 @@ app.post("/webhook", async (req, res) => {
           // puede cambiar la atribución a mitad de un turno (espera a que termine).
           msg = await conLockDeTelefono(normalizeWaId(_atInc.waId), () => procesarComandoCliente({
             waId: _atInc.waId, texto: _atInc.text || "", pushLead: pushLeadEvent, logErr,
+            desde: _atInc.enviadoAtMs, // [M2 r10] los mensajes mandados antes siguen con la atribución anterior
           }));
         } catch (e) { try { logErr("cliente_atribucion", e); } catch {} msg = "⚠️ No pude procesar el comando. Probá de nuevo."; }
         try { await waSendH(_atInc.waId, msg, true); } catch (e) { try { logErr("cliente_atribucion_send", e); } catch {} }
@@ -5427,7 +5420,7 @@ app.post("/webhook", async (req, res) => {
   try {
     const _agInc = extractMsg(req.body);
     if (_agInc?.ok && _agInc.type === "text" && verifySig(req) &&
-        normalizeWaId(_agInc.waId) === normalizeAdminPhone(ADMIN_PHONE)) {
+        esDuenio(_agInc.waId)) {
       const _agCmd = parseAdminCmd(_agInc.text || "");
       if (_agCmd && (_agCmd.type === "agenda_today" || _agCmd.type === "agenda_done" || _agCmd.type === "agenda_snooze" || _agCmd.type === "agenda_add")) {
         __agendaDebug.push({ ts: new Date().toISOString(), stage: "early_intercept", waId: _agInc.waId, esCEO: true, adminCmd: _agCmd.type, text: (_agInc.text || "").slice(0, 60), build: AGENDA_BUILD });
@@ -5447,7 +5440,7 @@ app.post("/webhook", async (req, res) => {
   try {
     const _mcInc = extractMsg(req.body);
     if (_mcInc?.ok && _mcInc.type === "text" && verifySig(req) &&
-        normalizeWaId(_mcInc.waId) === normalizeAdminPhone(ADMIN_PHONE)) {
+        esDuenio(_mcInc.waId)) {
       // [BUG#5 2026-07-01] hidratar desde Postgres ANTES de evaluar _inFlow: tras un restart de
       // Railway el Map está vacío y el flujo guiado en curso (manualConv) se perdía → el monto
       // que escribía el dueño caía al routing normal (loop de 3 días). Solo aplica al número admin.
@@ -5475,7 +5468,7 @@ app.post("/webhook", async (req, res) => {
       const _caWake = /^\s*oliver\b[\s,:.!¡¿?-]*/i;
       const _caTxt = _caInc?.text || "";
       const _caTrigger = _caInc?.type === "audio" || (_caInc?.type === "text" && _caWake.test(_caTxt));
-      if (_caInc?.ok && verifySig(req) && normalizeWaId(_caInc.waId) === normalizeAdminPhone(ADMIN_PHONE) && _caTrigger) {
+      if (_caInc?.ok && verifySig(req) && esDuenio(_caInc.waId) && _caTrigger) {
         res.sendStatus(200);
         if (!isDup(_caInc.msgId)) {
           try { await handleCeoAssistant(_caInc, _caTxt.replace(_caWake, "")); }
@@ -5726,7 +5719,7 @@ app.post("/webhook", async (req, res) => {
         waId,
         norm_waId: normalizeWaId(waId),
         norm_admin: normalizeAdminPhone(ADMIN_PHONE),
-        esCEO: normalizeWaId(waId) === normalizeAdminPhone(ADMIN_PHONE),
+        esCEO: esDuenio(waId),
         adminCmd: adminCmd ? adminCmd.type : null,
         text: (userText || "").slice(0, 60),
         build: AGENDA_BUILD,
@@ -5738,7 +5731,7 @@ app.post("/webhook", async (req, res) => {
     if (adminCmd) {
       // Agenda de seguimiento (FASE 1) — SIN PIN, solo el número CEO. Silencioso si no es Marcelo.
       if (adminCmd.type === "agenda_today" || adminCmd.type === "agenda_done" || adminCmd.type === "agenda_snooze") {
-        if (normalizeWaId(waId) !== normalizeAdminPhone(ADMIN_PHONE)) {
+        if (!esDuenio(waId)) {
           return; // no autorizado: ignorar silencioso para no filtrar la existencia del comando
         }
         if (adminCmd.type === "agenda_today") {

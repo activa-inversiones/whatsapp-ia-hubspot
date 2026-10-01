@@ -37,8 +37,12 @@ import { mantenerEscribiendo, conPausaHumana, enviarComoPersona } from '../../se
 // [2026-08-08 · reordenado 30-sep] Cotizar a nombre de un cliente (dueño o vendedor del equipo).
 // REGLA: `from` = quien escribe (chat, acuses, sesión); `turno.cliente` = dueño de TODO registro.
 import { registrarQueNosEscribio } from '../../services/consentimiento.js';
-import { resolverTurno, payloadLeadCotizacion, payloadQuote, payloadSaveLead } from '../../services/identidadCotizacion.js';
-import { alEntrar as atribucionAlEntrar, trasEmitir as atribucionTrasEmitir } from '../../services/atribucionTurno.js';
+import { resolverTurno, payloadLeadCotizacion, payloadQuote, payloadSaveLead, nombreBorrador } from '../../services/identidadCotizacion.js';
+import { msDeMensaje } from '../../services/atribucionStore.js';
+import {
+  alEntrar as atribucionAlEntrar, trasEmitir as atribucionTrasEmitir, alCerrarTurno as atribucionAlCerrarTurno,
+  alResetear as atribucionAlResetear, conservarMarcas as atribucionConservarMarcas,
+} from '../../services/atribucionTurno.js';
 import { acquireLock, LOCKS } from '../../services/lockTelefono.js';
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
 import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado } from '../../services/estadoPersistente.js';
@@ -447,6 +451,9 @@ function rateOk(waId, rateMap = RATE_MAP) {
     : { ok: true };
 }
 
+/** El comando RESET del chat (lo usan el corte del vendedor sin cliente y el manejo del reset). */
+const RESET_RE = /^\s*reset(ear)?\s*$/i;
+
 /* MUTEX por teléfono: services/lockTelefono.js (el MISMO que usa el comando CLIENTE en index.js). */
 
 /* =========================================================================
@@ -585,10 +592,11 @@ async function transcribeAudio(buffer, mime, deps) {
  *   Si el adjunto no se pudo resolver, devuelve un mensaje pidiendo texto.
  */
 // Los adjuntos (foto/audio/documento) van a la ficha de turno.cliente: la FOTO del turno, tomada
-// una sola vez tras el lock (Tridente r4 #1). Sin turno (no debería pasar), a quien escribe.
-async function resolveUserText(inbound, body, deps, turno = null) {
+// una sola vez tras el lock (Tridente r4 #1). El turno es OBLIGATORIO (r10): sin él no hay a quién
+// asignar el archivo, y adivinar es justo lo que la decisión «Cliente explícito» prohíbe.
+async function resolveUserText(inbound, body, deps, turno) {
+  if (!turno || !turno.cliente) throw new Error('resolveUserText: falta el turno (invariante)');
   const { type, text } = inbound;
-  const destinoAdjunto = (quienEscribe) => (turno ? turno.cliente : quienEscribe);
 
   if (type === 'image') {
     const raw = rawMessage(body);
@@ -603,11 +611,11 @@ async function resolveUserText(inbound, body, deps, turno = null) {
       try { desc = await (deps.describeImage || describeImage)(buffer, mime, deps); }
       catch (e) { log('error', 'media.image.vision', e); }
       // [#5] Persistir la imagen ENTRANTE (aunque sea ilegible o la visión falle) para que el operador la vea. Fire-and-forget.
-      saveMedia({ phone: destinoAdjunto(raw?.from), direction: 'inbound', mediaType: 'image', mimeType: mime, // [7 · 30-sep]
+      saveMedia({ phone: turno.cliente, direction: 'inbound', mediaType: 'image', mimeType: mime, // [7 · 30-sep]
         filename: `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, buffer, waMediaId: mediaId,
         aiDescription: (desc && desc !== '[Imagen no legible]') ? desc : '[imagen recibida]' }).catch(() => {});
       // [B1 2026-06-25] Adjuntar la imagen al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
-      attachInboundToDeal(destinoAdjunto(raw?.from), buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, mime).catch(() => {});
+      attachInboundToDeal(turno.cliente, buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.jpg`, mime).catch(() => {});
       // [F3b] '[Imagen no legible]' NO es contenido válido → cae al fallback que pide
       // describir por texto (evita pasar una no-descripción como medidas reales).
       if (desc && desc !== '[Imagen no legible]') {
@@ -639,11 +647,11 @@ async function resolveUserText(inbound, body, deps, turno = null) {
       try { transcript = await (deps.transcribeAudio || transcribeAudio)(buffer, mime, deps); }
       catch (e) { log('error', 'media.audio.stt', e); }
       // [#5] Persistir el audio ENTRANTE + su transcripción para el cockpit. Fire-and-forget.
-      saveMedia({ phone: destinoAdjunto(raw?.from), direction: 'inbound', mediaType: 'audio', mimeType: mime, // [7 · 30-sep]
+      saveMedia({ phone: turno.cliente, direction: 'inbound', mediaType: 'audio', mimeType: mime, // [7 · 30-sep]
         filename: `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, buffer, waMediaId: mediaId,
         transcription: transcript || '', aiDescription: transcript || '[audio recibido]' }).catch(() => {});
       // [B1 2026-06-25] Adjuntar el audio al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
-      attachInboundToDeal(destinoAdjunto(raw?.from), buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, mime).catch(() => {});
+      attachInboundToDeal(turno.cliente, buffer, `inbound_${raw?.from || 'wa'}_${mediaId}.ogg`, mime).catch(() => {});
       if (transcript) return { userText: transcript, mediaResolved: true };
     } catch (err) {
       log('error', 'media.audio', err);
@@ -664,10 +672,10 @@ async function resolveUserText(inbound, body, deps, turno = null) {
     if (mediaId) {
       try {
         const { buffer, mime } = await downloadWaMedia(mediaId, deps);
-        saveMedia({ phone: destinoAdjunto(raw?.from), direction: 'inbound', mediaType: 'document', mimeType: mime, // [7 · 30-sep]
+        saveMedia({ phone: turno.cliente, direction: 'inbound', mediaType: 'document', mimeType: mime, // [7 · 30-sep]
           filename: fn, buffer, waMediaId: mediaId, aiDescription: `Documento/plano entrante: ${fn}` }).catch(() => {});
         // [B1 2026-06-25] Adjuntar el documento al Deal de Zoho CRM si ya existe (no force-crea). Fire-and-forget.
-        attachInboundToDeal(destinoAdjunto(raw?.from), buffer, fn, mime).catch(() => {});
+        attachInboundToDeal(turno.cliente, buffer, fn, mime).catch(() => {});
         // [2026-06-22 FIX] Si es Excel, LEER la lista de ventanas y cotizar (antes: pedía reescribir a mano → se perdían clientes).
         const esExcel = /\.xlsx?$/i.test(fn) || /spreadsheet|excel/i.test(mime || '');
         if (esExcel && buffer) {
@@ -1240,14 +1248,15 @@ export async function handleWebhook(req, res, deps = {}) {
     // 📌 REGLA: `from` (= turno.quienEscribe) SOLO para el chat: envíos, acuses, sesión. Todo
     // registro (lead, cotización, informes, archivos, espejos, Deal, entregas) usa turno.cliente.
     // Una guardia (webhook.turno-registros.test.js) falla si un registro vuelve a usar `from`.
-    const turno = resolverTurno(from, Date.now());
+    // [M2 r10] Con la hora WhatsApp del mensaje: si se mandó ANTES del último CLIENTE, rige la
+    // atribución anterior (ver atribucionStore). Sin hora (tests, adaptadores viejos) = la actual.
+    const turno = resolverTurno(from, Date.now(), { tsMensaje: msDeMensaje(inbound.enviadoAt) });
     const { atribucion, claves, esDuenio } = turno;
     const esVendedorInterno = turno.esVendedor;
     if (turno.rol === 'vendedor_ambiguo') {
       log('warn', 'atribucion', `${String(from).slice(-4)}: en modo interno sin número completo confirmado; no cotiza sin CLIENTE`);
     }
     const telefonoCliente = turno.cliente;
-    const claveCot = turno.claveCot;
 
     // ── (2c) RATE-LIMIT — 18 msg/min por waId ───────────────────────────
     const rate = rateOk(from, rateMap);
@@ -1387,7 +1396,8 @@ export async function handleWebhook(req, res, deps = {}) {
     // [2026-09-30 · «Cliente explícito»] Un vendedor SIN cliente fijado no cotiza: Oliver no
     // adivina de quién es un mensaje. Se le pide el comando y se corta ANTES del LLM (no toma
     // medidas ni guarda nada a su nombre). El dueño queda afuera: puede cotizar para sí.
-    if (esVendedorInterno && !atribucion) {
+    // [L3 r10] RESET queda exento: un vendedor sin cliente tiene que poder limpiar su sesión.
+    if (esVendedorInterno && !atribucion && !RESET_RE.test(inbound?.text || '')) {
       log('info', 'atribucion', `${String(from).slice(-4)}: vendedor sin CLIENTE fijado; se le pide el comando`);
       // [r3 #3] Si su CLIENTE iba a ser rechazado, se le dice la causa real (no se le pide en bucle).
       await safe('atribucion.pedirCliente', () => sendWhatsAppText(from, textoCorteVendedor(turno.perfil)));
@@ -1462,18 +1472,13 @@ export async function handleWebhook(req, res, deps = {}) {
     const _carpetas = deps.carpetas || { leer: leerConEstado, escribir: escribirEstadoDurable };
     const _logAtrib = (nivel, msg) => log(nivel, 'atribucion', `${String(from).slice(-4)}: ${msg}`);
     const _mov = await atribucionAlEntrar({ turno, state, history, kv: _carpetas, log: _logAtrib });
-    if (_mov.mov === 'cambio') {
-      state.telefono = from;
-      log('info', 'atribucion', `${String(from).slice(-4)}: carpeta → ${state.carpeta_activa}`);
-    }
+    if (_mov.mov === 'cambio') log('info', 'atribucion', `${String(from).slice(-4)}: carpeta → ${state.carpeta_activa}`);
     if (_mov.aviso) await safe('atribucion.carpetaGuardada', () => sendWhatsAppText(from, _mov.aviso));
     if (_mov.mov === 'error') {
       // El estado activo sigue siendo el del cliente ANTERIOR, pero la atribución ya apunta al
       // nuevo: seguir el turno mezclaría los dos. Se corta acá (el finally suelta el lock) y el
       // próximo mensaje reintenta el cambio solo.
-      await safe('atribucion.carpeta.aviso', () => sendWhatsAppText(from,
-        '⚠️ No pude abrir la cotización de ese cliente. No perdí nada: vuelve a escribirme en un ' +
-        'momento y sigo.'));
+      await safe('atribucion.carpeta.aviso', () => sendWhatsAppText(from, _mov.texto));
       return;
     }
 
@@ -1603,9 +1608,11 @@ export async function handleWebhook(req, res, deps = {}) {
     // ── (5a) [FIX 2026-06-19] Comando RESET — paridad con IG/FB (channel-agent.js). Limpia la
     //    sesión (cache + Postgres) → la próxima conversación arranca limpia, SIN re-saludo heredado.
     //    Antes WhatsApp NO tenía este comando → "reset" caía al cerebro y re-saludaba (visto en test en vivo).
-    if (/^\s*reset(ear)?\s*$/i.test(userText)) {
+    if (RESET_RE.test(userText)) {
       conv.delete(from);
       persistSessionFn(from, { history: [], state: {} }, deps);
+      // [L2 r10] Con cliente fijado, también su carpeta (si no, el turno siguiente la restauraba).
+      await safe('reset.carpeta', () => atribucionAlResetear({ turno, kv: _carpetas, log: _logAtrib }));
       // [2026-08-26] RESET tambien suelta los candados del INFORME TERMICO (caso 0364: el
       // dueño probaba un "cliente nuevo" y el informe no salia por el candado de la prueba
       // anterior). No se borran claves (las huellas no se pueden enumerar): se deja un
@@ -2746,10 +2753,8 @@ Comuna: ${datos.comuna}`
           numerarVentanas(input.items);
           // 🔒 [2026-09-30] Un vendedor del equipo NO emite a su propio nombre. El corte de verdad es
           // el temprano (antes del LLM); esto es solo la ASERCIÓN de que nunca se llega acá así.
-          if (!turno.puedeEmitir) {
-            log('error', 'generarPdf.interno_sin_cliente', `${String(from).slice(-4)}: llegó a generarPdf sin poder emitir (no debería)`);
-            return { ok: false, reason: 'interno_sin_cliente', message: textoCorteVendedor(turno.perfil) };
-          }
+          // [r10] Inalcanzable ⇒ ASERCIÓN: si se llega acá es un bug, no un camino de negocio.
+          if (!turno.puedeEmitir) throw new Error('generarPdf: vendedor sin cliente llegó a emitir (invariante)');
           const itemsBad = (input.items || []).filter((it) => !(Number(it.unit_price) > 0));
           if (!input.items?.length || itemsBad.length) {
             log('error', 'generarPdf.guard',
@@ -3374,7 +3379,7 @@ Comuna: ${datos.comuna}`
           // [2026-09-30] claveCot = from sin atribución (idéntico a antes); con atribución, el
           // par vendedor+cliente: el dedup de un cliente nunca devuelve el folio de otro.
           const _claveQuote = claves.quotesig;
-          let _prevQuote = RECENT_QUOTES.get(claveCot);
+          let _prevQuote = RECENT_QUOTES.get(claves.quotesig);
           if (!_prevQuote) {
             try { _prevQuote = (await (deps.leerEstado || leerEstado)(_claveQuote)) || null; }
             catch { /* red caida: se degrada al guardia en memoria */ }
@@ -3441,7 +3446,7 @@ Comuna: ${datos.comuna}`
               // Hay una emisión IDENTICA en vuelo. Si ya terminó, `RECENT_QUOTES` tiene el
               // folio y se le devuelve ese; si sigue en curso, se le dice que espere — nunca
               // se emite un segundo documento.
-              const _yaHecha = RECENT_QUOTES.get(claveCot);
+              const _yaHecha = RECENT_QUOTES.get(claves.quotesig);
               log('info', 'generarPdf.dedup',
                 `emisión IDÉNTICA en vuelo para ${from}: no se emite un segundo documento`);
               if (_yaHecha && _yaHecha.sig === _quoteSig) {
@@ -3543,7 +3548,7 @@ Comuna: ${datos.comuna}`
 
           // Correlativo quemado → registrar (con firma de contenido) para el guard anti-duplicado.
           const _marcaQuote = { quote_number: quoteNumber, at: Date.now(), sig: _quoteSig };
-          RECENT_QUOTES.set(claveCot, _marcaQuote);
+          RECENT_QUOTES.set(claves.quotesig, _marcaQuote); // [r10] misma clave que el dedup durable
           // La marca ya está: el dedup de 2 min toma la posta y la reserva en vuelo sobra.
           _soltarEmision();
           // El respaldo sobrevive al redeploy. TTL corto: solo tiene que cubrir la ventana
@@ -4919,7 +4924,8 @@ Comuna: ${datos.comuna}`
           // fireConversion → CXM /api/conversions/track con el canal correcto.
           await landingAttributionReady;
           // [2026-09-30] Con atribución los click-ids van null: serían de quien escribe.
-          const _ck = turno.clickIds(state);
+          // [r10] Los pone payloadQuote (clickSrc), una sola vez; foto del estado acá.
+          const _ckSrc = { ...state };
           safe('generarPdf.conversion', () =>
             bridge.pushQuoteEvent(payloadQuote(turno, {
               phone:           clientPhone,
@@ -4979,9 +4985,9 @@ Comuna: ${datos.comuna}`
               })),
               // [ajuste abogado] click-ids a NIVEL RAÍZ: fireConversion (sales-os) los lee de
               // body.fbclid/body.gclid de raíz, NO de payload. Anti-cross-inject: un lead → un canal.
-              // [2026-09-30] Con atribución (_ck = {}) NO viajan click-ids: serían de quien
-              // escribe (vendedor/dueño), no del cliente — mismo criterio que saveLead (08-ago).
-              ..._ck,
+              // [2026-09-30] Con atribución NO viajan click-ids: serían de quien escribe
+              // (vendedor/dueño), no del cliente — mismo criterio que saveLead (08-ago).
+              // Los agrega payloadQuote (clickSrc) en raíz, lead y payload.
               // [2026-07-11 FIX lead_id NULL] sin este campo, quoteService.upsertQuote (sales-os)
               // no puede resolver lead_id → JOIN quotes→leads roto (auditoría BD viva confirmada).
               // Réplica de buildLeadPayload (index.js, ruta legacy) con los datos que el flujo
@@ -5001,14 +5007,12 @@ Comuna: ${datos.comuna}`
                 message: null,
                 status: 'quoted',
                 zoho_deal_id: null,
-                ..._ck,
               }),
               payload: {
                 comuna:   clientComuna,
-                // Click ids — anti-cross-inject: solo el canal del lead.
-                ..._ck,
+                // Click ids (los pone payloadQuote) — anti-cross-inject: solo el canal del lead.
               },
-            }))
+            }, { clickSrc: _ckSrc }))
           );
 
           // ── [2026-07-07] ESCALACIÓN por VENTANA FUERA DE ESTÁNDAR (instrucción del dueño) ──────
@@ -5253,6 +5257,7 @@ Comuna: ${datos.comuna}`
                            state: { ...state, lastMessageAt: Date.now() } };
       conv.set(from, toStoreNom);
       persistSessionFn(from, toStoreNom, deps);
+      await safe('atribucion.cerrarTurno', () => atribucionAlCerrarTurno({ turno, ...toStoreNom, kv: _carpetas, log: _logAtrib })); // [L4 r10]
       log('info', 'pdf.nombre-tardio',
         `${from}: nombre "${_nombreReal}" llego despues de la propuesta; reemitida ${pdfRes?.quote_number || _np.quote_number}`);
       return; // 200 ya enviado; el finally libera el lock
@@ -5291,6 +5296,7 @@ Comuna: ${datos.comuna}`
                            state: { ...state, pending_quote: null, lastMessageAt: Date.now() } };
       conv.set(from, toStorePdf);
       persistSessionFn(from, toStorePdf, deps);
+      await safe('atribucion.cerrarTurno', () => atribucionAlCerrarTurno({ turno, ...toStorePdf, kv: _carpetas, log: _logAtrib })); // [L4 r10]
       log('info', 'pdf.deterministic', `PDF determinista para ${from} (${pdfRes?.quote_number || 'sin folio'})`);
       return; // 200 ya enviado; el finally libera el lock
     }
@@ -5343,8 +5349,8 @@ Comuna: ${datos.comuna}`
     // [PDF-RACE 2026-07-01] sin este merge se perdería el last_quote (folio de la sesión, estado
     // real de entrega) que generarPdf escribió DURANTE este turno vía toolCalls del LLM.
     if (state.last_quote) newState.last_quote = state.last_quote;
-    // [2026-09-30] Lo mismo con la marca de carpeta cerrada que deja atribucionTrasEmitir DURANTE el turno.
-    if (state.carpeta_cerrada) newState.carpeta_cerrada = state.carpeta_cerrada;
+    // [2026-09-30] Lo mismo con las marcas de carpeta que deja atribucionTrasEmitir DURANTE el turno.
+    atribucionConservarMarcas(newState, state);
     // 🔴 [compuerta cruzada · Codex #3] `ya_compro` ES DEL TURNO, NO DE LA SESION.
     // Se recalcula del control en CADA turno, asi que guardarla no aporta nada y
     // si puede confundir: una sesion vieja quedaria con «ya_compro: true» escrito
@@ -5642,22 +5648,23 @@ Comuna: ${datos.comuna}`
     if (quote) {
       await landingAttributionReady;
       copyAttributionState(newState, state);
-      const _ckD = turno.clickIds(newState); // sin click-ids de quien escribe si hay atribución
+      // Click-ids: los pone payloadQuote (clickSrc); null con atribución (serían de quien escribe).
+      const _ckSrcD = { ...newState };
+      const _nombreD = nombreBorrador(turno, newState, push_name);
       await safe('persist.quote', () =>
         bridge.pushQuoteEvent(payloadQuote(turno, {
           // El borrador es de turno.cliente (con atribución, el cliente).
           phone: telefonoCliente,
           channel: 'whatsapp',
-          customer_name: atribucion?.name || newState.name || push_name || 'Cliente WhatsApp',
+          customer_name: _nombreD || 'Cliente WhatsApp',
           amount_total: montoTurno,
           currency: 'CLP',
           status: 'draft',
-          ..._ckD,
           // [2026-07-11 FIX lead_id NULL] sin este campo, quoteService.upsertQuote (sales-os)
           // no puede resolver lead_id → JOIN quotes→leads roto (auditoría BD viva confirmada).
           lead: payloadLeadCotizacion(turno, {
-            lead_name: atribucion?.name || newState.name || push_name || null,
-            name: atribucion?.name || newState.name || push_name || null,
+            lead_name: _nombreD || null,
+            name: _nombreD || null,
             phone: telefonoCliente || null,
             comuna: newState.comuna || null,
             city: newState.comuna || null,
@@ -5668,14 +5675,12 @@ Comuna: ${datos.comuna}`
             message: null,
             status: 'draft',
             zoho_deal_id: null,
-            ..._ckD,
           }),
           payload: {
             comuna: newState.comuna || '',
             quote,
-            ..._ckD,
           },
-        }))
+        }, { clickSrc: _ckSrcD }))
       );
     }
 
@@ -5712,6 +5717,10 @@ Comuna: ${datos.comuna}`
     conv.set(from, sessionToSave);
     // Persistencia remota fire-and-forget (F2-1): no bloquea el turno.
     persistSessionFn(from, sessionToSave, deps);
+    // [L4 r10] Hubo emisión con cliente: su carpeta se reescribe con el turno COMPLETO.
+    await safe('atribucion.cerrarTurno', () => atribucionAlCerrarTurno({
+      turno, state: sessionToSave.state, history: sessionToSave.history, kv: _carpetas, log: _logAtrib,
+    }));
   } catch (err) {
     // Fail-safe absoluto: el 200 ya se envió; jamás relanzamos.
     log('error', 'handleWebhook', err);

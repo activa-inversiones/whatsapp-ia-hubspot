@@ -7,7 +7,7 @@
 
 import { digitos, normalizarChileno, esCelularChileno } from './telefono.js';
 import { perfilEquipo, telefonoDuenio } from './internosEquipo.js';
-import { fijar, limpiar, VIGENCIA_MS } from './atribucionStore.js';
+import { fijar, limpiar, vigenciaMs } from './atribucionStore.js';
 import { yaNosEscribio, marcarSinConsentimiento } from './consentimiento.js';
 import { leadDeAtribucion } from './identidadCotizacion.js';
 
@@ -15,6 +15,8 @@ const FORMAS_OFF = /^(off|no|ninguno|salir|listo|fin)$/i;
 /** RUT chileno escrito con guion (con o sin puntos): 12.345.678-9, 56789012-3, 9.876.543-K. */
 const RUT_RE = /\b\d{1,2}\.?\d{3}\.?\d{3}-[\dkK]\b/g;
 const EJEMPLO = 'CLIENTE Juan Pérez +56912345678';
+/** Un bloque contiguo que puede ser un teléfono ("+56 9 1234 5678", "9-1234-5678"). */
+const BLOQUE_TEL = /[+\d][\d\s.-]{7,}/g;
 
 /**
  * Los celulares chilenos que trae el texto (sin RUT). Un bloque con espacios se prueba entero
@@ -23,7 +25,7 @@ const EJEMPLO = 'CLIENTE Juan Pérez +56912345678';
  */
 function celularesDelTexto(texto) {
   const sinRut = String(texto || '').replace(RUT_RE, ' ');
-  const bloques = sinRut.match(/[+\d][\d\s.-]{7,}/g) || [];
+  const bloques = sinRut.match(BLOQUE_TEL) || [];
   const vistos = new Map();
   for (const b of bloques) {
     const partes = esCelularChileno(b) ? [b] : b.split(/\s+/).filter(Boolean);
@@ -73,7 +75,9 @@ export function pareceComando(texto) {
   const resto = t.replace(/^\/?\s*cliente\b/i, '').trim();
   if (!resto) return true;
   if (FORMAS_OFF.test(resto)) return true;
-  return digitos(resto).length >= 8;
+  // [M1 r10] Un BLOQUE contiguo de teléfono (el mismo patrón que celularesDelTexto), no la suma de
+  // todos los dígitos: «Cliente quiere 2 ventanas de 1500x1200» se interceptaba como comando.
+  return (resto.match(BLOQUE_TEL) || []).some((b) => digitos(b).length >= 8);
 }
 
 /** ¿Se le acepta a este número este comando? Terminar: perfil.puedeTerminar; fijar: puedeFijar. */
@@ -90,11 +94,12 @@ export function autorizaComandoCliente(waId, texto, ahora = Date.now()) {
 export async function procesarComandoCliente({
   waId, texto, pushLead, escribio = yaNosEscribio, marcar = marcarSinConsentimiento, logErr = () => {},
   esDelEquipo = (p) => perfilEquipo(p).esEquipo,
+  desde = null,   // [M2 r10] hora WhatsApp del comando: ordena contra los mensajes en vuelo
 }) {
   const r = parseComandoCliente(texto || '');
   if (!r.ok) return `⚠️ ${r.error}`;
   if (r.limpiar) {
-    limpiar(waId);
+    limpiar(waId, { desde });
     return '✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.';
   }
   // El cliente no puede ser quien escribe, el dueño ni nadie del equipo.
@@ -103,7 +108,7 @@ export async function procesarComandoCliente({
   if (r.phone === normalizarChileno(waId) || r.phone === telefonoDuenio() || esEquipo) {
     return `⚠️ Ese número es tuyo o de alguien del equipo, no de un cliente. Escribe el WhatsApp del cliente: ${EJEMPLO}`;
   }
-  fijar(waId, r.phone, r.name);
+  fijar(waId, r.phone, r.name, { desde });
   // Si el cliente no existe como lead, se crea (no_pisar: si existía, no se le cambia nada).
   try {
     Promise.resolve(pushLead(leadDeAtribucion(waId, r.phone, r.name)))
@@ -119,7 +124,7 @@ export async function procesarComandoCliente({
     // [Thermos conjunto #6] Lo que llega antes de esta confirmación no tiene cliente al que asignarse.
     'Las fotos o audios del cliente mándalos DESPUÉS de esta confirmación.\n\n' +
     'Vale para UNA propuesta: cuando se envíe el PDF vuelve a tu nombre (para corregirla, manda ' +
-    `de nuevo este mismo comando). Para cancelar antes: *CLIENTE OFF*. Vence a las ${Math.round(VIGENCIA_MS / 3600000)} h.` +
+    `de nuevo este mismo comando). Para cancelar antes: *CLIENTE OFF*. Vence a las ${Math.round(vigenciaMs() / 3600000)} h.` +
     (_escribio ? '' :
       '\n\n⚠️ Como nunca escribió al bot, el seguimiento automático NO le va a llegar ' +
       'hasta que él te escriba por acá. Es a propósito: no podemos mandarle mensajes ' +

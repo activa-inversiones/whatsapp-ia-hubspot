@@ -10,14 +10,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import {
-  identidadCotizacion, leadDeAtribucion, clickIdsDe,
-  clavesCotizacion, procesarComandoCliente, mensajeTrasPdf, telefonoDuenio, DUENIO_DEFAULT,
-  fijar, obtener, limpiarSiMisma, yaNosEscribio, VIGENCIA_MS, _reset, parseComandoCliente,
-  autorizaComandoCliente,
-} from './atribucionCotizacion.js';
-import { aplicarLista, perfilEquipo, _reiniciarParaTests } from './internosEquipo.js';
-import { resolverTurno } from './identidadCotizacion.js';
+import { identidadCotizacion, leadDeAtribucion, clickIdsDe, clavesCotizacion, resolverTurno } from './identidadCotizacion.js';
+import { procesarComandoCliente, mensajeTrasPdf, parseComandoCliente, autorizaComandoCliente } from './comandoCliente.js';
+import { fijar, obtener, limpiar, limpiarSiMisma, vigenciaMs, _resetAtribuciones } from './atribucionStore.js';
+import { yaNosEscribio, _resetConsentimiento } from './consentimiento.js';
+import { aplicarLista, perfilEquipo, telefonoDuenio, DUENIO_DEFAULT, _reiniciarParaTests } from './internosEquipo.js';
+const _reset = () => { _resetAtribuciones(); _resetConsentimiento(); };
+const VIGENCIA_MS = vigenciaMs();
 // [reordenamiento 30-sep] Las 7 funciones sueltas de rol/permiso pasaron a UNA: perfilEquipo.
 const puedeFijar = (p) => perfilEquipo(p).puedeFijar;
 
@@ -65,7 +64,7 @@ test('decisión dueño 30-sep: index.js y webhook.js usan la MISMA regla de auto
   const wh = fs.readFileSync(path.join(dir, '..', 'src', 'oliver-gpt', 'webhook.js'), 'utf8');
   // [reordenamiento 30-sep] El rol y la atribución del turno salen de UNA foto (resolverTurno →
   // perfilEquipo), la misma función que usa index.js vía autorizaComandoCliente.
-  assert.match(wh, /const turno = resolverTurno\(from, Date\.now\(\)\);/);
+  assert.match(wh, /const turno = resolverTurno\(from, Date\.now\(\), \{ tsMensaje: msDeMensaje\(inbound\.enviadoAt\) \}\);/);
   assert.doesNotMatch(src, /import\("\.\/src\/oliver-gpt\/webhook\.js"\)[\s\S]{0,80}conLockDeTelefono/, 'index.js no toma el lock de webhook.js');
 });
 
@@ -279,6 +278,25 @@ test('Thermos conjunto #6: el texto dice mandar CLIENTE y ESPERAR la confirmaci�
   const msg = await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Juan +${JUAN}`,
     pushLead: async () => {}, escribio: async () => true, marcar: () => {}, esDelEquipo: () => false });
   assert.match(msg, /fotos o audios del cliente mándalos DESPUÉS de esta confirmación/);
+  _reset();
+});
+
+test('M2 r10: un mensaje mandado ANTES de «CLIENTE Pedro» (hora WhatsApp) sigue siendo de Juan', () => {
+  _reset();
+  const T = Date.now();
+  fijar(VENDEDOR, JUAN, 'Juan', { desde: Math.floor((T - 60000) / 1000) });
+  fijar(VENDEDOR, PEDRO, 'Pedro', { desde: Math.floor(T / 1000) });            // segundos, como Meta
+  assert.equal(obtener(VENDEDOR, { tsMensaje: Math.floor((T - 5000) / 1000) })?.phone, JUAN, 'enviado antes: Juan');
+  assert.equal(obtener(VENDEDOR, { tsMensaje: Math.floor(T / 1000) })?.phone, PEDRO, 'mismo segundo: cuenta como posterior');
+  assert.equal(obtener(VENDEDOR)?.phone, PEDRO, 'sin hora: la actual');
+  // Sin atribución previa: el mensaje anterior se procesa SIN atribución.
+  _reset();
+  fijar(VENDEDOR, PEDRO, 'Pedro', { desde: Math.floor(T / 1000) });
+  assert.equal(obtener(VENDEDOR, { tsMensaje: Math.floor((T - 5000) / 1000) }), null);
+  // Y lo mismo con CLIENTE OFF: lo mandado antes del OFF sigue siendo de Pedro.
+  limpiar(VENDEDOR, { desde: Math.floor((T + 10000) / 1000) });
+  assert.equal(obtener(VENDEDOR, { tsMensaje: Math.floor((T + 5000) / 1000) })?.phone, PEDRO);
+  assert.equal(obtener(VENDEDOR), null);
   _reset();
 });
 
