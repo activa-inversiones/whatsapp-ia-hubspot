@@ -15,7 +15,14 @@ import {
   clavesCotizacion, procesarComandoCliente, mensajeTrasPdf, telefonoDuenio, DUENIO_DEFAULT,
   fijar, obtener, limpiarSiMisma, yaNosEscribio, VIGENCIA_MS, _reset, parseComandoCliente,
 } from './atribucionCotizacion.js';
-import { aplicarLista, puedeComandoCliente, _reiniciarParaTests } from './internosEquipo.js';
+import * as internos from './internosEquipo.js';
+import * as atrib from './atribucionCotizacion.js';
+import { destinoAdjunto } from '../src/oliver-gpt/webhook.js';
+const { aplicarLista, puedeComandoCliente, _reiniciarParaTests } = internos;
+// Funciones nuevas de r4: si no existen, el test cae con "is not a function" (rojo) en vez de no cargar.
+const esInternoSinNumeroCompleto = (...a) => internos.esInternoSinNumeroCompleto(...a);
+const esDelEquipoParaCliente = (...a) => internos.esDelEquipoParaCliente(...a);
+const autorizaComandoCliente = (...a) => atrib.autorizaComandoCliente(...a);
 
 const ADMIN = '56957296035';
 const VENDEDOR = '56911110000';
@@ -50,7 +57,9 @@ test('decisión dueño 30-sep: si sales-os no manda el teléfono completo, ning�
 test('decisión dueño 30-sep: index.js y webhook.js usan la MISMA regla de autorización y de dueño', () => {
   const dir = path.dirname(fileURLToPath(import.meta.url));
   const src = fs.readFileSync(path.join(dir, '..', 'index.js'), 'utf8');
-  assert.match(src, /puedeUsarComandoCliente\(normalizeWaId\(_atInc\.waId\), \{ esInterno: puedeComandoCliente \}\)/);
+  // [r4 #5/#1] index.js autoriza con autorizaComandoCliente y corre el comando con el lock del webhook.
+  assert.match(src, /autorizaComandoCliente\(normalizeWaId\(_atInc\.waId\), _atInc\.text \|\| ""\)/);
+  assert.match(src, /conLockDeTelefono\(normalizeWaId\(_atInc\.waId\), \(\) => procesarComandoCliente\(/);
   assert.match(src, /const ADMIN_PHONE = process\.env\.ADMIN_PHONE \|\| DUENIO_DEFAULT;/);
   const wh = fs.readFileSync(path.join(dir, '..', 'src', 'oliver-gpt', 'webhook.js'), 'utf8');
   // [Thermos r4] El ROL usa la última lista conocida por número COMPLETO (sin antigüedad);
@@ -157,11 +166,16 @@ test('«Cliente explícito» 30-sep: CLIENTE fija; CLIENTE OFF termina; el TTL c
 });
 
 test('Tridente r3 #5 (30-sep): CLIENTE con dos números de 9+ dígitos (RUT + celular) y ninguno con 56 → ambiguo, se rechaza', () => {
-  for (const t of ['CLIENTE Juan Pérez 123456789 987654321', 'CLIENTE Juan Pérez 12.345.678-9 9 8765 4321']) {
+  for (const t of ['CLIENTE Juan Pérez 123456789 987654321', 'CLIENTE Juan Pérez 123456789, 987654321']) {
     const r = parseComandoCliente(t);
     assert.equal(r.ok, false, t);
     assert.match(r.error, /\+569/, 'pide el formato +569…');
   }
+  // [Tridente r4 #7] CAMBIO DECIDIDO: un RUT escrito como RUT (con guion) se reconoce y NO cuenta
+  // como número; el celular que queda es inequívoco. (En r3 este caso se rechazaba.)
+  const conRut = parseComandoCliente('CLIENTE Juan Pérez 12.345.678-9 9 8765 4321');
+  assert.equal(conRut.ok, true, JSON.stringify(conRut));
+  assert.equal(conRut.phone, '56987654321');
   // Con +56 / 56 se elige ESE, aunque haya otro número.
   const r = parseComandoCliente('CLIENTE Juan Pérez 12.345.678-9 +56 9 8765 4321');
   assert.equal(r.ok, true);
@@ -173,6 +187,49 @@ test('Tridente r3 #5 (30-sep): CLIENTE con dos números de 9+ dígitos (RUT + ce
   assert.match(pegado.error, /más de un número/);
   // Un solo número: como siempre.
   assert.equal(parseComandoCliente('CLIENTE Juan 987654321').phone, '56987654321');
+});
+
+test('Tridente r4 #7 (30-sep): CLIENTE acepta SOLO celular chileno; un "56…" que no es celular no gana', () => {
+  const r1 = parseComandoCliente('CLIENTE Juan 123456789');           // 9 dígitos que NO empiezan con 9
+  assert.equal(r1.ok, false);
+  assert.match(r1.error, /celular chileno/);
+  const r2 = parseComandoCliente('CLIENTE Juan 56789012-3 912345678'); // RUT que empieza con 56 + celular
+  assert.equal(r2.ok, true, JSON.stringify(r2));
+  assert.equal(r2.phone, '56912345678', 'gana el celular, no el RUT');
+  const r3 = parseComandoCliente('CLIENTE Juan +34 912 345 678');     // extranjero
+  assert.equal(r3.ok, false);
+  assert.match(r3.error, /celular chileno/);
+});
+
+test('Tridente r4 #5 (30-sep): CLIENTE OFF funciona aunque la lista tenga >30 min (la antigüedad solo frena FIJAR)', () => {
+  _reiniciarParaTests();
+  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] },
+    Date.now() - 31 * 60 * 1000);
+  assert.equal(autorizaComandoCliente(VENDEDOR, 'CLIENTE OFF'), true, 'OFF se acepta');
+  assert.equal(autorizaComandoCliente(VENDEDOR, `CLIENTE Juan +${JUAN}`), false, 'fijar uno nuevo, no');
+  assert.equal(autorizaComandoCliente('56933334444', 'CLIENTE OFF'), false, 'un cliente cualquiera no');
+  _reiniciarParaTests();
+});
+
+test('Tridente r4 #6 (30-sep): un +34 con la misma cola que un vendedor con número completo es CLIENTE, no equipo', () => {
+  _reiniciarParaTests();
+  aplicarLista({ internos_ult9: ['912345678'], vendedores: [{ ult9: '912345678', telefono: '56912345678', oliver_interno: true }] });
+  assert.equal(esInternoSinNumeroCompleto('34912345678'), false, 'el vendedor tiene número completo y es otro');
+  assert.equal(esDelEquipoParaCliente('34912345678'), false, 'se le puede fijar como cliente');
+  assert.equal(esDelEquipoParaCliente('56912345678'), true, 'el vendedor sí es del equipo');
+  // Vendedor SIN número completo cargado: por la cola no se puede distinguir → se trata como equipo.
+  aplicarLista({ internos_ult9: ['912345678'], vendedores: [{ ult9: '912345678', oliver_interno: true }] });
+  assert.equal(esInternoSinNumeroCompleto('34912345678'), true);
+  assert.equal(esDelEquipoParaCliente('34912345678'), true);
+  _reiniciarParaTests();
+});
+
+test('Tridente r4 #1 (30-sep): destinoAdjunto usa la FOTO de la atribución del turno, no la relee', () => {
+  _reset();
+  fijar(VENDEDOR, PEDRO, 'Pedro');     // entró CLIENTE Pedro a mitad del turno de Juan
+  assert.equal(destinoAdjunto(VENDEDOR, { phone: JUAN }), JUAN, 'la foto del turno (Juan) manda');
+  assert.equal(destinoAdjunto(VENDEDOR, null), VENDEDOR, 'sin atribución en la foto: quien escribe');
+  _reset();
 });
 
 test('5 · CLIENTE rechaza el propio número de quien escribe y cualquier número del equipo', async () => {

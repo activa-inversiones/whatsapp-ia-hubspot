@@ -27,7 +27,7 @@ import {
   escribir as escribirEstado,
   borrar as borrarEstado,
 } from './estadoPersistente.js';
-import { ultimos9, esNumeroDelEquipo } from './internosEquipo.js'; // una sola copia en el bot
+import { ultimos9, esDelEquipoParaCliente, esVendedorConfirmado, puedeComandoCliente } from './internosEquipo.js'; // una sola copia en el bot
 export { ultimos9 };
 
 const ATRIBUCIONES = new Map(); // telefonoDelDuenio -> { phone, name, ts, gen }
@@ -57,11 +57,18 @@ export function parseComandoCliente(texto) {
   if (/^(off|no|ninguno|salir|listo|fin)$/i.test(resto)) return { ok: true, limpiar: true };
 
   // El teléfono es el bloque de dígitos más largo (tolera +, espacios y guiones).
-  const candidatos = resto.match(/[+\d][\d\s.-]{7,}/g) || [];
+  // [Tridente r4 #7] Un RUT escrito como RUT (12.345.678-9 / 56789012-3) no es un teléfono: se
+  // saca antes de buscar números (queda en el texto del nombre, como estaba escrito).
+  const sinRut = resto.replace(RUT_RE, ' ');
+  const candidatos = sinRut.match(/[+\d][\d\s.-]{7,}/g) || [];
   // [Tridente r3 #5, 30-sep] Con dos bloques de 9+ dígitos (p. ej. RUT + celular) "el más largo"
   // es una adivinanza: un RUT de 9 dígitos y un celular de 9 empatan. Si alguno empieza con
   // 56/+56 se toma ESE; si no, se rechaza y se pide el formato inequívoco.
   const elegido = elegirTelefono(candidatos);
+  if (!elegido.ok && elegido.motivo === 'formato') {
+    return { ok: false, error: 'Ese número no es un celular chileno. Escribe el WhatsApp del cliente así: ' +
+      'CLIENTE Juan Pérez +56912345678' };
+  }
   if (!elegido.ok) {
     return { ok: false, error: 'Hay más de un número en el mensaje y no sé cuál es el WhatsApp. ' +
       'Escríbelo solo, con el código de país: CLIENTE Juan Pérez +56912345678' };
@@ -103,15 +110,27 @@ export function parseComandoCliente(texto) {
  * @returns {{ok:true, crudo:string}|{ok:false}}
  */
 export function elegirTelefono(candidatos = []) {
-  if (candidatos.some((c) => soloDigitos(c).length > 12)) return { ok: false };
+  if (candidatos.some((c) => soloDigitos(c).length > 12)) return { ok: false, motivo: 'ambiguo' };
   const largos = candidatos.filter((c) => soloDigitos(c).length >= 9);
-  if (largos.length > 1) {
-    const con56 = largos.filter((c) => /^\+?\s*56/.test(c.trim()));
-    return con56.length === 1 ? { ok: true, crudo: con56[0] } : { ok: false };
-  }
+  // [Tridente r4 #7] Solo un CELULAR CHILENO puede ganar (56 9 + 8 dígitos, o 9 dígitos que
+  // empiezan con 9). Un "56…" que no lo es (p. ej. el RUT 56.789.012-3) no gana por empezar con 56.
+  const validos = largos.filter(esCelularChileno);
+  // Con otros bloques largos al lado, el celular solo gana si viene con 56/+56 (inequívoco).
+  if (validos.length === 1 && (largos.length === 1 || /^\+?\s*56/.test(validos[0].trim()))) return { ok: true, crudo: validos[0] };
+  if (validos.length >= 1) return { ok: false, motivo: 'ambiguo' };
+  if (largos.length) return { ok: false, motivo: 'formato' };
+  // Ningún bloque de 9+: se devuelve el más largo para que parseComandoCliente pida "los 9 dígitos".
   let crudo = '';
   for (const c of candidatos) if (soloDigitos(c).length > soloDigitos(crudo).length) crudo = c;
   return { ok: true, crudo };
+}
+
+/** RUT chileno escrito con guion (con o sin puntos): 12.345.678-9, 56789012-3, 9.876.543-K. */
+const RUT_RE = /\b\d{1,2}\.?\d{3}\.?\d{3}-[\dkK]\b/g;
+
+/** Celular chileno: 56 9 + 8 dígitos (o 9 dígitos que empiezan con 9, que normalizar completa). */
+export function esCelularChileno(v) {
+  return /^569\d{8}$/.test(normalizar(soloDigitos(v)));
 }
 
 /**
@@ -150,7 +169,7 @@ export function pareceComando(texto) {
 export function fijar(telefonoDuenio, phone, name) {
   const key = soloDigitos(telefonoDuenio);
   if (!key || !phone) return null;
-  // [2026-09-30 · E] `gen` = versión de ESTA fijación. Quien la consume al emitir solo la borra
+  // [2026-09-30 · E] `gen` = versión de ESTA fijación. Quien la consume (al aceptarse el envío del PDF) solo la borra
   // si sigue siendo la misma: si entre medio entró "CLIENTE Pedro", la de Pedro no se toca.
   const dato = { phone: normalizar(phone), name: String(name || '').trim(), ts: Date.now(), gen: ++_GEN };
   ATRIBUCIONES.set(key, dato);
@@ -160,7 +179,8 @@ export function fijar(telefonoDuenio, phone, name) {
 /**
  * @returns {{phone:string,name:string,gen:number}|null} null si no hay o si ya venció.
  * [2026-09-30 · «Cliente explícito»] Vence a las VIGENCIA_MS desde que se FIJÓ (usarla no la
- * renueva); además se consume al emitir el PDF (limpiarSiMisma), con otro CLIENTE o CLIENTE OFF.
+ * renueva); además se consume cuando Meta acepta el envío del PDF (limpiarSiMisma), con otro
+ * CLIENTE o con CLIENTE OFF.
  */
 export function obtener(telefonoDuenio) {
   const key = soloDigitos(telefonoDuenio);
@@ -278,6 +298,16 @@ export function puedeUsarComandoCliente(waId, opciones = {}) {
 export const DUENIO_DEFAULT = '+56957296035';
 
 /**
+ * [Tridente r4 #5] ¿Se le acepta a este número este comando CLIENTE? Terminar (CLIENTE OFF) basta
+ * con ser vendedor según la última lista conocida; FIJAR un cliente nuevo exige además que la
+ * lista no tenga más de 30 min (puedeComandoCliente). El dueño, siempre.
+ */
+export function autorizaComandoCliente(waId, texto, { adminPhone = telefonoDuenio() } = {}) {
+  const esOff = parseComandoCliente(texto || '').limpiar === true;
+  return puedeUsarComandoCliente(waId, { adminPhone, esInterno: esOff ? esVendedorConfirmado : puedeComandoCliente });
+}
+
+/**
  * Teléfono del dueño (solo dígitos): UNA sola regla para index.js y webhook.js. Mismo orden que
  * usaba index.js para el comando CLIENTE: ADMIN_PHONE, y si no está, el número por defecto.
  */
@@ -386,7 +416,7 @@ export function leadDeAtribucion(waIdVendedor, phone, name) {
  *          escribio?:(p:string)=>Promise<boolean>, marcar?:(p:string)=>any, logErr?:Function}} o
  * @returns {Promise<string>} el mensaje para quien mandó el comando
  */
-export async function procesarComandoCliente({ waId, texto, pushLead, escribio = yaNosEscribio, marcar = marcarSinConsentimiento, logErr = () => {}, esDelEquipo = esNumeroDelEquipo }) {
+export async function procesarComandoCliente({ waId, texto, pushLead, escribio = yaNosEscribio, marcar = marcarSinConsentimiento, logErr = () => {}, esDelEquipo = esDelEquipoParaCliente }) {
   const r = parseComandoCliente(texto || '');
   if (!r.ok) return `⚠️ ${r.error}`;
   if (r.limpiar) {
@@ -417,7 +447,7 @@ export async function procesarComandoCliente({ waId, texto, pushLead, escribio =
   return `✅ Cotizando para *${r.name}* (+${r.phone}).\n\n` +
     'Lo que cotices desde ahora queda a su nombre: el lead, el seguimiento y el CRM. ' +
     'El PDF te llega a vos para que se lo mandes.\n\n' +
-    'Vale para UNA propuesta: cuando salga el PDF vuelve a tu nombre (para corregirla, manda ' +
+    'Vale para UNA propuesta: cuando se envíe el PDF vuelve a tu nombre (para corregirla, manda ' +
     `de nuevo este mismo comando). Para cancelar antes: *CLIENTE OFF*. Vence a las ${Math.round(VIGENCIA_MS / 3600000)} h.` +
     (_escribio ? '' :
       '\n\n⚠️ Como nunca escribió al bot, el seguimiento automático NO le va a llegar ' +
@@ -426,7 +456,7 @@ export async function procesarComandoCliente({ waId, texto, pushLead, escribio =
 }
 
 /**
- * «Cliente explícito» (dueño, 30-sep): tras emitir, la atribución se CONSUME. Se le dice a quien
+ * «Cliente explícito» (dueño, 30-sep): al aceptarse el envío del PDF, la atribución se CONSUME. Se le dice a quien
  * cotiza cómo volver a ese cliente para corregir (re-fijarlo restaura su carpeta y su folio).
  */
 export function mensajeTrasPdf(atribucion) {

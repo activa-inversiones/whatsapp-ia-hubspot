@@ -6,7 +6,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { handleWebhook } from './webhook.js';
+import * as wh from './webhook.js';
+const { handleWebhook } = wh;
+const conLockDeTelefono = (...a) => wh.conLockDeTelefono(...a); // r4: rojo "is not a function" si falta
 import { fijar, obtener, _reset as resetAtribucion } from '../../services/atribucionCotizacion.js';
 import { aplicarLista, _reiniciarParaTests } from '../../services/internosEquipo.js';
 
@@ -122,6 +124,68 @@ test('Tridente r3 #3 (30-sep): en modo interno (ult9) sin número completo confi
   assert.equal(llego, false);
   assert.ok(textos.some((x) => /no está habilitado como vendedor en \/equipo/.test(x.t)), `textos: ${JSON.stringify(textos.map((x) => x.t))}`);
   assert.ok(!textos.some((x) => /CLIENTE Nombre Apellido/.test(x.t)), 'no le pide un comando que va a ser rechazado');
+});
+
+test('Tridente r4 #1 (30-sep): CLIENTE Pedro que entra a mitad de un turno de Juan ESPERA al turno (mismo lock) y el turno sigue siendo de Juan', async () => {
+  prepararVendedor();
+  fijar(VENDEDOR, CLIENTE, 'Juan Pérez');
+  const ev = []; const pdf = [];
+  const deps = makeDeps(VENDEDOR, 'wamid.VEND.LOCK', ev, pdf, { medida: '1700x1000' });
+  let soltar; const pausa = new Promise((r) => { soltar = r; });
+  let enTurno; const entro = new Promise((r) => { enTurno = r; });
+  const turnoOriginal = deps.handleTurn;
+  const orden = [];
+  deps.handleTurn = async (args) => {
+    enTurno(); await pausa;
+    const r = await turnoOriginal(args);
+    orden.push('fin-turno-juan');          // dentro del turno (con el lock tomado)
+    return r;
+  };
+  try {
+    const turno = correr(deps);
+    await entro;
+    const comando = conLockDeTelefono(VENDEDOR, async () => { orden.push('cliente-pedro'); fijar(VENDEDOR, '56912345678', 'Pedro'); }, deps.locks);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(orden, [], 'el comando NO corre mientras el turno de Juan tiene el lock');
+    soltar();
+    await turno; await comando;
+  } finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.deepEqual(orden, ['fin-turno-juan', 'cliente-pedro']);
+  assert.equal(ev.find((e) => e.status === 'sent')?.phone, CLIENTE, 'la propuesta del turno es de Juan');
+});
+
+test('Tridente r4 #2 (30-sep): si el turno FALLA después de cambiar de carpeta, la sesión en caché NO queda mezclada', async () => {
+  prepararVendedor();
+  fijar(VENDEDOR, '56912345678', 'Pedro');
+  const ev = []; const pdf = [];
+  const deps = makeDeps(VENDEDOR, 'wamid.VEND.FALLA', ev, pdf);
+  const historialJuan = [{ role: 'user', content: 'Juan: 3 ventanas' }];
+  deps.conv.set(VENDEDOR, { history: historialJuan, state: { carpeta_activa: CLIENTE, name: 'Juan' } });
+  deps.handleTurn = async () => { throw new Error('el cerebro se cayó'); };
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  const enCache = deps.conv.get(VENDEDOR);
+  assert.deepEqual(enCache.history, [{ role: 'user', content: 'Juan: 3 ventanas' }], 'el historial de Juan sigue intacto en la caché');
+  assert.equal(enCache.state.carpeta_activa, CLIENTE, 'y su carpeta también');
+});
+
+test('Tridente r4 #3 (30-sep): antes de consumir la atribución, el folio del cliente queda guardado DURABLE en su carpeta', async () => {
+  prepararVendedor();
+  fijar(VENDEDOR, CLIENTE, 'Juan Pérez');
+  const ev = []; const pdf = []; const escrituras = [];
+  const deps = makeDeps(VENDEDOR, 'wamid.VEND.DURABLE', ev, pdf, { medida: '1800x1000' });
+  deps.carpetas = {
+    leer: async () => ({ ok: true, valor: null }),
+    escribir: async (k, v) => { escrituras.push({ k, v, atribucionAlEscribir: obtener(VENDEDOR) }); return { ok: true }; },
+  };
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  const sent = ev.find((e) => e.status === 'sent');
+  assert.ok(sent);
+  const deJuan = escrituras.find((e) => e.k === `sesion_cliente:${VENDEDOR}:${CLIENTE}`);
+  assert.ok(deJuan, `se guardó la carpeta de Juan (escrituras: ${JSON.stringify(escrituras.map((e) => e.k))})`);
+  assert.equal(deJuan.v.state.last_quote?.quote_number, sent.quote_number, 'con SU folio');
+  assert.ok(deJuan.atribucionAlEscribir, 'y ANTES de consumir la atribución');
 });
 
 test('decisión dueño 30-sep: vendedor interno con CLIENTE fijado → la cotización va con el teléfono del cliente', async () => {

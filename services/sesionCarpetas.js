@@ -43,6 +43,22 @@ export function claveCarpeta(from, carpeta) {
 }
 
 /**
+ * [Tridente r4 #3] Guarda AHORA (durable, con await) la carpeta del cliente activo con el estado
+ * actual: lo usa la emisión antes de consumir la atribución, para que su last_quote (el folio)
+ * esté en la carpeta aunque el proceso caiga antes del próximo turno. Nunca lanza.
+ * @returns {Promise<{ok:boolean, error?:string}>}
+ */
+export async function guardarCarpeta({ from, state, history, carpeta, escribir }) {
+  try {
+    const soloCliente = {};
+    for (const [k, v] of Object.entries(state)) if (!CLAVES_INFRA_SESION.includes(k)) soloCliente[k] = v;
+    const r = await escribir(claveCarpeta(from, carpeta), structuredClone({ state: soloCliente, history: [...(history || [])] }), TTL_CARPETA_S);
+    if (r && r.ok === false && r.motivo !== 'persistencia_apagada') return { ok: false, error: r.motivo || 'sin_motivo' };
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e?.message || String(e) }; }
+}
+
+/**
  * Cambia de carpeta si el cliente activo cambió. Muta `state` y `history` en el lugar.
  * @param {{from:string, state:object, history:Array, cliente:string|null,
  *          leer:(k)=>Promise<{ok:boolean, valor?:any}>, escribir:(k,v,ttl)=>Promise<{ok:boolean,motivo?:string}>,

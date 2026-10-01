@@ -32,7 +32,7 @@ export function telefonoCompleto(v) {
   return d.length >= 10 ? d : '';
 }
 
-let _estado = { at: 0, internos: new Set(), modoInterno: new Set(), clienteCompletos: new Set() };
+let _estado = { at: 0, internos: new Set(), modoInterno: new Set(), clienteCompletos: new Set(), completoPorUlt9: new Map() };
 
 /** Aplica la respuesta de sales-os ({internos_ult9, vendedores:[{ult9, oliver_interno}]}). */
 export function aplicarLista(data, ahora = Date.now()) {
@@ -53,12 +53,42 @@ export function aplicarLista(data, ahora = Date.now()) {
       .map((v) => telefonoCompleto(v.telefono))
       .filter(Boolean),
   );
-  _estado = { at: ahora, internos, modoInterno, clienteCompletos };
+  // [Tridente r4 #6] ult9 → número completo de cada vendedor que lo tiene cargado: con esto, un
+  // número que comparte la cola de 9 con un vendedor pero NO es el suyo (+34 912 345 678 vs
+  // +56 9 1234 5678) se reconoce como cliente.
+  const completoPorUlt9 = new Map(
+    (Array.isArray(data.vendedores) ? data.vendedores : [])
+      .map((v) => [ultimos9(v?.ult9 || v?.telefono), telefonoCompleto(v?.telefono)])
+      .filter(([k, t]) => k && t),
+  );
+  _estado = { at: ahora, internos, modoInterno, clienteCompletos, completoPorUlt9 };
   return true;
 }
 
+/**
+ * ¿Está en modo interno por la cola de 9 y su vendedor NO tiene número completo cargado? Solo ahí
+ * no se puede distinguir vendedor de cliente y se corta. Si el vendedor tiene número completo y
+ * no es este, este es un cliente (camino normal).
+ */
+export function esInternoSinNumeroCompleto(phone) {
+  const k = ultimos9(phone);
+  if (!k || !_estado.modoInterno.has(k) || !_estado.internos.has(k)) return false;
+  return !_estado.completoPorUlt9?.has(k);
+}
+
+/**
+ * ¿Este número es del equipo, para RECHAZARLO como cliente en el comando CLIENTE? Si el integrante
+ * con esa cola tiene número completo, se compara el completo; si no, la cola (no se distingue).
+ */
+export function esDelEquipoParaCliente(phone) {
+  const k = ultimos9(phone);
+  if (!k || !_estado.internos.has(k)) return false;
+  const completo = _estado.completoPorUlt9?.get(k);
+  return completo ? completo === telefonoCompleto(phone) : true;
+}
+
 /** Solo tests. */
-export function _reiniciarParaTests() { _estado = { at: 0, internos: new Set(), modoInterno: new Set(), clienteCompletos: new Set() }; }
+export function _reiniciarParaTests() { _estado = { at: 0, internos: new Set(), modoInterno: new Set(), clienteCompletos: new Set(), completoPorUlt9: new Map() }; }
 
 /**
  * [2026-09-30] ¿Este número (vendedor) puede usar el comando CLIENTE? Decisión del dueño 30-sep.

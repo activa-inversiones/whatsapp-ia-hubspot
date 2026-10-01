@@ -307,7 +307,7 @@ import { partirEnBurbujas } from "./services/burbujas.js";
 import {
   pareceComando as pareceComandoCliente,
   sinConsentimientoAsync,
-  puedeUsarComandoCliente,   // [2026-09-30] dueño o vendedor de /equipo con modo interno
+  autorizaComandoCliente,    // [2026-09-30] dueño o vendedor de /equipo; OFF sin exigir lista fresca
   procesarComandoCliente,    // [2026-09-30] el comando CLIENTE entero vive en el servicio
   DUENIO_DEFAULT,            // [2026-09-30] el número del dueño por defecto, una sola copia
 } from "./services/atribucionCotizacion.js";
@@ -329,7 +329,7 @@ import { classifyProduct, warmHandoffMessage } from "./services/oliverProduct.js
 import { detectNoiseLoop, noiseLoopMessage } from "./services/oliverNoise.js"; // [2026-06-10 anti-loop] basura variada (caso 119 msgs)
 import { detectOutOfCatalog, outOfCatalogRetentionMessage } from "./services/oliverOutOfCatalog.js"; // [2026-06-10 GT-05] vidrio shower → ofrecer PVC, no competencia
 import { shouldSkipFollowup } from "./services/oliverFollowup.js";
-import { iniciarRefrescoInternos, puedeComandoCliente } from "./services/internosEquipo.js"; // [#1059 b] lista del equipo desde sales-os // [2026-06-10] no enviar follow-up a Marcelo/internos
+import { iniciarRefrescoInternos } from "./services/internosEquipo.js"; // [#1059 b] lista del equipo desde sales-os // [2026-06-10] no enviar follow-up a Marcelo/internos
 import { parseAgendaVoz } from "./services/agendaVoz.js"; // [2026-07-07 ZL-F3] agenda por voz del CEO — parser determinista
 import { construirBloqueNumeros, REGLA_PERIODOS } from "./services/ceoContextoTexto.js"; // [2026-08-31 defecto-2] bloque de numeros del asistente CEO: 24h movil ≠ hoy
 import { addZohoNote as zohoAddNote } from "./services/zohoCommercial.js"; // [2026-07-07] "Salesforce reutilizando Zoho": nota en el Deal cuando sales-os marca un seguimiento hecho
@@ -5391,8 +5391,9 @@ app.post("/webhook", async (req, res) => {
     // [2026-09-30] Decisión del dueño: además de él, los vendedores que ÉL cargó en /equipo
     // con «Cotizar con Oliver en modo interno». Cualquier otro número sigue sin poder.
     if (_atInc?.ok && _atInc.type === "text" && verifySig(req) &&
-        // Vendedor: por número COMPLETO y fail-closed si la lista no cargó (puedeComandoCliente).
-        puedeUsarComandoCliente(normalizeWaId(_atInc.waId), { esInterno: puedeComandoCliente }) &&
+        // Vendedor por número COMPLETO, fail-closed si la lista no cargó; FIJAR exige lista fresca
+        // (≤30 min), CLIENTE OFF no (Tridente r4 #5). Ver autorizaComandoCliente.
+        autorizaComandoCliente(normalizeWaId(_atInc.waId), _atInc.text || "") &&
         // [2026-08-08] pareceComandoCliente y NO /^cliente\b/: interceptar todo lo que
         // empieza con "cliente" se comía mensajes reales del dueño ("Cliente me pidió otra
         // medida") que nunca llegaban a Oliver, sin explicación visible. Ahora solo entra
@@ -5404,9 +5405,12 @@ app.post("/webhook", async (req, res) => {
         // fijar/limpiar, crear el lead del cliente y la marca de consentimiento.
         let msg;
         try {
-          msg = await procesarComandoCliente({
+          // [Tridente r4 #1] Con el MISMO lock por teléfono que el turno de Oliver: el comando no
+          // puede cambiar la atribución a mitad de un turno (espera a que termine).
+          const { conLockDeTelefono } = await import("./src/oliver-gpt/webhook.js");
+          msg = await conLockDeTelefono(normalizeWaId(_atInc.waId), () => procesarComandoCliente({
             waId: _atInc.waId, texto: _atInc.text || "", pushLead: pushLeadEvent, logErr,
-          });
+          }));
         } catch (e) { try { logErr("cliente_atribucion", e); } catch {} msg = "⚠️ No pude procesar el comando. Probá de nuevo."; }
         try { await waSendH(_atInc.waId, msg, true); } catch (e) { try { logErr("cliente_atribucion_send", e); } catch {} }
       }

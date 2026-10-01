@@ -91,7 +91,7 @@ export async function leerConEstado(clave) {
   // devuelve eso (aunque el GET haya fallado) y no se toca el cache.
   const yaEnMemoria = MEMORIA.get(clave);
   if (vigente(yaEnMemoria)) return { ok: true, valor: yaEnMemoria.valor };
-  if (j === null) return { ok: false };
+  if (j === null || j.ok !== true) return { ok: false }; // [r4 #4] 200 {ok:false} = no se pudo
   const valor = Object.prototype.hasOwnProperty.call(j, 'valor') ? j.valor : null;
   if (valor !== null && valor !== undefined) MEMORIA.set(clave, { valor, expira: null });
   return { ok: true, valor: valor ?? null };
@@ -144,7 +144,8 @@ export async function escribirDurable(clave, valor, ttlSegundos = 3600) {
   }
   const r = await pedir('PUT', clave, { valor, ttl_segundos: ttlSegundos });
   // `pedir` devuelve null ante timeout, 5xx o sales-os caido. Null = no sabemos que quedo.
-  return r === null
+  // [Tridente r4 #4] Y un 200 con {ok:false} (sales-os viejo: la BD no guardó) tampoco es éxito.
+  return (r === null || r.ok !== true)
     ? { ok: false, enMemoria: true, motivo: 'sales_os_no_confirmo' }
     : { ok: true, enMemoria: true };
 }
