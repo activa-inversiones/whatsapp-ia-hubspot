@@ -118,11 +118,19 @@ test('4 · si la LECTURA de la carpeta nueva falla, no se cambia de carpeta ni s
   assert.ok(logs.some(([n]) => n === 'error'), 'queda registrado como error');
 });
 
-test('4 · escritura sin confirmar de sales-os (sales_os_no_confirmo) = advertencia y SIGUE (la memoria ya la tiene)', async () => {
-  const m = new Map();
-  const kv = kvFalso({ escribir: async (k, v) => { m.set(k, v); return { ok: false, motivo: 'sales_os_no_confirmo' }; } });
+test('Tridente r3 #4 (30-sep): escritura sin confirmar de sales-os = ERROR (no se sigue): perder la carpeta tras un redeploy es peor que pedir reintentar', async () => {
+  // Esta aserción se INVIRTIÓ a propósito (antes: 'cambio' con advertencia). Orden del coordinador
+  // tras el tridente r3: la memoria local no sobrevive a un redeploy, y la carpeta del cliente
+  // anterior se perdería en silencio.
+  const kv = kvFalso({ escribir: async () => ({ ok: false, motivo: 'sales_os_no_confirmo' }) });
+  const history = [{ role: 'user', content: 'Juan' }];
   const state = { carpeta_activa: JUAN, name: 'Juan' };
-  assert.equal((await cambiarCarpeta({ from: VENDEDOR, state, history: [], cliente: PEDRO, ...kv })).mov, 'cambio');
+  assert.equal((await cambiarCarpeta({ from: VENDEDOR, state, history, cliente: PEDRO, ...kv })).mov, 'error');
+  assert.equal(state.name, 'Juan', 'el estado activo no se toca');
+  assert.equal(history.length, 1);
+  // Persistencia apagada (desarrollo/tests, sin sales-os): eso NO es una falla, se sigue.
+  const kv2 = kvFalso({ escribir: async () => ({ ok: false, motivo: 'persistencia_apagada' }) });
+  assert.equal((await cambiarCarpeta({ from: VENDEDOR, state: { carpeta_activa: JUAN }, history: [], cliente: PEDRO, ...kv2 })).mov, 'cambio');
 });
 
 test('4 · si la escritura LANZA, el estado activo NO se vacía', async () => {

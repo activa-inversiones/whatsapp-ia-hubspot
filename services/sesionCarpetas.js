@@ -11,8 +11,8 @@
 //
 // 🔒 Un solo canal de error: cambiarCarpeta NUNCA lanza; devuelve {mov:'error'} y no toca el estado
 // activo si (a) la LECTURA de la carpeta nueva falló (no se sabe si existe: no se pisa nada) o
-// (b) la ESCRITURA de la saliente lanzó. Una escritura que sales-os no confirmó (la memoria local
-// ya la tiene) es advertencia y se sigue.
+// (b) la ESCRITURA de la saliente lanzó o sales-os no la confirmó (la memoria local no sobrevive a
+// un redeploy). Solo con la persistencia apagada (sin sales-os) se sigue.
 
 import { telefonoCompleto } from './internosEquipo.js';
 
@@ -47,7 +47,7 @@ export function claveCarpeta(from, carpeta) {
  * @param {{from:string, state:object, history:Array, cliente:string|null,
  *          leer:(k)=>Promise<{ok:boolean, valor?:any}>, escribir:(k,v,ttl)=>Promise<{ok:boolean,motivo?:string}>,
  *          log?:(nivel:string, msg:string)=>void}} o   cliente = teléfono normalizado, o null (propia)
- * @returns {Promise<{mov:'igual'|'cambio'|'error', error?:string, aviso?:string}>}
+ * @returns {Promise<{mov:'igual'|'cambio'|'error', error?:string}>}
  */
 export async function cambiarCarpeta({ from, state, history, cliente, leer, escribir, log = () => {} }) {
   const nueva = cliente ? (telefonoCompleto(cliente) || String(cliente)) : CARPETA_PROPIA;
@@ -68,13 +68,12 @@ export async function cambiarCarpeta({ from, state, history, cliente, leer, escr
   // (b) Se guarda la saliente (copia profunda). Si lanza, el estado activo queda intacto.
   const soloCliente = {};
   for (const [k, v] of Object.entries(state)) if (!CLAVES_INFRA_SESION.includes(k)) soloCliente[k] = v;
-  let aviso;
+  // [Tridente r3 #4] Una escritura que sales-os NO confirmó también aborta: la memoria local no
+  // sobrevive a un redeploy y la carpeta del cliente anterior se perdería en silencio. Solo
+  // 'persistencia_apagada' (sin sales-os: desarrollo/tests) sigue, porque ahí no hay más que memoria.
   try {
     const r = await escribir(claveCarpeta(from, previa), structuredClone({ state: soloCliente, history: [...history] }), TTL_CARPETA_S);
-    if (r && r.ok === false && r.motivo !== 'persistencia_apagada') {
-      aviso = `escritura sin confirmar (${r.motivo || 'sin_motivo'}); queda en memoria`;
-      log('warn', `carpeta ${previa}: ${aviso}`);
-    }
+    if (r && r.ok === false && r.motivo !== 'persistencia_apagada') return fallar(`escritura sin confirmar: ${r.motivo || 'sin_motivo'}`);
   } catch (e) {
     return fallar(`escritura lanzó: ${e?.message || e}`);
   }
@@ -88,5 +87,5 @@ export async function cambiarCarpeta({ from, state, history, cliente, leer, escr
   Object.assign(state, s, infra);
   history.splice(0, history.length, ...h);
   state.carpeta_activa = nueva;
-  return aviso ? { mov: 'cambio', aviso } : { mov: 'cambio' };
+  return { mov: 'cambio' };
 }

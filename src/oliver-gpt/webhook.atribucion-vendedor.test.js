@@ -95,7 +95,7 @@ test('Thermos r4 (30-sep): lista del equipo con >30 min — la atribución ya fi
   assert.equal(sent.phone, CLIENTE, 'la cotización sigue a Juan, no al vendedor');
 });
 
-test('Thermos r4 (30-sep): lista con >30 min y vendedor SIN cliente → se corta y se pide el cliente', async () => {
+test('Tridente r3 #3 (30-sep): lista con >30 min y vendedor SIN cliente → se corta y se dice la CAUSA (no pedir CLIENTE en bucle)', async () => {
   _reiniciarParaTests(); resetAtribucion();
   aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] }, HACE_31_MIN());
   const ev = []; const pdf = []; const textos = [];
@@ -105,10 +105,12 @@ test('Thermos r4 (30-sep): lista con >30 min y vendedor SIN cliente → se corta
   try { await correr(deps); }
   finally { _reiniciarParaTests(); resetAtribucion(); }
   assert.equal(llego, false, 'no cotiza a su propio número');
-  assert.ok(textos.some((x) => /CLIENTE Nombre Apellido/.test(x.t)));
+  // Su CLIENTE no sería aceptado (lista vieja): pedirle el comando lo deja en bucle.
+  assert.ok(textos.some((x) => /lista del equipo está desactualizada/.test(x.t)), `textos: ${JSON.stringify(textos.map((x) => x.t))}`);
+  assert.ok(!textos.some((x) => /CLIENTE Nombre Apellido/.test(x.t)), 'no le pide un comando que va a ser rechazado');
 });
 
-test('Thermos r4 (30-sep): en modo interno (ult9) sin rol confirmado (sin número completo) → se corta, no cotiza a su nombre', async () => {
+test('Tridente r3 #3 (30-sep): en modo interno (ult9) sin número completo confirmado → se corta y se dice que no está habilitado', async () => {
   _reiniciarParaTests(); resetAtribucion();
   aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', oliver_interno: true }] }); // sin `telefono`
   const ev = []; const pdf = []; const textos = [];
@@ -118,7 +120,8 @@ test('Thermos r4 (30-sep): en modo interno (ult9) sin rol confirmado (sin númer
   try { await correr(deps); }
   finally { _reiniciarParaTests(); resetAtribucion(); }
   assert.equal(llego, false);
-  assert.ok(textos.some((x) => /CLIENTE Nombre Apellido/.test(x.t)));
+  assert.ok(textos.some((x) => /no está habilitado como vendedor en \/equipo/.test(x.t)), `textos: ${JSON.stringify(textos.map((x) => x.t))}`);
+  assert.ok(!textos.some((x) => /CLIENTE Nombre Apellido/.test(x.t)), 'no le pide un comando que va a ser rechazado');
 });
 
 test('decisión dueño 30-sep: vendedor interno con CLIENTE fijado → la cotización va con el teléfono del cliente', async () => {

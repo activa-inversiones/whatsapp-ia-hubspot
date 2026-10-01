@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import {
   puedeUsarComandoCliente, identidadCotizacion, leadDeAtribucion, clickIdsDe, rolCotizador,
   clavesCotizacion, procesarComandoCliente, mensajeTrasPdf, telefonoDuenio, DUENIO_DEFAULT,
-  fijar, obtener, limpiarSiMisma, yaNosEscribio, VIGENCIA_MS, _reset,
+  fijar, obtener, limpiarSiMisma, yaNosEscribio, VIGENCIA_MS, _reset, parseComandoCliente,
 } from './atribucionCotizacion.js';
 import { aplicarLista, puedeComandoCliente, _reiniciarParaTests } from './internosEquipo.js';
 
@@ -72,9 +72,11 @@ test('decisión dueño 30-sep: con atribución la identidad es del CLIENTE y cot
   assert.equal(id.telefonoCliente, JUAN);
   assert.equal(id.claveCot, `${VENDEDOR}:${JUAN}`);
   assert.equal(id.cotizadoPor, '911110000');
-  assert.deepEqual(id.extraLead, { external_id: JUAN, cotizado_por: '911110000', no_pisar: true, source: 'vendedor_equipo' });
+  // [Tridente r3 #6] external_id sale de la IDENTIDAD (externalId), no de un spread que pisa otro valor.
+  assert.equal(id.externalId, JUAN);
+  assert.deepEqual(id.extraLead, { cotizado_por: '911110000', no_pisar: true, source: 'vendedor_equipo' });
   const sin = identidadCotizacion(VENDEDOR, null);
-  assert.deepEqual(sin, { telefonoCliente: VENDEDOR, claveCot: VENDEDOR, cotizadoPor: null, atribuida: false, extraLead: {} });
+  assert.deepEqual(sin, { telefonoCliente: VENDEDOR, externalId: VENDEDOR, claveCot: VENDEDOR, cotizadoPor: null, atribuida: false, extraLead: {} });
 });
 
 test('decisión 30-sep: de quién es cada clave de estado (informes/entregas/deal/reset del CLIENTE; folio del par)', () => {
@@ -152,6 +154,21 @@ test('«Cliente explícito» 30-sep: CLIENTE fija; CLIENTE OFF termina; el TTL c
     t += VIGENCIA_MS - 1000; assert.ok(obtener(VENDEDOR), 'dentro de la vigencia');
     t += 2000;               assert.equal(obtener(VENDEDOR), null, 'usarla no la renovó: vence a las 2 h de fijada');
   } finally { Date.now = realNow; _reset(); }
+});
+
+test('Tridente r3 #5 (30-sep): CLIENTE con dos números de 9+ dígitos (RUT + celular) y ninguno con 56 → ambiguo, se rechaza', () => {
+  for (const t of ['CLIENTE Juan Pérez 123456789 987654321', 'CLIENTE Juan Pérez 12.345.678-9 9 8765 4321']) {
+    const r = parseComandoCliente(t);
+    assert.equal(r.ok, false, t);
+    assert.match(r.error, /\+569/, 'pide el formato +569…');
+  }
+  // Con +56 / 56 se elige ESE, aunque haya otro número.
+  const r = parseComandoCliente('CLIENTE Juan Pérez 12.345.678-9 +56 9 8765 4321');
+  assert.equal(r.ok, true);
+  assert.equal(r.phone, '56987654321');
+  assert.equal(r.name.includes('12.345.678-9'), true, 'el otro número queda en el texto, no se toma como teléfono');
+  // Un solo número: como siempre.
+  assert.equal(parseComandoCliente('CLIENTE Juan 987654321').phone, '56987654321');
 });
 
 test('5 · CLIENTE rechaza el propio número de quien escribe y cualquier número del equipo', async () => {

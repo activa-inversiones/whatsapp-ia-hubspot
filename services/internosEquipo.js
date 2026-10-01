@@ -76,6 +76,21 @@ export function esVendedorConfirmado(phone) {
   return !!t && _estado.clienteCompletos.has(t);
 }
 
+/**
+ * [Tridente r3 #3, 30-sep] Qué decirle a un vendedor que quiere cotizar SIN cliente fijado. Si su
+ * comando CLIENTE iba a ser rechazado, pedírselo lo deja en bucle: se le dice la CAUSA real.
+ */
+export function textoCorteVendedor(phone, ahora = Date.now()) {
+  if (!esVendedorConfirmado(phone)) {
+    return '⚠️ Tu número no está habilitado como vendedor en /equipo (falta tu WhatsApp completo o el permiso ' +
+      'de cotizar con Oliver). Avísale al administrador para que lo revise.';
+  }
+  if (!puedeComandoCliente(phone, ahora)) {
+    return '⚠️ La lista del equipo está desactualizada y por ahora no puedo fijar clientes. Intenta en unos minutos.';
+  }
+  return TEXTO_PEDIR_CLIENTE_INTERNO;
+}
+
 export const MAX_ANTIGUEDAD_LISTA_CLIENTE_MS = 30 * 60 * 1000;
 /** ¿Puede FIJAR un CLIENTE nuevo? Como esVendedorConfirmado, y además la lista no puede tener
  *  más de 30 min sin refresco exitoso (un vendedor dado de baja no carga clientes nuevos). */
@@ -149,8 +164,3 @@ export const TEXTO_MODO_INTERNO = [
 export const TEXTO_PEDIR_CLIENTE_INTERNO =
   'Antes de emitir la propuesta, dime para qué cliente es (queda a su nombre, no al tuyo). ' +
   'Escríbeme en un mensaje aparte: CLIENTE Nombre Apellido +569XXXXXXXX';
-
-export const TEXTO_SIN_CLIENTE_INTERNO = [
-  '⚠️ ESTE VENDEDOR NO TIENE CLIENTE FIJADO. Si pide cotizar, recuérdale en una línea que primero',
-  `envíe el comando, textual: "${TEXTO_PEDIR_CLIENTE_INTERNO}". Sin eso la propuesta formal no se emite.`,
-].join('\n');

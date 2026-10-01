@@ -228,7 +228,7 @@ import {
 } from '../../services/avisoCerebroRespaldo.js';
 import { pidioDeNuevo } from '../../services/pidioDeNuevo.js';
 import { clavePendiente, decidirConciliacion, mensajeConciliado } from '../../services/conciliacionDudosa.js'; // [2026-09-16 Kimi] la conciliacion es el mecanismo real, no la idempotencia // [2026-09-16, decision del dueño] el cliente destraba lo que no se reenvia solo // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
-import { modoInternoOliver, esVendedorConfirmado, TEXTO_PEDIR_CLIENTE_INTERNO } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
+import { modoInternoOliver, esVendedorConfirmado, textoCorteVendedor, TEXTO_PEDIR_CLIENTE_INTERNO } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
 
 /* =========================================================================
@@ -1438,7 +1438,8 @@ export async function handleWebhook(req, res, deps = {}) {
     // medidas ni guarda nada a su nombre). El dueño queda afuera: puede cotizar para sí.
     if (esVendedorInterno && !atribucion) {
       log('info', 'atribucion', `${String(from).slice(-4)}: vendedor sin CLIENTE fijado; se le pide el comando`);
-      await safe('atribucion.pedirCliente', () => sendWhatsAppText(from, TEXTO_PEDIR_CLIENTE_INTERNO));
+      // [r3 #3] Si su CLIENTE iba a ser rechazado, se le dice la causa real (no se le pide en bucle).
+      await safe('atribucion.pedirCliente', () => sendWhatsAppText(from, textoCorteVendedor(from)));
       return; // el finally suelta el lock
     }
 
@@ -2089,7 +2090,7 @@ export async function handleWebhook(req, res, deps = {}) {
             const recEnviado = await enviarSinPausa(from, rec);
             if (recEnviado?.ok === true) {
               safe('informeTermico.espejo.recuperacion', () => bridge.pushConversationEvent({
-                channel: 'whatsapp', external_id: from, direction: 'outbound',
+                channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound', // [r3 #2] ficha del cliente
                 actor_type: 'ai', actor_name: 'Oliver', message_type: 'text',
                 body: rec,
                 metadata: { source: 'oliver_gpt_secuencia_informe' },
@@ -2168,7 +2169,7 @@ export async function handleWebhook(req, res, deps = {}) {
               try { await (deps.escribirEstado || escribirEstado)(claveValor, { at: Date.now() }, 12 * 3600); }
               catch { /* sin marca, el peor caso es repetir el speech: el bug de hoy, no uno nuevo */ }
               safe('informeTermico.espejo.valor', () => bridge.pushConversationEvent({
-                channel: 'whatsapp', external_id: from, direction: 'outbound',
+                channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound', // [r3 #2]
                 actor_type: 'ai', actor_name: 'Oliver', message_type: 'text',
                 body: textoValor,
                 metadata: { source: 'oliver_gpt_secuencia_informe' },
@@ -2211,7 +2212,7 @@ export async function handleWebhook(req, res, deps = {}) {
               const rn = await fetch(`${sosUrl}/internal/informes/next-number`, {
                 method: 'POST',
                 headers: { 'x-api-key': sosTok, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tenant_id: 'activa', telefono: String(from) }),
+                body: JSON.stringify({ tenant_id: 'activa', telefono: String(telefonoCliente) }), // [r3 #1] el registro ISO es del cliente
                 // [P2 · Codex] 5 s, no 8: este tiempo corre ANTES del aviso, con el cliente
                 // esperando en silencio. En el caso normal la llamada tarda <300 ms; el
                 // timeout solo importa con sales-os caido, y ahi 3 s menos de mudez valen
@@ -2535,7 +2536,7 @@ export async function handleWebhook(req, res, deps = {}) {
             // es idempotente, así que da igual quién lo haya puesto antes.
             const nombreParaElArchivo = conCorrelativoUnaVez(nombreArchivo, numeroInforme);
             await (deps.saveMedia || saveMedia)({
-              phone:         from,
+              phone:         telefonoCliente, // [r3 #1] ficha del cliente
               direction:     'outbound',
               mediaType:     'document',
               mimeType:      'application/pdf',
@@ -2602,7 +2603,7 @@ Comuna: ${datos.comuna}`
                   body: JSON.stringify({
                     tenant_id: 'activa',
                     informe_number: numeroInforme,
-                    telefono: String(from),
+                    telefono: String(telefonoCliente), // [r3 #1] registro de entrega del cliente
                     nombre: state.name || '',
                     comuna: datos.comuna,
                     es_referencia_regional: esRef,
@@ -2726,7 +2727,9 @@ Comuna: ${datos.comuna}`
               ttclid: leadState.ttclid || state.ttclid,
               landing_lead_id: leadState.landing_ref || leadState.landing_lead_id || state.landing_lead_id,
             }, atribucion),
-            // [2026-09-30] external_id, cotizado_por, no_pisar y source del cliente (vacío sin atribución).
+            // [2026-09-30] Con atribución: external_id del cliente (identidad), cotizado_por, no_pisar
+            // y source. Sin atribución no se agrega nada (como antes).
+            ...(atribucion ? { external_id: _idCot.externalId } : {}),
             ...extraLead,
             // [2026-08-08] Trazabilidad ISO: queda escrito que este lead lo cargó alguien del
             // equipo a nombre del cliente. [2026-09-30] atribuido_por en formato ÚNICO: los
@@ -3873,7 +3876,7 @@ Comuna: ${datos.comuna}`
               }
               // (la marca ya quedo puesta ANTES del envio — ver arriba)
               safe('generarPdf.video.espejo', () => bridge.pushConversationEvent({
-                channel: 'whatsapp', external_id: from, direction: 'outbound',
+                channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound', // [r3 #2]
                 actor_type: 'ai', actor_name: 'Oliver', message_type: 'video',
                 body: `🎥 Video ${video.id} (${video.titulo}) enviado al cliente`,
                 metadata: { source: 'oliver_gpt_video', video: video.id, media_id: ids[video.id] },
@@ -3958,7 +3961,7 @@ Comuna: ${datos.comuna}`
                   const rnV = await fetch(`${sosUrl}/internal/informes/next-number`, {
                     method: 'POST',
                     headers: { 'x-api-key': sosTok, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenant_id: 'activa', telefono: String(from), tipo: 'vientos' }),
+                    body: JSON.stringify({ tenant_id: 'activa', telefono: String(telefonoCliente), tipo: 'vientos' }), // [r3 #1]
                     // Mismo criterio que el termico: 5 s. Corre con el cliente esperando.
                     signal: AbortSignal.timeout(5000),
                   });
@@ -4097,7 +4100,7 @@ Comuna: ${datos.comuna}`
                     tenant_id: 'activa',
                     tipo: 'vientos',
                     informe_number: folioV,
-                    telefono: String(from),
+                    telefono: String(telefonoCliente), // [r3 #1]
                     nombre: clientName || '',
                     comuna: clientComuna || '',
                     producto: (input.items || []).map((it) => it.producto_label || it.product || '').filter(Boolean).join(' · ') || null,
@@ -4119,7 +4122,7 @@ Comuna: ${datos.comuna}`
                 if (!rrV.ok) log('warn', 'generarPdf.vientos.iso', `registro ${folioV}: HTTP ${rrV.status}`);
               });
               safe('generarPdf.vientos.registro', () => (deps.saveMedia || saveMedia)({
-                phone: from, direction: 'outbound', mediaType: 'document',
+                phone: telefonoCliente, direction: 'outbound', mediaType: 'document', // [r3 #1]
                 mimeType: 'application/pdf',
                 // [2026-09-15] Mismo bug que el térmico: duplicaba el correlativo del Drive.
                 filename: conCorrelativoUnaVez(archivoV, folioV),
@@ -4822,8 +4825,8 @@ Comuna: ${datos.comuna}`
                     lead_name: clientName || null, name: clientName || null,
                     phone: clientPhone || from || null,
                     comuna: clientComuna || null, city: clientComuna || null,
-                    status: 'quoted', external_id: from || null,
-                    ...extraLead,   // [2026-09-30] con atribución: del CLIENTE, sin pisar
+                    status: 'quoted', external_id: _idCot.externalId || null, // [r3 #6] de la identidad
+                    ...extraLead,   // [2026-09-30] con atribución: cotizado_por, no_pisar, source
                   },
                   ...(cotizadoPor ? { cotizado_por: cotizadoPor } : {}),
                   // ⛔ SIN click-ids. No los necesita (no dispara conversion) y mandarlos
@@ -5096,9 +5099,9 @@ Comuna: ${datos.comuna}`
                 message: null,
                 status: 'quoted',
                 zoho_deal_id: null,
-                external_id: from || null,
+                external_id: _idCot.externalId || null, // [r3 #6] de la identidad
                 ..._ck,
-                ...extraLead,   // [2026-09-30] con atribución: del CLIENTE, sin pisar
+                ...extraLead,   // [2026-09-30] con atribución: cotizado_por, no_pisar, source
               },
               payload: {
                 comuna:   clientComuna,
@@ -5419,9 +5422,6 @@ Comuna: ${datos.comuna}`
     // TURNO: se recalcula cada vez y se borra antes de persistir (dar de baja = cliente normal).
     state.modo_interno = modoInternoOliver(from);
     if (state.modo_interno) log('info', 'modo_interno', `${from} es del equipo: turno en modo INTERNO`);
-    // [2026-09-30] Del turno también: vendedor interno sin CLIENTE fijado ⇒ el prompt le
-    // recuerda el comando (y generarPdf no emite). El dueño no entra en esta marca.
-    state.modo_interno_sin_cliente = esVendedorInterno && !atribucion;
 
     const turn = await handleTurn({ history, userText, state, toolCtx });
     let reply = turn?.reply || '';
@@ -5440,8 +5440,6 @@ Comuna: ${datos.comuna}`
     delete newState.ya_compro;
     delete newState.modo_interno; // [#1059 b] del turno, no de la sesión
     delete state.modo_interno;
-    delete newState.modo_interno_sin_cliente; // [2026-09-30] del turno
-    delete state.modo_interno_sin_cliente;
     // 🔴 [2026-08-25] LOS RELOJES DE LOS GATES, POR LA MISMA RAZON EXACTA QUE `last_quote`.
     // `agent.handleTurn` saca la foto del estado AL EMPEZAR (`{ ...state }`) y el webhook se
     // queda con esa copia, asi que todo lo que una tool escriba DURANTE el turno queda afuera.
@@ -5765,9 +5763,9 @@ Comuna: ${datos.comuna}`
             message: null,
             status: 'draft',
             zoho_deal_id: null,
-            external_id: from || null,
+            external_id: _idCot.externalId || null, // [r3 #6] de la identidad
             ..._ckD,
-            ...extraLead,   // [2026-09-30] con atribución: del CLIENTE, sin pisar
+            ...extraLead,   // [2026-09-30] con atribución: cotizado_por, no_pisar, source
           },
           payload: {
             comuna: newState.comuna || '',

@@ -58,8 +58,24 @@ export function parseComandoCliente(texto) {
 
   // El teléfono es el bloque de dígitos más largo (tolera +, espacios y guiones).
   const candidatos = resto.match(/[+\d][\d\s.-]{7,}/g) || [];
+  // [Tridente r3 #5, 30-sep] Con dos bloques de 9+ dígitos (p. ej. RUT + celular) "el más largo"
+  // es una adivinanza: un RUT de 9 dígitos y un celular de 9 empatan. Si alguno empieza con
+  // 56/+56 se toma ESE; si no, se rechaza y se pide el formato inequívoco.
+  // Un bloque de MÁS de 12 dígitos tampoco es un teléfono: son dos números separados por
+  // espacios que la tolerancia a "+56 9 1234 5678" juntó (p. ej. "123456789 987654321").
+  const largos = candidatos.filter((c) => soloDigitos(c).length >= 9);
+  const pegados = candidatos.some((c) => soloDigitos(c).length > 12);
   let crudo = '';
-  for (const c of candidatos) if (soloDigitos(c).length > soloDigitos(crudo).length) crudo = c;
+  if (largos.length > 1 || pegados) {
+    const con56 = largos.filter((c) => /^\+?\s*56/.test(c.trim()));
+    if (con56.length !== 1) {
+      return { ok: false, error: 'Hay más de un número en el mensaje y no sé cuál es el WhatsApp. ' +
+        'Escríbelo con el código de país: CLIENTE Juan Pérez +56912345678' };
+    }
+    crudo = con56[0];
+  } else {
+    for (const c of candidatos) if (soloDigitos(c).length > soloDigitos(crudo).length) crudo = c;
+  }
   const phone = soloDigitos(crudo);
   // ⚠️ 9 dígitos mínimo, NO 8. La primera versión aceptaba 8 y les anteponía "569" sola:
   // un typo se convertía en el teléfono de OTRA persona, y la cotización le llegaba a un
@@ -293,17 +309,18 @@ export function clickIdsDe(src, atribucion) {
  */
 export function identidadCotizacion(from, atribucion) {
   if (!atribucion || !atribucion.phone) {
-    return { telefonoCliente: from, claveCot: from, cotizadoPor: null, atribuida: false, extraLead: {} };
+    return { telefonoCliente: from, externalId: from, claveCot: from, cotizadoPor: null, atribuida: false, extraLead: {} };
   }
   const cotizadoPor = ultimos9(from) || null;
   return {
     telefonoCliente: atribucion.phone,
+    externalId: atribucion.phone,     // [r3 #6] los payloads lo toman de acá, no de un spread
     claveCot: `${from}:${atribucion.phone}`,
     cotizadoPor,
     atribuida: true,
     // no_pisar: si el cliente ya es lead, sales-os solo completa lo vacío (no cambia su
-    // origen, canal, nombre ni score). source marca que lo cargó alguien del equipo.
-    extraLead: { external_id: atribucion.phone, cotizado_por: cotizadoPor, no_pisar: true, source: 'vendedor_equipo' },
+    // origen, canal ni score). source marca que lo cargó alguien del equipo.
+    extraLead: { cotizado_por: cotizadoPor, no_pisar: true, source: 'vendedor_equipo' },
   };
 }
 
@@ -334,11 +351,12 @@ export function clavesCotizacion({ from, telefonoCliente, claveCot }) {
 /** Lead mínimo del cliente al fijar la atribución (upsertLead de sales-os deduplica por teléfono). */
 export function leadDeAtribucion(waIdVendedor, phone, name) {
   const p = normalizar(phone);
-  const { extraLead } = identidadCotizacion(soloDigitos(waIdVendedor), { phone: p });
+  const { extraLead, externalId } = identidadCotizacion(soloDigitos(waIdVendedor), { phone: p });
   return {
     phone: p,
     channel: 'whatsapp',
     name: String(name || '').trim(),
+    external_id: externalId,
     ...extraLead,
     metadata: { via: 'comando_CLIENTE', cotizado_por: extraLead.cotizado_por },
   };
