@@ -339,6 +339,18 @@ test('r11 #3: mensaje encolado detrás del turno del PDF con hora ANTERIOR al co
   _reset();
 });
 
+test('decisión 01-oct: solo una COTIZACIÓN reabre un perdido — reabrir:true en el lead del borrador/emisión, NO en saveLead', async () => {
+  const { payloadSaveLead } = await import('./identidadCotizacion.js');
+  const turno = resolverTurno(VENDEDOR, Date.now(), {
+    perfil: () => ({ rol: 'vendedor' }), leerAtribucion: () => ({ phone: JUAN, name: 'Juan', gen: 1 }),
+  });
+  assert.equal(payloadLeadCotizacion(turno, { phone: JUAN }).reabrir, true, 'borrador/emisión: reabre');
+  assert.equal('reabrir' in payloadSaveLead(turno, {}, {}), false, 'saveLead bajo CLIENTE: completa vacíos, no reabre');
+  assert.equal(payloadSaveLead(turno, {}, {}).no_pisar, true);
+  const sin = resolverTurno(OTRO, Date.now(), { perfil: () => ({ rol: null }), leerAtribucion: () => null });
+  assert.equal('reabrir' in payloadLeadCotizacion(sin, { phone: OTRO }), false, 'cliente normal: payload como siempre');
+});
+
 test('r11 #1: V1 (respaldo) no cotiza para quien tiene cliente fijado ni para un vendedor', async () => {
   const fs = await import('node:fs');
   const idx = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');

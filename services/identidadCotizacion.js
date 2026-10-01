@@ -116,6 +116,9 @@ export function payloadLeadCotizacion(turno, datos = {}) {
     ...datos,
     external_id: turno.externalId || null,
     ...turno.extraLead,
+    // [01-oct] Esto ES una cotización: con atribución, un lead PERDIDO se reabre («si alguien le
+    // cotiza, está vivo»). Solo acá; saveLead (sin cotización) completa vacíos y no reabre.
+    ...(turno.atribucion ? { reabrir: true } : {}),
   };
 }
 
