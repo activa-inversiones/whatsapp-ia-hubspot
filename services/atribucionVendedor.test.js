@@ -379,6 +379,17 @@ test('r11 #1: V1 (respaldo) no cotiza para quien tiene cliente fijado ni para un
   assert.equal(v1Rechazo(OTRO, null, { deps: { perfil: () => ({ rol: null }), leerAtribucion: () => null } }), null, 'cliente normal');
 });
 
+test('r14: V1 re-evalúa v1Rechazo DENTRO del lock (un CLIENTE que entró al lock antes que el turno V1 manda)', async () => {
+  const fs = await import('node:fs');
+  const idx = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+  const iLock = idx.indexOf('const release = await acquireLock(waId);');
+  assert.ok(iLock > 0);
+  const trasLock = idx.slice(iLock);
+  const iDentro = trasLock.indexOf('v1Rechazo(waId, inc.enviadoAtMs');
+  const iSesion = trasLock.indexOf('await loadSessionFromStore(waId);');
+  assert.ok(iDentro > 0 && iSesion > 0 && iDentro < iSesion, 'la decisión que manda es la de adentro del lock, antes de cargar la sesión');
+});
+
 test('r13 #3/#4: V1 deja pasar los comandos admin del dueño y al vendedor le dice la CAUSA real', async () => {
   const ident = await import('./identidadCotizacion.js');
   const fs = await import('node:fs');

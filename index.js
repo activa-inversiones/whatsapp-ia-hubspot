@@ -5562,6 +5562,14 @@ app.post("/webhook", async (req, res) => {
   const stopType = startTypingLoop(waId, 8000);
 
   try {
+    // [r14 · Codex] La decisión que MANDA es esta, ya con el lock: un «CLIENTE …» que tomó el lock
+    // antes que este turno V1 cambió la atribución después del chequeo rápido de afuera.
+    const _v1NoDentro = v1Rechazo(waId, inc.enviadoAtMs, { esComandoAdmin: !!parseAdminCmd(inc.text || "") });
+    if (_v1NoDentro) {
+      logInfo("v1_atribucion", `…${String(waId).slice(-4)}: V1 no atiende (decidido dentro del lock)`);
+      try { await waSend(waId, _v1NoDentro); } catch (e) { logErr("v1_atribucion_send", e); }
+      return; // el finally suelta el lock
+    }
     // [v5.1] Hidratar sesión desde Postgres si el cache está frío (sobrevive a redeploys)
     await loadSessionFromStore(waId);
 
