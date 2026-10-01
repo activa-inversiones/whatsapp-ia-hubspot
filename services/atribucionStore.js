@@ -41,20 +41,31 @@ export function msDeMensaje(v) {
 const orden = (a, b) => (a.ts - b.ts) || (a.llegada - b.llegada);
 const copia = (d) => (d ? { phone: d.phone, name: d.name, gen: d.gen } : null);
 
-function agregar(key, tipo, ts, dato = null) {
+function agregar(key, tipo, ts, dato = null, gen = null) {
   const lista = EVENTOS.get(key) || [];
-  lista.push({ tipo, ts: msDeMensaje(ts) || Date.now(), llegada: ++_LLEGADA, dato });
+  lista.push({ tipo, ts: msDeMensaje(ts) || Date.now(), llegada: ++_LLEGADA, dato, gen });
   lista.sort(orden);
   while (lista.length > MAX_EVENTOS) lista.shift();
   EVENTOS.set(key, lista);
 }
 
-/** El evento que rige a la hora `ts` (Infinity = el último). */
+/**
+ * El `fijar` que rige a la hora `ts` (Infinity = ahora), o null. Se recorre la secuencia:
+ *   fijar → rige ese; off → nadie; consumo(gen) → nadie SOLO si el que regía es ESE gen.
+ * [r13 #1 · Thermos] Antes el consumo era un OFF global: un «CLIENTE Pedro» mandado durante el turno
+ * del PDF de Juan (hora Meta anterior al consumo, que lleva hora local) quedaba ordenado antes del
+ * consumo y lo anulaba. Con el gen, un consumo solo apaga a SU cliente.
+ */
 function vigenteA(key, ts = Infinity) {
   const lista = EVENTOS.get(key);
   if (!lista) return null;
   let rige = null;
-  for (const e of lista) { if (e.ts <= ts) rige = e; else break; }
+  for (const e of lista) {
+    if (e.ts > ts) break;
+    if (e.tipo === 'fijar') rige = e;
+    else if (e.tipo === 'off') rige = null;
+    else if (e.tipo === 'consumo' && rige && rige.dato.gen === e.gen) rige = null;
+  }
   return rige;
 }
 
@@ -97,8 +108,11 @@ export function limpiar(quienEscribe, { desde } = {}) {
 export function limpiarSiMisma(quienEscribe, gen) {
   const key = digitos(quienEscribe);
   const e = vigenteA(key);
-  if (!e || e.tipo !== 'fijar' || e.dato.gen !== gen) return false;
-  agregar(key, 'consumo', null);
+  if (!e || e.dato.gen !== gen) return false;
+  // [r13 #1] Hora del consumo: la local (no hay hora de Meta para "Meta aceptó el envío"), pero nunca
+  // anterior al fijar que consume. Las horas de Meta y la local son ambas reloj real; el gen hace que
+  // un desfase entre ellas ya no pueda apagar a OTRO cliente.
+  agregar(key, 'consumo', Math.max(Date.now(), e.ts), null, gen);
   return true;
 }
 

@@ -10,7 +10,7 @@
 // FOTO: nadie la relee durante el turno). Los payloads se arman con los builders de este módulo.
 
 import { digitos, ult9, normalizarChileno } from './telefono.js';
-import { perfilEquipo } from './internosEquipo.js';
+import { perfilEquipo, textoCorteVendedor } from './internosEquipo.js';
 import { obtener } from './atribucionStore.js';
 
 const CLICK_IDS = ['fbclid', 'gclid', 'ttclid', 'ctwa_clid', 'ad_id'];
@@ -181,9 +181,18 @@ export function payloadSaveLead(turno, leadState = {}, state = {}) {
  * vendedor, con o sin cliente— V1 no lo atiende. El dueño sin cliente fijado sí (cotiza para sí).
  */
 export const TEXTO_V1_CON_ATRIBUCION = 'Tuve un problema procesando tu mensaje, reenvíalo en un minuto.';
-export function v1DebeRechazar(waId, tsMensaje = null, deps) {
+/**
+ * @returns {string|null} el texto a responder si V1 NO debe atender este mensaje; null si puede.
+ *  · [r13 #3] el dueño con un comando admin (parseAdminCmd) pasa: esos comandos no cotizan.
+ *  · [r13 #3/#4] un vendedor (o vendedor_ambiguo) SIN cliente recibe la causa real
+ *    (textoCorteVendedor), no un «reenvíalo» que lo dejaría en bucle.
+ */
+export function v1Rechazo(waId, tsMensaje = null, { esComandoAdmin = false, deps } = {}) {
   const t = resolverTurno(waId, Date.now(), { ...(deps || {}), tsMensaje });
-  return !!t.atribucion || t.esVendedor;
+  if (t.esDuenio && esComandoAdmin) return null;
+  if (t.esVendedor && !t.atribucion) return textoCorteVendedor(t.perfil);
+  if (t.atribucion || t.esVendedor) return TEXTO_V1_CON_ATRIBUCION;
+  return null;
 }
 
 // [r11 #6] leadDeAtribucion se BORRÓ: el lead del cliente ya no se crea al fijar CLIENTE sino al

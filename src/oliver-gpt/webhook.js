@@ -1613,7 +1613,7 @@ export async function handleWebhook(req, res, deps = {}) {
       // llegar y la activa ahora, incluida la propia). Si eso falla NO se confirma el reset: se avisa
       // y la sesión queda como estaba (un «partimos de cero» falso dejaría resucitar lo viejo).
       let _rc;
-      try { _rc = await atribucionAlResetear({ turno, state, kv: _carpetas, log: _logAtrib }); }
+      try { _rc = await atribucionAlResetear({ turno, state, previa: _mov.previa, kv: _carpetas, log: _logAtrib }); }
       catch (e) { _rc = { ok: false, error: e?.message || String(e) }; }
       if (!_rc?.ok) {
         await safe('reset.fallido', () => sendWhatsAppText(from, TEXTO_RESET_FALLIDO));

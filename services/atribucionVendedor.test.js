@@ -329,6 +329,17 @@ test('r11 #3: un CLIENTE que LLEGA tarde con hora vieja no pisa al posterior (or
   _reset();
 });
 
+test('r13 #1 (Thermos ALTO): CLIENTE Pedro mandado DURANTE el turno del PDF de Juan (esperó el lock) NO lo anula el consumo de Juan', () => {
+  _reset();
+  const s = Math.floor(Date.now() / 1000);
+  const j = fijar(VENDEDOR, JUAN, 'Juan', { desde: s - 120 });
+  assert.equal(limpiarSiMisma(VENDEDOR, j.gen), true);                // turno del PDF: consumo (hora local ≈ ahora)
+  fijar(VENDEDOR, PEDRO, 'Pedro', { desde: s - 5 });                   // mandado antes del consumo, procesado después
+  assert.equal(obtener(VENDEDOR)?.phone, PEDRO, 'Pedro rige: el consumo era de Juan, no un OFF global');
+  assert.equal(obtener(VENDEDOR, { tsMensaje: s - 60 })?.phone, JUAN, 'mensaje de antes de Pedro: sigue Juan');
+  _reset();
+});
+
 test('r11 #3: mensaje encolado detrás del turno del PDF con hora ANTERIOR al consumo → sigue siendo del cliente', () => {
   _reset();
   const s = Math.floor(Date.now() / 1000);
@@ -356,16 +367,32 @@ test('r11 #1: V1 (respaldo) no cotiza para quien tiene cliente fijado ni para un
   const idx = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
   // El chequeo va en el camino V1, ANTES de tomar el lock y de cotizar nada.
   const v1 = idx.slice(idx.indexOf('const inc = extractMsg(req.body);\n  if (!inc.ok) return;'.replace(/\n/g, idx.includes('\r\n') ? '\r\n' : '\n')));
-  const iRechazo = v1.indexOf('v1DebeRechazar(waId, inc.enviadoAtMs)');
+  const iRechazo = v1.indexOf('v1Rechazo(waId, inc.enviadoAtMs');
   const iLock = v1.indexOf('const release = await acquireLock(waId);');
   assert.ok(iRechazo > 0 && iLock > 0 && iRechazo < iLock, 'V1 rechaza antes de tomar el lock');
-  const { v1DebeRechazar, TEXTO_V1_CON_ATRIBUCION } = await import('./identidadCotizacion.js');
+  const { v1Rechazo, TEXTO_V1_CON_ATRIBUCION } = await import('./identidadCotizacion.js');
   assert.match(TEXTO_V1_CON_ATRIBUCION, /Tuve un problema procesando tu mensaje, reenvíalo en un minuto/);
   const con = { perfil: () => ({ rol: 'duenio' }), leerAtribucion: () => ({ phone: JUAN, name: 'Juan', gen: 1 }) };
-  assert.equal(v1DebeRechazar(ADMIN, null, con), true, 'dueño con cliente fijado');
-  assert.equal(v1DebeRechazar(ADMIN, null, { perfil: () => ({ rol: 'duenio' }), leerAtribucion: () => null }), false, 'dueño para sí: V1 normal');
-  assert.equal(v1DebeRechazar(VENDEDOR, null, { perfil: () => ({ rol: 'vendedor' }), leerAtribucion: () => null }), true, 'vendedor sin cliente');
-  assert.equal(v1DebeRechazar(OTRO, null, { perfil: () => ({ rol: null }), leerAtribucion: () => null }), false, 'cliente normal');
+  assert.equal(v1Rechazo(ADMIN, null, { deps: con }), TEXTO_V1_CON_ATRIBUCION, 'dueño con cliente fijado');
+  assert.equal(v1Rechazo(ADMIN, null, { deps: { perfil: () => ({ rol: 'duenio' }), leerAtribucion: () => null } }), null, 'dueño para sí: V1 normal');
+  assert.ok(v1Rechazo(VENDEDOR, null, { deps: { perfil: () => ({ rol: 'vendedor' }), leerAtribucion: () => null } }), 'vendedor sin cliente');
+  assert.equal(v1Rechazo(OTRO, null, { deps: { perfil: () => ({ rol: null }), leerAtribucion: () => null } }), null, 'cliente normal');
+});
+
+test('r13 #3/#4: V1 deja pasar los comandos admin del dueño y al vendedor le dice la CAUSA real', async () => {
+  const ident = await import('./identidadCotizacion.js');
+  const fs = await import('node:fs');
+  const idx = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+  assert.match(idx, /v1Rechazo\(waId, inc\.enviadoAtMs, \{ esComandoAdmin: !!parseAdminCmd\(inc\.text \|\| ""\) \}\)/);
+  const v1Rechazo = (...a) => ident.v1Rechazo(...a);
+  const conJuan = { perfil: () => ({ rol: 'duenio' }), leerAtribucion: () => ({ phone: JUAN, name: 'Juan', gen: 1 }) };
+  assert.equal(v1Rechazo(ADMIN, null, { esComandoAdmin: true, deps: conJuan }), null, 'comando admin del dueño: V1 lo atiende');
+  assert.match(v1Rechazo(ADMIN, null, { deps: conJuan }), /reenvíalo en un minuto/, 'dueño con cliente, texto normal');
+  const vend = { perfil: () => ({ rol: 'vendedor', motivoBloqueo: 'lista_desactualizada' }), leerAtribucion: () => null };
+  assert.match(v1Rechazo(VENDEDOR, null, { deps: vend }), /lista del equipo está desactualizada/, 'vendedor sin cliente: la causa real');
+  const amb = { perfil: () => ({ rol: 'vendedor_ambiguo', motivoBloqueo: 'no_habilitado' }), leerAtribucion: () => null };
+  assert.match(v1Rechazo(VENDEDOR, null, { deps: amb }), /no está habilitado como vendedor/, 'vendedor_ambiguo: la causa real');
+  assert.equal(v1Rechazo(OTRO, null, { deps: { perfil: () => ({ rol: null }), leerAtribucion: () => null } }), null, 'cliente normal');
 });
 
 test('r11 #4: si la consulta del equipo FALLA, CLIENTE se rechaza (fail-closed) y no fija nada', async () => {

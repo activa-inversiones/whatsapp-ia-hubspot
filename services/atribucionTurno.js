@@ -23,12 +23,12 @@ export const TEXTO_ERROR_CARPETA =
 
 /**
  * @param {{turno:object, state:object, history:Array, kv:{leer,escribir}, log?:Function}} o
- * @returns {Promise<{mov:'igual'|'cambio'|'error', error?:string, aviso?:string}>}
+ * @returns {Promise<{mov:'igual'|'cambio'|'error', previa?:string, error?:string, aviso?:string, texto?:string}>}
+ *   previa = la carpeta con la que llegó el turno (RESET la vacía también).
  */
 export async function alEntrar({ turno, state, history, kv, log = () => {} }) {
   const a = turno.atribucion;
-  const previa = state.carpeta_activa || CARPETA_PROPIA;
-  turno._carpetaPrevia = previa;   // [r11 #5] RESET vacía también la carpeta con la que llegó el turno
+  const previa = state.carpeta_activa || CARPETA_PROPIA;   // se devuelve: RESET la vacía también (r11 #5)
 
   // [Thermos conjunto #4] Sin atribución pero con la carpeta de un cliente activa y SIN cerrar
   // (un redeploy borró la atribución de memoria): no se pierde nada —la carpeta queda guardada— y
@@ -62,7 +62,7 @@ export async function alEntrar({ turno, state, history, kv, log = () => {} }) {
   } else if (mov.mov === 'cambio') {
     delete state.carpeta_gen; delete state.carpeta_nombre; delete state.carpeta_cerrada;
   }
-  return aviso && mov.mov === 'cambio' ? { ...mov, aviso } : mov;
+  return { ...mov, previa, ...(aviso && mov.mov === 'cambio' ? { aviso } : {}) };
 }
 
 /**
@@ -113,11 +113,15 @@ export async function alCerrarTurno({ turno, state, history, kv, log = () => {} 
  *    durable con lo VIEJO reaparecía al volver de otro cliente.
  * @returns {Promise<{ok:boolean, error?:string}>} ok=false ⇒ quien llama NO confirma el RESET.
  */
-export async function alResetear({ turno, state, kv, log = () => {} }) {
+export async function alResetear({ turno, state, previa = null, kv, log = () => {} }) {
   // Sin número completo no hay carpetas posibles (claveCarpeta lo rechaza): nada que vaciar.
   if (!completo(turno.quienEscribe)) return { ok: true };
+  // [r13 #2 · Thermos] Un CLIENTE NORMAL (sin rol del equipo y sin carpeta de un cliente) resetea
+  // como siempre: sin I/O de carpetas, así una falla del KV no le cambia la respuesta.
+  const deCliente = (c) => !!c && c !== CARPETA_PROPIA;
+  if (!turno.rol && !turno.atribucion && !deCliente(previa) && !deCliente(state?.carpeta_activa)) return { ok: true };
   const carpetas = new Set([state?.carpeta_activa || CARPETA_PROPIA]);
-  if (turno._carpetaPrevia) carpetas.add(turno._carpetaPrevia);
+  if (previa) carpetas.add(previa);
   if (turno.atribucion) carpetas.add(turno.cliente);
   for (const carpeta of carpetas) {
     const g = await escribirCarpeta({ from: turno.quienEscribe, carpeta, state: {}, history: [], escribir: kv.escribir });

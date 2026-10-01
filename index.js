@@ -316,7 +316,7 @@ import { DUENIO_DEFAULT, esDuenio } from "./services/internosEquipo.js"; // el d
 import { conLockDeTelefono, acquireLock } from "./services/lockTelefono.js";  // el MISMO lock (instancia y clave) que los turnos de Oliver
 import { digitos as digitosTel } from "./services/telefono.js";
 import { msDeMensaje } from "./services/atribucionStore.js";
-import { v1DebeRechazar, TEXTO_V1_CON_ATRIBUCION } from "./services/identidadCotizacion.js"; // [r11 #1] V1 no cotiza bajo atribución
+import { v1Rechazo } from "./services/identidadCotizacion.js"; // [r11 #1] V1 no cotiza bajo atribución
 // [2026-08-08] Estado del bot que sobrevive a un redeploy (respaldo en Postgres).
 import { leer as leerEstado, escribir as escribirEstado } from "./services/estadoPersistente.js";
 import { estadoReporteCosto } from "./services/reporteCosto.js";
@@ -5545,10 +5545,12 @@ app.post("/webhook", async (req, res) => {
 
   // [r11 #1 · Codex] V1 (respaldo) no entiende CLIENTE: con un cliente fijado (o si es un vendedor)
   // cotizaría a nombre de quien escribe. No se atiende acá; se pide reenviar (Oliver GPT lo tomará).
+  // [r13 #3] Los comandos admin del dueño pasan; al vendedor sin cliente se le dice la causa real.
   try {
-    if (v1DebeRechazar(waId, inc.enviadoAtMs)) {
+    const _v1No = v1Rechazo(waId, inc.enviadoAtMs, { esComandoAdmin: !!parseAdminCmd(inc.text || "") });
+    if (_v1No) {
       logInfo("v1_atribucion", `…${String(waId).slice(-4)}: V1 no atiende a quien cotiza para un cliente / vendedor`);
-      try { await waSend(waId, TEXTO_V1_CON_ATRIBUCION); } catch (e) { logErr("v1_atribucion_send", e); }
+      try { await waSend(waId, _v1No); } catch (e) { logErr("v1_atribucion_send", e); }
       return;
     }
   } catch (e) { logErr("v1_atribucion", e); return; } // fail-closed: ante la duda, V1 no cotiza

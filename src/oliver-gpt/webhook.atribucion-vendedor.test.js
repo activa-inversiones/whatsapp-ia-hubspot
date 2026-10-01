@@ -360,6 +360,18 @@ test('r11 #5: si no se puede vaciar lo guardado, RESET NO confirma «partimos de
   assert.ok(textos.some((x) => /No pude reiniciar/.test(x.t)));
 });
 
+test('r13 #2 (Thermos MEDIO): RESET de un CLIENTE NORMAL es como siempre — sin I/O de carpetas, y confirma aunque el KV falle', async () => {
+  _reiniciarParaTests(); resetAtribucion();
+  const NORMAL = '56933334444';
+  const ev = []; const pdf = []; const textos = []; const escrituras = [];
+  const deps = textoDe(makeDeps(NORMAL, 'wamid.NORMAL.RESET', ev, pdf, { textos }), 'reset');
+  deps.carpetas = { leer: async () => ({ ok: true, valor: null }), escribir: async (k) => { escrituras.push(k); return { ok: false, motivo: 'bd' }; } };
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.deepEqual(escrituras, [], 'un cliente normal no toca carpetas');
+  assert.ok(textos.some((x) => /partimos de cero/.test(x.t)), `textos: ${JSON.stringify(textos.map((x) => x.t))}`);
+});
+
 test('L4 r10: tras emitir, la carpeta del cliente queda con el turno COMPLETO (no la foto de mitad de generarPdf)', async () => {
   prepararVendedor();
   const kv = kvCarpetas();
