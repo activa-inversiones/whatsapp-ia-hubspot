@@ -320,6 +320,46 @@ test('L3 r10: un vendedor SIN cliente fijado puede usar RESET (no lo corta el pe
   assert.ok(textos.some((x) => /partimos de cero/.test(x.t)), `textos: ${JSON.stringify(textos.map((x) => x.t))}`);
 });
 
+test('r11 #5 (caso Codex): RESET vacía la carpeta PROPIA durable — lo viejo no resucita al volver de otro cliente', async () => {
+  prepararVendedor();
+  const DUENO = '56957296035';
+  const clavePropia = `sesion_cliente:${DUENO}:propia`;
+  const kv = kvCarpetas({ [clavePropia]: { state: { pending_quote: { items: [{ product: 'VIEJO' }] } }, history: [{ role: 'user', content: 'VIEJO' }] } });
+  const ev = []; const pdf = []; const textos = [];
+  const deps = textoDe(makeDeps(DUENO, 'wamid.DUENO.RESET.PROPIA', ev, pdf, { textos }), 'reset');
+  deps.carpetas = kv;
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.ok(textos.some((x) => /partimos de cero/.test(x.t)));
+  assert.deepEqual(kv.m.get(clavePropia), { state: {}, history: [] }, 'la propia quedó vacía en el almacén durable');
+});
+
+test('r11 #5: RESET sin atribución con la carpeta de un cliente activa (redeploy) vacía ESA carpeta', async () => {
+  prepararVendedor();
+  const DUENO = '56957296035';
+  const claveJuan = `sesion_cliente:${DUENO}:${CLIENTE}`;
+  const kv = kvCarpetas({ [claveJuan]: { state: { pending_quote: { items: [{ product: 'x' }] } }, history: [{ role: 'user', content: 'de Juan' }] } });
+  const ev = []; const pdf = []; const textos = [];
+  const deps = textoDe(makeDeps(DUENO, 'wamid.DUENO.RESET.JUAN', ev, pdf, { textos }), 'reset');
+  deps.carpetas = kv;
+  deps.loadSession = async () => ({ history: [{ role: 'user', content: 'para Juan' }], state: { carpeta_activa: CLIENTE, carpeta_nombre: 'Juan Pérez', name: 'Juan Pérez' } });
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.deepEqual(kv.m.get(claveJuan), { state: {}, history: [] });
+});
+
+test('r11 #5: si no se puede vaciar lo guardado, RESET NO confirma «partimos de cero» y avisa', async () => {
+  prepararVendedor();
+  const DUENO = '56957296035';
+  const ev = []; const pdf = []; const textos = [];
+  const deps = textoDe(makeDeps(DUENO, 'wamid.DUENO.RESET.FALLA', ev, pdf, { textos }), 'reset');
+  deps.carpetas = { leer: async () => ({ ok: true, valor: null }), escribir: async () => ({ ok: false, motivo: 'bd' }) };
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.ok(!textos.some((x) => /partimos de cero/.test(x.t)), `textos: ${JSON.stringify(textos.map((x) => x.t))}`);
+  assert.ok(textos.some((x) => /No pude reiniciar/.test(x.t)));
+});
+
 test('L4 r10: tras emitir, la carpeta del cliente queda con el turno COMPLETO (no la foto de mitad de generarPdf)', async () => {
   prepararVendedor();
   const kv = kvCarpetas();

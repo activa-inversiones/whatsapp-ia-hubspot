@@ -9,7 +9,6 @@ import { digitos, normalizarChileno, esCelularChileno } from './telefono.js';
 import { perfilEquipo, telefonoDuenio } from './internosEquipo.js';
 import { fijar, limpiar, vigenciaMs } from './atribucionStore.js';
 import { yaNosEscribio, marcarSinConsentimiento } from './consentimiento.js';
-import { leadDeAtribucion } from './identidadCotizacion.js';
 
 const FORMAS_OFF = /^(off|no|ninguno|salir|listo|fin)$/i;
 /** RUT chileno escrito con guion (con o sin puntos): 12.345.678-9, 56789012-3, 9.876.543-K. */
@@ -88,14 +87,20 @@ export function autorizaComandoCliente(waId, texto, ahora = Date.now()) {
 }
 
 /**
- * El comando entero: fijar/limpiar, crear el lead del cliente y la marca de consentimiento.
+ * El comando entero: autorizar (de nuevo), fijar/limpiar y la marca de consentimiento.
  * @returns {Promise<string>} el mensaje para quien mandó el comando
  */
 export async function procesarComandoCliente({
-  waId, texto, pushLead, escribio = yaNosEscribio, marcar = marcarSinConsentimiento, logErr = () => {},
+  waId, texto, escribio = yaNosEscribio, marcar = marcarSinConsentimiento, logErr = () => {},
   esDelEquipo = (p) => perfilEquipo(p).esEquipo,
   desde = null,   // [M2 r10] hora WhatsApp del comando: ordena contra los mensajes en vuelo
+  // [r11 #4] Se re-chequea ACÁ (dentro del lock en index.js): un permiso revocado mientras el
+  // comando esperaba el lock no puede ejecutarse igual.
+  autorizar = () => autorizaComandoCliente(waId, texto),
 }) {
+  let autorizado = false;
+  try { autorizado = autorizar() === true; } catch { autorizado = false; }
+  if (!autorizado) return '⚠️ Tu número no está habilitado para usar CLIENTE en este momento. Avísale al administrador.';
   const r = parseComandoCliente(texto || '');
   if (!r.ok) return `⚠️ ${r.error}`;
   if (r.limpiar) {
@@ -103,17 +108,19 @@ export async function procesarComandoCliente({
     return '✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.';
   }
   // El cliente no puede ser quien escribe, el dueño ni nadie del equipo.
-  let esEquipo = false;
-  try { esEquipo = esDelEquipo(r.phone) === true; } catch { esEquipo = false; }
+  // [r11 #4] FAIL-CLOSED: si no se puede saber si es del equipo, se rechaza (antes se aceptaba).
+  let esEquipo;
+  try { esEquipo = esDelEquipo(r.phone) === true; } catch (e) {
+    try { logErr('cliente_equipo_indeterminado', e); } catch { /* */ }
+    return '⚠️ No pude verificar ese número contra la lista del equipo. Intenta de nuevo en unos minutos.';
+  }
   if (r.phone === normalizarChileno(waId) || r.phone === telefonoDuenio() || esEquipo) {
     return `⚠️ Ese número es tuyo o de alguien del equipo, no de un cliente. Escribe el WhatsApp del cliente: ${EJEMPLO}`;
   }
   fijar(waId, r.phone, r.name, { desde });
-  // Si el cliente no existe como lead, se crea (no_pisar: si existía, no se le cambia nada).
-  try {
-    Promise.resolve(pushLead(leadDeAtribucion(waId, r.phone, r.name)))
-      .catch((e) => { try { logErr('cliente_atribucion_lead', e); } catch { /* */ } });
-  } catch (e) { try { logErr('cliente_atribucion_lead', e); } catch { /* */ } }
+  // [r11 #6 · Codex] El lead del cliente NO se crea ni se reabre acá: se crea/reabre al COTIZAR
+  // (borrador o emisión bajo atribución llevan `lead` con no_pisar). Un comando no es una
+  // cotización: «CLIENTE Juan» + «CLIENTE OFF» revivía a un perdido sin que nadie le cotizara.
   // Consentimiento: se marca SIEMPRE, salvo que ese número le haya escrito al bot.
   let _escribio = false;
   try { _escribio = await escribio(r.phone); } catch { _escribio = false; }

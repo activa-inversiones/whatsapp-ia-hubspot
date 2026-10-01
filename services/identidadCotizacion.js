@@ -172,15 +172,16 @@ export function payloadSaveLead(turno, leadState = {}, state = {}) {
   };
 }
 
-/** Lead mínimo del cliente al fijar la atribución (upsertLead de sales-os lo busca por teléfono). */
-export function leadDeAtribucion(quienEscribe, phoneCrudo, name) {
-  const { extraLead, externalId, telefonoCliente } = identidadCotizacion(digitos(quienEscribe), { phone: phoneCrudo });
-  return {
-    phone: telefonoCliente,
-    channel: 'whatsapp',
-    name: String(name || '').trim(),
-    external_id: externalId,
-    ...extraLead,
-    metadata: { via: 'comando_CLIENTE', cotizado_por: extraLead.cotizado_por },
-  };
+/**
+ * [r11 #1 · Codex] El turno V1 (index.js, respaldo ante una excepción de Oliver GPT) NO entiende la
+ * atribución: cotizaría a nombre de quien escribe. Si quien escribe tiene un cliente fijado —o es un
+ * vendedor, con o sin cliente— V1 no lo atiende. El dueño sin cliente fijado sí (cotiza para sí).
+ */
+export const TEXTO_V1_CON_ATRIBUCION = 'Tuve un problema procesando tu mensaje, reenvíalo en un minuto.';
+export function v1DebeRechazar(waId, tsMensaje = null, deps) {
+  const t = resolverTurno(waId, Date.now(), { ...(deps || {}), tsMensaje });
+  return !!t.atribucion || t.esVendedor;
 }
+
+// [r11 #6] leadDeAtribucion se BORRÓ: el lead del cliente ya no se crea al fijar CLIENTE sino al
+// cotizar (el `lead` del quote-event, payloadLeadCotizacion, con no_pisar).

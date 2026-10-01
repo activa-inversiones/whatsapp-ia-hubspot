@@ -316,6 +316,7 @@ import { DUENIO_DEFAULT, esDuenio } from "./services/internosEquipo.js"; // el d
 import { conLockDeTelefono, acquireLock } from "./services/lockTelefono.js";  // el MISMO lock (instancia y clave) que los turnos de Oliver
 import { digitos as digitosTel } from "./services/telefono.js";
 import { msDeMensaje } from "./services/atribucionStore.js";
+import { v1DebeRechazar, TEXTO_V1_CON_ATRIBUCION } from "./services/identidadCotizacion.js"; // [r11 #1] V1 no cotiza bajo atribución
 // [2026-08-08] Estado del bot que sobrevive a un redeploy (respaldo en Postgres).
 import { leer as leerEstado, escribir as escribirEstado } from "./services/estadoPersistente.js";
 import { estadoReporteCosto } from "./services/reporteCosto.js";
@@ -5402,8 +5403,9 @@ app.post("/webhook", async (req, res) => {
         try {
           // [Tridente r4 #1] Con el MISMO lock por teléfono que el turno de Oliver: el comando no
           // puede cambiar la atribución a mitad de un turno (espera a que termine).
+          // [r11 #4] procesarComandoCliente vuelve a autorizar DENTRO del lock (autorizaComandoCliente).
           msg = await conLockDeTelefono(normalizeWaId(_atInc.waId), () => procesarComandoCliente({
-            waId: _atInc.waId, texto: _atInc.text || "", pushLead: pushLeadEvent, logErr,
+            waId: normalizeWaId(_atInc.waId), texto: _atInc.text || "", logErr,
             desde: _atInc.enviadoAtMs, // [M2 r10] los mensajes mandados antes siguen con la atribución anterior
           }));
         } catch (e) { try { logErr("cliente_atribucion", e); } catch {} msg = "⚠️ No pude procesar el comando. Probá de nuevo."; }
@@ -5540,6 +5542,16 @@ app.post("/webhook", async (req, res) => {
   const { waId, msgId, type } = inc;
   if (isDup(msgId)) return;
   _lastMsgId = msgId;
+
+  // [r11 #1 · Codex] V1 (respaldo) no entiende CLIENTE: con un cliente fijado (o si es un vendedor)
+  // cotizaría a nombre de quien escribe. No se atiende acá; se pide reenviar (Oliver GPT lo tomará).
+  try {
+    if (v1DebeRechazar(waId, inc.enviadoAtMs)) {
+      logInfo("v1_atribucion", `…${String(waId).slice(-4)}: V1 no atiende a quien cotiza para un cliente / vendedor`);
+      try { await waSend(waId, TEXTO_V1_CON_ATRIBUCION); } catch (e) { logErr("v1_atribucion_send", e); }
+      return;
+    }
+  } catch (e) { logErr("v1_atribucion", e); return; } // fail-closed: ante la duda, V1 no cotiza
 
   const rc = rateOk(waId);
   if (!rc.ok) return waSend(waId, rc.msg);

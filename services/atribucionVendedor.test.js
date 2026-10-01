@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { identidadCotizacion, leadDeAtribucion, clickIdsDe, clavesCotizacion, resolverTurno } from './identidadCotizacion.js';
+import { identidadCotizacion, payloadLeadCotizacion, clickIdsDe, clavesCotizacion, resolverTurno } from './identidadCotizacion.js';
 import { procesarComandoCliente, mensajeTrasPdf, parseComandoCliente, autorizaComandoCliente } from './comandoCliente.js';
 import { fijar, obtener, limpiar, limpiarSiMisma, vigenciaMs, _resetAtribuciones } from './atribucionStore.js';
 import { yaNosEscribio, _resetConsentimiento } from './consentimiento.js';
@@ -146,8 +146,15 @@ test('decisión dueño 30-sep: UNA regla de rol (dueño / vendedor / nadie)', ()
   }
 });
 
-test('decisión dueño 30-sep: al fijar cliente se crea su lead con su teléfono, sin pisar uno existente', () => {
-  const l = leadDeAtribucion(VENDEDOR, '+56 9 8765 4321', 'Juan Pérez');
+// [r11 #6] CAMBIO DECIDIDO (Codex + coordinador, 01-oct): el lead del cliente se crea/reabre al
+// COTIZAR, no al fijar CLIENTE. La decisión del dueño («si no existe como lead se crea») se mantiene,
+// pero la lleva el `lead` del quote-event (payloadLeadCotizacion) — lo defiende también el test del
+// webhook «vendedor interno con CLIENTE fijado → la cotización va con el teléfono del cliente».
+test('decisión dueño 30-sep: al COTIZAR para el cliente, su lead va con su teléfono y sin pisar uno existente', () => {
+  const turno = resolverTurno(VENDEDOR, Date.now(), {
+    perfil: () => ({ rol: 'vendedor' }), leerAtribucion: () => ({ phone: '+56 9 8765 4321', name: 'Juan Pérez', gen: 1 }),
+  });
+  const l = payloadLeadCotizacion(turno, { phone: turno.cliente, name: 'Juan Pérez' });
   assert.equal(l.phone, JUAN);
   assert.equal(l.external_id, JUAN);
   assert.equal(l.name, 'Juan Pérez');
@@ -171,13 +178,13 @@ test('E 30-sep: limpiarSiMisma solo borra la MISMA versión (carrera CLIENTE Jua
 test('«Cliente explícito» 30-sep: CLIENTE fija; CLIENTE OFF termina; el TTL cuenta desde que se fijó (usarla NO la renueva)', async () => {
   _reset();
   const pushes = [];
-  const msg = await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Juan Pérez +${JUAN}`,
+  const msg = await procesarComandoCliente({ waId: VENDEDOR, autorizar: () => true, texto: `CLIENTE Juan Pérez +${JUAN}`,
     pushLead: async (p) => { pushes.push(p); }, escribio: async () => false, marcar: () => {}, esDelEquipo: () => false });
   assert.match(msg, /Cotizando para \*Juan Pérez\*/);
-  assert.equal(pushes[0].phone, JUAN);
+  assert.deepEqual(pushes, [], '[r11 #6] el comando ya no crea el lead (se crea al cotizar)');
   assert.equal(obtener(VENDEDOR).phone, JUAN);
   assert.match(mensajeTrasPdf(obtener(VENDEDOR)), /Propuesta de \*Juan Pérez\* emitida\. Para corregirla manda CLIENTE Juan Pérez \+56987654321/);
-  await procesarComandoCliente({ waId: VENDEDOR, texto: 'CLIENTE OFF', pushLead: async () => {} });
+  await procesarComandoCliente({ waId: VENDEDOR, autorizar: () => true, texto: 'CLIENTE OFF', pushLead: async () => {} });
   assert.equal(obtener(VENDEDOR), null, 'CLIENTE OFF la termina');
 
   const realNow = Date.now;
@@ -275,7 +282,7 @@ test('Thermos conjunto #6: el texto dice mandar CLIENTE y ESPERAR la confirmaci�
   const { TEXTO_PEDIR_CLIENTE_INTERNO } = await import('./internosEquipo.js');
   assert.match(TEXTO_PEDIR_CLIENTE_INTERNO, /espera mi confirmación antes de mandar fotos/);
   _reset();
-  const msg = await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Juan +${JUAN}`,
+  const msg = await procesarComandoCliente({ waId: VENDEDOR, autorizar: () => true, texto: `CLIENTE Juan +${JUAN}`,
     pushLead: async () => {}, escribio: async () => true, marcar: () => {}, esDelEquipo: () => false });
   assert.match(msg, /fotos o audios del cliente mándalos DESPUÉS de esta confirmación/);
   _reset();
@@ -300,13 +307,90 @@ test('M2 r10: un mensaje mandado ANTES de «CLIENTE Pedro» (hora WhatsApp) sigu
   _reset();
 });
 
+test('r11 #3 (caso Codex): Juan → Pedro → María y un mensaje TARDÍO con hora de Juan → Juan', () => {
+  _reset();
+  const s = Math.floor(Date.now() / 1000);
+  fijar(VENDEDOR, JUAN, 'Juan', { desde: s - 300 });
+  fijar(VENDEDOR, PEDRO, 'Pedro', { desde: s - 200 });
+  fijar(VENDEDOR, '56955554444', 'María', { desde: s - 100 });
+  assert.equal(obtener(VENDEDOR, { tsMensaje: s - 250 })?.phone, JUAN, 'hora de Juan → Juan');
+  assert.equal(obtener(VENDEDOR, { tsMensaje: s - 150 })?.phone, PEDRO);
+  assert.equal(obtener(VENDEDOR, { tsMensaje: s - 50 })?.phone, '56955554444');
+  _reset();
+});
+
+test('r11 #3: un CLIENTE que LLEGA tarde con hora vieja no pisa al posterior (orden por hora WhatsApp)', () => {
+  _reset();
+  const s = Math.floor(Date.now() / 1000);
+  fijar(VENDEDOR, PEDRO, 'Pedro', { desde: s - 100 });
+  fijar(VENDEDOR, JUAN, 'Juan', { desde: s - 200 });     // llegó después, pero se mandó antes
+  assert.equal(obtener(VENDEDOR)?.phone, PEDRO, 'rige el mandado último');
+  assert.equal(obtener(VENDEDOR, { tsMensaje: s - 150 })?.phone, JUAN);
+  _reset();
+});
+
+test('r11 #3: mensaje encolado detrás del turno del PDF con hora ANTERIOR al consumo → sigue siendo del cliente', () => {
+  _reset();
+  const s = Math.floor(Date.now() / 1000);
+  const j = fijar(VENDEDOR, JUAN, 'Juan', { desde: s - 120 });
+  assert.equal(limpiarSiMisma(VENDEDOR, j.gen), true);           // se consumió (hora local ≈ ahora)
+  assert.equal(obtener(VENDEDOR), null, 'después del consumo, nadie');
+  assert.equal(obtener(VENDEDOR, { tsMensaje: s - 60 })?.phone, JUAN, 'mandado antes del consumo: Juan');
+  _reset();
+});
+
+test('r11 #1: V1 (respaldo) no cotiza para quien tiene cliente fijado ni para un vendedor', async () => {
+  const fs = await import('node:fs');
+  const idx = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+  // El chequeo va en el camino V1, ANTES de tomar el lock y de cotizar nada.
+  const v1 = idx.slice(idx.indexOf('const inc = extractMsg(req.body);\n  if (!inc.ok) return;'.replace(/\n/g, idx.includes('\r\n') ? '\r\n' : '\n')));
+  const iRechazo = v1.indexOf('v1DebeRechazar(waId, inc.enviadoAtMs)');
+  const iLock = v1.indexOf('const release = await acquireLock(waId);');
+  assert.ok(iRechazo > 0 && iLock > 0 && iRechazo < iLock, 'V1 rechaza antes de tomar el lock');
+  const { v1DebeRechazar, TEXTO_V1_CON_ATRIBUCION } = await import('./identidadCotizacion.js');
+  assert.match(TEXTO_V1_CON_ATRIBUCION, /Tuve un problema procesando tu mensaje, reenvíalo en un minuto/);
+  const con = { perfil: () => ({ rol: 'duenio' }), leerAtribucion: () => ({ phone: JUAN, name: 'Juan', gen: 1 }) };
+  assert.equal(v1DebeRechazar(ADMIN, null, con), true, 'dueño con cliente fijado');
+  assert.equal(v1DebeRechazar(ADMIN, null, { perfil: () => ({ rol: 'duenio' }), leerAtribucion: () => null }), false, 'dueño para sí: V1 normal');
+  assert.equal(v1DebeRechazar(VENDEDOR, null, { perfil: () => ({ rol: 'vendedor' }), leerAtribucion: () => null }), true, 'vendedor sin cliente');
+  assert.equal(v1DebeRechazar(OTRO, null, { perfil: () => ({ rol: null }), leerAtribucion: () => null }), false, 'cliente normal');
+});
+
+test('r11 #4: si la consulta del equipo FALLA, CLIENTE se rechaza (fail-closed) y no fija nada', async () => {
+  _reset();
+  const msg = await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Juan +${JUAN}`, autorizar: () => true,
+    pushLead: async () => {}, escribio: async () => true, marcar: () => {}, esDelEquipo: () => { throw new Error('lista caída'); } });
+  assert.match(msg, /^⚠️/);
+  assert.equal(obtener(VENDEDOR), null);
+  _reset();
+});
+
+test('r11 #4: la autorización se vuelve a mirar DENTRO del comando (revocado mientras esperaba el lock)', async () => {
+  _reset();
+  const msg = await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Juan +${JUAN}`, autorizar: () => false,
+    pushLead: async () => {}, escribio: async () => true, marcar: () => {}, esDelEquipo: () => false });
+  assert.match(msg, /^⚠️/);
+  assert.equal(obtener(VENDEDOR), null);
+  _reset();
+});
+
+test('r11 #6: CLIENTE (y luego OFF) NO crea ni reabre el lead: eso pasa recién al cotizar', async () => {
+  _reset();
+  const pushes = [];
+  await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Juan +${JUAN}`, autorizar: () => true,
+    pushLead: async (p) => { pushes.push(p); }, escribio: async () => true, marcar: () => {}, esDelEquipo: () => false });
+  await procesarComandoCliente({ waId: VENDEDOR, texto: 'CLIENTE OFF', autorizar: () => true, pushLead: async (p) => { pushes.push(p); } });
+  assert.deepEqual(pushes, [], 'un comando no es una cotización: un perdido no revive');
+  _reset();
+});
+
 test('5 · CLIENTE rechaza el propio número de quien escribe y cualquier número del equipo', async () => {
   _reset();
-  const r1 = await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Yo Mismo +${VENDEDOR}`,
+  const r1 = await procesarComandoCliente({ waId: VENDEDOR, autorizar: () => true, texto: `CLIENTE Yo Mismo +${VENDEDOR}`,
     pushLead: async () => {}, escribio: async () => false, marcar: () => {}, esDelEquipo: () => false });
   assert.match(r1, /^⚠️/);
   assert.equal(obtener(VENDEDOR), null);
-  const r2 = await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Colega +${OTRO}`,
+  const r2 = await procesarComandoCliente({ waId: VENDEDOR, autorizar: () => true, texto: `CLIENTE Colega +${OTRO}`,
     pushLead: async () => {}, escribio: async () => false, marcar: () => {}, esDelEquipo: (p) => p === OTRO });
   assert.match(r2, /^⚠️/);
   assert.equal(obtener(VENDEDOR), null);
@@ -330,9 +414,9 @@ test('F1 30-sep: "ya nos escribió" solo si ese número escribió al bot (ser le
   assert.equal(await yaNosEscribio(JUAN, async (k) => (k === `escribio:${JUAN}` ? true : null)), true);
   // Y el comando marca "sin consentimiento" salvo que haya escrito.
   const marcados = [];
-  await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Juan +${JUAN}`, pushLead: async () => {},
+  await procesarComandoCliente({ waId: VENDEDOR, autorizar: () => true, texto: `CLIENTE Juan +${JUAN}`, pushLead: async () => {},
     escribio: async () => false, marcar: (p) => marcados.push(p), esDelEquipo: () => false });
-  await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Pedro +${PEDRO}`, pushLead: async () => {},
+  await procesarComandoCliente({ waId: VENDEDOR, autorizar: () => true, texto: `CLIENTE Pedro +${PEDRO}`, pushLead: async () => {},
     escribio: async () => true, marcar: (p) => marcados.push(p), esDelEquipo: () => false });
   assert.deepEqual(marcados, [JUAN]);
   _reset();

@@ -4,9 +4,17 @@
 //                  consumir la atribución y decir cómo corregir. UNA vez por turno aunque salgan
 //                  varios PDF (alternativas A/B/C).
 // La foto de la atribución es `turno` (identidadCotizacion.resolverTurno): nadie la relee.
+//
+// 📌 DISEÑO DEL CONSUMO (r11 #2, decisión 01-oct; Codex propuso consumir recién con `delivered`):
+//   la atribución se CONSUME cuando Meta ACEPTA el envío del PDF, no cuando lo entrega. Motivo: el
+//   PDF va AL VENDEDOR (quien escribe), no al cliente; si la entrega falla, el vendedor lo ve en su
+//   propio chat y re-fija el MISMO cliente con CLIENTE: su carpeta trae su estado y su folio
+//   (alEntrar, Thermos conjunto #1), así que la corrección no quema un folio nuevo. Esperar el
+//   `delivered` dejaría la atribución abierta indefinidamente si el acuse no llega.
 
 import { cambiarCarpeta, escribirCarpeta, leerCarpeta, CARPETA_PROPIA } from './sesionCarpetas.js';
 import { limpiarSiMisma } from './atribucionStore.js';
+import { completo } from './telefono.js';
 import { mensajeTrasPdf } from './comandoCliente.js';
 
 /** Lo que se le dice a quien escribe si no se pudo abrir/guardar la carpeta al cambiar de cliente. */
@@ -20,6 +28,7 @@ export const TEXTO_ERROR_CARPETA =
 export async function alEntrar({ turno, state, history, kv, log = () => {} }) {
   const a = turno.atribucion;
   const previa = state.carpeta_activa || CARPETA_PROPIA;
+  turno._carpetaPrevia = previa;   // [r11 #5] RESET vacía también la carpeta con la que llegó el turno
 
   // [Thermos conjunto #4] Sin atribución pero con la carpeta de un cliente activa y SIN cerrar
   // (un redeploy borró la atribución de memoria): no se pierde nada —la carpeta queda guardada— y
@@ -95,15 +104,33 @@ export async function alCerrarTurno({ turno, state, history, kv, log = () => {} 
 }
 
 /**
- * [L2 r10] RESET con atribución activa: se vacía TAMBIÉN la carpeta de ese cliente. Si no, el turno
- * siguiente la restauraba (la sesión vacía no tiene carpeta_activa → cambio → se lee la de Juan).
+ * RESET explícito: se vacían DURABLEMENTE las carpetas que el turno tocó, para que nada viejo resucite.
+ *  · [L2 r10] la del cliente fijado (si no, el turno siguiente la restauraba);
+ *  · [r11 #5 · Codex] la que estaba activa al llegar aunque ya no haya atribución (p. ej. el dueño
+ *    tras un redeploy con la carpeta de Juan activa);
+ *  · [r11 #5] la carpeta activa ahora, INCLUIDA la 'propia': la regla «un vacío no pisa una carpeta»
+ *    (cambiarCarpeta) es para cambios de cliente; acá el vacío ES lo pedido. Sin esto, la propia
+ *    durable con lo VIEJO reaparecía al volver de otro cliente.
+ * @returns {Promise<{ok:boolean, error?:string}>} ok=false ⇒ quien llama NO confirma el RESET.
  */
-export async function alResetear({ turno, kv, log = () => {} }) {
-  if (!turno.atribucion) return { hecho: false };
-  const g = await escribirCarpeta({ from: turno.quienEscribe, carpeta: turno.cliente, state: {}, history: [], escribir: kv.escribir });
-  if (!g.ok) log('warn', `RESET: no pude vaciar la carpeta del cliente (${g.error})`);
-  return { hecho: true, ok: g.ok };
+export async function alResetear({ turno, state, kv, log = () => {} }) {
+  // Sin número completo no hay carpetas posibles (claveCarpeta lo rechaza): nada que vaciar.
+  if (!completo(turno.quienEscribe)) return { ok: true };
+  const carpetas = new Set([state?.carpeta_activa || CARPETA_PROPIA]);
+  if (turno._carpetaPrevia) carpetas.add(turno._carpetaPrevia);
+  if (turno.atribucion) carpetas.add(turno.cliente);
+  for (const carpeta of carpetas) {
+    const g = await escribirCarpeta({ from: turno.quienEscribe, carpeta, state: {}, history: [], escribir: kv.escribir });
+    if (!g.ok) {
+      log('warn', `RESET: no pude vaciar la carpeta ${carpeta === CARPETA_PROPIA ? 'propia' : `…${String(carpeta).slice(-4)}`} (${g.error})`);
+      return { ok: false, error: g.error };
+    }
+  }
+  return { ok: true };
 }
+
+/** Lo que se dice si el RESET no pudo vaciar lo guardado (no se confirma «partimos de cero»). */
+export const TEXTO_RESET_FALLIDO = '⚠️ No pude reiniciar la conversación del todo. Vuelve a mandar RESET en un minuto.';
 
 /** Marcas de carpeta que se escriben DURANTE el turno y el estado que devuelve el cerebro no trae. */
 export function conservarMarcas(newState, state) {

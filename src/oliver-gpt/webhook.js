@@ -41,7 +41,7 @@ import { resolverTurno, payloadLeadCotizacion, payloadQuote, payloadSaveLead, no
 import { msDeMensaje } from '../../services/atribucionStore.js';
 import {
   alEntrar as atribucionAlEntrar, trasEmitir as atribucionTrasEmitir, alCerrarTurno as atribucionAlCerrarTurno,
-  alResetear as atribucionAlResetear, conservarMarcas as atribucionConservarMarcas,
+  alResetear as atribucionAlResetear, conservarMarcas as atribucionConservarMarcas, TEXTO_RESET_FALLIDO,
 } from '../../services/atribucionTurno.js';
 import { acquireLock, LOCKS } from '../../services/lockTelefono.js';
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
@@ -1609,10 +1609,18 @@ export async function handleWebhook(req, res, deps = {}) {
     //    sesión (cache + Postgres) → la próxima conversación arranca limpia, SIN re-saludo heredado.
     //    Antes WhatsApp NO tenía este comando → "reset" caía al cerebro y re-saludaba (visto en test en vivo).
     if (RESET_RE.test(userText)) {
+      // [L2 r10 · r11 #5] PRIMERO se vacían durablemente las carpetas (cliente fijado, la activa al
+      // llegar y la activa ahora, incluida la propia). Si eso falla NO se confirma el reset: se avisa
+      // y la sesión queda como estaba (un «partimos de cero» falso dejaría resucitar lo viejo).
+      let _rc;
+      try { _rc = await atribucionAlResetear({ turno, state, kv: _carpetas, log: _logAtrib }); }
+      catch (e) { _rc = { ok: false, error: e?.message || String(e) }; }
+      if (!_rc?.ok) {
+        await safe('reset.fallido', () => sendWhatsAppText(from, TEXTO_RESET_FALLIDO));
+        return; // el finally libera el lock
+      }
       conv.delete(from);
       persistSessionFn(from, { history: [], state: {} }, deps);
-      // [L2 r10] Con cliente fijado, también su carpeta (si no, el turno siguiente la restauraba).
-      await safe('reset.carpeta', () => atribucionAlResetear({ turno, kv: _carpetas, log: _logAtrib }));
       // [2026-08-26] RESET tambien suelta los candados del INFORME TERMICO (caso 0364: el
       // dueño probaba un "cliente nuevo" y el informe no salia por el candado de la prueba
       // anterior). No se borran claves (las huellas no se pueden enumerar): se deja un
