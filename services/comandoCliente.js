@@ -6,7 +6,7 @@
 // interno. Quién puede: perfilEquipo (internosEquipo.js). Lo fijado: atribucionStore.js.
 
 import { digitos, normalizarChileno, esCelularChileno } from './telefono.js';
-import { perfilEquipo, telefonoDuenio } from './internosEquipo.js';
+import { perfilEquipo, telefonoDuenio, listaEquipoVigente } from './internosEquipo.js';
 import { fijar, limpiar, vigenciaMs } from './atribucionStore.js';
 import { yaNosEscribio, marcarSinConsentimiento } from './consentimiento.js';
 
@@ -97,6 +97,7 @@ export async function procesarComandoCliente({
   // [r11 #4] Se re-chequea ACÁ (dentro del lock en index.js): un permiso revocado mientras el
   // comando esperaba el lock no puede ejecutarse igual.
   autorizar = () => autorizaComandoCliente(waId, texto),
+  listaVigente = () => listaEquipoVigente(),
 }) {
   let autorizado = false;
   try { autorizado = autorizar() === true; } catch { autorizado = false; }
@@ -107,6 +108,12 @@ export async function procesarComandoCliente({
     limpiar(waId, { desde });
     return '✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.';
   }
+  // [r15 · Codex] Sin lista del equipo (nunca cargó, o >30 min sin refrescar) no se puede saber si el
+  // número es de un vendedor: perfilEquipo diría "no es equipo" sin lanzar. Se rechaza para TODOS,
+  // incluido el dueño. CLIENTE OFF (arriba) sigue funcionando.
+  let hayLista = false;
+  try { hayLista = listaVigente() === true; } catch { hayLista = false; }
+  if (!hayLista) return '⚠️ La lista del equipo no está disponible, intenta en unos minutos.';
   // El cliente no puede ser quien escribe, el dueño ni nadie del equipo.
   // [r11 #4] FAIL-CLOSED: si no se puede saber si es del equipo, se rechaza (antes se aceptaba).
   let esEquipo;

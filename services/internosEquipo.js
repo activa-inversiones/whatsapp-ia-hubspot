@@ -121,6 +121,11 @@ export function modoInternoOliver(phone) {
   return !!k && _estado.internos.has(k) && _estado.modoInterno.has(k);
 }
 
+/** ¿Hay lista del equipo cargada y con ≤30 min? (sin ella no se puede validar a quién se fija con CLIENTE) */
+export function listaEquipoVigente(ahora = Date.now()) {
+  return _estado.at > 0 && ahora - _estado.at <= MAX_ANTIGUEDAD_LISTA_CLIENTE_MS;
+}
+
 export function estadoLista() {
   return { cargada: _estado.at > 0, at: _estado.at, internos: _estado.internos.size, modo_interno: _estado.modoInterno.size };
 }
