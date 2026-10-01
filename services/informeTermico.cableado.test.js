@@ -411,8 +411,9 @@ test('🔴 [Codex final] el informe NO hace upsert: se cuelga del Deal de la pro
   // cotizan a nombre del cliente) y del coordinador (F2): la clave local del Deal pasó de `from`
   // a `telefonoCliente` — el Deal es del CLIENTE, igual que en Zoho. Sin atribución es `from`.
   // Lectura y escritura usan la MISMA clave; lo que protege este test sigue igual.
-  assert.match(bloque, /leerEstado\)\(`deal:\$\{String\(telefonoCliente\)/, 'lo lee del que dejo la propuesta');
-  assert.match(wh, /escribirEstado\)\(`deal:\$\{String\(telefonoCliente\)/, 'y la propuesta lo escribe con la misma clave');
+  // [2026-09-30, Thermos r2] Las claves salen de clavesCotizacion (claves.deal = deal:<cliente>).
+  assert.match(bloque, /leerEstado\)\(claves\.deal\)/, 'lo lee del que dejo la propuesta');
+  assert.match(wh, /escribirEstado\)\(claves\.deal, dealId/, 'y la propuesta lo escribe con la misma clave');
   assert.match(bloque, /if \(!dealId\) return;/, 'y sin Deal no archiva: mejor sin copia que a medias');
 });
 

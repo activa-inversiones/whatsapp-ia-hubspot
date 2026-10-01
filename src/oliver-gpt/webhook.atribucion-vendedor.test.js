@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { handleWebhook } from './webhook.js';
-import { fijar, _reset as resetAtribucion } from '../../services/atribucionCotizacion.js';
+import { fijar, obtener, _reset as resetAtribucion } from '../../services/atribucionCotizacion.js';
 import { aplicarLista, _reiniciarParaTests } from '../../services/internosEquipo.js';
 
 const VENDEDOR = '56911110000';
@@ -104,9 +104,17 @@ test('B 30-sep: cotiza SIN cliente → Oliver pide cliente → CLIENTE → emite
 test('decisión dueño 30-sep: vendedor interno con CLIENTE fijado → la cotización va con el teléfono del cliente', async () => {
   prepararVendedor();
   fijar(VENDEDOR, CLIENTE, 'Juan Pérez');
-  const ev = []; const pdf = [];
-  try { await correr(makeDeps(VENDEDOR, 'wamid.VEND.ATRIB', ev, pdf)); }
+  const ev = []; const pdf = []; const textos = [];
+  const deps = makeDeps(VENDEDOR, 'wamid.VEND.ATRIB', ev, pdf);
+  deps.sendWhatsAppText = async (to, t) => { textos.push({ to, t }); return { ok: true }; };
+  let sigue = null;
+  try { await correr(deps); sigue = obtener(VENDEDOR); }
   finally { _reiniciarParaTests(); resetAtribucion(); }
+  // [Thermos r2, 30-sep] emitir NO consume la atribución: las correcciones siguen yendo al cliente,
+  // y se le confirma al vendedor a nombre de quién sigue.
+  assert.equal(sigue?.phone, CLIENTE, 'tras el PDF sigue fijado el cliente');
+  assert.ok(textos.some((x) => x.to === VENDEDOR && /Sigues cotizando para \*Juan Pérez\*/.test(x.t)),
+    'se le avisa al vendedor que sigue cotizando para Juan');
 
   const sent = ev.find((e) => e.status === 'sent');
   assert.ok(sent, `debe emitirse la propuesta (resultado: ${JSON.stringify(pdf[0])})`);

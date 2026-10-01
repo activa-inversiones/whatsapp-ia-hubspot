@@ -37,14 +37,14 @@ import { mantenerEscribiendo, conPausaHumana, enviarComoPersona } from '../../se
 // [2026-08-08] Cotizar a nombre de un cliente que le hablo directo al duenio.
 import {
   obtener as obtenerAtribucion,
-  limpiar as limpiarAtribucion,
   registrarQueNosEscribio,
   identidadCotizacion,          // [2026-09-30] vendedores del equipo cotizan a nombre del cliente
-  cambiarCarpeta,               // [2026-09-30] carpeta por cliente (rediseño tras el tridente)
-  limpiarSiMisma,
+  clavesCotizacion,             // [2026-09-30] todas las claves de estado de una cotización
+  avisoSigueCotizandoPara,
   clickIdsDe,
   rolCotizador,
 } from '../../services/atribucionCotizacion.js';
+import { cambiarCarpeta } from '../../services/sesionCarpetas.js'; // [2026-09-30] carpeta por cliente
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
 import { leer as leerEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
@@ -893,9 +893,6 @@ export async function handleWebhook(req, res, deps = {}) {
   // [2026-08-08] Mismo motivo que releaseLock: el finally tiene que verlas. Si el turno se
   // cae después de emitir el PDF, la atribución ya se gastó y hay que borrarla igual — si
   // no, la cotización siguiente se le carga al cliente equivocado.
-  let atribucionConsumida = false;
-  let _fromParaAtribucion = '';
-  let _genAtribucion = null; // [E · 30-sep] versión de la atribución que usó ESTE turno
   try {
     const parseInbound    = deps.parseInbound    || realParseInbound;
     // [2026-08-08] conPausaHumana: espera lo que un humano tardaría en tipear ese texto
@@ -1406,13 +1403,17 @@ export async function handleWebhook(req, res, deps = {}) {
     // [2026-09-30] UNA sola regla de quién es el dueño y quién vendedor: la misma función que
     // usa index.js para permitir el comando CLIENTE (rolCotizador). Decisión del dueño: los
     // vendedores de /equipo con modo interno también cotizan a nombre del cliente.
-    // El rol que habilita la ATRIBUCIÓN exige el número COMPLETO (puedeComandoCliente, igual que
-    // el comando en index.js). La guardia "vendedor sin cliente no emite a su nombre" usa
-    // además el modo interno por ult9: si el número completo aún no llegó de sales-os, el
-    // vendedor igual queda frenado en vez de cotizar a su propio nombre.
+    // El rol exige el número COMPLETO (puedeComandoCliente, igual que el comando en index.js),
+    // y las guardias de vendedor ("sin CLIENTE no emite ni guarda lead a su nombre") usan ESE
+    // rol, no los últimos 9: un cliente extranjero con la misma cola no pierde su lead.
+    // Si sales-os todavía no manda el número completo (deploy desfasado), el vendedor NO queda
+    // bloqueado: cotiza como hasta hoy y se deja una advertencia en el log.
     const _rol = rolCotizador(from, { esInterno: puedeComandoCliente });
     const esDuenio = _rol === 'duenio';
-    const esVendedorInterno = _rol === 'vendedor' || (!esDuenio && modoInternoOliver(from));
+    const esVendedorInterno = _rol === 'vendedor';
+    if (!_rol && modoInternoOliver(from)) {
+      log('warn', 'atribucion', `${String(from).slice(-4)}: en modo interno pero sin número completo desde sales-os; cotiza sin guardia de CLIENTE`);
+    }
     const atribucion = _rol ? obtenerAtribucion(from) : null;
     // FUENTE ÚNICA de la identidad de la cotización (identidadCotizacion): con atribución,
     // teléfono/external_id del CLIENTE, cotizado_por = últimos 9 de quien cotizó, no_pisar y
@@ -1423,19 +1424,18 @@ export async function handleWebhook(req, res, deps = {}) {
     const cotizadoPor = _idCot.cotizadoPor;
     const claveCot = _idCot.claveCot;
     const extraLead = _idCot.extraLead;
+    // [2026-09-30] Todas las claves de estado de la cotización salen de UN helper
+    // (clavesCotizacion): del CLIENTE las de informes/entregas/deal/reset, del par las de folio.
+    const claves = clavesCotizacion({ from, telefonoCliente, claveCot });
     if (atribucion) {
       log('info', 'atribucion', `cotización atribuida a ${atribucion.phone} (${atribucion.name || 'sin nombre'}) en vez de ${from}`);
     }
-    // [2026-08-08] La atribución se CONSUME al emitirse la propuesta formal, y recién ahí
-    // se borra. Las 2 h quedan solo como tope de arriba.
-    // Por qué: Gemini marcó que un plazo fijo es una trampa cuando el dueño atiende a tres
-    // clientes en paralelo — cotiza para Juan, lo interrumpe Pedro, y la cotización de
-    // Pedro se le carga a Juan. Consumir al cotizar hace que el comando valga para UNA
-    // cotización, que es como el dueño lo va a usar de verdad.
-    // No se borra al primer turno porque cotizar lleva varios (medidas, color, vidrio):
-    // se borra cuando sale el PDF, que es el momento en que la cotización existe.
-    _fromParaAtribucion = from;
-    _genAtribucion = atribucion ? atribucion.gen : null;
+    // [2026-09-30] La atribución YA NO se consume al emitir el PDF (antes sí, desde el 08-ago).
+    // Decisión del coordinador tras Thermos: las correcciones post-PDF ("cámbialo a blanco")
+    // tienen que seguir yendo al cliente, también para el dueño. Termina con otro CLIENTE,
+    // CLIENTE OFF, o 2 h sin usarse (se renueva en cada uso). El riesgo que motivó consumirla
+    // (cotizar para Pedro con Juan fijado) lo cubren el aviso tras cada PDF ("sigues cotizando
+    // para Juan") y la carpeta por cliente.
 
     // [2026-08-08] Si esta persona estaba marcada como "cargada por el dueño y nunca nos
     // escribió", el hecho de que ESTÉ ESCRIBIENDO AHORA levanta la restricción: ya hay una
@@ -1500,15 +1500,31 @@ export async function handleWebhook(req, res, deps = {}) {
     // cliente normal no cambia en nada.
     // [2026-09-30 · rediseño] CARPETA POR CLIENTE: se guarda la sesión del cliente anterior y se
     // restaura la del actual (o la propia sin atribución). Ver cambiarCarpeta.
+    // Escritura DURABLE: si no se confirma el guardado de la carpeta saliente, no se toca el
+    // estado activo (cambiarCarpeta devuelve 'error') y se avisa a quien escribe.
     try {
       const _mov = await cambiarCarpeta({
-        from, state, history, atribucion,
+        from, state, history, cliente: atribucion ? telefonoCliente : null,
         leer: deps.leerEstado || leerEstado,
-        escribir: deps.escribirEstado || escribirEstado,
+        escribir: deps.escribirEstadoDurable || deps.escribirEstado || escribirEstadoDurable,
       });
-      if (_mov !== 'igual') {
+      if (_mov.mov !== 'igual') {
         state.telefono = from;
-        log('info', 'atribucion', `${from}: carpeta ${_mov} → ${state.carpeta_activa}`);
+        log(_mov.mov === 'error' ? 'error' : 'info', 'atribucion', `${String(from).slice(-4)}: carpeta ${_mov.mov} → ${state.carpeta_activa || 'propia'}${_mov.error ? ` (${_mov.error})` : ''}`);
+      }
+      if (_mov.mov === 'fusion' && _mov.agregados > 0) {
+        await safe('atribucion.fusion', () => sendWhatsAppText(from,
+          `ℹ️ ${atribucion?.name || 'Este cliente'} ya tenía una cotización en curso: le agregué ` +
+          `${_mov.agregados} ventana(s) que habías listado antes de fijarlo. Revisa que corresponda.`));
+      }
+      if (_mov.mov === 'error') {
+        // El estado activo sigue siendo el del cliente ANTERIOR, pero la atribución ya apunta
+        // al nuevo: seguir el turno mezclaría los dos. Se corta acá (el finally suelta el lock)
+        // y el próximo mensaje reintenta el cambio solo.
+        await safe('atribucion.carpeta.aviso', () => sendWhatsAppText(from,
+          '⚠️ No pude guardar la cotización anterior antes de cambiar de cliente. No perdí nada: ' +
+          'vuelve a escribirme en un momento y sigo con el cliente nuevo.'));
+        return;
       }
     } catch (e) { log('error', 'atribucion.carpeta', e?.message || e); /* nunca tumba el turno */ }
 
@@ -1646,7 +1662,7 @@ export async function handleWebhook(req, res, deps = {}) {
       // anterior). No se borran claves (las huellas no se pueden enumerar): se deja un
       // marcador con fecha y `candadoVigente` ignora todo candado anterior a el.
       await safe('reset.informes', () => escribirEstado(
-        `informe_reset:${String(from).replace(/\D/g, '')}`, Date.now(), 30 * 24 * 3600));
+        claves.reset, Date.now(), 30 * 24 * 3600)); // [2026-09-30] del cliente activo (sin atribución = from)
       const resetMsg = 'Listo, partimos de cero 🙌 ¿En qué te ayudo con tus ventanas?';
       await safe('reset.send', () => sendWhatsAppText(from, resetMsg));
       await safe('reset.persistIn', () => bridge.pushConversationEvent({
@@ -1920,11 +1936,11 @@ export async function handleWebhook(req, res, deps = {}) {
         // 🔴 La clave del candado incluye la HUELLA del proyecto: mismo cliente + mismo
         // proyecto = un solo informe en 30 dias; cambia la comuna, el producto o el vidrio =
         // proyecto distinto y le corresponde el suyo.
-        // [H2 · Thermos 30-sep] claveCot (= from sin atribución): el candado del informe es
-        // del CLIENTE para el que se cotiza, no del vendedor que escribe.
-        const _tel = String(claveCot).replace(/\D/g, '');
+        // [2026-09-30] El candado del informe es del CLIENTE para el que se cotiza, no del
+        // vendedor que escribe (claves.informeTermico; sin atribución = from).
         const _huella = huellaDelInforme({ comuna, producto, glassLabel });
-        const clave = _huella ? `informe_termico:${_tel}:${_huella}` : `informe_termico:${_tel}`;
+        const clave = claves.informeTermico(_huella);
+        const _tel = claves.entrega; // dígitos del CLIENTE (logs e informe_valor)
         return safe('informeTermico', async () => {
           // 🔴 [2026-08-24 · Codex, compuerta cruzada] LA MEMORIA VA ANTES QUE TODO CANDADO.
           // Primer intento la puse despues, y Codex cazo el agujero: si el cliente YA recibio
@@ -1958,7 +1974,7 @@ export async function handleWebhook(req, res, deps = {}) {
           let yaSeMando = false;
           try {
             const _candado = await (deps.leerEstado || leerEstado)(clave);
-            const _resetAt = Number(await (deps.leerEstado || leerEstado)(`informe_reset:${String(from).replace(/\D/g, '')}`)) || 0; // reset = de quien escribe
+            const _resetAt = Number(await (deps.leerEstado || leerEstado)(claves.reset)) || 0; // reset del cliente
             const _vigente = candadoVigente(_candado, _resetAt);
             if (!forzar) {
               yaSeMando = _vigente;
@@ -2326,7 +2342,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // deje un hueco (A, C) que nadie sabria explicar.
           // ⚠️ Si el KV no responde, `_letraIdx` queda null y `nombreConLetra` devuelve el
           // nombre de siempre: se degrada al comportamiento anterior, nunca se frena el envio.
-          const _claveLetra = `informe_letra:${String(claveCot).replace(/\D/g, '')}:termico`; // [H2] claveCot
+          const _claveLetra = claves.letraTermico; // [2026-09-30] del cliente
           let _letraIdx = null;
           try { _letraIdx = Number(await (deps.leerEstado || leerEstado)(_claveLetra)) || 0; }
           catch { /* sin contador, sale con el nombre de siempre */ }
@@ -2438,7 +2454,7 @@ export async function handleWebhook(req, res, deps = {}) {
           catch { /* no bloquea: el mensaje ya llegó */ }
           // [2026-09-30] Marca de ENTREGA por cliente (no por huella): respaldo local del
           // selector de documentos si sales-os no contesta.
-          try { await marcarEntregaLocal(telefonoCliente, 'termico', deps.escribirEstado || escribirEstado); } // [C · 30-sep] por cliente
+          try { await marcarEntregaLocal(claves.entrega, 'termico', deps.escribirEstado || escribirEstado); } // [C · 30-sep] por cliente
           catch { /* solo afecta al respaldo local */ }
 
           // El informe SALIO. Se suelta el token sin liberar la reserva: si el `finally` la
@@ -2561,7 +2577,7 @@ export async function handleWebhook(req, res, deps = {}) {
             // Si la propuesta no dejo Deal, NO se archiva. Mejor sin copia que con un
             // registro a medias: el cliente ya tiene su informe igual.
             let dealId = null;
-            try { dealId = await (deps.leerEstado || leerEstado)(`deal:${String(telefonoCliente).replace(/\D/g, '')}`); } // [F2 · 30-sep] por CLIENTE, igual que Zoho
+            try { dealId = await (deps.leerEstado || leerEstado)(claves.deal); } // [F2 · 30-sep] por CLIENTE, igual que Zoho
             catch { /* sin Deal no se archiva */ }
             if (!dealId) return;
             await addZohoNote(dealId,
@@ -2704,12 +2720,16 @@ Comuna: ${datos.comuna}`
             // al lead de un recomendado le atribuiría esa venta a un anuncio que nunca vio,
             // y el ROAS con el que se decide el gasto quedaría inflado.
             // Es el problema opuesto al que este comando vino a resolver. (Codex, 08-ago.)
-            ctwa_clid: atribucion ? null : (leadState.ctwa_clid || state.ctwa_clid || null),
-            ad_id: atribucion ? null : (leadState.ad_id || state.ad_id || null),
-            gclid: atribucion ? null : (leadState.gclid || state.gclid || null),
-            fbclid: atribucion ? null : (leadState.fbclid || state.fbclid || null),
-            ttclid: atribucion ? null : (leadState.ttclid || state.ttclid || null),
-            landing_ref: atribucion ? null : (leadState.landing_ref || leadState.landing_lead_id || state.landing_lead_id || null),
+            // [2026-09-30] Mismo helper que los otros payloads (clickIdsDe): lo que trae el
+            // leadState manda sobre la sesión; con atribución, todos null.
+            ...clickIdsDe({
+              ctwa_clid: leadState.ctwa_clid || state.ctwa_clid,
+              ad_id: leadState.ad_id || state.ad_id,
+              gclid: leadState.gclid || state.gclid,
+              fbclid: leadState.fbclid || state.fbclid,
+              ttclid: leadState.ttclid || state.ttclid,
+              landing_lead_id: leadState.landing_ref || leadState.landing_lead_id || state.landing_lead_id,
+            }, atribucion),
             // [2026-09-30] external_id, cotizado_por, no_pisar y source del cliente (vacío sin atribución).
             ...extraLead,
             // [2026-08-08] Trazabilidad ISO: queda escrito que este lead lo cargó alguien del
@@ -3441,7 +3461,7 @@ Comuna: ${datos.comuna}`
           // memoria no sabe, y si la red se cae se degrada al comportamiento anterior.
           // [2026-09-30] claveCot = from sin atribución (idéntico a antes); con atribución, el
           // par vendedor+cliente: el dedup de un cliente nunca devuelve el folio de otro.
-          const _claveQuote = `quotesig:${String(claveCot).replace(/\D/g, '')}`;
+          const _claveQuote = claves.quotesig;
           let _prevQuote = RECENT_QUOTES.get(claveCot);
           if (!_prevQuote) {
             try { _prevQuote = (await (deps.leerEstado || leerEstado)(_claveQuote)) || null; }
@@ -3491,7 +3511,7 @@ Comuna: ${datos.comuna}`
             // el segundo quede bloqueado sin razón.
             const { createHash } = await import('node:crypto');
             const _huellaSig = createHash('sha1').update(String(_quoteSig)).digest('hex').slice(0, 16);
-            const _claveEmision = `quote_emision:${String(claveCot).replace(/\D/g, '')}:${_huellaSig}`;
+            const _claveEmision = claves.emision(_huellaSig);
             _claveEmisionActiva = _claveEmision;
             try {
               // ⚠️ TTL corto: esta reserva cubre SOLO la ventana en vuelo (el viaje HTTP por
@@ -3882,16 +3902,15 @@ Comuna: ${datos.comuna}`
               log('info', 'rafaga.corte', `${from}: el cliente escribio; el informe de vientos queda para el proximo turno`);
               return 'cliente_escribio';
             }
-            const _tel = String(claveCot).replace(/\D/g, ''); // [H2] candado de vientos por cliente
             const ultimaV = (input.items || []).at(-1) || {};
             const _huellaV = huellaDelInforme({
               comuna: clientComuna, producto: ultimaV.producto_label || ultimaV.product || '',
               glassLabel: ultimaV.glass_label || '',
             });
-            const claveV = _huellaV ? `informe_vientos:${_tel}:${_huellaV}` : `informe_vientos:${_tel}`;
+            const claveV = claves.informeVientos(_huellaV); // [2026-09-30] candado de vientos del cliente
             try {
               const _cand = await (deps.leerEstado || leerEstado)(claveV);
-              const _resetAt = Number(await (deps.leerEstado || leerEstado)(`informe_reset:${String(from).replace(/\D/g, '')}`)) || 0; // reset = de quien escribe
+              const _resetAt = Number(await (deps.leerEstado || leerEstado)(claves.reset)) || 0; // reset del cliente
               // [2026-09-30] Marcado a mano en el cockpit ⇒ se manda aunque ya lo tenga.
               if (!forzar && candadoVigente(_cand, _resetAt)) return 'ya_enviado';
             } catch { /* sin estado se sigue: mejor un posible repetido que ninguno */ }
@@ -3985,7 +4004,7 @@ Comuna: ${datos.comuna}`
               await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: SEQ_VIENTOS_MS });
               // [#651] Misma letra que el termico, con su propio contador: son dos series de
               // documentos distintas y mezclarlas daria saltos sin explicacion en las dos.
-              const _claveLetraV = `informe_letra:${String(claveCot).replace(/\D/g, '')}:vientos`; // [H2] claveCot
+              const _claveLetraV = claves.letraVientos; // [2026-09-30] del cliente
               let _letraIdxV = null;
               try { _letraIdxV = Number(await (deps.leerEstado || leerEstado)(_claveLetraV)) || 0; }
               catch { /* sin contador, sale con el nombre de siempre */ }
@@ -4034,7 +4053,7 @@ Comuna: ${datos.comuna}`
               }
               try { await (deps.escribirEstado || escribirEstado)(claveV, { at: Date.now() }, 30 * 24 * 3600); }
               catch { /* el candado largo es anti-spam, no entrega */ }
-              try { await marcarEntregaLocal(telefonoCliente, 'vientos', deps.escribirEstado || escribirEstado); } // [C · 30-sep] por cliente
+              try { await marcarEntregaLocal(claves.entrega, 'vientos', deps.escribirEstado || escribirEstado); } // [C · 30-sep] por cliente
               catch { /* solo afecta al respaldo local del selector */ }
               tokenV = null;   // entregado: la reserva corta muere sola, sin reabrir ventana
               // 🔴 [P0 · Codex] `sendWaDocument` confirma el POST a Meta, NO la entrega: el
@@ -4142,7 +4161,7 @@ Comuna: ${datos.comuna}`
           try {
             // [C · 30-sep] ¿ESTE CLIENTE ya recibió el informe? Por cliente, no por quien escribe:
             // si no, cotizar para Juan hacía creer que Pedro ya lo tenía.
-            const entregasLocales = await leerEntregasLocales(telefonoCliente, deps.leerEstado || leerEstado);
+            const entregasLocales = await leerEntregasLocales(claves.entrega, deps.leerEstado || leerEstado);
             docsSel = await (deps.decidirDocumentosCotizacion || decidirDocumentosCotizacion)({
               telefono: telefonoCliente, quoteNumber, ...entregasLocales,
             });
@@ -4373,8 +4392,11 @@ Comuna: ${datos.comuna}`
               && _clProp.resultado === RESULTADO_META.DESCONOCIDO;
             if (propuestaDudosa) propuestaDudosaMotivo = _clProp.motivo;
             if (docSent) {
-              // La propuesta formal salió: la atribución ya cumplió su función.
-              if (atribucion) atribucionConsumida = true;
+              // [2026-09-30] La propuesta salió y la atribución SIGUE (ya no se consume): se le
+              // confirma a quien cotiza a nombre de quién sigue, y cómo terminar.
+              if (atribucion) {
+                await safe('atribucion.aviso', () => sendWhatsAppText(from, avisoSigueCotizandoPara(atribucion)));
+              }
               log('info', 'generarPdf.wa', `PDF enviado a ${from} media_id=${waDocMediaId} msgId=${sendRes.msgId || '?'}`);
             } else {
               log('error', 'generarPdf.wa', `Documento NO entregado a ${from}: ${sendRes?.error || 'sin detalle'}`);
@@ -4973,7 +4995,7 @@ Comuna: ${datos.comuna}`
               // [2026-08-24] Se publica el dealId para que el INFORME se cuelgue de ESTE
               // Deal en vez de hacer su propio upsert: el suyo iria sin los datos de la
               // propuesta y pisaria el nombre y la descripcion con un payload pobre.
-              try { await (deps.escribirEstado || escribirEstado)(`deal:${String(telefonoCliente).replace(/\D/g, '')}`, dealId, 7 * 24 * 3600); } // [F2 · 30-sep] por CLIENTE, igual que Zoho (upsertZohoDeal busca por su teléfono)
+              try { await (deps.escribirEstado || escribirEstado)(claves.deal, dealId, 7 * 24 * 3600); } // [F2 · 30-sep] por CLIENTE, igual que Zoho (upsertZohoDeal busca por su teléfono)
               catch { /* el informe se las arregla sin archivar */ }
             }
           });
@@ -5801,19 +5823,8 @@ Comuna: ${datos.comuna}`
     // [2026-08-08] Cortar el "escribiendo…" pase lo que pase. Si el turno se cae, Oliver
     // no puede quedar "escribiendo" un mensaje que nunca va a llegar.
     try { _detenerEscribiendo(); } catch { /* ya detenido */ }
-    // [2026-08-08] Consumir la atribución acá y no antes: si el turno se cayó DESPUÉS de
-    // mandar el PDF, la atribución igual se gastó (la cotización ya existe y ya es del
-    // cliente). Dejarla viva sería peor: la siguiente cotización se le cargaría a él.
-    try {
-      if (atribucionConsumida && _fromParaAtribucion) {
-        // [E · 30-sep] compare-and-delete: si mientras se emitía entró "CLIENTE Pedro", la de
-        // Pedro (otra `gen`) NO se borra.
-        const _borro = limpiarSiMisma(_fromParaAtribucion, _genAtribucion);
-        log('info', 'atribucion', _borro
-          ? 'consumida: la próxima cotización vuelve a nombre de quien escribe'
-          : 'no se consume: ya hay OTRO cliente fijado (se respeta)');
-      }
-    } catch { /* no puede tumbar el turno */ }
+    // [2026-09-30] Aquí se CONSUMÍA la atribución al emitir. Ya no: sigue viva para las
+    // correcciones hasta otro CLIENTE, CLIENTE OFF o 2 h sin uso (decisión tras Thermos r2).
   }
 }
 

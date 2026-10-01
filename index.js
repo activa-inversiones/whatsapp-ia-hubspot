@@ -305,15 +305,11 @@ import { textoDeReaccion } from "./services/reactionText.js";
 import { partirEnBurbujas } from "./services/burbujas.js";
 // [2026-08-08] Cotizar a nombre de un cliente que le habló directo al dueño.
 import {
-  parseComandoCliente,
   pareceComando as pareceComandoCliente,
-  fijar as fijarAtribucion,
-  limpiar as limpiarAtribucion,
-  marcarSinConsentimiento,
   sinConsentimientoAsync,
   puedeUsarComandoCliente,   // [2026-09-30] dueño o vendedor de /equipo con modo interno
-  leadDeAtribucion,
-  yaNosEscribio,
+  procesarComandoCliente,    // [2026-09-30] el comando CLIENTE entero vive en el servicio
+  DUENIO_DEFAULT,            // [2026-09-30] el número del dueño por defecto, una sola copia
 } from "./services/atribucionCotizacion.js";
 // [2026-08-08] Estado del bot que sobrevive a un redeploy (respaldo en Postgres).
 import { leer as leerEstado, escribir as escribirEstado } from "./services/estadoPersistente.js";
@@ -807,7 +803,7 @@ const ESCALATION_EMAIL = process.env.ESCALATION_EMAIL || "";
 // ═══════════════════════════════════════════════════════════════════
 // [ADMIN] OLIVER MODE — Control remoto + Cubicación Automática
 // ═══════════════════════════════════════════════════════════════════
-const ADMIN_PHONE = process.env.ADMIN_PHONE || "+56957296035";
+const ADMIN_PHONE = process.env.ADMIN_PHONE || DUENIO_DEFAULT; // misma regla que telefonoDuenio()
 const ADMIN_PIN = (process.env.ADMIN_PIN || process.env.OLIVER_ADMIN_PIN || "").trim(); // fail-closed: sin env, modo admin deshabilitado; alias = mismo contrato que los callers internos (#134)
 
 // ═══ Reglas dinámicas admin (editables desde WhatsApp) ═══
@@ -5404,38 +5400,14 @@ app.post("/webhook", async (req, res) => {
         pareceComandoCliente(_atInc.text || "")) {
       res.sendStatus(200);
       if (!isDup(_atInc.msgId)) {
-        const r = parseComandoCliente(_atInc.text || "");
+        // [2026-09-30] La lógica del comando vive en el servicio (procesarComandoCliente):
+        // fijar/limpiar, crear el lead del cliente y la marca de consentimiento.
         let msg;
-        if (!r.ok) {
-          msg = `⚠️ ${r.error}`;
-        } else if (r.limpiar) {
-          limpiarAtribucion(_atInc.waId);
-          msg = "✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.";
-        } else {
-          fijarAtribucion(_atInc.waId, r.phone, r.name);
-          // [2026-09-30] Si el cliente no existe como lead, se crea (upsertLead de sales-os lo
-          // busca por teléfono; no_pisar: si existía, no se le cambia nada). Fire-and-forget:
-          // un fallo acá no rompe el comando.
-          try {
-            pushLeadEvent(leadDeAtribucion(_atInc.waId, r.phone, r.name))
-              .catch((e) => { try { logErr("cliente_atribucion_lead", e); } catch {} });
-          } catch (e) { try { logErr("cliente_atribucion_lead", e); } catch {} }
-          // Consentimiento (08-ago; F1 del 30-sep): se marca SIEMPRE, salvo que ese número le
-          // haya escrito al bot alguna vez (que exista como lead NO es consentimiento). Ante
-          // error de red, se marca: es el lado seguro de la Ley 21.719.
-          let _escribio = false;
-          try { _escribio = await yaNosEscribio(r.phone); } catch { _escribio = false; }
-          if (!_escribio) { try { marcarSinConsentimiento(r.phone); } catch {} }
-          msg = `✅ Cotizando para *${r.name}* (+${r.phone}).\n\n` +
-            `La próxima propuesta queda a su nombre: el lead, el seguimiento y el CRM. ` +
-            `El PDF te llega a vos para que se lo mandes.\n\n` +
-            `Se usa UNA vez: cuando salga el PDF vuelve solo a tu nombre. ` +
-            `Igual vence a las 2 h. Para cancelar antes: *CLIENTE OFF*.` +
-            (_escribio ? "" :
-              `\n\n⚠️ Como nunca escribió al bot, el seguimiento automático NO le va a llegar ` +
-              `hasta que él te escriba por acá. Es a propósito: no podemos mandarle mensajes ` +
-              `sin que él haya iniciado la conversación.`);
-        }
+        try {
+          msg = await procesarComandoCliente({
+            waId: _atInc.waId, texto: _atInc.text || "", pushLead: pushLeadEvent, logErr,
+          });
+        } catch (e) { try { logErr("cliente_atribucion", e); } catch {} msg = "⚠️ No pude procesar el comando. Probá de nuevo."; }
         try { await waSendH(_atInc.waId, msg, true); } catch (e) { try { logErr("cliente_atribucion_send", e); } catch {} }
       }
       return;

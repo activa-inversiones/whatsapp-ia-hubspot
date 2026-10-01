@@ -27,8 +27,11 @@ import {
   escribir as escribirEstado,
   borrar as borrarEstado,
 } from './estadoPersistente.js';
+import { ultimos9 } from './internosEquipo.js'; // una sola copia en el bot
+export { ultimos9 };
 
-const ATRIBUCIONES = new Map(); // telefonoDelDuenio -> { phone, name, ts }
+const ATRIBUCIONES = new Map(); // telefonoDelDuenio -> { phone, name, ts, gen }
+let _GEN = 0;                   // versión de cada fijación (compare-and-delete en limpiarSiMisma)
 
 // Se vence sola: si el dueño fijó un cliente hace 3 horas y se olvidó, lo que cotice
 // después NO debe irse al cliente equivocado. Ese error es peor que pedirle que repita
@@ -124,14 +127,19 @@ export function fijar(telefonoDuenio, phone, name) {
   ATRIBUCIONES.set(key, dato);
   return dato;
 }
-let _GEN = 0;
 
-/** @returns {{phone:string,name:string,gen:number}|null} null si no hay o si ya venció. */
+/**
+ * @returns {{phone:string,name:string,gen:number}|null} null si no hay o si ya venció.
+ * [2026-09-30] La vigencia se RENUEVA con cada uso: la atribución ya no se consume al emitir el
+ * PDF (las correcciones siguen yendo al cliente); vence a las VIGENCIA_MS sin usarse, o con
+ * otro CLIENTE / CLIENTE OFF.
+ */
 export function obtener(telefonoDuenio) {
   const key = soloDigitos(telefonoDuenio);
   const d = ATRIBUCIONES.get(key);
   if (!d) return null;
   if (Date.now() - d.ts > VIGENCIA_MS) { ATRIBUCIONES.delete(key); return null; }
+  d.ts = Date.now();
   return { phone: d.phone, name: d.name, gen: d.gen };
 }
 
@@ -194,7 +202,7 @@ export function registrarQueNosEscribio(phone) {
   // "sin consentimiento" a quien sí inició una conversación.
   if (p && !ESCRIBIERON.has(p)) {
     ESCRIBIERON.add(p);
-    escribirEstado(CLAVE_ESCRIBIO(p), true, TTL_CONSENT_S);
+    try { escribirEstado(CLAVE_ESCRIBIO(p), true, TTL_CONSENT_S); } catch { /* nunca tumba el turno */ }
   }
   const habia = SIN_CONSENTIMIENTO.delete(p);
   // Se borra siempre, no solo si estaba en memoria: tras un redeploy la marca vive en
@@ -232,10 +240,6 @@ export async function sinConsentimientoAsync(phone) {
 /**
  * ¿Este número puede usar el comando CLIENTE?
  * @param {string} waId
- * @param {{adminPhone:string, esInterno:(p:string)=>boolean}} o
- */
-/**
- * @param {string} waId
  * @param {{adminPhone?:string, esInterno?:(p:string)=>boolean}} [opciones] esInterno DEBE comparar
  *   el número COMPLETO (internosEquipo.puedeComandoCliente), no los últimos 9.
  */
@@ -243,12 +247,15 @@ export function puedeUsarComandoCliente(waId, opciones = {}) {
   return rolCotizador(waId, opciones) !== null;
 }
 
+/** El ÚNICO literal del número del dueño en el bot; index.js lo importa de acá. */
+export const DUENIO_DEFAULT = '+56957296035';
+
 /**
- * Teléfono del dueño: UNA sola regla para index.js y webhook.js (antes cada uno tenía la suya).
- * ADMIN_PHONE primero (es la que usaba el comando CLIENTE en index.js), OWNER_PHONE de respaldo.
+ * Teléfono del dueño (solo dígitos): UNA sola regla para index.js y webhook.js. Mismo orden que
+ * usaba index.js para el comando CLIENTE: ADMIN_PHONE, y si no está, el número por defecto.
  */
 export function telefonoDuenio() {
-  return soloDigitos(process.env.ADMIN_PHONE || process.env.OWNER_PHONE || '56957296035');
+  return soloDigitos(process.env.ADMIN_PHONE || DUENIO_DEFAULT);
 }
 
 /**
@@ -264,8 +271,6 @@ export function rolCotizador(waId, { adminPhone = telefonoDuenio(), esInterno = 
   try { return esInterno(w) === true ? 'vendedor' : null; } catch { return null; }
 }
 
-/** Últimos 9 dígitos: identifica a quien cotizó sin exponer el número completo. */
-export const ultimos9 = (v) => { const d = soloDigitos(v); return d.length >= 8 ? d.slice(-9) : ''; };
 
 const CLICK_IDS = ['fbclid', 'gclid', 'ttclid', 'ctwa_clid', 'ad_id'];
 
@@ -304,6 +309,30 @@ export function identidadCotizacion(from, atribucion) {
   };
 }
 
+/**
+ * [2026-09-30] TODAS las claves de estado de una cotización, en UN lugar (antes estaban
+ * repartidas en ~10 template strings de webhook.js y cada ronda se escapaba una).
+ * Decisión: lo que es del CLIENTE (candados y letras de informes, entregas, deal, reset) va por
+ * `telefonoCliente` — así dueño y vendedor sobre el mismo cliente se ven, y el reset del dueño
+ * destraba. Lo que evita emitir DOS VECES en la misma conversación (quotesig, emisión) va por
+ * `claveCot` (quien escribe + cliente). Sin atribución, todo es `from`, como siempre.
+ */
+export function clavesCotizacion({ from, telefonoCliente, claveCot }) {
+  const cli = soloDigitos(telefonoCliente || from);
+  const cot = soloDigitos(claveCot || from);
+  return {
+    informeTermico: (huella) => (huella ? `informe_termico:${cli}:${huella}` : `informe_termico:${cli}`),
+    informeVientos: (huella) => (huella ? `informe_vientos:${cli}:${huella}` : `informe_vientos:${cli}`),
+    letraTermico: `informe_letra:${cli}:termico`,
+    letraVientos: `informe_letra:${cli}:vientos`,
+    reset: `informe_reset:${cli}`,
+    deal: `deal:${cli}`,
+    entrega: cli,                       // lo que recibe marcar/leerEntregasLocales
+    quotesig: `quotesig:${cot}`,
+    emision: (huella) => `quote_emision:${cot}:${huella}`,
+  };
+}
+
 /** Lead mínimo del cliente al fijar la atribución (upsertLead de sales-os deduplica por teléfono). */
 export function leadDeAtribucion(waIdVendedor, phone, name) {
   const p = normalizar(phone);
@@ -317,77 +346,50 @@ export function leadDeAtribucion(waIdVendedor, phone, name) {
   };
 }
 
-// ── CARPETA POR CLIENTE (rediseño 30-sep, tras el NO APTO del tridente) ─────────────────
-// La sesión vive por el número de quien ESCRIBE. En vez de BORRAR estado al cambiar de
-// cliente (dos rondas de parches mostraron que siempre quedaba algo acoplado), cada cliente
-// tiene su CARPETA: al cambiar el cliente activo se GUARDA la sesión entera (estado + historial)
-// en la carpeta del anterior y se RESTAURA la del nuevo (o vacía). Sin atribución = carpeta
-// "propia" de quien escribe. Así nada se pierde (volver a Juan recupera su trabajo) y nada se
-// filtra (Pedro nunca ve el folio, el nombre ni las medidas de Juan).
-// Las carpetas viven en estadoPersistente (`sesion_cliente:<quien9>:<cliente9|propia>`), NO
-// dentro del blob de sesión: no lo hinchan y sobreviven a un redeploy.
+// La carpeta por cliente vive en services/sesionCarpetas.js.
 
 /**
- * Claves de INFRAESTRUCTURA: son de quien escribe, no del cliente, y no se mudan de carpeta.
- * Exportada para que un test documente la lista: agregar algo acá es decidir que se comparte
- * entre clientes.
+ * [2026-09-30] El comando CLIENTE entero, fuera de index.js (antes vivía inline allá).
+ * index.js solo verifica firma/tipo/quién escribe e intercepta; esto decide y arma la respuesta.
+ * @param {{waId:string, texto:string, pushLead:(p:object)=>Promise<any>,
+ *          escribio?:(p:string)=>Promise<boolean>, marcar?:(p:string)=>any, logErr?:Function}} o
+ * @returns {Promise<string>} el mensaje para quien mandó el comando
  */
-export const CLAVES_INFRA_SESION = Object.freeze([
-  'telefono', 'fecha', 'lastMessageAt', 'carpeta_activa',
-  // atribución de anuncios de QUIEN ESCRIBE (con atribución a un cliente no viaja: clickIdsDe)
-  'ctwa_clid', 'ad_id', 'gclid', 'fbclid', 'ttclid', 'ctwaCaptured',
-  'landing_lead_id', 'landingRefCaptured', 'ref_status',
-]);
-export const CARPETA_PROPIA = 'propia';
-export const TTL_CARPETA_S = 30 * 24 * 3600;
-
-export function claveCarpeta(from, carpeta) {
-  return `sesion_cliente:${ultimos9(from) || soloDigitos(from)}:${carpeta === CARPETA_PROPIA ? CARPETA_PROPIA : ultimos9(carpeta) || soloDigitos(carpeta)}`;
+export async function procesarComandoCliente({ waId, texto, pushLead, escribio = yaNosEscribio, marcar = marcarSinConsentimiento, logErr = () => {} }) {
+  const r = parseComandoCliente(texto || '');
+  if (!r.ok) return `⚠️ ${r.error}`;
+  if (r.limpiar) {
+    limpiar(waId);
+    return '✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.';
+  }
+  fijar(waId, r.phone, r.name);
+  // Si el cliente no existe como lead, se crea (sales-os lo busca por teléfono; no_pisar: si
+  // existía, no se le cambia nada). Fire-and-forget: un fallo no rompe el comando.
+  try {
+    Promise.resolve(pushLead(leadDeAtribucion(waId, r.phone, r.name)))
+      .catch((e) => { try { logErr('cliente_atribucion_lead', e); } catch { /* */ } });
+  } catch (e) { try { logErr('cliente_atribucion_lead', e); } catch { /* */ } }
+  // Consentimiento (08-ago; F1 30-sep): se marca SIEMPRE, salvo que ese número le haya escrito
+  // al bot alguna vez (ser lead NO es consentimiento). Ante error de red, se marca.
+  let _escribio = false;
+  try { _escribio = await escribio(r.phone); } catch { _escribio = false; }
+  if (!_escribio) { try { marcar(r.phone); } catch { /* */ } }
+  return `✅ Cotizando para *${r.name}* (+${r.phone}).\n\n` +
+    'Lo que cotices desde ahora queda a su nombre: el lead, el seguimiento y el CRM. ' +
+    'El PDF te llega a vos para que se lo mandes.\n\n' +
+    'Sigue a su nombre también después del PDF (para correcciones), hasta que mandes otro ' +
+    `*CLIENTE* o *CLIENTE OFF*. Si no lo usas, vence solo a las ${Math.round(VIGENCIA_MS / 3600000)} h.` +
+    (_escribio ? '' :
+      '\n\n⚠️ Como nunca escribió al bot, el seguimiento automático NO le va a llegar ' +
+      'hasta que él te escriba por acá. Es a propósito: no podemos mandarle mensajes ' +
+      'sin que él haya iniciado la conversación.');
 }
 
-const tieneTrabajoPendiente = (s) => Array.isArray(s?.pending_quote?.items) && s.pending_quote.items.length > 0;
-
-/**
- * Cambia de carpeta si el cliente activo cambió. Muta `state` y `history` en el lugar.
- * @param {{from:string, state:object, history:Array, atribucion:object|null,
- *          leer:(k)=>Promise<any>, escribir:(k,v,ttl)=>any}} o
- * @returns {Promise<'igual'|'cambio'|'adopcion'>}
- */
-export async function cambiarCarpeta({ from, state, history, atribucion, leer, escribir }) {
-  const nueva = atribucion?.phone ? normalizar(atribucion.phone) : CARPETA_PROPIA;
-  const previa = state.carpeta_activa || CARPETA_PROPIA;
-  if (nueva === previa) return 'igual';
-
-  const infra = {};
-  for (const k of CLAVES_INFRA_SESION) if (k in state) infra[k] = state[k];
-  const soloCliente = () => {
-    const out = {};
-    for (const [k, v] of Object.entries(state)) if (!CLAVES_INFRA_SESION.includes(k)) out[k] = v;
-    return out;
-  };
-  const reemplazar = (nuevoState, nuevoHistory) => {
-    for (const k of Object.keys(state)) delete state[k];
-    Object.assign(state, nuevoState || {}, infra);
-    history.splice(0, history.length, ...(Array.isArray(nuevoHistory) ? nuevoHistory : []));
-    state.carpeta_activa = nueva;
-  };
-
-  // [B] ADOPCIÓN: quien escribe cotizó SIN cliente (carpeta propia con ventanas pendientes) y
-  // recién ahora dice para quién es. Ese trabajo ES del cliente: se adopta, no se borra.
-  // El folio propio (last_quote) NO viaja: queda en la carpeta propia.
-  if (previa === CARPETA_PROPIA && nueva !== CARPETA_PROPIA && tieneTrabajoPendiente(state)) {
-    const propio = { state: state.last_quote ? { last_quote: state.last_quote } : {}, history: [] };
-    await escribir(claveCarpeta(from, CARPETA_PROPIA), propio, TTL_CARPETA_S);
-    delete state.last_quote;
-    state.carpeta_activa = nueva;
-    return 'adopcion';
-  }
-
-  await escribir(claveCarpeta(from, previa), { state: soloCliente(), history: [...history] }, TTL_CARPETA_S);
-  let guardada = null;
-  try { guardada = await leer(claveCarpeta(from, nueva)); } catch { guardada = null; }
-  reemplazar(guardada?.state, guardada?.history);
-  return 'cambio';
+/** Aviso a quien cotiza, tras emitir la propuesta con un cliente fijado. */
+export function avisoSigueCotizandoPara(atribucion) {
+  if (!atribucion?.phone) return '';
+  return `ℹ️ Sigues cotizando para *${atribucion.name || 'el cliente'}* (+${atribucion.phone}). ` +
+    'Las correcciones quedan a su nombre. *CLIENTE OFF* para terminar.';
 }
 
 /** Para tests. */

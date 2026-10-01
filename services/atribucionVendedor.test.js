@@ -12,8 +12,8 @@ import { fileURLToPath } from 'node:url';
 
 import {
   puedeUsarComandoCliente, identidadCotizacion, leadDeAtribucion, clickIdsDe, rolCotizador,
-  cambiarCarpeta, claveCarpeta, CLAVES_INFRA_SESION, CARPETA_PROPIA,
-  fijar, obtener, limpiarSiMisma, yaNosEscribio, _reset,
+  clavesCotizacion, procesarComandoCliente, avisoSigueCotizandoPara, telefonoDuenio, DUENIO_DEFAULT,
+  fijar, obtener, limpiarSiMisma, yaNosEscribio, VIGENCIA_MS, _reset,
 } from './atribucionCotizacion.js';
 import { aplicarLista, puedeComandoCliente, _reiniciarParaTests } from './internosEquipo.js';
 
@@ -47,12 +47,24 @@ test('decisión dueño 30-sep: si sales-os no manda el teléfono completo, ning�
   _reiniciarParaTests();
 });
 
-test('decisión dueño 30-sep: index.js y webhook.js usan la MISMA regla de autorización', () => {
+test('decisión dueño 30-sep: index.js y webhook.js usan la MISMA regla de autorización y de dueño', () => {
   const dir = path.dirname(fileURLToPath(import.meta.url));
   const src = fs.readFileSync(path.join(dir, '..', 'index.js'), 'utf8');
   assert.match(src, /puedeUsarComandoCliente\(normalizeWaId\(_atInc\.waId\), \{ esInterno: puedeComandoCliente \}\)/);
+  assert.match(src, /const ADMIN_PHONE = process\.env\.ADMIN_PHONE \|\| DUENIO_DEFAULT;/);
   const wh = fs.readFileSync(path.join(dir, '..', 'src', 'oliver-gpt', 'webhook.js'), 'utf8');
   assert.match(wh, /rolCotizador\(from, \{ esInterno: puedeComandoCliente \}\)/);
+  // Las guardias de vendedor usan el rol por número COMPLETO, no el modo interno por ult9.
+  assert.match(wh, /const esVendedorInterno = _rol === 'vendedor';/);
+});
+
+test('telefonoDuenio: ADMIN_PHONE, y si no está, el número por defecto (mismo orden que index.js)', () => {
+  const prev = process.env.ADMIN_PHONE;
+  delete process.env.ADMIN_PHONE;
+  assert.equal(telefonoDuenio(), DUENIO_DEFAULT.replace(/\D/g, ''));
+  process.env.ADMIN_PHONE = '+56 9 0000 1111';
+  assert.equal(telefonoDuenio(), '56900001111');
+  if (prev === undefined) delete process.env.ADMIN_PHONE; else process.env.ADMIN_PHONE = prev;
 });
 
 test('decisión dueño 30-sep: con atribución la identidad es del CLIENTE y cotizado_por = últimos 9 de quien cotizó', () => {
@@ -63,6 +75,25 @@ test('decisión dueño 30-sep: con atribución la identidad es del CLIENTE y cot
   assert.deepEqual(id.extraLead, { external_id: JUAN, cotizado_por: '911110000', no_pisar: true, source: 'vendedor_equipo' });
   const sin = identidadCotizacion(VENDEDOR, null);
   assert.deepEqual(sin, { telefonoCliente: VENDEDOR, claveCot: VENDEDOR, cotizadoPor: null, atribuida: false, extraLead: {} });
+});
+
+test('decisión 30-sep: de quién es cada clave de estado (informes/entregas/deal/reset del CLIENTE; folio del par)', () => {
+  const id = identidadCotizacion(VENDEDOR, { phone: JUAN });
+  const c = clavesCotizacion({ from: VENDEDOR, telefonoCliente: id.telefonoCliente, claveCot: id.claveCot });
+  assert.equal(c.informeTermico('h1'), `informe_termico:${JUAN}:h1`);
+  assert.equal(c.informeTermico(''), `informe_termico:${JUAN}`);
+  assert.equal(c.informeVientos('h2'), `informe_vientos:${JUAN}:h2`);
+  assert.equal(c.letraTermico, `informe_letra:${JUAN}:termico`);
+  assert.equal(c.letraVientos, `informe_letra:${JUAN}:vientos`);
+  assert.equal(c.reset, `informe_reset:${JUAN}`, 'el reset del dueño destraba los candados del cliente');
+  assert.equal(c.deal, `deal:${JUAN}`, 'un Deal por cliente, igual que Zoho');
+  assert.equal(c.entrega, JUAN);
+  assert.equal(c.quotesig, `quotesig:${VENDEDOR}${JUAN}`, 'el dedup de folio es del par quien-escribe+cliente');
+  assert.equal(c.emision('x'), `quote_emision:${VENDEDOR}${JUAN}:x`);
+  // Sin atribución: todo es de quien escribe, como siempre.
+  const s = clavesCotizacion({ from: '56933334444', telefonoCliente: '56933334444', claveCot: '56933334444' });
+  assert.equal(s.deal, 'deal:56933334444');
+  assert.equal(s.quotesig, 'quotesig:56933334444');
 });
 
 test('decisión dueño 30-sep: con atribución no viajan los click-ids de quien escribe', () => {
@@ -90,15 +121,41 @@ test('decisión dueño 30-sep: al fijar cliente se crea su lead con su teléfono
   assert.ok(!JSON.stringify(l).includes(VENDEDOR), 'no expone el número completo del vendedor');
 });
 
-test('E 30-sep: consumir la atribución solo borra la MISMA versión (carrera CLIENTE Juan → CLIENTE Pedro)', () => {
+test('E 30-sep: limpiarSiMisma solo borra la MISMA versión (carrera CLIENTE Juan → CLIENTE Pedro)', () => {
   _reset();
   const juan = fijar(VENDEDOR, JUAN, 'Juan');
-  const pedro = fijar(VENDEDOR, PEDRO, 'Pedro');           // entra mientras se emitía lo de Juan
-  assert.equal(limpiarSiMisma(VENDEDOR, juan.gen), false, 'el turno de Juan no borra a Pedro');
+  const pedro = fijar(VENDEDOR, PEDRO, 'Pedro');
+  assert.equal(limpiarSiMisma(VENDEDOR, juan.gen), false, 'la versión vieja no borra la nueva');
   assert.equal(obtener(VENDEDOR).phone, PEDRO);
   assert.equal(limpiarSiMisma(VENDEDOR, pedro.gen), true);
   assert.equal(obtener(VENDEDOR), null);
   _reset();
+});
+
+test('decisión 30-sep (Thermos r2): la atribución NO se consume sola; termina con OFF, otro CLIENTE o TTL sin uso', async () => {
+  _reset();
+  const pushes = [];
+  const msg = await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Juan Pérez +${JUAN}`,
+    pushLead: async (p) => { pushes.push(p); }, escribio: async () => false, marcar: () => {} });
+  assert.match(msg, /Cotizando para \*Juan Pérez\*/);
+  assert.match(msg, /CLIENTE OFF/);
+  assert.equal(pushes[0].phone, JUAN);
+  assert.equal(obtener(VENDEDOR).phone, JUAN);
+  assert.equal(obtener(VENDEDOR).phone, JUAN, 'usarla no la consume');
+  assert.match(avisoSigueCotizandoPara(obtener(VENDEDOR)), /Sigues cotizando para \*Juan Pérez\*.*CLIENTE OFF/s);
+  await procesarComandoCliente({ waId: VENDEDOR, texto: 'CLIENTE OFF', pushLead: async () => {} });
+  assert.equal(obtener(VENDEDOR), null, 'CLIENTE OFF la termina');
+
+  // TTL: vence sin uso; el uso la renueva.
+  const realNow = Date.now;
+  try {
+    let t = realNow();
+    Date.now = () => t;
+    fijar(VENDEDOR, JUAN, 'Juan');
+    t += VIGENCIA_MS - 1000; assert.ok(obtener(VENDEDOR), 'dentro de la vigencia');
+    t += VIGENCIA_MS - 1000; assert.ok(obtener(VENDEDOR), 'renovada por el uso anterior');
+    t += VIGENCIA_MS + 1;    assert.equal(obtener(VENDEDOR), null, 'sin uso, vence');
+  } finally { Date.now = realNow; _reset(); }
 });
 
 test('F1 30-sep: "ya nos escribió" solo si ese número escribió al bot (ser lead no cuenta)', async () => {
@@ -106,79 +163,12 @@ test('F1 30-sep: "ya nos escribió" solo si ese número escribió al bot (ser le
   assert.equal(await yaNosEscribio(JUAN, async () => null), false);
   assert.equal(await yaNosEscribio(JUAN, async () => { throw new Error('red'); }), false, 'ante error: se marca');
   assert.equal(await yaNosEscribio(JUAN, async (k) => (k === `escribio:${JUAN}` ? true : null)), true);
-});
-
-// ── Carpeta por cliente ───────────────────────────────────────────────────────────────────
-function kvFalso() {
-  const m = new Map();
-  return { m, leer: async (k) => (m.has(k) ? structuredClone(m.get(k)) : null), escribir: async (k, v) => { m.set(k, structuredClone(v)); } };
-}
-
-test('decisión dueño 30-sep: la lista de claves que se comparten entre clientes está documentada', () => {
-  // Agregar algo acá es decidir que pasa de un cliente al siguiente. last_quote, lockedData,
-  // name, pending_quote e historial NO pueden estar.
-  assert.deepEqual([...CLAVES_INFRA_SESION].sort(), [
-    'ad_id', 'carpeta_activa', 'ctwaCaptured', 'ctwa_clid', 'fbclid', 'fecha', 'gclid',
-    'landingRefCaptured', 'landing_lead_id', 'lastMessageAt', 'ref_status', 'telefono', 'ttclid',
-  ]);
-});
-
-test('decisión dueño 30-sep: cambiar de cliente NO filtra nada y volver a Juan recupera SU trabajo', async () => {
-  const kv = kvFalso();
-  const history = [{ role: 'user', content: 'Juan: 3 ventanas' }];
-  const state = { telefono: VENDEDOR, carpeta_activa: JUAN, name: 'Juan', lockedData: { comuna: 'Temuco' },
-    last_quote: { quote_number: 'CM-FR-004-2026-0500' }, gclid: 'g-vendedor' };
-
-  assert.equal(await cambiarCarpeta({ from: VENDEDOR, state, history, atribucion: { phone: PEDRO }, ...kv }), 'cambio');
-  assert.equal(state.last_quote, undefined, 'el folio de Juan jamás queda para Pedro');
-  assert.equal(state.name, undefined);
-  assert.equal(state.lockedData, undefined);
-  assert.equal(history.length, 0);
-  assert.equal(state.carpeta_activa, PEDRO);
-  assert.equal(state.gclid, 'g-vendedor', 'lo de infraestructura de quien escribe se queda');
-
-  state.last_quote = { quote_number: 'CM-FR-004-2026-0501' };
-  history.push({ role: 'user', content: 'Pedro: 1 puerta' });
-  assert.equal(await cambiarCarpeta({ from: VENDEDOR, state, history, atribucion: { phone: JUAN }, ...kv }), 'cambio');
-  assert.equal(state.last_quote.quote_number, 'CM-FR-004-2026-0500', 'volver a Juan devuelve SU folio');
-  assert.equal(state.name, 'Juan');
-  assert.deepEqual(history, [{ role: 'user', content: 'Juan: 3 ventanas' }]);
-  assert.ok(kv.m.has(claveCarpeta(VENDEDOR, PEDRO)), 'lo de Pedro quedó guardado, no borrado');
-});
-
-test('decisión dueño 30-sep: consumir la atribución vuelve a la carpeta PROPIA (sin datos del cliente)', async () => {
-  const kv = kvFalso();
-  await kv.escribir(claveCarpeta(ADMIN, CARPETA_PROPIA), { state: { name: 'Marcelo' }, history: [{ role: 'user', content: 'lo mío' }] });
-  const history = [{ role: 'user', content: 'para Juan' }];
-  const state = { telefono: ADMIN, carpeta_activa: JUAN, name: 'Juan', lockedData: { comuna: 'Vilcún' },
-    last_quote: { quote_number: 'CM-FR-004-2026-0600' } };
-  assert.equal(await cambiarCarpeta({ from: ADMIN, state, history, atribucion: null, ...kv }), 'cambio');
-  assert.equal(state.name, 'Marcelo');
-  assert.equal(state.lockedData, undefined, 'la comuna de Juan no queda en la sesión del dueño');
-  assert.equal(state.last_quote, undefined);
-  assert.deepEqual(history, [{ role: 'user', content: 'lo mío' }]);
-});
-
-test('decisión dueño 30-sep: sin atribución y sin carpeta previa, la sesión no se toca', async () => {
-  const kv = kvFalso();
-  const history = [{ role: 'user', content: 'hola' }];
-  const lq = { quote_number: 'CM-FR-004-2026-0400' };
-  const state = { telefono: '56933334444', name: 'Ana', last_quote: lq };
-  assert.equal(await cambiarCarpeta({ from: '56933334444', state, history, atribucion: null, ...kv }), 'igual');
-  assert.equal(state.last_quote, lq);
-  assert.equal(history.length, 1);
-  assert.equal(kv.m.size, 0, 'no escribe nada');
-});
-
-test('B 30-sep: cotizó SIN cliente y después manda CLIENTE ⇒ ese trabajo se ADOPTA (no se borra)', async () => {
-  const kv = kvFalso();
-  const items = [{ product: 'corredera', measures: '1200x1000', color: 'blanco', unit_price: 300000, qty: 1 }];
-  const history = [{ role: 'user', content: 'corredera 1200x1000 blanca' }];
-  const state = { telefono: VENDEDOR, pending_quote: { items }, last_quote: { quote_number: 'CM-FR-004-2026-0100' } };
-  assert.equal(await cambiarCarpeta({ from: VENDEDOR, state, history, atribucion: { phone: JUAN }, ...kv }), 'adopcion');
-  assert.deepEqual(state.pending_quote.items, items, 'las mismas ventanas, ahora del cliente');
-  assert.equal(history.length, 1);
-  assert.equal(state.last_quote, undefined, 'el folio propio no viaja al cliente');
-  assert.equal(state.carpeta_activa, JUAN);
-  assert.deepEqual((await kv.leer(claveCarpeta(VENDEDOR, CARPETA_PROPIA))).state.last_quote, { quote_number: 'CM-FR-004-2026-0100' });
+  // Y el comando marca "sin consentimiento" salvo que haya escrito.
+  const marcados = [];
+  await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Juan +${JUAN}`, pushLead: async () => {},
+    escribio: async () => false, marcar: (p) => marcados.push(p) });
+  await procesarComandoCliente({ waId: VENDEDOR, texto: `CLIENTE Pedro +${PEDRO}`, pushLead: async () => {},
+    escribio: async () => true, marcar: (p) => marcados.push(p) });
+  assert.deepEqual(marcados, [JUAN]);
+  _reset();
 });
