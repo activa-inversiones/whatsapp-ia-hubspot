@@ -81,6 +81,46 @@ function prepararVendedor() {
   aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
 }
 
+const HACE_31_MIN = () => Date.now() - 31 * 60 * 1000;
+
+test('Thermos r4 (30-sep): lista del equipo con >30 min — la atribución ya fijada SIGUE valiendo (la antigüedad solo frena fijar)', async () => {
+  _reiniciarParaTests(); resetAtribucion();
+  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] }, HACE_31_MIN());
+  fijar(VENDEDOR, CLIENTE, 'Juan Pérez');
+  const ev = []; const pdf = [];
+  try { await correr(makeDeps(VENDEDOR, 'wamid.VEND.VIEJA', ev, pdf, { medida: '1500x1000' })); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  const sent = ev.find((e) => e.status === 'sent');
+  assert.ok(sent, `debe emitirse (resultado: ${JSON.stringify(pdf[0])})`);
+  assert.equal(sent.phone, CLIENTE, 'la cotización sigue a Juan, no al vendedor');
+});
+
+test('Thermos r4 (30-sep): lista con >30 min y vendedor SIN cliente → se corta y se pide el cliente', async () => {
+  _reiniciarParaTests(); resetAtribucion();
+  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] }, HACE_31_MIN());
+  const ev = []; const pdf = []; const textos = [];
+  const deps = makeDeps(VENDEDOR, 'wamid.VEND.VIEJA.SIN', ev, pdf, { textos });
+  let llego = false;
+  deps.handleTurn = async () => { llego = true; return { reply: 'x', history: [], toolCalls: [], state: {} }; };
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.equal(llego, false, 'no cotiza a su propio número');
+  assert.ok(textos.some((x) => /CLIENTE Nombre Apellido/.test(x.t)));
+});
+
+test('Thermos r4 (30-sep): en modo interno (ult9) sin rol confirmado (sin número completo) → se corta, no cotiza a su nombre', async () => {
+  _reiniciarParaTests(); resetAtribucion();
+  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', oliver_interno: true }] }); // sin `telefono`
+  const ev = []; const pdf = []; const textos = [];
+  const deps = makeDeps(VENDEDOR, 'wamid.VEND.SINROL', ev, pdf, { textos });
+  let llego = false;
+  deps.handleTurn = async () => { llego = true; return { reply: 'x', history: [], toolCalls: [], state: {} }; };
+  try { await correr(deps); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.equal(llego, false);
+  assert.ok(textos.some((x) => /CLIENTE Nombre Apellido/.test(x.t)));
+});
+
 test('decisión dueño 30-sep: vendedor interno con CLIENTE fijado → la cotización va con el teléfono del cliente', async () => {
   prepararVendedor();
   fijar(VENDEDOR, CLIENTE, 'Juan Pérez');

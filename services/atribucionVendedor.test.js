@@ -53,9 +53,9 @@ test('decisión dueño 30-sep: index.js y webhook.js usan la MISMA regla de auto
   assert.match(src, /puedeUsarComandoCliente\(normalizeWaId\(_atInc\.waId\), \{ esInterno: puedeComandoCliente \}\)/);
   assert.match(src, /const ADMIN_PHONE = process\.env\.ADMIN_PHONE \|\| DUENIO_DEFAULT;/);
   const wh = fs.readFileSync(path.join(dir, '..', 'src', 'oliver-gpt', 'webhook.js'), 'utf8');
-  assert.match(wh, /rolCotizador\(from, \{ esInterno: puedeComandoCliente \}\)/);
-  // Las guardias de vendedor usan el rol por número COMPLETO, no el modo interno por ult9.
-  assert.match(wh, /const esVendedorInterno = _rol === 'vendedor';/);
+  // [Thermos r4] El ROL usa la última lista conocida por número COMPLETO (sin antigüedad);
+  // la antigüedad solo frena FIJAR (index.js usa puedeComandoCliente).
+  assert.match(wh, /rolCotizador\(from, \{ esInterno: esVendedorConfirmado \}\)/);
 });
 
 test('telefonoDuenio: ADMIN_PHONE, y si no está, el número por defecto (mismo orden que index.js)', () => {
@@ -88,7 +88,6 @@ test('decisión 30-sep: de quién es cada clave de estado (informes/entregas/dea
   assert.equal(c.reset, `informe_reset:${JUAN}`, 'el reset del dueño destraba los candados del cliente');
   assert.equal(c.deal, `deal:${JUAN}`, 'un Deal por cliente, igual que Zoho');
   assert.equal(c.cliente, JUAN);
-  assert.equal(c.entrega, JUAN, 'alias de compatibilidad');
   assert.equal(c.quotesig, `quotesig:${VENDEDOR}${JUAN}`, 'el dedup de folio es del par quien-escribe+cliente');
   assert.equal(c.emision('x'), `quote_emision:${VENDEDOR}${JUAN}:x`);
   // Sin atribución: todo es de quien escribe, como siempre.

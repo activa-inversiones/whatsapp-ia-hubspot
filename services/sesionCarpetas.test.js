@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { cambiarCarpeta, claveCarpeta, CLAVES_INFRA_SESION, CARPETA_PROPIA, erroresCarpeta } from './sesionCarpetas.js';
+import { cambiarCarpeta, claveCarpeta, CLAVES_INFRA_SESION, CARPETA_PROPIA } from './sesionCarpetas.js';
 
 const ADMIN = '56957296035';
 const VENDEDOR = '56911110000';
@@ -35,6 +35,7 @@ test('6 · la clave de carpeta usa el número COMPLETO normalizado (no la cola d
   assert.equal(claveCarpeta('911110000', '987654321'), `sesion_cliente:${VENDEDOR}:${JUAN}`, 'celular chileno sin 56');
   assert.notEqual(claveCarpeta(VENDEDOR, '34987654321'), claveCarpeta(VENDEDOR, JUAN), 'otro país, misma cola: otra carpeta');
   assert.equal(claveCarpeta(VENDEDOR, CARPETA_PROPIA), `sesion_cliente:${VENDEDOR}:propia`);
+  assert.throws(() => claveCarpeta(VENDEDOR, '12345678'), /incompleto/, 'un número incompleto no arma clave');
 });
 
 test('cambiar de cliente NO filtra nada y volver a Juan recupera SU trabajo (y su folio)', async () => {
@@ -107,14 +108,14 @@ test('4 · si la LECTURA de la carpeta nueva falla, no se cambia de carpeta ni s
   const kv = kvFalso({ leerFalla: true });
   const history = [{ role: 'user', content: 'Juan' }];
   const state = { carpeta_activa: JUAN, name: 'Juan' };
-  const antes = erroresCarpeta();
-  const r = await cambiarCarpeta({ from: VENDEDOR, state, history, cliente: PEDRO, ...kv });
+  const logs = [];
+  const r = await cambiarCarpeta({ from: VENDEDOR, state, history, cliente: PEDRO, ...kv, log: (n, m) => logs.push([n, m]) });
   assert.equal(r.mov, 'error');
   assert.equal(state.carpeta_activa, JUAN);
   assert.equal(state.name, 'Juan');
   assert.equal(history.length, 1);
   assert.equal(kv.m.size, 0, 'no se escribió nada');
-  assert.equal(erroresCarpeta(), antes + 1, 'cuenta el error');
+  assert.ok(logs.some(([n]) => n === 'error'), 'queda registrado como error');
 });
 
 test('4 · escritura sin confirmar de sales-os (sales_os_no_confirmo) = advertencia y SIGUE (la memoria ya la tiene)', async () => {

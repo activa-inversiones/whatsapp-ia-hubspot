@@ -326,7 +326,6 @@ export function clavesCotizacion({ from, telefonoCliente, claveCot }) {
     reset: `informe_reset:${cli}`,
     deal: `deal:${cli}`,
     cliente: cli,                       // dígitos del cliente (entregas locales, logs, informe_valor)
-    entrega: cli,                       // alias de compatibilidad de `cliente`
     quotesig: `quotesig:${cot}`,
     emision: (huella) => `quote_emision:${cot}:${huella}`,
   };

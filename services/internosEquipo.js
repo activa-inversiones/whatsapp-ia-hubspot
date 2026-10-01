@@ -65,14 +65,23 @@ export function _reiniciarParaTests() { _estado = { at: 0, internos: new Set(), 
  * Por número COMPLETO (con ult9, +34 912 345 678 pasaba por +56 9 1234 5678 — Codex).
  * Fail-closed: si la lista nunca cargó, NO.
  */
-export const MAX_ANTIGUEDAD_LISTA_CLIENTE_MS = 30 * 60 * 1000;
-export function puedeComandoCliente(phone, ahora = Date.now()) {
+/**
+ * [Thermos r4, 30-sep] ¿Es un vendedor con modo interno según la ÚLTIMA lista conocida (número
+ * completo)? Decide el ROL en el webhook. NO mira la antigüedad: con sales-os caído un rato, un
+ * vendedor con Juan fijado tiene que seguir cotizando para Juan, no pasar a cotizar a su nombre.
+ */
+export function esVendedorConfirmado(phone) {
   if (!_estado.at) return false;
-  // [10 · 30-sep] Fail-closed también por ANTIGÜEDAD: si hace más de 30 min que no hay un refresco
-  // exitoso (sales-os caído), un vendedor dado de baja no puede seguir cargando cotizaciones.
-  if (ahora - _estado.at > MAX_ANTIGUEDAD_LISTA_CLIENTE_MS) return false;
   const t = telefonoCompleto(phone);
   return !!t && _estado.clienteCompletos.has(t);
+}
+
+export const MAX_ANTIGUEDAD_LISTA_CLIENTE_MS = 30 * 60 * 1000;
+/** ¿Puede FIJAR un CLIENTE nuevo? Como esVendedorConfirmado, y además la lista no puede tener
+ *  más de 30 min sin refresco exitoso (un vendedor dado de baja no carga clientes nuevos). */
+export function puedeComandoCliente(phone, ahora = Date.now()) {
+  if (!esVendedorConfirmado(phone)) return false;
+  return ahora - _estado.at <= MAX_ANTIGUEDAD_LISTA_CLIENTE_MS;
 }
 
 /** ¿El número es del equipo (dueño, bot o vendedor activo con WhatsApp cargado)? Síncrono. */

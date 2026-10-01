@@ -16,8 +16,6 @@
 
 import { telefonoCompleto } from './internosEquipo.js';
 
-const soloDigitos = (s) => String(s || '').replace(/\D/g, '');
-const numero = (s) => telefonoCompleto(s) || soloDigitos(s);
 
 /**
  * Claves de INFRAESTRUCTURA: son de quien escribe, no del cliente, y no se mudan de carpeta.
@@ -33,13 +31,15 @@ export const CLAVES_INFRA_SESION = Object.freeze([
 export const CARPETA_PROPIA = 'propia';
 export const TTL_CARPETA_S = 30 * 24 * 3600;
 
-let _errores = 0;
-/** Cuántos cambios de carpeta abortaron por error en este proceso (para el log y los tests). */
-export function erroresCarpeta() { return _errores; }
-
+/**
+ * Clave de la carpeta. Los números se normalizan con telefonoCompleto (celular chileno de 9 → 56…);
+ * un número incompleto (menos de 9 dígitos útiles) se RECHAZA: una clave ambigua mezclaría clientes.
+ */
 export function claveCarpeta(from, carpeta) {
-  const de = carpeta === CARPETA_PROPIA ? CARPETA_PROPIA : numero(carpeta);
-  return `sesion_cliente:${numero(from)}:${de}`;
+  const quien = telefonoCompleto(from);
+  const de = carpeta === CARPETA_PROPIA ? CARPETA_PROPIA : telefonoCompleto(carpeta);
+  if (!quien || !de) throw new Error('claveCarpeta: número incompleto');
+  return `sesion_cliente:${quien}:${de}`;
 }
 
 /**
@@ -50,13 +50,12 @@ export function claveCarpeta(from, carpeta) {
  * @returns {Promise<{mov:'igual'|'cambio'|'error', error?:string, aviso?:string}>}
  */
 export async function cambiarCarpeta({ from, state, history, cliente, leer, escribir, log = () => {} }) {
-  const nueva = cliente ? numero(cliente) : CARPETA_PROPIA;
+  const nueva = cliente ? (telefonoCompleto(cliente) || String(cliente)) : CARPETA_PROPIA;
   const previa = state.carpeta_activa || CARPETA_PROPIA;
   if (nueva === previa) return { mov: 'igual' };
 
   const fallar = (error) => {
-    _errores++;
-    log('error', `carpeta: cambio ${previa} → ${nueva} abortado (${error}); errores en este proceso: ${_errores}`);
+    log('error', `carpeta: cambio ${previa} → ${nueva} abortado (${error})`);
     return { mov: 'error', error };
   };
 

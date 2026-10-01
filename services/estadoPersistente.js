@@ -63,23 +63,10 @@ async function pedir(metodo, clave, cuerpo) {
  * @returns {Promise<any|null>}
  */
 export async function leer(clave) {
-  const e = MEMORIA.get(clave);
-  if (vigente(e)) return e.valor;
-  if (e) MEMORIA.delete(clave);
-  const j = await pedir('GET', clave);
-  const valor = j && Object.prototype.hasOwnProperty.call(j, 'valor') ? j.valor : null;
-  // 🔴 [2026-08-24 · Codex, 3a compuerta] SE RE-CHEQUEA LA MEMORIA DESPUES DEL AWAIT.
-  // El GET tarda, y mientras viaja otra ejecucion pudo escribir. Al volver, esto cacheaba
-  // la respuesta encima sin mirar: A fusionaba [VIEJA, A], llegaba el GET atrasado con
-  // [VIEJA] y lo pisaba, y B terminaba guardando [VIEJA, B]. La ventana de A desaparecia
-  // sin ningun error — un informe con una ventana menos y nadie enterado.
-  //
-  // Lo que hay en memoria es siempre MAS NUEVO que una respuesta que venia en camino: se
-  // devuelve eso y no se toca el cache.
-  const yaEnMemoria = MEMORIA.get(clave);
-  if (vigente(yaEnMemoria)) return yaEnMemoria.valor;
-  if (valor !== null && valor !== undefined) MEMORIA.set(clave, { valor, expira: null });
-  return valor ?? null;
+  // [Thermos r4, 30-sep] Un solo camino: `leer` es `leerConEstado` sin distinguir el fallo
+  // (para quien no lo necesita, «no existe» y «no se pudo» se tratan igual: null).
+  const r = await leerConEstado(clave);
+  return r.ok ? (r.valor ?? null) : null;
 }
 
 /**
@@ -95,9 +82,16 @@ export async function leerConEstado(clave) {
   if (e) MEMORIA.delete(clave);
   if (!PERSISTENCIA_ACTIVA) return { ok: true, valor: null };   // solo memoria: lo que no está, no existe
   const j = await pedir('GET', clave);
-  if (j === null) return { ok: false };
-  const yaEnMemoria = MEMORIA.get(clave);                         // mismo re-chequeo que `leer`
+  // 🔴 [2026-08-24 · Codex, 3a compuerta] SE RE-CHEQUEA LA MEMORIA DESPUES DEL AWAIT.
+  // El GET tarda, y mientras viaja otra ejecucion pudo escribir. Al volver, esto cacheaba
+  // la respuesta encima sin mirar: A fusionaba [VIEJA, A], llegaba el GET atrasado con
+  // [VIEJA] y lo pisaba, y B terminaba guardando [VIEJA, B]. La ventana de A desaparecia
+  // sin ningun error — un informe con una ventana menos y nadie enterado.
+  // Lo que hay en memoria es siempre MAS NUEVO que una respuesta que venia en camino: se
+  // devuelve eso (aunque el GET haya fallado) y no se toca el cache.
+  const yaEnMemoria = MEMORIA.get(clave);
   if (vigente(yaEnMemoria)) return { ok: true, valor: yaEnMemoria.valor };
+  if (j === null) return { ok: false };
   const valor = Object.prototype.hasOwnProperty.call(j, 'valor') ? j.valor : null;
   if (valor !== null && valor !== undefined) MEMORIA.set(clave, { valor, expira: null });
   return { ok: true, valor: valor ?? null };

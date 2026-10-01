@@ -228,7 +228,7 @@ import {
 } from '../../services/avisoCerebroRespaldo.js';
 import { pidioDeNuevo } from '../../services/pidioDeNuevo.js';
 import { clavePendiente, decidirConciliacion, mensajeConciliado } from '../../services/conciliacionDudosa.js'; // [2026-09-16 Kimi] la conciliacion es el mecanismo real, no la idempotencia // [2026-09-16, decision del dueño] el cliente destraba lo que no se reenvia solo // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
-import { modoInternoOliver, puedeComandoCliente, TEXTO_PEDIR_CLIENTE_INTERNO } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
+import { modoInternoOliver, esVendedorConfirmado, TEXTO_PEDIR_CLIENTE_INTERNO } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
 
 /* =========================================================================
@@ -619,7 +619,7 @@ async function transcribeAudio(buffer, mime, deps) {
  */
 export function destinoAdjunto(from) {
   try {
-    if (!rolCotizador(from, { esInterno: puedeComandoCliente })) return from;
+    if (!rolCotizador(from, { esInterno: esVendedorConfirmado })) return from;
     return obtenerAtribucion(from)?.phone || from;
   } catch { return from; }
 }
@@ -1401,16 +1401,17 @@ export async function handleWebhook(req, res, deps = {}) {
     // [2026-09-30] UNA sola regla de quién es el dueño y quién vendedor: la misma función que
     // usa index.js para permitir el comando CLIENTE (rolCotizador). Decisión del dueño: los
     // vendedores de /equipo con modo interno también cotizan a nombre del cliente.
-    // El rol exige el número COMPLETO (puedeComandoCliente, igual que el comando en index.js),
-    // y las guardias de vendedor ("sin CLIENTE no emite ni guarda lead a su nombre") usan ESE
-    // rol, no los últimos 9: un cliente extranjero con la misma cola no pierde su lead.
-    // Si sales-os todavía no manda el número completo (deploy desfasado), el vendedor NO queda
-    // bloqueado: cotiza como hasta hoy y se deja una advertencia en el log.
-    const _rol = rolCotizador(from, { esInterno: puedeComandoCliente });
+    // El rol exige el número COMPLETO según la ÚLTIMA lista conocida (esVendedorConfirmado), sin
+    // mirar su antigüedad: la antigüedad >30 min solo impide FIJAR un cliente nuevo (index.js,
+    // puedeComandoCliente). Así, con sales-os caído un rato, una atribución ya fijada sigue
+    // valiendo y el vendedor no pasa a cotizar a su propio número (Thermos r4, 30-sep).
+    const _rol = rolCotizador(from, { esInterno: esVendedorConfirmado });
     const esDuenio = _rol === 'duenio';
-    const esVendedorInterno = _rol === 'vendedor';
-    if (!_rol && modoInternoOliver(from)) {
-      log('warn', 'atribucion', `${String(from).slice(-4)}: en modo interno pero sin número completo desde sales-os; cotiza sin guardia de CLIENTE`);
+    // Vendedor = rol confirmado, o en modo interno (ult9) sin número completo todavía: en ese
+    // caso tampoco se cotiza a su nombre — se corta y se le pide el cliente (decisión r4).
+    const esVendedorInterno = _rol === 'vendedor' || (!_rol && modoInternoOliver(from));
+    if (!_rol && esVendedorInterno) {
+      log('warn', 'atribucion', `${String(from).slice(-4)}: en modo interno sin número completo confirmado; no cotiza sin CLIENTE`);
     }
     const atribucion = _rol ? obtenerAtribucion(from) : null;
     // FUENTE ÚNICA de la identidad de la cotización (identidadCotizacion): con atribución,
