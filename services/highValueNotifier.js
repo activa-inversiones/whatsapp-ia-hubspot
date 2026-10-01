@@ -212,12 +212,19 @@ async function notifyHighValue(waSendFn, customerPhone, session, reason = "auto"
   const _chMatch = typeof reason === "string" && reason.match(/^\[(instagram|facebook)\]/i);
   const altChannel = _chMatch ? _chMatch[1].toLowerCase() : null;
   const chIcon = altChannel === "instagram" ? "📸" : altChannel === "facebook" ? "💬" : "📞";
-  const clienteLine = altChannel
-    ? `${chIcon} Cliente ${altChannel.toUpperCase()} (id ${customerPhone})`
-    : `📞 Cliente: ${customerPhone}`;
-  const responderLine = altChannel
-    ? `📱 Responde desde el inbox: ops.activalabs.ai → Conversaciones → filtro ${altChannel.toUpperCase()}`
-    : `📱 O responde directo al ${customerPhone}`;
+  // [r19] `session.sin_cliente`: el aviso sale de un rastro viejo que no dice de QUIÉN era el documento
+  // (el chat era del dueño/vendedor). No se afirma cliente ni se manda a responder a ese teléfono.
+  const sinCliente = session && session.sin_cliente === true;
+  const clienteLine = sinCliente
+    ? `📞 Cliente no identificado en el rastro (el envío fue desde el chat de ${customerPhone})`
+    : altChannel
+      ? `${chIcon} Cliente ${altChannel.toUpperCase()} (id ${customerPhone})`
+      : `📞 Cliente: ${customerPhone}`;
+  const responderLine = sinCliente
+    ? `📱 Revisa el inbox (ops.activalabs.ai → Conversaciones) para ver a quién iba el documento`
+    : altChannel
+      ? `📱 Responde desde el inbox: ops.activalabs.ai → Conversaciones → filtro ${altChannel.toUpperCase()}`
+      : `📱 O responde directo al ${customerPhone}`;
 
   const alertMsg = [
     `${emoji} LEAD ${tierLabel} ${emoji}`,

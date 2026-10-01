@@ -226,7 +226,7 @@ import {
 } from '../../services/avisoCerebroRespaldo.js';
 import { pidioDeNuevo } from '../../services/pidioDeNuevo.js';
 import { clavePendiente, decidirConciliacion, mensajeConciliado } from '../../services/conciliacionDudosa.js'; // [2026-09-16 Kimi] la conciliacion es el mecanismo real, no la idempotencia // [2026-09-16, decision del dueño] el cliente destraba lo que no se reenvia solo // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
-import { modoInternoOliver, textoCorteVendedor } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
+import { modoInternoOliver, textoCorteVendedor, perfilEquipo } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
 
 /* =========================================================================
@@ -1112,10 +1112,17 @@ export async function handleWebhook(req, res, deps = {}) {
           // fallo viejo le manda un segundo informe al cliente. Solo actua el acuse del
           // ULTIMO envio registrado.
           let esElVigente = true;   // ¿este envio sigue siendo el ultimo, o ya fue reemplazado?
+          // [r19 · Codex] RASTRO ANTERIOR AL DEPLOY (sin `cliente`) de un dueño/vendedor: no se puede
+          // asegurar de quién era el documento (el chat puede ser el vendedor). Su marcador `ultimo_msg`
+          // es compartido entre varios clientes, así que NO se usa para descartar: se procesa igual
+          // (libera SU clave, que viaja en el rastro) y la alerta no afirma cliente.
+          // Un cliente normal (chat == cliente) no pasa por acá: queda idéntico.
+          let _sinCliente = false;
+          try { _sinCliente = !rastro.cliente && !!perfilEquipo(rastro.telefono).rol; } catch { _sinCliente = false; }
           // [r18] Se mide por el CLIENTE del documento (rastro viejo sin `cliente` ⇒ el destinatario): con CLIENTE el chat
           // es el del vendedor, y un envío posterior a OTRO cliente hacía pasar éste por «ya reemplazado».
           const _dueno = rastro.cliente || rastro.telefono;
-          if (_dueno) {
+          if (_dueno && !_sinCliente) {
             try {
               const ultimo = await (deps.leerEstado || leerEstado)(
                 `${rastro.tipo}:${String(_dueno).replace(/\D/g, '')}:ultimo_msg`);
@@ -1194,7 +1201,8 @@ export async function handleWebhook(req, res, deps = {}) {
             deps.sendWhatsAppText || realSendWhatsAppText, // [r17 · Codex] El aviso (y su cooldown) es del CLIENTE del documento, no del chat al que se envió:
             // con CLIENTE el chat es el del vendedor. Rastro viejo sin `cliente` ⇒ el destinatario, como antes.
             rastro.cliente || rastro.telefono || ac.telefono,
-            { data: { telefono: rastro.cliente || rastro.telefono, folio: rastro.folio }, history: [] },
+            // sin_cliente: el notificador dice «cliente no identificado en el rastro» (no «responde directo»).
+            { sin_cliente: _sinCliente, data: { telefono: rastro.cliente || rastro.telefono, folio: rastro.folio }, history: [] },
             `[whatsapp] ${que} ${rastro.folio || ''} NO se entregó (${detalle}) — reenviarlo desde el inbox`));
 
           log('warn', 'acuse.fallo', `${que} ${rastro.folio || ac.msgId} rechazado por Meta: ${detalle}`);

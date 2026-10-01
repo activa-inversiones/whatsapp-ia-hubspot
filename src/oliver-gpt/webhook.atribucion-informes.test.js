@@ -136,6 +136,50 @@ test('Tridente r3 #1/#2 (30-sep): bajo atribución los informes (correlativo, re
   assert.ok(spy.media.some((m) => m.phone === CLIENTE), 'y sí quedan en la ficha del cliente');
 });
 
+test('r19: rastros ANTERIORES al deploy (sin `cliente`) de un vendedor: el failed tardío del primero NO se descarta — libera SU clave y alerta sin afirmar cliente', async () => {
+  _reiniciarParaTests(); resetAtribucion();
+  aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
+  const { deps } = makeDeps();
+  const kv = new Map();
+  const borrados = []; const avisos = [];
+  deps.leerEstado = async (k) => kv.get(k) ?? null;
+  deps.escribirEstado = (k, v) => { kv.set(k, v); };
+  deps.borrarEstado = (k) => { borrados.push(k); kv.delete(k); };
+  deps.notifyHighValue = async (_s, phone, ses, motivo) => { avisos.push({ phone, ses, motivo }); return { sent: true }; };
+  // Dos envíos consecutivos del MISMO emisor, guardados con el formato viejo: sin `cliente`.
+  kv.set('wamsg:old.A', { msgId: 'old.A', tipo: 'informe_termico', folio: 'F-A', telefono: VENDEDOR, clave: 'informe_termico:56976543210:hA' });
+  kv.set('wamsg:old.B', { msgId: 'old.B', tipo: 'informe_termico', folio: 'F-B', telefono: VENDEDOR, clave: 'informe_termico:56912345678:hB' });
+  kv.set(`informe_termico:${VENDEDOR}:ultimo_msg`, 'old.B');      // el marcador compartido quedó en el último
+  deps.parseInbound = () => ({ ok: false });
+  deps.parseStatuses = () => [{ msgId: 'old.A', estado: 'failed', fallo: true, telefono: VENDEDOR, codigo: 131026, motivo: 'no entregable' }];
+  try { await handleWebhook({ body: {} }, makeRes(), deps); await new Promise((r) => setTimeout(r, 100)); }
+  finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.ok(borrados.includes('informe_termico:56976543210:hA'), `libera la clave de SU envío (borrados: ${JSON.stringify(borrados)})`);
+  assert.ok(!borrados.includes('informe_termico:56912345678:hB'), 'y no la del otro');
+  const a = avisos.find((x) => /NO se entregó/.test(x.motivo));
+  assert.ok(a, 'y alerta');
+  assert.equal(a.ses.sin_cliente, true, 'marcando que el cliente no está identificado');
+});
+
+test('r19: un cliente NORMAL con rastro viejo (chat == cliente) sigue igual: el failed de un envío ya reemplazado se descarta', async () => {
+  _reiniciarParaTests(); resetAtribucion();
+  const NORMAL = '56933334444';
+  const { deps } = makeDeps();
+  const kv = new Map(); const avisos = []; const borrados = [];
+  deps.leerEstado = async (k) => kv.get(k) ?? null;
+  deps.escribirEstado = (k, v) => { kv.set(k, v); };
+  deps.borrarEstado = (k) => { borrados.push(k); kv.delete(k); };
+  deps.notifyHighValue = async () => { avisos.push(1); return { sent: true }; };
+  kv.set('wamsg:old.N1', { msgId: 'old.N1', tipo: 'informe_termico', folio: 'F-1', telefono: NORMAL, clave: `informe_termico:${NORMAL}:h1` });
+  kv.set(`informe_termico:${NORMAL}:ultimo_msg`, 'old.N2');
+  deps.parseInbound = () => ({ ok: false });
+  deps.parseStatuses = () => [{ msgId: 'old.N1', estado: 'failed', fallo: true, telefono: NORMAL, codigo: 131026, motivo: 'x' }];
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(avisos, [], 'reemplazado: no se avisa');
+  assert.ok(!borrados.includes(`informe_termico:${NORMAL}:h1`), 'ni se suelta el candado');
+});
+
 test('r18: informe térmico de Juan rechazado TARDE (después de uno de Pedro, mismo vendedor) → se libera SU candado y se avisa por él', async () => {
   _reiniciarParaTests(); resetAtribucion(); CUERPOS.length = 0;
   aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });

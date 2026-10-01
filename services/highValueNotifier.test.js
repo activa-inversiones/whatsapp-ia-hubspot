@@ -31,6 +31,17 @@ function makeWaSendMock() {
   return fn;
 }
 
+test('r19: rastro sin cliente identificado → la alerta NO afirma cliente ni dice «responde directo» con el teléfono del chat', async () => {
+  const send = makeWaSendMock();
+  const r = await notifyHighValue(send, '56911110000', { sin_cliente: true, data: { telefono: '56911110000', folio: 'F-1' }, history: [] },
+    'oliver_gpt:x [whatsapp] Propuesta F-1 NO se entregó (no entregable) — reenviarlo desde el inbox');
+  assert.equal(r.sent, true);
+  const msg = send.calls[0].msg;
+  assert.match(msg, /cliente no identificado en el rastro/i);
+  assert.doesNotMatch(msg, /responde directo al/i);
+  assert.doesNotMatch(msg, /📞 Cliente: 56911110000/);
+});
+
 // Sesión "caso real" del repro documentado: 5 items, "proyecto" + "urgente"
 // en el mensaje, comuna Temuco, nombre, stage cotizacion_enviada, $0 total.
 // `dataOverrides` se mergea DENTRO de `data` (no reemplaza el objeto entero).
