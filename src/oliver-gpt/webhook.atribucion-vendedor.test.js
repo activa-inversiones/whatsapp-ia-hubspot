@@ -391,6 +391,40 @@ test('r16 #2: los avisos a Marcelo (notifyHighValue) apuntan al CLIENTE — Juan
   assert.deepEqual(deEntrega.map((a) => a.phone), [CLIENTE, '56912345678'], `avisos: ${JSON.stringify(avisos)}`);
 });
 
+test('r17 (Codex ALTO): acuse `failed` tardío → la alerta a Marcelo sale con el CLIENTE de cada envío (sin cooldown cruzado por vendedor)', async () => {
+  prepararVendedor();
+  const PEDRO = '56912345678';
+  const kv = new Map();                                    // estado compartido: el rastro del envío vive entre llamadas
+  const avisos = [];
+  const comunes = (d) => {
+    d.leerEstado = async (k) => kv.get(k) ?? null;
+    d.escribirEstado = (k, v) => { kv.set(k, v); };
+    d.borrarEstado = (k) => { kv.delete(k); };
+    d.notifyHighValue = async (_s, phone, _ses, motivo) => { avisos.push({ phone, motivo }); return { sent: true }; };
+    return d;
+  };
+  const ciclo = async (cliente, nombre, msgId, wamid, medida) => {
+    fijar(VENDEDOR, cliente, nombre);
+    const deps = comunes(makeDeps(VENDEDOR, msgId, [], [], { medida }));
+    deps.sendWaDocument = async () => ({ ok: true, msgId: wamid });     // Meta ACEPTA el HTTP (200)
+    await correr(deps);
+  };
+  const falla = async (wamid) => {
+    const deps = comunes(makeDeps(VENDEDOR, `st.${wamid}`, [], [], {}));
+    deps.parseInbound = () => ({ ok: false });
+    deps.parseStatuses = () => [{ msgId: wamid, estado: 'failed', fallo: true, telefono: VENDEDOR, codigo: 131026, motivo: 'no entregable' }];
+    await correr(deps);
+  };
+  try {
+    await ciclo(CLIENTE, 'Juan Pérez', 'wamid.AC.J', 'wamid.ACUSE.J', '1980x1000');
+    await ciclo(PEDRO, 'Pedro', 'wamid.AC.P', 'wamid.ACUSE.P', '1990x1000');
+    await falla('wamid.ACUSE.J');
+    await falla('wamid.ACUSE.P');
+  } finally { _reiniciarParaTests(); resetAtribucion(); }
+  const deAcuse = avisos.filter((a) => /NO se entregó/.test(a.motivo));
+  assert.deepEqual(deAcuse.map((a) => a.phone), [CLIENTE, PEDRO], `avisos: ${JSON.stringify(avisos)}`);
+});
+
 test('L4 r10: tras emitir, la carpeta del cliente queda con el turno COMPLETO (no la foto de mitad de generarPdf)', async () => {
   prepararVendedor();
   const kv = kvCarpetas();

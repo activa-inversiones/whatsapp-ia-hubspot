@@ -1188,8 +1188,10 @@ export async function handleWebhook(req, res, deps = {}) {
 
           // 3. Avisarle a Marcelo: un documento que no llego es una venta detenida.
           await safe('acuse.aviso', () => notifyHighValue(
-            deps.sendWhatsAppText || realSendWhatsAppText, rastro.telefono || ac.telefono,
-            { data: { telefono: rastro.telefono, folio: rastro.folio }, history: [] },
+            deps.sendWhatsAppText || realSendWhatsAppText, // [r17 · Codex] El aviso (y su cooldown) es del CLIENTE del documento, no del chat al que se envió:
+            // con CLIENTE el chat es el del vendedor. Rastro viejo sin `cliente` ⇒ el destinatario, como antes.
+            rastro.cliente || rastro.telefono || ac.telefono,
+            { data: { telefono: rastro.cliente || rastro.telefono, folio: rastro.folio }, history: [] },
             `[whatsapp] ${que} ${rastro.folio || ''} NO se entregó (${detalle}) — reenviarlo desde el inbox`));
 
           log('warn', 'acuse.fallo', `${que} ${rastro.folio || ac.msgId} rechazado por Meta: ${detalle}`);
@@ -2433,7 +2435,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // termino figurando "entregado" con hora mientras el cliente no tenia nada.
           try {
             await (deps.escribirEstado || escribirEstado)(`wamsg:${envio.msgId}`, {
-              msgId: envio.msgId, tipo: 'informe_termico', folio: numeroInforme, telefono: String(from) /* [chat] acuse del envío al chat */,
+              msgId: envio.msgId, tipo: 'informe_termico', folio: numeroInforme, telefono: String(from) /* [chat] destinatario del envío */, cliente: String(turno.cliente),
               // La clave viaja con el rastro: sin esto, un acuse de fallo intentaria soltar
               // `informe_termico:{tel}` y dejaria puesto el candado real (que ahora lleva
               // huella) — el cliente quedaria un mes sin informe por un envio que no llego.
@@ -3993,7 +3995,7 @@ Comuna: ${datos.comuna}`
                 try {
                   await (deps.escribirEstado || escribirEstado)(`wamsg:${envioV.msgId}`, {
                     msgId: envioV.msgId, tipo: 'informe_vientos', folio: folioV,
-                    telefono: String(from) /* [chat] acuse del envío al chat */, clave: claveV,
+                    telefono: String(from) /* [chat] destinatario del envío */, cliente: String(turno.cliente), clave: claveV,
                   }, 3 * 24 * 3600);
                 } catch { /* solo se pierde el diagnostico, no la entrega */ }
               }
@@ -4411,7 +4413,7 @@ Comuna: ${datos.comuna}`
           if (docSent && waDocMsgId) {
             try {
               await (deps.escribirEstado || escribirEstado)(`wamsg:${waDocMsgId}`, {
-                msgId: waDocMsgId, tipo: 'propuesta', folio: quoteNumber, telefono: String(from) /* [chat] acuse del envío al chat */,
+                msgId: waDocMsgId, tipo: 'propuesta', folio: quoteNumber, telefono: String(from) /* [chat] destinatario del envío */, cliente: String(turno.cliente),
               }, 3 * 24 * 3600);
             } catch { /* solo se pierde el diagnostico */ }
 

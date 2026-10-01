@@ -29,7 +29,9 @@ test('[r16 #6] ningún aviso a Marcelo (notifyHighValue) usa `from` como teléfo
   const src = lineas.map((l) => l.replace(/\/\/.*$/, '')).join('\n');
   const malas = [];
   for (const m of src.matchAll(/notifyHighValue\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,/g)) {
-    if (/^from$/.test(m[2].trim())) malas.push(m[0].replace(/\s+/g, ' '));
+    // [r17] también el telefono del RASTRO como destinatario del aviso: es el chat (el vendedor).
+    // `rastro.cliente || rastro.telefono || …` está bien: el cliente va primero.
+    if (/^from$/.test(m[2].trim()) || /^rastro\.telefono\b/.test(m[2].trim())) malas.push(m[0].replace(/\s+/g, ' '));
   }
   assert.deepEqual(malas, [], 'el aviso (y su cooldown) es del cliente: usar turno.cliente');
 });
