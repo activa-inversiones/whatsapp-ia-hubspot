@@ -135,3 +135,42 @@ test('Tridente r3 #1/#2 (30-sep): bajo atribución los informes (correlativo, re
   assert.deepEqual(espejos.map((c) => c.metadata?.source), [], 'ningún espejo de documento/video en la ficha del vendedor');
   assert.ok(spy.media.some((m) => m.phone === CLIENTE), 'y sí quedan en la ficha del cliente');
 });
+
+test('r18: informe térmico de Juan rechazado TARDE (después de uno de Pedro, mismo vendedor) → se libera SU candado y se avisa por él', async () => {
+  _reiniciarParaTests(); resetAtribucion(); CUERPOS.length = 0;
+  aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
+  const JUAN = '56976543210';   // distinto de CLIENTE: el dedup de propuesta es por par vendedor+cliente (2 min)
+  const PEDRO = '56912345678';
+  const { deps } = makeDeps();
+  const borrados = []; const avisos = [];
+  deps.borrarEstado = (k) => { borrados.push(k); };
+  deps.notifyHighValue = async (_s, phone, _ses, motivo) => { avisos.push({ phone, motivo }); return { sent: true }; };
+  const envios = [];
+  const envio = deps.sendWaDocument;
+  deps.sendWaDocument = async (to, mediaId, filename, ...r) => {
+    const res = await envio(to, mediaId, filename, ...r);
+    if (/^Informe-Termico/.test(filename)) envios.push(res.msgId);
+    return res;
+  };
+  const parseBase = deps.parseInbound;
+  try {
+    for (const [cliente, nombre] of [[JUAN, 'Juan Pérez'], [PEDRO, 'Pedro']]) {
+      fijar(VENDEDOR, cliente, nombre);
+      deps.parseInbound = () => ({ ...parseBase(), msgId: `wamid.R18.${cliente}` });
+      const antes = envios.length;
+      await handleWebhook({ body: {} }, makeRes(), deps);
+      assert.ok(await esperar(() => envios.length > antes), `sale el informe térmico de ${nombre} (envíos: ${envios.length})`);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(envios.length, 2);
+    // Meta había aceptado los dos (200); ahora llega el `failed` del PRIMERO (Juan).
+    deps.parseInbound = () => ({ ok: false });
+    deps.parseStatuses = () => [{ msgId: envios[0], estado: 'failed', fallo: true, telefono: VENDEDOR, codigo: 131026, motivo: 'no entregable' }];
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    await new Promise((r) => setTimeout(r, 200));
+  } finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.ok(borrados.some((k) => k.startsWith(`informe_termico:${JUAN}`)),
+    `el candado de JUAN se libera para poder reenviarle el informe (borrados: ${JSON.stringify(borrados)})`);
+  assert.ok(!borrados.some((k) => k.startsWith(`informe_termico:${PEDRO}`)), 'y no se toca el de Pedro');
+  assert.deepEqual(avisos.filter((a) => /NO se entregó/.test(a.motivo)).map((a) => a.phone), [JUAN], 'y el aviso a Marcelo es por Juan');
+});

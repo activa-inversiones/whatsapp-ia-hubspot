@@ -76,7 +76,9 @@ test('webhook.js PROVEE el hook, con candado de una sola vez por cliente', async
   const src = await leer('../src/oliver-gpt/webhook.js');
   assert.match(src, /enviarInformeTermico: \(comuna, opciones/, 'el hook tiene que estar en toolCtx');
   assert.match(src, /const despacharInforme = \(comuna,/, 'y el envio, en la funcion del turno');
-  assert.match(src, /informe_termico:\$\{String\(from\)/, 'el candado va por telefono');
+  // [r18] CAMBIO DECIDIDO: el «último envío» (informe_termico:<tel>:ultimo_msg) va por el CLIENTE del
+  // documento (turno.cliente), no por el chat; con CLIENTE son números distintos.
+  assert.match(src, /informe_termico:\$\{String\(turno\.cliente\)/, 'el candado va por el teléfono del cliente');
   assert.match(src, /30 \* 24 \* 3600/, 'candado de 30 dias: un informe repetido es spam');
 });
 

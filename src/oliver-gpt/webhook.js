@@ -1112,10 +1112,13 @@ export async function handleWebhook(req, res, deps = {}) {
           // fallo viejo le manda un segundo informe al cliente. Solo actua el acuse del
           // ULTIMO envio registrado.
           let esElVigente = true;   // ¿este envio sigue siendo el ultimo, o ya fue reemplazado?
-          if (rastro.telefono) {
+          // [r18] Se mide por el CLIENTE del documento (rastro viejo sin `cliente` ⇒ el destinatario): con CLIENTE el chat
+          // es el del vendedor, y un envío posterior a OTRO cliente hacía pasar éste por «ya reemplazado».
+          const _dueno = rastro.cliente || rastro.telefono;
+          if (_dueno) {
             try {
               const ultimo = await (deps.leerEstado || leerEstado)(
-                `${rastro.tipo}:${String(rastro.telefono).replace(/\D/g, '')}:ultimo_msg`);
+                `${rastro.tipo}:${String(_dueno).replace(/\D/g, '')}:ultimo_msg`);
               if (ultimo && ultimo !== ac.msgId) esElVigente = false;
             } catch { /* sin dato se asume vigente: es el caso normal */ }
           }
@@ -1176,11 +1179,11 @@ export async function handleWebhook(req, res, deps = {}) {
           // Se sueltan LOS DOS candados: si solo se soltara el de 30 dias, el reintento
           // caeria dentro de los 5 min del corto, se descartaria, y no queda programado
           // para despues — el cliente igual se queda sin informe.
-          if (rastro.tipo === 'informe_termico' && rastro.telefono && esElVigente) {
+          if (rastro.tipo === 'informe_termico' && (rastro.cliente || rastro.telefono) && esElVigente) {
             // Se usa la clave que dejo el envio; si el rastro es viejo y no la trae, se cae a
             // la de siempre. Un rastro sin clave es de antes de este cambio, no un error.
             const base = rastro.clave
-              || `informe_termico:${String(rastro.telefono).replace(/\D/g, '')}`;
+              || `informe_termico:${String(rastro.cliente || rastro.telefono).replace(/\D/g, '')}`;
             for (const k of [base, `${base}:en_curso`]) {
               try { (deps.borrarEstado || borrarEstado)(k); } catch { /* vence solo */ }
             }
@@ -2444,7 +2447,7 @@ export async function handleWebhook(req, res, deps = {}) {
             // Cual es el envio VIGENTE, para que un acuse tardio de uno anterior no suelte
             // el candado de este.
             await (deps.escribirEstado || escribirEstado)(
-              `informe_termico:${String(from).replace(/\D/g, '')}:ultimo_msg`, envio.msgId, 3 * 24 * 3600);
+              `informe_termico:${String(turno.cliente).replace(/\D/g, '')}:ultimo_msg`, envio.msgId, 3 * 24 * 3600); // [r18] del CLIENTE, no del chat
           } catch { /* sin rastro solo se pierde el diagnostico, no el informe */ }
 
           // 🔴 [2026-08-24] ESPEJO AL COCKPIT — EL DEFECTO QUE HIZO PREGUNTAR "¿POR QUE NO
