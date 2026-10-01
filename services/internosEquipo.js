@@ -40,15 +40,25 @@ export function esDuenio(waId) {
   return !!d && d === telefonoDuenio();
 }
 
-const VACIO = () => ({ at: 0, internos: new Set(), modoInterno: new Set(), completosModoInterno: new Set(), completoPorUlt9: new Map() });
+const VACIO = () => ({ at: 0, okAt: 0, internos: new Set(), modoInterno: new Set(), completosModoInterno: new Set(), completoPorUlt9: new Map() });
 let _estado = VACIO();
 
-/** Aplica la respuesta de sales-os ({internos_ult9, vendedores:[{ult9, telefono, oliver_interno}]}). */
+/**
+ * Aplica la respuesta de sales-os ({internos_ult9, vendedores:[{ult9, telefono, oliver_interno}],
+ * lista_confiable, consultada_ok_at}).
+ * [01-oct · Codex] `okAt` = hora de la última consulta BUENA de sales-os, y SOLO si la lista viene
+ * marcada confiable. Con la BD de sales-os caída (lista_confiable:false) o un sales-os viejo que no
+ * manda la marca, okAt = 0 ⇒ la lista no es vigente y CLIENTE se rechaza (fail-closed). `at` sigue
+ * siendo la hora en que el bot la recibió: el ROL usa la última lista conocida.
+ */
 export function aplicarLista(data, ahora = Date.now()) {
   if (!data || !Array.isArray(data.internos_ult9)) return false;
   const vendedores = Array.isArray(data.vendedores) ? data.vendedores.filter(Boolean) : [];
+  const okServidor = Number(data.consultada_ok_at);
+  const okAt = data.lista_confiable === true ? (Number.isFinite(okServidor) && okServidor > 0 ? Math.min(okServidor, ahora) : ahora) : 0;
   _estado = {
     at: ahora,
+    okAt,
     internos: new Set(data.internos_ult9.map(ult9).filter(Boolean)),
     modoInterno: new Set(vendedores.filter((v) => v.oliver_interno === true).map((v) => ult9(v.ult9)).filter(Boolean)),
     // Para el comando CLIENTE: solo vendedores con modo interno, por número COMPLETO. Si sales-os
@@ -85,7 +95,7 @@ export function perfilEquipo(waId, ahora = Date.now()) {
   const completoDeLaCola = k ? _estado.completoPorUlt9.get(k) : '';
   const esEquipo = deLaLista && (completoDeLaCola ? completoDeLaCola === completo(waId) : true);
   if (_estado.at && _estado.completosModoInterno.has(completo(waId))) {
-    const fresca = ahora - _estado.at <= MAX_ANTIGUEDAD_LISTA_CLIENTE_MS;
+    const fresca = listaEquipoVigente(ahora);   // confiable y con la última consulta buena ≤30 min
     return { rol: 'vendedor', puedeFijar: fresca, puedeTerminar: true, motivoBloqueo: fresca ? null : 'lista_desactualizada', esEquipo: true };
   }
   if (deLaLista && _estado.modoInterno.has(k) && !completoDeLaCola) {
@@ -123,7 +133,7 @@ export function modoInternoOliver(phone) {
 
 /** ¿Hay lista del equipo cargada y con ≤30 min? (sin ella no se puede validar a quién se fija con CLIENTE) */
 export function listaEquipoVigente(ahora = Date.now()) {
-  return _estado.at > 0 && ahora - _estado.at <= MAX_ANTIGUEDAD_LISTA_CLIENTE_MS;
+  return _estado.okAt > 0 && ahora - _estado.okAt <= MAX_ANTIGUEDAD_LISTA_CLIENTE_MS;
 }
 
 export function estadoLista() {

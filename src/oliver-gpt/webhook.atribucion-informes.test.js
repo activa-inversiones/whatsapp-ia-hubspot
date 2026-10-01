@@ -118,7 +118,7 @@ async function esperar(cond, ms = 8000) {
 
 test('Tridente r3 #1/#2 (30-sep): bajo atribución los informes (correlativo, registro, archivo, espejos) son del CLIENTE', async () => {
   _reiniciarParaTests(); resetAtribucion(); CUERPOS.length = 0;
-  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
+  aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
   fijar(VENDEDOR, CLIENTE, 'Juan Pérez');
   const { deps, spy } = makeDeps();
   try {

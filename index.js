@@ -5545,15 +5545,8 @@ app.post("/webhook", async (req, res) => {
 
   // [r11 #1 · Codex] V1 (respaldo) no entiende CLIENTE: con un cliente fijado (o si es un vendedor)
   // cotizaría a nombre de quien escribe. No se atiende acá; se pide reenviar (Oliver GPT lo tomará).
-  // [r13 #3] Los comandos admin del dueño pasan; al vendedor sin cliente se le dice la causa real.
-  try {
-    const _v1No = v1Rechazo(waId, inc.enviadoAtMs, { esComandoAdmin: !!parseAdminCmd(inc.text || "") });
-    if (_v1No) {
-      logInfo("v1_atribucion", `…${String(waId).slice(-4)}: V1 no atiende a quien cotiza para un cliente / vendedor`);
-      try { await waSend(waId, _v1No); } catch (e) { logErr("v1_atribucion_send", e); }
-      return;
-    }
-  } catch (e) { logErr("v1_atribucion", e); return; } // fail-closed: ante la duda, V1 no cotiza
+  // [r16 #3 · Codex] V1 y la atribución: la decisión (v1Rechazo) se toma UNA vez, DENTRO del lock
+  // (abajo). Afuera no hay chequeo terminal: un CLIENTE que entrara al lock antes cambiaría la respuesta.
 
   const rc = rateOk(waId);
   if (!rc.ok) return waSend(waId, rc.msg);

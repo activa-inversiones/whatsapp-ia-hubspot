@@ -32,7 +32,7 @@ test('decisión dueño 30-sep: solo el dueño o un vendedor con oliver_interno (
   try {
     assert.equal(puedeFijar(VENDEDOR), false, 'lista nunca cargada ⇒ fail-closed');
     assert.equal(puedeFijar(ADMIN), true, 'el dueño sigue pudiendo');
-    aplicarLista({ internos_ult9: ['911110000', '922220000'], vendedores: [
+    aplicarLista({ lista_confiable: true, internos_ult9: ['911110000', '922220000'], vendedores: [
       { ult9: '911110000', telefono: VENDEDOR, oliver_interno: true },
       { ult9: '922220000', telefono: OTRO, oliver_interno: false },   // del equipo, sin modo interno
     ] });
@@ -49,7 +49,7 @@ test('decisión dueño 30-sep: solo el dueño o un vendedor con oliver_interno (
 
 test('decisión dueño 30-sep: si sales-os no manda el teléfono completo, ningún vendedor usa CLIENTE', () => {
   _reiniciarParaTests();
-  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', oliver_interno: true }] });
+  aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', oliver_interno: true }] });
   assert.equal(puedeFijar(VENDEDOR), false);
   _reiniciarParaTests();
 });
@@ -131,12 +131,12 @@ test('decisión dueño 30-sep: UNA regla de rol (dueño / vendedor / nadie)', ()
   _reiniciarParaTests();
   const prev = process.env.ADMIN_PHONE; process.env.ADMIN_PHONE = ADMIN;
   try {
-    aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
+    aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
     assert.equal(perfilEquipo(ADMIN).rol, 'duenio');
     assert.equal(perfilEquipo(VENDEDOR).rol, 'vendedor');
     assert.equal(perfilEquipo(OTRO).rol, null);
     // [Thermos r4] El ROL usa la última lista conocida (sin antigüedad); la antigüedad solo frena FIJAR.
-    aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] },
+    aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] },
       Date.now() - 60 * 60 * 1000);
     const p = perfilEquipo(VENDEDOR);
     assert.deepEqual([p.rol, p.puedeFijar, p.puedeTerminar, p.motivoBloqueo], ['vendedor', false, true, 'lista_desactualizada']);
@@ -242,7 +242,7 @@ test('Tridente r4 #7 (30-sep): CLIENTE acepta SOLO celular chileno; un "56…" q
 
 test('Tridente r4 #5 (30-sep): CLIENTE OFF funciona aunque la lista tenga >30 min (la antigüedad solo frena FIJAR)', () => {
   _reiniciarParaTests();
-  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] },
+  aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] },
     Date.now() - 31 * 60 * 1000);
   assert.equal(autorizaComandoCliente(VENDEDOR, 'CLIENTE OFF'), true, 'OFF se acepta');
   assert.equal(autorizaComandoCliente(VENDEDOR, `CLIENTE Juan +${JUAN}`), false, 'fijar uno nuevo, no');
@@ -252,12 +252,12 @@ test('Tridente r4 #5 (30-sep): CLIENTE OFF funciona aunque la lista tenga >30 mi
 
 test('Tridente r4 #6 (30-sep): un +34 con la misma cola que un vendedor con número completo es CLIENTE, no equipo', () => {
   _reiniciarParaTests();
-  aplicarLista({ internos_ult9: ['912345678'], vendedores: [{ ult9: '912345678', telefono: '56912345678', oliver_interno: true }] });
+  aplicarLista({ lista_confiable: true, internos_ult9: ['912345678'], vendedores: [{ ult9: '912345678', telefono: '56912345678', oliver_interno: true }] });
   assert.notEqual(perfilEquipo('34912345678').rol, 'vendedor_ambiguo', 'el vendedor tiene número completo y es otro');
   assert.equal(perfilEquipo('34912345678').esEquipo, false, 'se le puede fijar como cliente');
   assert.equal(perfilEquipo('56912345678').esEquipo, true, 'el vendedor sí es del equipo');
   // Vendedor SIN número completo cargado: por la cola no se puede distinguir → se trata como equipo.
-  aplicarLista({ internos_ult9: ['912345678'], vendedores: [{ ult9: '912345678', oliver_interno: true }] });
+  aplicarLista({ lista_confiable: true, internos_ult9: ['912345678'], vendedores: [{ ult9: '912345678', oliver_interno: true }] });
   assert.equal(perfilEquipo('34912345678').rol, 'vendedor_ambiguo');
   assert.equal(perfilEquipo('34912345678').esEquipo, true);
   assert.equal(perfilEquipo('34912345678').motivoBloqueo, 'no_habilitado');
@@ -365,11 +365,12 @@ test('decisión 01-oct: solo una COTIZACIÓN reabre un perdido — reabrir:true 
 test('r11 #1: V1 (respaldo) no cotiza para quien tiene cliente fijado ni para un vendedor', async () => {
   const fs = await import('node:fs');
   const idx = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-  // El chequeo va en el camino V1, ANTES de tomar el lock y de cotizar nada.
-  const v1 = idx.slice(idx.indexOf('const inc = extractMsg(req.body);\n  if (!inc.ok) return;'.replace(/\n/g, idx.includes('\r\n') ? '\r\n' : '\n')));
+  // El chequeo va en el camino V1, ANTES de cotizar nada. [r16 #3] CAMBIO DECIDIDO (Codex): ya no
+  // antes del lock sino DENTRO (lo defiende «r16 #3»); acá se exige que preceda a cargar la sesión.
+  const v1 = idx.slice(idx.indexOf('const release = await acquireLock(waId);'));
   const iRechazo = v1.indexOf('v1Rechazo(waId, inc.enviadoAtMs');
-  const iLock = v1.indexOf('const release = await acquireLock(waId);');
-  assert.ok(iRechazo > 0 && iLock > 0 && iRechazo < iLock, 'V1 rechaza antes de tomar el lock');
+  const iSesion = v1.indexOf('await loadSessionFromStore(waId);');
+  assert.ok(iRechazo > 0 && iSesion > 0 && iRechazo < iSesion, 'V1 rechaza antes de cargar la sesión y cotizar');
   const { v1Rechazo, TEXTO_V1_CON_ATRIBUCION } = await import('./identidadCotizacion.js');
   assert.match(TEXTO_V1_CON_ATRIBUCION, /Tuve un problema procesando tu mensaje, reenvíalo en un minuto/);
   const con = { perfil: () => ({ rol: 'duenio' }), leerAtribucion: () => ({ phone: JUAN, name: 'Juan', gen: 1 }) };
@@ -377,6 +378,15 @@ test('r11 #1: V1 (respaldo) no cotiza para quien tiene cliente fijado ni para un
   assert.equal(v1Rechazo(ADMIN, null, { deps: { perfil: () => ({ rol: 'duenio' }), leerAtribucion: () => null } }), null, 'dueño para sí: V1 normal');
   assert.ok(v1Rechazo(VENDEDOR, null, { deps: { perfil: () => ({ rol: 'vendedor' }), leerAtribucion: () => null } }), 'vendedor sin cliente');
   assert.equal(v1Rechazo(OTRO, null, { deps: { perfil: () => ({ rol: null }), leerAtribucion: () => null } }), null, 'cliente normal');
+});
+
+test('r16 #3: en V1 la ÚNICA decisión terminal es la de dentro del lock (no hay rechazo antes de tomarlo)', async () => {
+  const fs = await import('node:fs');
+  const idx = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+  const llamadas = [...idx.matchAll(/v1Rechazo\(waId, inc\.enviadoAtMs/g)].map((m) => m.index);
+  const iLock = idx.indexOf('const release = await acquireLock(waId);');
+  assert.equal(llamadas.length, 1, `una sola evaluación (hay ${llamadas.length})`);
+  assert.ok(llamadas[0] > iLock, 'y va después de tomar el lock');
 });
 
 test('r14: V1 re-evalúa v1Rechazo DENTRO del lock (un CLIENTE que entró al lock antes que el turno V1 manda)', async () => {
@@ -406,6 +416,26 @@ test('r13 #3/#4: V1 deja pasar los comandos admin del dueño y al vendedor le di
   assert.equal(v1Rechazo(OTRO, null, { deps: { perfil: () => ({ rol: null }), leerAtribucion: () => null } }), null, 'cliente normal');
 });
 
+test('r16 #1: lista NO confiable (BD de sales-os caída) → no es vigente y CLIENTE se rechaza, aunque haya llegado recién', async () => {
+  _reset(); _reiniciarParaTests();
+  const prev = process.env.ADMIN_PHONE; process.env.ADMIN_PHONE = ADMIN;
+  try {
+    // sales-os contesta ok:true, pero su consulta de vendedores falló: solo la base fija.
+    aplicarLista({ internos_ult9: ['957296035'], vendedores: [], lista_confiable: false, consultada_ok_at: null });
+    const m = await procesarComandoCliente({ waId: ADMIN, texto: `CLIENTE Colega +${VENDEDOR}`, escribio: async () => true, marcar: () => {} });
+    assert.match(m, /La lista del equipo no está disponible/);
+    assert.equal(obtener(ADMIN), null);
+    // Confiable pero con la última consulta buena de hace 31 min: tampoco.
+    aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }],
+      lista_confiable: true, consultada_ok_at: Date.now() - 31 * 60 * 1000 });
+    const m2 = await procesarComandoCliente({ waId: ADMIN, texto: `CLIENTE Juan +${JUAN}`, escribio: async () => true, marcar: () => {} });
+    assert.match(m2, /La lista del equipo no está disponible/, 'la hora que manda es la de la última consulta buena');
+  } finally {
+    if (prev === undefined) delete process.env.ADMIN_PHONE; else process.env.ADMIN_PHONE = prev;
+    _reiniciarParaTests(); _reset();
+  }
+});
+
 test('r15: sin lista del equipo (nunca cargó o >30 min) CLIENTE se rechaza para TODOS, incluido el dueño; OFF sigue', async () => {
   _reset(); _reiniciarParaTests();
   const prev = process.env.ADMIN_PHONE; process.env.ADMIN_PHONE = ADMIN;
@@ -413,7 +443,7 @@ test('r15: sin lista del equipo (nunca cargó o >30 min) CLIENTE se rechaza para
     const m1 = await procesarComandoCliente({ waId: ADMIN, texto: `CLIENTE Colega +${VENDEDOR}`, escribio: async () => true, marcar: () => {} });
     assert.match(m1, /La lista del equipo no está disponible, intenta en unos minutos/, 'nunca cargó');
     assert.equal(obtener(ADMIN), null, 'no fijó el número de un posible vendedor');
-    aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] },
+    aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] },
       Date.now() - 31 * 60 * 1000);
     const m2 = await procesarComandoCliente({ waId: ADMIN, texto: `CLIENTE Juan +${JUAN}`, escribio: async () => true, marcar: () => {} });
     assert.match(m2, /La lista del equipo no está disponible/, 'vieja >30 min');
@@ -471,9 +501,9 @@ test('5 · CLIENTE rechaza el propio número de quien escribe y cualquier númer
 test('10 · si la lista del equipo no se refrescó con éxito en 30 min, CLIENTE se rechaza (fail-closed por antigüedad)', () => {
   _reiniciarParaTests();
   const hace31 = Date.now() - 31 * 60 * 1000;
-  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] }, hace31);
+  aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] }, hace31);
   assert.equal(puedeFijar(VENDEDOR), false);
-  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
+  aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
   assert.equal(puedeFijar(VENDEDOR), true);
   _reiniciarParaTests();
 });

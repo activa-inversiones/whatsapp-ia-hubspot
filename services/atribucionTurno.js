@@ -53,7 +53,13 @@ export async function alEntrar({ turno, state, history, kv, log = () => {} }) {
     // emitir). Se lee la carpeta y, si su folio es más nuevo, se recupera.
     if (mov.mov === 'igual' && state.carpeta_gen !== a.gen) {
       const leida = await leerCarpeta({ from: turno.quienEscribe, carpeta: turno.cliente, leer: kv.leer });
-      const lq = leida.ok ? leida.valor?.state?.last_quote : null;
+      // [r16 #5] Si no se pudo leer, NO se sigue sin su folio (la corrección quemaría uno nuevo):
+      // se corta el turno igual que un cambio de carpeta fallido; el próximo mensaje reintenta.
+      if (!leida.ok) {
+        log('error', `carpeta: re-fijado del mismo cliente sin poder leer su carpeta (${leida.error})`);
+        return { mov: 'error', error: leida.error, previa, texto: TEXTO_ERROR_CARPETA };
+      }
+      const lq = leida.valor?.state?.last_quote || null;
       if (lq && (!state.last_quote || Number(lq.at || 0) > Number(state.last_quote.at || 0))) state.last_quote = lq;
     }
     state.carpeta_gen = a.gen;

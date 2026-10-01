@@ -84,14 +84,14 @@ async function correr(deps, mediaStore = []) {
 function prepararVendedor() {
   _reiniciarParaTests();
   resetAtribucion();
-  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
+  aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] });
 }
 
 const HACE_31_MIN = () => Date.now() - 31 * 60 * 1000;
 
 test('Thermos r4 (30-sep): lista del equipo con >30 min — la atribución ya fijada SIGUE valiendo (la antigüedad solo frena fijar)', async () => {
   _reiniciarParaTests(); resetAtribucion();
-  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] }, HACE_31_MIN());
+  aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] }, HACE_31_MIN());
   fijar(VENDEDOR, CLIENTE, 'Juan Pérez');
   const ev = []; const pdf = [];
   try { await correr(makeDeps(VENDEDOR, 'wamid.VEND.VIEJA', ev, pdf, { medida: '1500x1000' })); }
@@ -103,7 +103,7 @@ test('Thermos r4 (30-sep): lista del equipo con >30 min — la atribución ya fi
 
 test('Tridente r3 #3 (30-sep): lista con >30 min y vendedor SIN cliente → se corta y se dice la CAUSA (no pedir CLIENTE en bucle)', async () => {
   _reiniciarParaTests(); resetAtribucion();
-  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] }, HACE_31_MIN());
+  aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', telefono: VENDEDOR, oliver_interno: true }] }, HACE_31_MIN());
   const ev = []; const pdf = []; const textos = [];
   const deps = makeDeps(VENDEDOR, 'wamid.VEND.VIEJA.SIN', ev, pdf, { textos });
   let llego = false;
@@ -118,7 +118,7 @@ test('Tridente r3 #3 (30-sep): lista con >30 min y vendedor SIN cliente → se c
 
 test('Tridente r3 #3 (30-sep): en modo interno (ult9) sin número completo confirmado → se corta y se dice que no está habilitado', async () => {
   _reiniciarParaTests(); resetAtribucion();
-  aplicarLista({ internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', oliver_interno: true }] }); // sin `telefono`
+  aplicarLista({ lista_confiable: true, internos_ult9: ['911110000'], vendedores: [{ ult9: '911110000', oliver_interno: true }] }); // sin `telefono`
   const ev = []; const pdf = []; const textos = [];
   const deps = makeDeps(VENDEDOR, 'wamid.VEND.SINROL', ev, pdf, { textos });
   let llego = false;
@@ -370,6 +370,25 @@ test('r13 #2 (Thermos MEDIO): RESET de un CLIENTE NORMAL es como siempre — sin
   finally { _reiniciarParaTests(); resetAtribucion(); }
   assert.deepEqual(escrituras, [], 'un cliente normal no toca carpetas');
   assert.ok(textos.some((x) => /partimos de cero/.test(x.t)), `textos: ${JSON.stringify(textos.map((x) => x.t))}`);
+});
+
+test('r16 #2: los avisos a Marcelo (notifyHighValue) apuntan al CLIENTE — Juan y luego Pedro del mismo vendedor no comparten cooldown', async () => {
+  prepararVendedor();
+  const avisos = [];
+  const correrPara = async (cliente, nombre, msgId, medida) => {
+    fijar(VENDEDOR, cliente, nombre);
+    const ev = []; const pdf = [];
+    const deps = makeDeps(VENDEDOR, msgId, ev, pdf, { medida });
+    deps.sendWaDocument = async () => ({ ok: false, status: 400, code: 131026 });   // rechazo CONOCIDO → aviso a Marcelo
+    deps.notifyHighValue = async (_send, phone, _ses, motivo) => { avisos.push({ phone, motivo }); return { sent: true }; };
+    await correr(deps);
+  };
+  try {
+    await correrPara(CLIENTE, 'Juan Pérez', 'wamid.VEND.AVISO.J', '1960x1000');
+    await correrPara('56912345678', 'Pedro', 'wamid.VEND.AVISO.P', '1970x1000');
+  } finally { _reiniciarParaTests(); resetAtribucion(); }
+  const deEntrega = avisos.filter((a) => /no se pudo entregar/.test(a.motivo));
+  assert.deepEqual(deEntrega.map((a) => a.phone), [CLIENTE, '56912345678'], `avisos: ${JSON.stringify(avisos)}`);
 });
 
 test('L4 r10: tras emitir, la carpeta del cliente queda con el turno COMPLETO (no la foto de mitad de generarPdf)', async () => {

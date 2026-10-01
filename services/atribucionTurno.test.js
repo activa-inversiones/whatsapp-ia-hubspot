@@ -10,6 +10,29 @@ const J = '56987654321';
 
 function turnoCon(a) { return { quienEscribe: V, cliente: J, atribucion: a, _trasEmitirHecho: false }; }
 
+test('r16 #4: ATRIBUCION_VIGENCIA_MS no numérico, 0 o negativo → la vigencia por defecto (2 h)', async () => {
+  const { vigenciaMs } = await import('./atribucionStore.js');
+  const prev = process.env.ATRIBUCION_VIGENCIA_MS;
+  try {
+    for (const malo of ['abc', '0', '-5', 'Infinity', '']) {
+      process.env.ATRIBUCION_VIGENCIA_MS = malo;
+      assert.equal(vigenciaMs(), 2 * 60 * 60 * 1000, `"${malo}"`);
+    }
+    process.env.ATRIBUCION_VIGENCIA_MS = '1000';
+    assert.equal(vigenciaMs(), 1000);
+  } finally { if (prev === undefined) delete process.env.ATRIBUCION_VIGENCIA_MS; else process.env.ATRIBUCION_VIGENCIA_MS = prev; }
+});
+
+test('r16 #5: re-fijar el MISMO cliente con la carpeta activa y la LECTURA falla → mov:error (no seguir sin su folio)', async () => {
+  const { alEntrar } = await import('./atribucionTurno.js');
+  const turno = { quienEscribe: V, cliente: J, atribucion: { phone: J, name: 'Juan', gen: 99 } };
+  const state = { carpeta_activa: J, carpeta_gen: 1 };   // sesión recargada: dice Juan, gen vieja
+  const r = await alEntrar({ turno, state, history: [],
+    kv: { leer: async () => ({ ok: false }), escribir: async () => ({ ok: true }) } });
+  assert.equal(r.mov, 'error');
+  assert.ok(r.texto, 'con el texto para quien escribe');
+});
+
 test('falla al guardar el folio → NO consume y avisa', async () => {
   _resetAtribuciones();
   const a = fijar(V, J, 'Juan');

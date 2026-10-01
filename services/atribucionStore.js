@@ -26,7 +26,10 @@ let _LLEGADA = 0;
 
 /** ÚNICA fuente de la vigencia (vencimiento y texto del comando). Se relee del env en cada uso. */
 export function vigenciaMs() {
-  return Number(process.env.ATRIBUCION_VIGENCIA_MS || 2 * 60 * 60 * 1000);
+  // [r16 #4] Un valor no numérico, 0, negativo o infinito NO es una vigencia: se usa la de 2 h.
+  // (Con NaN, `Date.now() - fijadoAt > NaN` es siempre false ⇒ la atribución no vencía nunca.)
+  const v = Number(process.env.ATRIBUCION_VIGENCIA_MS);
+  return Number.isFinite(v) && v > 0 ? v : 2 * 60 * 60 * 1000;
 }
 
 /** Hora de un mensaje de WhatsApp en ms (acepta segundos de Meta, ms o ISO). null si no hay. */

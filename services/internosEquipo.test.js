@@ -27,7 +27,7 @@ test('un número de la lista NO dispara seguimiento; dado de baja, vuelve a ser 
     assert.equal(shouldSkipFollowup('+56 9 1111 2222'), true, 'vendedor: sin follow-up');
     assert.equal(shouldSkipFollowup('56933334444'), true, 'también el que no tiene modo interno');
     assert.equal(shouldSkipFollowup('56955556666'), false, 'un cliente sigue recibiendo su follow-up');
-    aplicarLista({ ...LISTA, internos_ult9: ['957296035', '984412961'], vendedores: [] }); // baja
+    aplicarLista({ lista_confiable: true, ...LISTA, internos_ult9: ['957296035', '984412961'], vendedores: [] }); // baja
     assert.equal(shouldSkipFollowup('56911112222'), false, 'de baja: cliente normal');
   } finally {
     for (const [k, v] of Object.entries({ MARCELO_PHONE: previo.M, ESCALATION_PHONE: previo.E, OWNER_NOTIFICATION_PHONE: previo.O, INTERNAL_PHONES: previo.I })) {

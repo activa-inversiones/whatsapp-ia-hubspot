@@ -1741,7 +1741,7 @@ export async function handleWebhook(req, res, deps = {}) {
       let imgLoopMsg = null;
       if (state.unreadable_streak === 2) {
         const esc = await safe('imgloop.notify', () =>
-          notifyHighValue(enviarSinPausa, from, { data: { ...state }, history },
+          notifyHighValue(enviarSinPausa, turno.cliente, { data: { ...state }, history },
             'oliver_gpt:imagenes_ilegibles — el cliente mandó varias fotos que la IA no pudo leer; las fotos SÍ están guardadas en el panel (media), cotizar desde ahí'));
         imgLoopMsg = (esc && esc.sent)
           ? 'Sus fotos SÍ quedaron guardadas de mi lado 👍. Se las paso a Marcelo para que le prepare la propuesta desde ahí. Si prefiere avanzar al tiro, también puede escribirme las medidas por texto (ancho × alto y tipo).'
@@ -1785,7 +1785,7 @@ export async function handleWebhook(req, res, deps = {}) {
       // Un cliente que pide hablar con una persona es de lo más caro que pasa por acá, y el comentario
       // de arriba ya decía que esto es "plata/reputación". Ahora el fallo se DECLARA.
       const rNotify = await safe('escalate.notify', () =>
-        notifyHighValue(enviarSinPausa, from, { data: { ...state }, history },
+        notifyHighValue(enviarSinPausa, turno.cliente, { data: { ...state }, history },
           'cliente pidió hablar con un humano / molesto'));
       const rTemplate = await safe('escalate.template', () =>
         escalationTemplateFn(state.name || '', 'cliente pide hablar con humano'));
@@ -2679,7 +2679,7 @@ Comuna: ${datos.comuna}`
             // (ESCALATION_PHONE/OWNER_PHONE). Se le escapó a la primera corrección — los
             // otros 6 llamados sí se cambiaron y este quedó (P2 de Codex, 2ª pasada).
             enviarSinPausa, // waSendFn(to, body) — firma compatible
-            from,
+            turno.cliente,   // [r16 #2] el aviso es del CLIENTE (y su cooldown también)
             {
               data: { ...state, ...(payload.data || {}) },
               history,
@@ -3541,7 +3541,7 @@ Comuna: ${datos.comuna}`
             // sepa que ya viene. Igual que channel-agent.js (IG/FB).
             log('error', 'generarPdf.correlativo', 'correlativo ISO no disponible — NO se emite PDF, se escala a Marcelo');
             await safe('generarPdf.correlativo.escalate', () =>
-              notifyHighValue(enviarSinPausa, from, { data: { ...state }, history },
+              notifyHighValue(enviarSinPausa, turno.cliente, { data: { ...state }, history },
                 '[whatsapp] cliente pidió su Propuesta Técnica Económica pero el correlativo ISO no respondió — emitirla desde el inbox (ops.activalabs.ai)'));
             // 🔴 [Kimi, compuerta 16-sep] SIN ESTO, EL CANDADO SE VUELVE EL PROBLEMA.
             // Textual: *"si el HTTP del correlativo falla, la reserva queda tomada 120 s…
@@ -5035,7 +5035,7 @@ Comuna: ${datos.comuna}`
               .map((it) => `• ${it.producto_label || it.product || 'Ventana'} (${it.measures_original || it.measures || 's/medida'})`)
               .join('\n');
             await safe('generarPdf.referencial.escalate', () =>
-              notifyHighValue(enviarSinPausa, from,
+              notifyHighValue(enviarSinPausa, turno.cliente,
                 { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber, grand_total: grandTotal, items: input.items }, history },
                 `oliver_gpt:ventana_fuera_estandar — 🔧 REVISIÓN DE INGENIERÍA: ${_refItems.length} ventana(s) fuera del estándar de fábrica en el folio ${quoteNumber}. Confirmar medida y precio final antes de fabricar:\n${_lista}`));
           }
@@ -5066,7 +5066,7 @@ Comuna: ${datos.comuna}`
                 motivo: propuestaDudosaMotivo || 'desconocido', nombre: clientName || '' });
             } else {
               await safe('generarPdf.escalate', () =>
-                notifyHighValue(enviarSinPausa, from,
+                notifyHighValue(enviarSinPausa, turno.cliente,
                   { data: { ...state, name: clientName, comuna: clientComuna, quote_number: quoteNumber }, history },
                   `[whatsapp] PDF ${quoteNumber} no se pudo entregar al cliente — enviarlo desde el inbox (ops.activalabs.ai)`));
             }
@@ -5495,7 +5495,7 @@ Comuna: ${datos.comuna}`
       if (_lastH && _lastH.role === 'assistant' && !String(_lastH.content || '').trim()) _lastH.content = reply;
       if (replyEmptyAlertAllowed()) {
         await safe('replyEmpty.notify', () =>
-          notifyHighValue(enviarSinPausa, from, { data: { ...newState }, history: newHistory },
+          notifyHighValue(enviarSinPausa, turno.cliente, { data: { ...newState }, history: newHistory },
             'oliver_gpt:respuesta_vacia — el cerebro devolvió texto vacío (ver log turn.reply_empty); el cliente recibió un fallback'));
       }
     }

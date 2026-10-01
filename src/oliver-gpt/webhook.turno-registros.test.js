@@ -24,6 +24,16 @@ test('ningún registro usa `from`: solo líneas marcadas [chat] (lista blanca ex
   assert.deepEqual(malas, [], 'registros con `from` (deben usar turno.cliente o marcarse [chat] con motivo)');
 });
 
+test('[r16 #6] ningún aviso a Marcelo (notifyHighValue) usa `from` como teléfono del cliente', () => {
+  // Sin comentarios (los // del medio de una llamada partida en líneas no deben ocultar el argumento).
+  const src = lineas.map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+  const malas = [];
+  for (const m of src.matchAll(/notifyHighValue\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,/g)) {
+    if (/^from$/.test(m[2].trim())) malas.push(m[0].replace(/\s+/g, ' '));
+  }
+  assert.deepEqual(malas, [], 'el aviso (y su cooldown) es del cliente: usar turno.cliente');
+});
+
 test('la lista blanca existe y está acotada (si crece, que sea a propósito)', () => {
   const blancas = lineas.filter((l) => /\[chat\]/.test(l) && PROHIBIDOS.some((re) => re.test(l)));
   // 17 al 30-sep: mensajes inbound/outbound del chat (13), acuses de envío (3), telemetría (1).
