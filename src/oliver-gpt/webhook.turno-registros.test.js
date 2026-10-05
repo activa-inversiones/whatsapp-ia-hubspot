@@ -5,6 +5,15 @@
 // webhook.js y falla si aparece `external_id: from`, `phone: from` o `telefono: String(from)` SIN la
 // marca `[chat]` en la misma línea. La marca es la LISTA BLANCA explícita: quien la ponga tiene que
 // poder explicar por qué ese dato es del chat y no un registro del cliente.
+//
+// [#1093] SIGUE SIENDO UNA GUARDIA DE FUENTE, A PROPÓSITO (AGENTS.md:63 prefiere probar conducta). No se
+// convirtió porque no era directo: medido el 05-oct, la regla cubre un archivo de ~5.800 líneas con 17 sitios marcados
+// `[chat]` y cero sin marca; una prueba de conducta equivalente tendría que armar un turno de vendedor
+// (from ≠ turno.cliente) que recorra CADA camino que escribe un registro (lead, quote, informes, media, espejos,
+// deal, entregas, avisos), cada uno con sus dobles. Los caminos principales ya tienen su prueba de conducta
+// (webhook.atribucion-vendedor.test.js, webhook.atribucion-informes.test.js); este archivo es el cinturón para el
+// sitio que ninguna recorre. Para retirarla: una regla `no-restricted-syntax` de eslint con selector AST (la lista
+// blanca pasaría a `eslint-disable-line` en esas 17 líneas de webhook.js) o un recorrido de conducta por sitio.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

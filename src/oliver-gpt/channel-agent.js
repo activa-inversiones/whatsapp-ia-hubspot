@@ -54,6 +54,7 @@ import { stripMontos, stripAccionesFalsas, quoteDataComplete } from './pdf-inten
 // del título viejo de Marcelo en IG/FB (se actualizó escalation.js y las copias quedaron atrás).
 import { escalationMessage, isEscalationRequest, sendEscalationTemplate } from './escalation.js';
 import { crearCanalesAvisoVidrio, almacenDeAvisos } from './canalesAvisoVidrio.js'; // [2026-10-05 r8] los tres canales del aviso por satén perdido (la MISMA fábrica que WhatsApp)
+import { FOLIO_REUSO_MS } from '../../services/folioReuso.js'; // cuánto vive un folio reusado: UNA constante para los dos canales
 
 /* =========================================================================
  * ESTADO IN-MEMORY (piloto) — por canal+sender.
@@ -495,8 +496,7 @@ export async function handleChannelTurn(
           // nuevo, sin reintentar envío, sin depender del LLM. REGLA #35 garantizada por código.
           // Reuso/estado del folio ACOTADO a 48h: pasado eso, la sesión se trata como nueva
           // (una cotización genuinamente nueva semanas después NO debe heredar un folio viejo).
-          const QUOTE_REUSE_MS = 48 * 60 * 60 * 1000;
-          const lq = (state.last_quote && (Date.now() - (state.last_quote.at || 0)) < QUOTE_REUSE_MS)
+          const lq = (state.last_quote && (Date.now() - (state.last_quote.at || 0)) < FOLIO_REUSO_MS)
             ? state.last_quote : null;
           if (lq && lq.quote_number && lq.escalated) {
             // [2026-07-14 auto-recuperación] El lock permanente dejaba al cliente SIN PDF para
@@ -696,12 +696,12 @@ export async function handleChannelTurn(
           }
           RECENT_QUOTES.set(dedupKey, { quote_number: quoteNumber, at: Date.now() });
           // [2026-10-05] Los avisos del vidrio, ya con su folio: al tablero (log) y, si el satén se
-          // perdió, UN aviso al dueño por el canal de escalaciones de siempre (highValueNotifier;
-          // su cooldown por id+motivo, y el motivo lleva el folio, lo deja en uno por folio —
-          // aunque el folio se REUSE en una corrección). No cambia el precio: es carril plata.
-          // [r8] Texto Y plantilla, siempre, una vez por folio (la plantilla es la misma que en WhatsApp: el dueño
+          // perdió, un aviso al dueño por texto Y plantilla (la misma plantilla que en WhatsApp: el dueño
           // recibe todo por WhatsApp aunque el cliente sea de IG/FB); si ninguno sale, un evento en la conversación
-          // del cliente (como la escalación #888). Nadie espera esta promesa acá (nunca rechaza). Ver `avisarVidrio`.
+          // del cliente (como la escalación #888). Un aviso por folio y vidrio durante 72 h, aunque el folio se
+          // REUSE en una corrección: lo decide la marca de `avisarVidrio`; el cooldown de highValueNotifier
+          // (id+motivo) es solo el respaldo. Nadie espera esta promesa acá (nunca rechaza). No cambia el precio:
+          // es carril plata.
           avisarVidrio({
             avisos: _avisosVidrio, folio: quoteNumber, logWarn: (aviso, texto) => log('warn', aviso, `${convKey}: ${texto}`),
             canales: crearCanalesAvisoVidrio({

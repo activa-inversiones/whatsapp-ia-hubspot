@@ -20,7 +20,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleWebhook, huellaDelInforme } from './webhook.js';
 import { capturarLogs } from './capturarLogs.testutil.js';
-import { claveAviso } from '../../services/avisoEntregaDudosa.js';
+import { claveAvisoVidrio } from '../../services/vidrioCotizado.js';
 
 process.env.ACTIVA_ENGINE_URL = 'http://motor.test';
 
@@ -342,7 +342,10 @@ test('🔔 B3 satén perdido ⇒ texto Y plantilla (un solo mensaje de cada uno 
   assert.deepEqual(spy.plantillas, [{ folio: FOLIO_DEL_TEST, etiquetas: ['4+12+4 satén (baño)', 'Termopanel 4+12+4 esmerilado'] }]);
   // Llegó ⇒ nada que gritar en el panel, y la marca de «ya avisado» quedó en el KV que inyecta el llamador.
   assert.deepEqual(eventosDeAvisoFallido(spy), []);
-  assert.ok(x.estado.get(claveAviso('vidrio', FOLIO_DEL_TEST))?.valor?.at > 0, 'la marca quedó escrita con deps.escribirEstado');
+  // [#1089] La marca es por folio + VIDRIO: las dos etiquetas son el mismo satén 4+12+4, así que comparten UNA marca.
+  assert.ok(x.estado.get(claveAvisoVidrio('vidrio', FOLIO_DEL_TEST, '4+12+4 satén (baño)', '4+12+4'))?.valor?.at > 0, 'la marca quedó escrita con deps.escribirEstado');
+  assert.equal(x.estado.get(claveAvisoVidrio('vidrio', FOLIO_DEL_TEST, 'Termopanel 4+12+4 esmerilado', '4+12+4'))?.valor?.at,
+    x.estado.get(claveAvisoVidrio('vidrio', FOLIO_DEL_TEST, '4+12+4 satén (baño)', '4+12+4'))?.valor?.at, 'y es la misma para las dos etiquetas');
   assert.deepEqual(spy.propuestas[0]?.items.map((i) => i.unit_price), [100000, 100000, 100000], 'el precio no cambia: es carril plata');
 });
 
@@ -375,8 +378,26 @@ test('🔔 B3 ninguno de los dos canales salió ⇒ UN evento de sistema en la c
   assert.equal(eventos[0].metadata.source, 'oliver_gpt_webhook');
   assert.equal(eventos[0].metadata.folio, FOLIO_DEL_TEST);
   assert.match(String(eventos[0].metadata.motivo_template), /meta_credentials_missing/);
-  assert.equal(x.estado.has(claveAviso('vidrio', FOLIO_DEL_TEST)), false, 'no llegó ⇒ SIN marca: el reintento tiene que poder salir');
+  assert.equal(x.estado.has(claveAvisoVidrio('vidrio', FOLIO_DEL_TEST, '4+12+4 satén (baño)', '4+12+4')), false, 'no llegó ⇒ SIN marca: el reintento tiene que poder salir');
 });
+
+/* ── el plazo EFECTIVO del folio reusado sigue siendo 48 h (una sola constante: services/folioReuso.js) ───────────────
+ * Los dos canales y la marca del aviso de satén leen `FOLIO_REUSO_MS`; estas pruebas fijan el comportamiento de
+ * WhatsApp a ambos lados del borde (el de IG/FB está en channel-agent.paridad-abc-rut.test.js). */
+
+for (const [horas, reusa] of [[47, true], [49, false]]) {
+  test(`📎 WhatsApp: la cotización anterior de hace ${horas} h ${reusa ? 'SE REUSA (revisión del mismo folio)' : 'ya NO se reusa: folio nuevo'}`, async () => {
+    const FOLIO_PREVIO = 'CM-FR-004-2026-0300';
+    const x = armar();
+    x.deps.conv.set(x.telefono, {
+      history: [{ role: 'user', content: 'hola' }],
+      state: { lastMessageAt: Date.now(), last_quote: { quote_number: FOLIO_PREVIO, at: Date.now() - horas * 3600_000, pdf_sent: true } },
+    });
+    await handleWebhook({ body: {} }, makeRes(), x.deps);
+    assert.ok(await esperar(() => pos(x.spy, 'propuesta') >= 0), 'la propuesta sale');
+    assert.equal(x.spy.propuestas[0]?.quote_num, reusa ? FOLIO_PREVIO : FOLIO_DEL_TEST);
+  });
+}
 
 /* ── D · la pausa antes del precio, si se mando ALGUN informe (decision 4, r4) ───────── */
 

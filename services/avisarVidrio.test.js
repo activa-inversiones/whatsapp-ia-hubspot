@@ -21,12 +21,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aplicarVidrio, avisarVidrio, textoBanoPerdido, AVISO_VIDRIO_REPETIR_MS } from './vidrioCotizado.js';
-import { claveAviso } from './avisoEntregaDudosa.js';
+import { aplicarVidrio, avisarVidrio, textoBanoPerdido, AVISO_VIDRIO_REPETIR_MS, claveAvisoVidrio } from './vidrioCotizado.js';
 import * as estadoReal from './estadoPersistente.js';
 
 const FOLIO = 'CM-FR-004-2026-0601';
 const ETIQUETA = '4+12+4 satén (baño)';
+const MOTOR = '4+12+4';                                     // el vidrio claro con que cotizó el motor
 const SATEN = () => {
   const avisos = [];
   aplicarVidrio({ glass_label: ETIQUETA }, '4+12+4', { avisos });
@@ -308,7 +308,7 @@ test('⏱️ reloj: la ventana la decide `tocaAvisar` sobre el `at` de la marca,
   const m = mundo();
   await m.avisar();
   // Un almacén que NO vence (Postgres con TTL flojo): la marca sigue ahí pero es vieja.
-  const kMarca = claveAviso('vidrio', FOLIO);
+  const kMarca = claveAvisoVidrio('vidrio', FOLIO, ETIQUETA, MOTOR);
   const marca = m.kv.get(kMarca);
   m.kv.set(kMarca, { valor: marca.valor, expira: Number.MAX_SAFE_INTEGER });
   m.reloj.avanzar(AVISO_VIDRIO_REPETIR_MS + 1);
@@ -319,7 +319,7 @@ test('⏱️ reloj: la ventana la decide `tocaAvisar` sobre el `at` de la marca,
 test('la marca se escribe SOLO si el aviso llegó (o es dudoso): con la marca puesta nada se reenvía; sin ella, el reintento sale', async () => {
   const m = mundo({ texto: TEXTO_VENTANA, plantilla: PLANTILLA_META_RECHAZA });
   await m.avisar();
-  assert.equal(m.escrituras.filter((e) => e.k === claveAviso('vidrio', FOLIO)).length, 0, 'no llegó: sin marca');
+  assert.equal(m.escrituras.filter((e) => e.k === claveAvisoVidrio('vidrio', FOLIO, ETIQUETA, MOTOR)).length, 0, 'no llegó: sin marca');
   await m.avisar();
   assert.equal(m.visto.texto.length, 2, 'el reintento vuelve a intentar los DOS canales');
   assert.equal(m.visto.plantilla.length, 2);
@@ -328,11 +328,12 @@ test('la marca se escribe SOLO si el aviso llegó (o es dudoso): con la marca pu
 test('la marca lleva `at` (lo que lee tocaAvisar) y vive exactamente la ventana de repetición', async () => {
   const m = mundo({ texto: TEXTO_OK, plantilla: PLANTILLA_OK });
   await m.avisar();
-  const marca = m.escrituras.find((e) => e.k === claveAviso('vidrio', FOLIO));
-  assert.ok(marca, 'se escribió la marca bajo claveAviso(\'vidrio\', folio)');
+  const marca = m.escrituras.find((e) => e.k === claveAvisoVidrio('vidrio', FOLIO, ETIQUETA, MOTOR));
+  assert.ok(marca, 'se escribió la marca bajo claveAvisoVidrio(\'vidrio\', folio, etiqueta, motor)');
   assert.equal(marca.v.at, m.reloj.ahora());
   assert.equal(marca.ttl, AVISO_VIDRIO_REPETIR_MS / 1000, 'una sola constante');
   assert.equal(marca.v.via, 'texto+plantilla');
+  assert.deepEqual(marca.v.etiquetas, [ETIQUETA], 'la clave solo trae la identidad del vidrio: las etiquetas quedan adentro del valor, para poder auditar la marca');
 });
 
 test('🧱 la reserva y la marca viven en CLAVES DISTINTAS (si no, la reserva pisa la marca durable y tras un redeploy se lee a sí misma)', async () => {
@@ -344,10 +345,12 @@ test('🧱 la reserva y la marca viven en CLAVES DISTINTAS (si no, la reserva pi
   const reservarOriginal = m.estado.reservar;
   m.estado.reservar = (k, ttl) => { reservadas.push(k); return reservarOriginal(k, ttl); };
   await m.avisar();
-  const kMarca = claveAviso('vidrio', FOLIO);
+  const kMarca = claveAvisoVidrio('vidrio', FOLIO, ETIQUETA, MOTOR);
   assert.equal(reservadas.length, 1);
   assert.notEqual(reservadas[0], kMarca);
+  assert.equal(reservadas[0], claveAvisoVidrio('vidrio_en_vuelo', FOLIO, ETIQUETA, MOTOR), 'la reserva tiene su propia clave, también por vidrio');
   assert.ok(m.escrituras.some((e) => e.k === kMarca));
+  assert.ok(!m.escrituras.some((e) => e.k === reservadas[0]), 'y el aviso nunca escribe encima de la clave de la reserva');
 });
 
 test('BAJO-3: dos llamadas casi simultáneas del mismo folio mandan UNA sola plantilla (reserva atómica ANTES de enviar)', async () => {
@@ -428,7 +431,106 @@ test('🧪 con estadoPersistente REAL: avisa una vez por folio; si no llegó, la
   await avisar();                                    // llegó: la marca real corta
   await avisar();
   assert.deepEqual(llamadas, { texto: 3, plantilla: 3 }, 'una vez por folio con el almacén real');
-  assert.ok(estadoReal.leerLocal(claveAviso('vidrio', folio))?.at > 0, 'la marca quedó en el almacén');
-  assert.ok(estadoReal.reservar(claveAviso('vidrio_en_vuelo', folio), 1), 'y la reserva en vuelo está libre');
+  assert.ok(estadoReal.leerLocal(claveAvisoVidrio('vidrio', folio, ETIQUETA, MOTOR))?.at > 0, 'la marca quedó en el almacén');
+  assert.ok(estadoReal.reservar(claveAvisoVidrio('vidrio_en_vuelo', folio, ETIQUETA, MOTOR), 1), 'y la reserva en vuelo está libre');
   estadoReal._reset();
+});
+
+/* ── #1089 y #1090: la marca de «ya avisé» es por FOLIO + VIDRIO y dura lo que vive el folio reusado ──────────────────
+ *
+ * CAUSA RAÍZ (las dos tienen la misma raíz: la marca decía «este FOLIO ya se avisó» y nada más):
+ *  · #1089: las tres claves (marca, panel, reserva en vuelo) salían de `claveAviso(tipo, folio)`. El vidrio no entraba
+ *    en la clave, así que una corrección del cliente en IG —que REUSA el folio— con un satén NUEVO pegaba contra la
+ *    marca (y contra la reserva) del primero y salía por la puerta sin avisar. La otra cara se vio después: con la
+ *    clave sacada del TEXTO de la etiqueta, el mismo satén dicho con otras palabras («satinado», «Satén baño») contaba
+ *    como nuevo y avisaba otra vez; la clave sale del sentido (`identidadDeVidrio`).
+ *  · #1090: la vida de la marca era `COOLDOWN_MS` (2 h), la ventana del cooldown del TEXTO en highValueNotifier. El
+ *    folio se reusa hasta 48 h (FOLIO_REUSO_MS): pasadas 2 h, el MISMO folio con los MISMOS vidrios volvía a mandar
+ *    texto y plantilla, cada 2 h, mientras la corrección siguiera.
+ * Cada prueba se puso en ROJO con el defecto puesto antes de tocar el código. */
+
+const SATEN_5 = '5+12+5 satén (dormitorio)';          // otro vidrio de verdad: otro espesor
+/** Los avisos que junta `aplicarVidrio` para estas etiquetas (todas satén y el motor cotizó claro). */
+const avisosDe = (...etiquetas) => {
+  const avisos = [];
+  for (const e of etiquetas) aplicarVidrio({ glass_label: e }, MOTOR, { avisos });
+  return avisos;
+};
+
+test('🔴 [#1089] una corrección del MISMO folio con un vidrio NUEVO se avisa, y solo ese; los que ya se avisaron no se repiten', async () => {
+  const m = mundo();
+  await m.avisar(avisosDe(ETIQUETA));
+  m.reloj.avanzar(10 * 60 * 1000);                      // el cliente corrige en IG: el folio se REUSA
+  await m.avisar(avisosDe(ETIQUETA, SATEN_5));
+  assert.equal(m.visto.texto.length, 2, `el vidrio nuevo tiene que avisarse: ${JSON.stringify(m.visto.texto)}`);
+  assert.equal(m.visto.texto[1], textoBanoPerdido(FOLIO, [SATEN_5]), 'el aviso habla solo del nuevo: el otro ya se le dijo al dueño');
+  assert.deepEqual(m.visto.plantilla.at(-1), { folio: FOLIO, etiquetas: [SATEN_5] });
+  // Los dos juntos, en cualquier orden, ya no son novedad.
+  await m.avisar(avisosDe(SATEN_5, ETIQUETA));
+  await m.avisar(avisosDe(ETIQUETA));
+  assert.equal(m.visto.texto.length, 2, 'ni el orden ni un subconjunto de lo ya avisado vuelve a molestar al dueño');
+  assert.equal(m.visto.plantilla.length, 2);
+});
+
+test('[#1089] mayúsculas, tildes y espacios de más no vuelven «nuevo» al mismo vidrio', async () => {
+  const m = mundo();
+  await m.avisar(avisosDe('4+12+4 satén (baño)'));
+  await m.avisar(avisosDe('4+12+4  SATEN  (BAÑO) '));
+  await m.avisar(avisosDe('4+12+4 Saten (bano)'));
+  assert.equal(m.visto.texto.length, 1);
+  assert.equal(m.visto.plantilla.length, 1);
+});
+
+test('🔴 [#1089] dos llamadas SIMULTÁNEAS del mismo folio con vidrios distintos: cada vidrio se avisa UNA vez (la reserva es por vidrio; el nuevo no se pierde)', async () => {
+  const m = mundo();
+  await Promise.all([m.avisar(avisosDe(ETIQUETA)), m.avisar(avisosDe(ETIQUETA, SATEN_5))]);
+  const dichas = m.visto.texto.join('\n');
+  assert.equal(m.visto.texto.length, 2, `una por llamada: ${JSON.stringify(m.visto.texto)}`);
+  assert.equal(dichas.split(`"${ETIQUETA}"`).length - 1, 1, 'el vidrio compartido se avisa una sola vez');
+  assert.equal(dichas.split(`"${SATEN_5}"`).length - 1, 1, 'y el nuevo no se pierde porque la otra llamada tenía el folio en vuelo');
+});
+
+test('🔴 [#1089] fraseos distintos del MISMO satén en el mismo folio avisan UNA sola vez; un vidrio distinto de verdad sí avisa', async () => {
+  const m = mundo();
+  await m.avisar(avisosDe('4+12+4 satén (baño)'));
+  m.reloj.avanzar(60_000);
+  for (const otroFraseo of ['4+12+4 satinado (baño)', 'Satén baño', 'Termopanel satén', '4/12/4 SATÉN', 'DVH 4-12-4 esmerilado']) {
+    await m.avisar(avisosDe(otroFraseo));
+    m.reloj.avanzar(60_000);
+  }
+  assert.equal(m.visto.texto.length, 1, `el mismo satén con otras palabras no es novedad: ${JSON.stringify(m.visto.texto)}`);
+  assert.equal(m.visto.plantilla.length, 1);
+  // …pero un satén de OTRO espesor es otro vidrio: ese sí se avisa (y solo ese).
+  await m.avisar(avisosDe('5+12+5 satén (baño)'));
+  assert.equal(m.visto.texto.length, 2);
+  assert.equal(m.visto.texto[1], textoBanoPerdido(FOLIO, ['5+12+5 satén (baño)']));
+});
+
+test('[#1089] dos etiquetas del MISMO vidrio en una misma emisión salen juntas en UN aviso (se listan las dos), y después ninguna se repite', async () => {
+  const m = mundo();
+  await m.avisar(avisosDe('4+12+4 satén (baño)', 'Termopanel 4+12+4 esmerilado'));
+  assert.equal(m.visto.texto.length, 1);
+  assert.equal(m.visto.texto[0], textoBanoPerdido(FOLIO, ['4+12+4 satén (baño)', 'Termopanel 4+12+4 esmerilado']), 'el dueño ve las dos etiquetas del documento');
+  assert.deepEqual(m.visto.plantilla[0].etiquetas, ['4+12+4 satén (baño)', 'Termopanel 4+12+4 esmerilado']);
+  await m.avisar(avisosDe('Termopanel 4+12+4 esmerilado'));
+  await m.avisar(avisosDe('4+12+4 satén (baño)'));
+  assert.equal(m.visto.texto.length, 1);
+});
+
+test('🔴 [#1090] el MISMO folio con los MISMOS vidrios NO se repite por días: ni a las 2 h, ni a las 47 h; vuelve recién pasada la vida del folio reusado + margen', async () => {
+  const H = 3600_000;
+  const m = mundo();
+  const t0 = m.reloj.ahora();
+  const avanzarHasta = (ms) => m.reloj.avanzar(ms - (m.reloj.ahora() - t0));   // ms desde el primer aviso
+  await m.avisar();
+  for (const horas of [2.01, 12, 47.9, 48.5, 71.9]) {
+    avanzarHasta(horas * H);
+    await m.avisar();
+    assert.equal(m.visto.texto.length, 1, `a las ${horas} h el aviso ya se repitió: el folio reusado sigue siendo el mismo folio`);
+    assert.equal(m.visto.plantilla.length, 1, `a las ${horas} h la plantilla se repitió`);
+  }
+  avanzarHasta(AVISO_VIDRIO_REPETIR_MS);                // vencida la marca
+  await m.avisar();
+  assert.equal(m.visto.texto.length, 2, 'vencida la marca, un problema que sigue ahí vuelve a avisarse');
+  assert.equal(m.visto.plantilla.length, 2);
 });

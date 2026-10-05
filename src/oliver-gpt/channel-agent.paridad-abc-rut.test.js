@@ -26,7 +26,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { handleChannelTurn } from './channel-agent.js';
 import { capturarLogs } from './capturarLogs.testutil.js';
-import { claveAviso } from '../../services/avisoEntregaDudosa.js';
+import { claveAvisoVidrio } from '../../services/vidrioCotizado.js';
 
 // Precio por color, DISTINTO en cada uno — como en la lista real (medido en el motor sobre el
 // marco doble riel S70: Blanco $30.385 · Nogal $49.974 · New Black $54.356). Sin precios
@@ -136,6 +136,8 @@ function armar(opts = {}) {
 /** Corre los turnos de una conversacion IG con el mismo cache (la sesion no se pierde). */
 async function correr(opts = {}) {
   const { deps, spy, senderId } = armar(opts);
+  // `opts.lastQuote`: la cotizacion anterior de esta conversacion (ya en el cache de sesion), para probar el reuso del folio.
+  if (opts.lastQuote) deps.conv.set(`instagram:${senderId}`, { history: [], state: { lastMessageAt: Date.now(), last_quote: opts.lastQuote } });
   const item = opts.item || {
     producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
     measures: '1500x1200', color: 'Blanco', qty: 1, unit_price: PRECIO.Blanco,
@@ -430,7 +432,7 @@ test('🔔 IG satén perdido ⇒ texto Y plantilla, UN aviso de cada uno (A, B y
   // PLANTILLA: sale AUNQUE el texto salió (sent:true): ver services/avisarVidrio.test.js (causa raíz de r7).
   assert.deepEqual(corrida.plantillas, [{ folio: 'CM-FR-004-2026-0392', etiquetas: ['4+12+4 satén (baño)'] }]);
   assert.deepEqual(eventosFallidos(corrida), []);
-  assert.ok(corrida.estado.get(claveAviso('vidrio', 'CM-FR-004-2026-0392'))?.valor?.at > 0, 'la marca quedó escrita con deps.escribirEstado');
+  assert.ok(corrida.estado.get(claveAvisoVidrio('vidrio', 'CM-FR-004-2026-0392', '4+12+4 satén (baño)', '4+12+4'))?.valor?.at > 0, 'la marca quedó escrita con deps.escribirEstado');
   assert.deepEqual(corrida.pdfs.map((p) => p.unit_price).sort((a, b) => a - b),
     [PRECIO.Blanco, PRECIO.Nogal, PRECIO['New Black']], 'los precios no cambian');
 });
@@ -450,7 +452,7 @@ test('🔔 IG ninguno de los dos canales salió ⇒ UN evento de sistema en la c
   assert.equal(eventos[0].metadata.source, 'oliver_gpt_channel');
   assert.equal(eventos[0].metadata.folio, 'CM-FR-004-2026-0392');
   assert.match(String(eventos[0].metadata.motivo_template), /meta_credentials_missing/);
-  assert.equal(corrida.estado.has(claveAviso('vidrio', 'CM-FR-004-2026-0392')), false, 'no llegó ⇒ SIN marca: el reintento tiene que poder salir');
+  assert.equal(corrida.estado.has(claveAvisoVidrio('vidrio', 'CM-FR-004-2026-0392', '4+12+4 satén (baño)', '4+12+4')), false, 'no llegó ⇒ SIN marca: el reintento tiene que poder salir');
 });
 
 test('🔔 IG sin satén perdido NO se avisa al dueño del vidrio: ni texto ni plantilla ni evento', async () => {
@@ -479,3 +481,21 @@ test('🔒 IG: si el cliente SI dijo el color, sale UNA sola y se reporta su mon
   assert.equal(sent.length, 1);
   assert.equal(sent[0].amount_total, PRECIO.Nogal);
 });
+
+/* =========================================================================
+ * 4-bis) EL PLAZO EFECTIVO DEL FOLIO REUSADO SIGUE SIENDO 48 h (una sola constante: services/folioReuso.js)
+ * Los dos canales y la marca del aviso de satén leen `FOLIO_REUSO_MS`; el de WhatsApp está en webhook.vientos.test.js.
+ * ========================================================================= */
+
+for (const [horas, reusa] of [[47, true], [49, false]]) {
+  test(`📎 IG: la cotización anterior de hace ${horas} h ${reusa ? 'SE REUSA (revisión del mismo folio)' : 'ya NO se reusa: folio nuevo'}`, async () => {
+    const FOLIO_PREVIO = 'CM-FR-004-2026-0300';
+    const spy = await correr({
+      lastQuote: { quote_number: FOLIO_PREVIO, at: Date.now() - horas * 3600_000, pdf_sent: true },
+      item: { producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
+        measures: '1500x1200', color: 'Nogal', qty: 1, unit_price: PRECIO.Nogal, glass_label: '4+12+4' },
+      turnos: [{ cotiza: true, text: 'quiero una corredera NOGAL de 1500x1200' }],
+    });
+    assert.deepEqual(spy.documentos, [reusa ? FOLIO_PREVIO : 'CM-FR-004-2026-0392']);
+  });
+}

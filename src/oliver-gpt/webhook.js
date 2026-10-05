@@ -230,6 +230,7 @@ import { crearCanalesAvisoVidrio, almacenDeAvisos } from './canalesAvisoVidrio.j
 import { agregarCotizacionDelTurno, tieneMontoUtil } from './cotizacionDelTurno.js'; // [2026-09-15 tridente] contrato total_neto + agrega TODO el turno
 import { clasificar as clasificarEnvio, RESULTADO as RESULTADO_META, rechazoDelDestinatario } from '../sales-agent/errorMeta.js';
 import { mensajeEntregaDudosa, tocaAvisar, claveAviso } from '../../services/avisoEntregaDudosa.js';
+import { FOLIO_REUSO_MS } from '../../services/folioReuso.js';
 import {
   mensajeCerebroRespaldo, causaDelRespaldo, claveAvisoRespaldo, RESPALDO_REPETIR_MS,
 } from '../../services/avisoCerebroRespaldo.js';
@@ -431,13 +432,10 @@ export function huellaDelInforme({ comuna = '', producto = '', glassLabel = '' }
 // re-cálculo por pérdida de estado (el bug que generó 0003 y 0004 en el mismo chat).
 const RECENT_QUOTES = new Map();
 const QUOTE_DEDUP_MS = 120000; // 2 min
-// [PDF-RACE 2026-07-01] REUSAR el folio de la sesión (ventana 48h): una corrección del
-// cliente = REVISIÓN del MISMO folio, no correlativo nuevo (antes: 0081→0085→0086 en una
-// sola sesión = 3 folios ISO quemados para la misma propuesta).
-// [2026-08-31 · tridente] Subida al modulo porque ahora la miran DOS decisiones —el reuso del
-// folio y la eleccion de una opcion ya entregada— y una de las dos corre antes que la otra.
-// Dos copias del mismo plazo se desincronizan igual que dos copias de una regla.
-const QUOTE_REUSE_MS = 48 * 60 * 60 * 1000;
+// [PDF-RACE 2026-07-01] REUSAR el folio de la sesión: una corrección del cliente = REVISIÓN del
+// MISMO folio, no correlativo nuevo. El plazo (FOLIO_REUSO_MS) vive en services/folioReuso.js: lo
+// miran DOS decisiones de este archivo —el reuso del folio y la eleccion de una opcion ya
+// entregada—, el otro canal (channel-agent.js) y la marca del aviso de satén (vidrioCotizado.js).
 const CONTROL_CACHE = new Map(); // [FIX 2026-06-19 CON-02] último control conocido por waId → fail-closed hacia el operador si sales-os cae
 
 /**
@@ -3356,7 +3354,7 @@ Comuna: ${datos.comuna}`
             // Un pedido con DOS colores distintos no es elegir una de las tres: es otra cosa.
             color:     _coloresPedidos.length === 1 ? _coloresPedidos[0] : '',
             sigProyecto: _sigProyecto,
-            ventanaMs: QUOTE_REUSE_MS,
+            ventanaMs: FOLIO_REUSO_MS,
           });
           if (_eleccion) {
             log('info', 'generarPdf.eleccion',
@@ -3540,7 +3538,7 @@ Comuna: ${datos.comuna}`
           // arreglo el 08-ago con el caso Jessica (3 correlativos quemados en 5 minutos).
           let esRevision = false;
           const _lq = state.last_quote;
-          const _dec = numeroDeDocumento({ lastQuote: _lq, sig: _quoteSig, ventanaMs: QUOTE_REUSE_MS });
+          const _dec = numeroDeDocumento({ lastQuote: _lq, sig: _quoteSig, ventanaMs: FOLIO_REUSO_MS });
           if (_dec.numero) {
             quoteNumber = _dec.numero;
             descuentoMercadoPct = Number(_lq.descuento_mercado_pct) || 0;
@@ -3597,12 +3595,11 @@ Comuna: ${datos.comuna}`
           catch { /* el guardia en memoria sigue cubriendo esta instancia */ }
           if (RECENT_QUOTES.size > 500) RECENT_QUOTES.clear(); // backstop de memoria
           // [2026-10-05] Los avisos del vidrio, ya con su folio: al tablero (log) y, si el satén se
-          // perdió, UN aviso al dueño por el canal de escalaciones de siempre (highValueNotifier;
-          // su cooldown por teléfono+motivo, y el motivo lleva el folio, lo deja en uno por folio).
-          // Fire-and-forget como los demás avisos con el mutex tomado. No cambia el precio:
-          // eso es carril plata y va a propuesta.
-          // [r8] Texto Y plantilla, siempre, una vez por folio; si ninguno sale, un evento en la conversación del
-          // cliente (como la escalación #888). Nadie espera esta promesa acá (nunca rechaza). Ver `avisarVidrio`.
+          // perdió, un aviso al dueño por texto Y plantilla; si ninguno sale, un evento en la conversación del
+          // cliente (como la escalación #888). Un aviso por folio y vidrio durante 72 h, aunque el folio se
+          // REUSE en una corrección: lo decide la marca de `avisarVidrio`; el cooldown de highValueNotifier
+          // (teléfono+motivo) es solo el respaldo. Fire-and-forget como los demás avisos con el mutex tomado
+          // (la promesa nunca rechaza). No cambia el precio: eso es carril plata y va a propuesta.
           // El cliente del turno (`turno.cliente`), NO `from`: es un REGISTRO de la propuesta y su cooldown es del
           // cliente (webhook.turno-registros.test.js; un vendedor cotiza a nombre de su cliente).
           avisarVidrio({
@@ -5169,7 +5166,7 @@ Comuna: ${datos.comuna}`
           // pero NO los items. Se guardan aca, y solo cuando el nombre lo pusimos nosotros: si
           // el cliente lo dio, no hay nada que actualizar y no hay por que arrastrar el peso.
           // ⚠️ El folio NO se vuelve a pedir: `numeroDeDocumento` ve la misma firma (`_quoteSig`
-          // no incluye el nombre) dentro de las 48 h de QUOTE_REUSE_MS y devuelve motivo
+          // no incluye el nombre) dentro de las 48 h de FOLIO_REUSO_MS y devuelve motivo
           // 'revision' con el MISMO numero. O sea, corregir el nombre NO quema un correlativo
           // ISO — que es justo lo que costo 3 folios en 5 minutos en el caso Jessica.
           if (_nombreAsumido) {
@@ -5249,7 +5246,7 @@ Comuna: ${datos.comuna}`
     // sirve.
     //
     // ⚠️ NO QUEMA UN CORRELATIVO ISO. `_quoteSig` no incluye el nombre, asi que dentro de las
-    // 48 h de QUOTE_REUSE_MS `numeroDeDocumento` devuelve motivo 'revision' con el MISMO
+    // 48 h de FOLIO_REUSO_MS `numeroDeDocumento` devuelve motivo 'revision' con el MISMO
     // folio, y el mensaje de generarPdf ya dice "Le corregi la propuesta N° X ... Es la misma
     // propuesta actualizada, no una nueva". Es la rama que se arreglo el 08-ago por el caso
     // Jessica (3 folios en 5 minutos); acá se REUSA, no se duplica.
@@ -5261,7 +5258,7 @@ Comuna: ${datos.comuna}`
     // mandarle un PDF corregido a nombre de "Ok".
     if (state.nombre_pendiente && Array.isArray(state.nombre_pendiente.items)
         && state.nombre_pendiente.items.length
-        && (Date.now() - (state.nombre_pendiente.at || 0)) < QUOTE_REUSE_MS
+        && (Date.now() - (state.nombre_pendiente.at || 0)) < FOLIO_REUSO_MS
         && soloEsElDatoQueFaltaba(userText, state)) {
       const _np = state.nombre_pendiente;
       // 🔴 [hallazgo 6 de Codex] EL RUT TAMBIEN CORRIGE, porque el aviso lo PROMETE.

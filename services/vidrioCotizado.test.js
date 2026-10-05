@@ -8,9 +8,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   motorCotizo, vidrioDelMotor, precioCoincide, elegirVidrio, aplicarVidrio, textoBanoPerdido,
-  fraseBanoPerdido, motivoDeEnvio, AVISO_VIDRIO_REPETIR_MS,
+  fraseBanoPerdido, motivoDeEnvio, AVISO_VIDRIO_REPETIR_MS, claveAvisoVidrio, normalizarEtiqueta,
 } from './vidrioCotizado.js';
 import { COOLDOWN_MS } from './highValueNotifier.js';
+import { FOLIO_REUSO_MS } from './folioReuso.js';
 import { claveVidrio } from './dibujoVentana.js';
 import { dicePalabraSaten } from './vidrioSatinado.js';
 
@@ -189,9 +190,47 @@ test('[r8] motivoDeEnvio: el porqué de un envío que no salió, de cualquiera d
   assert.equal(motivoDeEnvio({ error: 'x'.repeat(500) }).length, 200, 'acotado: va a un log y a un evento del panel');
 });
 
-test('[r8] la ventana de repetición ES el cooldown del texto: UNA constante, importada (no otra copia de «2 h»)', () => {
-  // Si fuera MENOR, vencería la marca y volvería a salir la plantilla mientras el texto sigue en cooldown.
-  assert.equal(AVISO_VIDRIO_REPETIR_MS, COOLDOWN_MS);
+// 🔁 ASERCIÓN DADA VUELTA a propósito (orden del coordinador, tablero #1090). Este test decía
+// `assert.equal(AVISO_VIDRIO_REPETIR_MS, COOLDOWN_MS)`: la marca de «ya avisé» valía lo mismo que el cooldown de 2 h del
+// TEXTO, y el mismo folio —que se reusa hasta 48 h— volvía a avisar cada 2 h. Lo que el test protegía de verdad no era la
+// igualdad sino el piso: la marca no puede ser MENOR que el cooldown del texto (volvería a salir la plantilla mientras el
+// texto sigue en cooldown). Ese piso se conserva; la igualdad se retira.
+test('[#1090] la marca del «ya avisé» dura más que un folio reusado (FOLIO_REUSO_MS), nunca menos que el cooldown del texto, y cabe en el KV', () => {
+  const H = 3600_000;
+  assert.ok(AVISO_VIDRIO_REPETIR_MS > FOLIO_REUSO_MS, `la marca (${AVISO_VIDRIO_REPETIR_MS / H} h) tiene que durar más que el folio reusado (${FOLIO_REUSO_MS / H} h)`);
+  assert.ok(AVISO_VIDRIO_REPETIR_MS >= COOLDOWN_MS, 'si fuera menor que el cooldown del texto, saldría la plantilla mientras el texto sigue en cooldown');
+  assert.ok(AVISO_VIDRIO_REPETIR_MS <= 30 * 24 * H, '/internal/kv corta el TTL a 30 días: una ventana mayor vencería antes de lo que dice');
+});
+
+test('🔴 [#1089] la clave sale del SENTIDO de la etiqueta: todos los fraseos del mismo satén 4+12+4 dan UNA clave; un espesor o un folio distintos, otra', () => {
+  const F = 'CM-FR-004-2026-0601';
+  const MOTOR = '4+12+4';
+  const NBSP = String.fromCharCode(0xa0);
+  const ANCHO_CERO = String.fromCharCode(0x200b);
+  const mismoSaten = [
+    '4+12+4 satén (baño)', '4+12+4 Satén (Baño)', '4+12+4 saten (bano)', '4+12+4 satinado (baño)', '4+12+4 satinado',
+    'satén', 'Satén', 'Satén baño', 'Termopanel satén', '4+12+4 satén baño', '4+12+4 satén (baño).', '4+12+4 satén (baño) ',
+    `4+12+4${NBSP}satén (baño)`, `4+12+4 satén (baño)${ANCHO_CERO}`, '4+12+4 satén (baño)'.normalize('NFD'),
+    '4/12/4 SATÉN', 'DVH 4 - 12 - 4 esmerilado', 'Termopanel DVH baño',
+  ];
+  const claves = new Set(mismoSaten.map((e) => claveAvisoVidrio('vidrio', F, e, MOTOR)));
+  assert.equal(claves.size, 1, `${mismoSaten.length} fraseos del mismo satén dieron ${claves.size} claves: ${[...claves].join(' | ')}`);
+  const base = [...claves][0];
+  assert.match(base, /^aviso_dudoso:vidrio:CM-FR-004-2026-0601:satinado-4x12x4$/, 'forma estable y legible: folio + clase + espesores');
+  // Una etiqueta SIN espesor toma el del vidrio con que cotizó el motor: otro vidrio cotizado, otra clave.
+  assert.notEqual(claveAvisoVidrio('vidrio', F, 'Satén baño', '5+12+5'), base);
+  // Vidrios distintos de verdad ⇒ claves distintas.
+  for (const distinta of ['5+12+5 satén (baño)', '4+16+4 satén', '5/12/5 satén', '6+12+6 satén (baño)']) {
+    assert.notEqual(claveAvisoVidrio('vidrio', F, distinta, MOTOR), base, `"${distinta}" es otro vidrio`);
+  }
+  assert.notEqual(claveAvisoVidrio('vidrio', 'CM-FR-004-2026-0602', '4+12+4 satén', MOTOR), base, 'otro folio');
+  assert.notEqual(claveAvisoVidrio('vidrio_en_vuelo', F, '4+12+4 satén', MOTOR), base, 'la reserva NO comparte clave con la marca');
+  assert.notEqual(claveAvisoVidrio('vidrio_panel', F, '4+12+4 satén', MOTOR), base, 'ni el evento del panel');
+  // Lo que no es satén (no pasa por acá hoy) no se confunde con él y se compara por su texto normalizado.
+  assert.notEqual(claveAvisoVidrio('vidrio', F, 'Laminado 4+12+4', MOTOR), base);
+  assert.equal(claveAvisoVidrio('vidrio', F, 'Laminado 6+6', MOTOR), claveAvisoVidrio('vidrio', F, 'laminado  6+6', MOTOR));
+  assert.match(claveAvisoVidrio('vidrio', F, 'Laminado 6+6', MOTOR), /^aviso_dudoso:vidrio:CM-FR-004-2026-0601:otro-[0-9a-f]{12}$/);
+  assert.equal(normalizarEtiqueta('  4+12+4   SATÉN\t(Baño) '), '4+12+4 saten (bano)');
 });
 
 /* ── r5 · Thermos BAJO: «satén» es UNA definición, la del dibujo ───────────────────────────────────── */
@@ -248,5 +287,3 @@ test('🔴 [r6] control — lo que SÍ es satén sigue siéndolo, también pegad
     assert.equal(elegirVidrio(e, '4+12+4').aviso, 'vidrio.bano_perdido', `"${e}" sigue avisando «satén perdido»`);
   }
 });
-
-
