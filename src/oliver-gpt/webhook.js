@@ -845,6 +845,19 @@ export function turnoVigente(telefono, miTurno) {
 /** Solo para los tests: deja la numeracion como recien arrancado el proceso. */
 export function _resetTurnos() { SEQ_TURNO = 0; TURNO_VIGENTE.clear(); }
 
+/**
+ * [2026-10-05] Si la ventana llego SIN vidrio, le pone el vidrio con que el MOTOR la cotizo.
+ * Solo si el motor la cotizo de verdad (precio > 0): sin cotizacion real no hay vidrio que
+ * copiar y no se inventa uno. Un vidrio que la ventana ya traia NO se pisa.
+ * Por que existe: ver el bloque del Uw en `generarPdf` (caso YONNY, propuesta 0588).
+ */
+function completarVidrioCotizado(item, cotizado) {
+  if (!item || String(item.glass_label || '').trim()) return;
+  if (!cotizado || !(Number(cotizado.unit_price) > 0)) return;
+  const vidrio = String(cotizado.glass_label || '').trim();
+  if (vidrio) item.glass_label = vidrio;
+}
+
 export async function handleWebhook(req, res, deps = {}) {
   // ── (1) ACK INMEDIATO a Meta. Nada antes de esto puede lanzar. ──────────
   try {
@@ -3231,6 +3244,20 @@ Comuna: ${datos.comuna}`
               }
               it.termico = _t?.termico || null; // motor manda; sin termico → null
 
+              // 🔴 [2026-10-05] EL VIDRIO CON QUE EL MOTOR COTIZO, CUANDO EL ITEM NO TRAE NINGUNO.
+              // `glass_label` es opcional en la tool del PDF y el LLM a veces lo omite. El motor
+              // igual elige el vidrio de cada ventana (por area, `pickGlassId`) y con ESE vidrio
+              // calcula el precio y el Uw que la propuesta imprime — pero aca se devolvia el Uw y
+              // no el vidrio. MEDIDO: 5 propuestas en 30 dias con `"vidrio": null` en la BD; en la
+              // 0588 (YONNY, 03-oct) las opciones B y C —mismas ventanas, otro color— decian
+              // "5+12+5"/"4+12+4" (esas si copian `_p.glass_label`) y la A "Termopanel DVH", y el
+              // informe de vientos descarto las dos ventanas por "sin vidrio legible" (sin_datos).
+              // ⛔ NO SE INVENTA: se copia SOLO si el motor cotizo esta ventana de verdad (precio
+              // > 0). Si el motor no contesto, no hay un vidrio real que copiar y queda vacio.
+              // Y un vidrio que ya traia el item NO se pisa.
+              // Guardia: webhook.secuencia-informe.test.js, "caso YONNY 0588" + "anti-alucinacion".
+              completarVidrioCotizado(it, _t);
+
               // 🔴 [2026-08-26] LA COMPOSICION DE LA VENTANA VIAJA AL DIBUJO. Sin esto el PDF
               // dibujaba las tres compuestas de Paula como UN PAÑO UNICO: el dibujo necesita
               // `compuesta.partes` para saber donde va el travesaño y cual paño abre, y ese
@@ -3830,15 +3857,19 @@ Comuna: ${datos.comuna}`
           // (mismo criterio anti-spam que el térmico). Folio serie LOCAL propia INF-V
           // mientras sales-os no tenga la serie CM-FR de vientos (tablero #541).
           const enviarInformeVientos = async ({ forzar = false } = {}) => {
-            // 🔴 [2026-09-03] SEGUNDO CORTE DE LA RAFAGA: el informe de vientos es el TERCER
-            // documento de la secuencia y llega ~25 s despues del anterior. Si el cliente ya
-            // escribio, se lo guarda para el turno siguiente en vez de encimarselo.
-            // Igual que el video: ANTES de calcular la huella y de reservar `:en_curso`, para
-            // no dejar un candado tomado sin envio (defecto que la compuerta anticipo).
-            // Su propuesta con el precio NO se corta nunca — eso se decide aparte.
+            // 🔁 [2026-10-05] EL INFORME DE VIENTOS YA NO SE CORTA CUANDO EL CLIENTE ESCRIBE.
+            // Desde el 03-sep (85a7dd6) se cortaba aca con un log que decia "queda para el
+            // proximo turno" — y ese proximo turno NO EXISTE: este informe solo se manda desde
+            // `generarPdf`, asi que si el cliente no volvia a pedir un PDF no le llegaba NUNCA.
+            // Medido 04-oct (propuesta 0590): el cliente pregunto "Usted de donde son" en medio
+            // de la secuencia, recibio termico y propuesta, y el de vientos jamas.
+            // Reclamo del dueño (05-oct): *"solo esta saliendo cotizaciones e informe termico"*.
+            // Manda su regla del 30-sep: primero los informes, despues la propuesta, sin perder
+            // el orden. El termico y la propuesta nunca se cortaron; el de vientos ahora tampoco.
+            // Solo el VIDEO de cortesia se sigue cortando (ver `enviarVideoCortesia`).
+            // Guardia: webhook.secuencia-informe.test.js, "caso nacho 0590".
             if (!turnoVigente(from, miTurno)) {
-              log('info', 'rafaga.corte', `${from}: el cliente escribio; el informe de vientos queda para el proximo turno`);
-              return 'cliente_escribio';
+              log('info', 'rafaga.vientos', `${from}: el cliente escribio; el informe de vientos sale igual (no se corta)`);
             }
             const ultimaV = (input.items || []).at(-1) || {};
             const _huellaV = huellaDelInforme({
