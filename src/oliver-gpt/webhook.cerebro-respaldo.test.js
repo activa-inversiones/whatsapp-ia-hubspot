@@ -255,6 +255,94 @@ test('🔴 si OWNER_PHONE es el número del cliente, NO se manda nada', async ()
   }
 });
 
+// 🔴 [#1094] LA RESERVA Y LA MARCA DURABLE NO PUEDEN SER LA MISMA CLAVE.
+//
+// CAUSA RAÍZ: `avisarCerebroDeRespaldo` usaba `k = claveAvisoRespaldo(causa)` para las DOS cosas: `reservarEstado(k)` y la
+// marca durable `{at, causa}` que `escribirEstado(k)` deja tras un envío. Pero `estadoPersistente.reservar()` hace
+// `escribir(clave, token)` —memoria + PUT a Postgres— (`reservar` en estadoPersistente.js). Tras un REDEPLOY (memoria vacía):
+//   1. `reservar(k)` tiene éxito (la memoria está vacía; no mira Postgres) y PISA la marca durable con su token;
+//   2. el `leerEstado(k)` siguiente pega en la MEMORIA, que ahora tiene ese token (un string, sin `.at`);
+//   3. `tocaAvisar(undefined)` ⇒ true ⇒ el aviso sale OTRA VEZ, aunque el de hoy ya había salido.
+// O sea: la «marca durable que cubre un redeploy en medio del episodio» (el comentario del código) no existía; el aviso
+// se repetía una vez por redeploy durante el episodio. Es el mismo defecto que `avisarVidrio` ya evitaba.
+//
+// Por qué no lo cazaba ningún test: el `makeDeps` de arriba finge `reservarEstado` con un Set APARTE del KV, o sea no
+// escribe el token en la clave que `leerEstado` lee. Este test usa el `estadoPersistente.js` REAL (contra un «Postgres»
+// de mentira que sobrevive al reinicio) y simula el redeploy con una instancia nueva del módulo (memoria vacía).
+function armarPostgresFalso() {
+  const disco = new Map();
+  const fetchFalso = async (url, opts = {}) => {
+    const clave = decodeURIComponent(String(url).split('/internal/kv/')[1] || '');
+    const metodo = opts.method || 'GET';
+    if (metodo === 'GET') return { ok: true, json: async () => ({ ok: true, valor: disco.has(clave) ? disco.get(clave) : null }) };
+    if (metodo === 'PUT') { disco.set(clave, JSON.parse(opts.body).valor); return { ok: true, json: async () => ({ ok: true }) }; }
+    if (metodo === 'DELETE') { disco.delete(clave); return { ok: true, json: async () => ({ ok: true }) }; }
+    return { ok: false, json: async () => ({}) };
+  };
+  return { disco, fetchFalso };
+}
+
+/** Una instancia NUEVA de estadoPersistente.js (= un proceso recién desplegado: memoria vacía) hablando con ese «Postgres». */
+async function procesoNuevo(fetchFalso, marca) {
+  const previo = { url: process.env.SALES_OS_URL, tok: process.env.SALES_OS_OPERATOR_TOKEN };
+  process.env.SALES_OS_URL = 'http://sales-os.test';
+  process.env.SALES_OS_OPERATOR_TOKEN = 'token-de-prueba';
+  global.fetch = fetchFalso;
+  try {
+    // El módulo lee el entorno AL CARGARSE: se restaura enseguida para no filtrar la persistencia a otros tests.
+    return await import(`../../services/estadoPersistente.js?redeploy=${marca}`);
+  } finally {
+    for (const [k, v] of [['SALES_OS_URL', previo.url], ['SALES_OS_OPERATOR_TOKEN', previo.tok]]) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+}
+const depsConEstado = (prov, est) => makeDeps(prov, {
+  leerEstado: est.leer, escribirEstado: est.escribir, reservarEstado: est.reservar, liberarReserva: est.liberarReserva,
+});
+
+test('🔴 [#1094] tras un REDEPLOY (memoria vacía) con la marca durable de hoy vigente, NO se vuelve a avisar — y la marca durable no se pisa', async () => {
+  const prov = { cerebro: 'openai', cerebro_respaldo: true, cerebro_motivo: MOTIVO_REAL };
+  const clave = claveAvisoRespaldo(causaDelRespaldo(MOTIVO_REAL));
+  const { disco, fetchFalso } = armarPostgresFalso();
+  const fetchPrevio = global.fetch;
+  try {
+    // El aviso de hoy salió hace 1 h, desde el proceso ANTERIOR: lo único que queda de él es la marca en Postgres.
+    const marcaDeHoy = { at: Date.now() - 3600 * 1000, causa: 'sin_saldo' };
+    disco.set(clave, marcaDeHoy);
+    const est = await procesoNuevo(fetchFalso, '1094-a');
+    assert.equal(est.leerLocal(clave), null, 'control: la memoria del proceso nuevo arranca vacía');
+
+    const { deps, spy } = depsConEstado(prov, est);
+    await handleWebhook(makeReq('hola', '56933330005'), makeRes(), deps);
+    await esperar();
+    assert.equal(spy.enviados.filter((e) => /cerebro de respaldo/i.test(e.text)).length, 0,
+      'el aviso de hoy ya salió: un redeploy en medio del episodio no puede mandarle OTRO al dueño');
+    assert.deepEqual(disco.get(clave), marcaDeHoy, 'y la marca durable sigue siendo la del aviso (la reserva no la pisó con su token)');
+  } finally { global.fetch = fetchPrevio; }
+});
+
+test('🔴 [#1094] el episodio completo a través de un redeploy: UN aviso antes del deploy, ninguno después', async () => {
+  const prov = { cerebro: 'openai', cerebro_respaldo: true, cerebro_motivo: MOTIVO_REAL };
+  const { disco, fetchFalso } = armarPostgresFalso();
+  const fetchPrevio = global.fetch;
+  const avisosDe = (spy) => spy.enviados.filter((e) => /cerebro de respaldo/i.test(e.text)).length;
+  try {
+    const antes = depsConEstado(prov, await procesoNuevo(fetchFalso, '1094-b1'));
+    await handleWebhook(makeReq('uno', '56933330006'), makeRes(), antes.deps);
+    await esperar();
+    assert.equal(avisosDe(antes.spy), 1, 'control: el primer turno del episodio avisa');
+    assert.ok(disco.get(claveAvisoRespaldo('sin_saldo'))?.at > 0, 'y deja la marca durable en Postgres');
+
+    // «deployamos»: proceso nuevo, memoria vacía, el MISMO Postgres.
+    const despues = depsConEstado(prov, await procesoNuevo(fetchFalso, '1094-b2'));
+    await handleWebhook(makeReq('dos', '56933330007'), makeRes(), despues.deps);
+    await handleWebhook(makeReq('tres', '56933330007'), makeRes(), despues.deps);
+    await esperar();
+    assert.equal(avisosDe(despues.spy), 0, 'el episodio de hoy ya se avisó: ni el primer turno del proceso nuevo ni los siguientes lo repiten');
+  } finally { global.fetch = fetchPrevio; }
+});
+
 test('el aviso va al dueño, no a quien escribió', async () => {
   const previo = process.env.OWNER_PHONE;
   process.env.OWNER_PHONE = '56957296035';

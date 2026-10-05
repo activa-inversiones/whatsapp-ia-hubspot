@@ -959,7 +959,13 @@ export async function handleWebhook(req, res, deps = {}) {
           return;
         }
         const causa = causaDelRespaldo(prov.cerebro_motivo);
-        const k = claveAvisoRespaldo(causa);
+        const k = claveAvisoRespaldo(causa);       // la MARCA durable {at, causa}
+        // 🔴 [#1094] LA RESERVA VIVE EN OTRA CLAVE QUE LA MARCA. `reservar()` escribe su token en la clave que
+        // recibe (memoria + PUT a Postgres, ver estadoPersistente.js): con `k` para las dos cosas, tras un REDEPLOY
+        // el token pisaba la marca durable y el `leerEstado(k)` de abajo leía ese token (sin `.at`) desde la memoria ⇒
+        // `tocaAvisar` daba true y el aviso salía OTRA VEZ, una vez por redeploy durante el episodio. Mismo defecto
+        // que `avisarVidrio` ya evitaba, y la misma separación del informe térmico y el de vientos (`clave` / `clave:en_curso`).
+        const kEnCurso = `${k}:en_curso`;
 
         // 🔴 [compuerta cruzada · Codex #1] LA RESERVA VA PRIMERO, Y ES LO QUE
         // FRENA EL BUCLE. La version anterior hacia leer -> decidir -> enviar, y
@@ -968,7 +974,7 @@ export async function handleWebhook(req, res, deps = {}) {
         // quinto ya no se lee. `reservar` es atomico y vive en MEMORIA, asi que
         // corta igual aunque el almacenamiento durable no conteste, y tambien
         // cierra la carrera entre dos turnos simultaneos.
-        const token = (deps.reservarEstado || reservarEstado)(k, 24 * 3600);
+        const token = (deps.reservarEstado || reservarEstado)(kEnCurso, 24 * 3600);
         if (!token) return;                       // ya hay un aviso de hoy, en vuelo o mandado
 
         let ultimo = null;
@@ -988,7 +994,7 @@ export async function handleWebhook(req, res, deps = {}) {
         // reintente. Si el episodio se acabo justo aca, el aviso se pierde — es el
         // limite conocido (Codex #2) y se acepta: montar un outbox con reintentos
         // para una alerta operativa es mas maquinaria de la que el problema pide.
-        (deps.liberarReserva || liberarReserva)(k, token);
+        (deps.liberarReserva || liberarReserva)(kEnCurso, token);
       });
     };
 
