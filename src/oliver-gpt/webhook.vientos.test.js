@@ -23,6 +23,10 @@ import { capturarLogs } from './capturarLogs.testutil.js';
 
 process.env.ACTIVA_ENGINE_URL = 'http://motor.test';
 
+// El folio que da el correlativo FALSO. Casi todos los tests comparten el 9999; los del respaldo por plantilla
+// (r7) fijan uno propio: «una plantilla por folio» es estado del módulo y no debe filtrarse de un test a otro.
+let FOLIO_PROXIMO = 'CM-FR-004-2026-9999';
+
 // El motor FALSO: el precio y el Uw dependen del vidrio que el propio motor elige (por area,
 // como `pickGlassId`: 34 = 4+12+4 · 61 = 5+12+5 · 38 = satén), igual que en produccion.
 const PRECIO_VIDRIO = { 34: 100000, 38: 120000, 61: 130000 };
@@ -32,7 +36,7 @@ let motorCaido = false;
 global.fetch = async (url, opts = {}) => {
   const u = String(url);
   if (u.includes('/internal/quotes/next-number')) {
-    return { ok: true, status: 200, json: async () => ({ quote_number: 'CM-FR-004-2026-9999' }) };
+    return { ok: true, status: 200, json: async () => ({ quote_number: FOLIO_PROXIMO }) };
   }
   if (u.startsWith('http://motor.test/api/quotes/calculate')) {
     if (motorCaido) return { ok: false, status: 503, text: async () => '{}', json: async () => ({}) };
@@ -62,7 +66,7 @@ const makeRes = () => ({ sendStatus() { return this; } });
 /** Arnes minimo: KV en memoria, envios a una linea de tiempo, THERMAL y PDFs falsos. */
 function armar({ informeEnvio = { ok: true, msgId: 'doc.1' }, informeCuelga = false, thermalCaido = false, ventanas = VENTANAS, nombre = 'Dady' } = {}) {
   const telefono = `5697${String(++SEQ).padStart(7, '0')}`;
-  const spy = { linea: [], textos: [], propuestas: [], vientos: [], alertas: [] };
+  const spy = { linea: [], textos: [], propuestas: [], vientos: [], alertas: [], eventos: [], plantillas: [] };
   const estado = new Map();
   let tok = 0;
   const vigente = (e) => e && (!e.expira || e.expira > Date.now());
@@ -119,12 +123,15 @@ function armar({ informeEnvio = { ok: true, msgId: 'doc.1' }, informeCuelga = fa
     },
     bridge: {
       getConversationControl: async () => ({ ai_paused: false, operator_status: 'ai' }),
-      pushConversationEvent: async () => ({ ok: true }),
+      pushConversationEvent: async (p) => { spy.eventos.push(p); return { ok: true }; },
       pushLeadEvent: async () => ({ ok: true }),
       pushQuoteEvent: async () => ({ ok: true }),
     },
     // El canal de avisos al dueño (highValueNotifier): (envio, telefono del cliente, sesion, motivo).
     notifyHighValue: async (envio, cliente, sesion, motivo) => { spy.alertas.push({ cliente, motivo: String(motivo) }); return { sent: true }; },
+    // [r7] La plantilla de respaldo al dueño (escalation.js → /admin/send-template). Por defecto FALLA y no sale a
+    // ninguna parte: la suite corre sin red, y un test que no habla de la plantilla no debe depender de ADMIN_PIN.
+    sendAvisoVidrioTemplate: async (folio, etiquetas) => { spy.plantillas.push({ folio, etiquetas }); return { ok: false, error: 'plantilla_no_cableada_en_el_test' }; },
   };
   return { deps, spy, telefono, estado };
 }
@@ -381,6 +388,74 @@ test('🔔 B3 [r5] el aviso SALIÓ (sent:true) ⇒ no se declara ninguna falla',
     await dejarCorrer();
   });
   assert.ok(!logs.some((l) => /vidrio\.aviso_no_salio/.test(l)), JSON.stringify(logs.filter((l) => /vidrio\./.test(l))));
+});
+
+/* ── B3 · r7: el aviso del satén NO puede morir en la ventana de 24 h ──────────────────── */
+
+const RECHAZO_VENTANA = { sent: false, reason: 'envio_fallido', code: 131047, error: '{"error":{"code":131047}}' };
+const eventosDeAvisoFallido = (spy) => spy.eventos.filter((e) => e?.metadata?.aviso_fallido === true);
+/** Corre un turno con el folio dado y espera a que el aviso al dueño (y lo que le sigue) haya terminado. */
+async function correrConFolio(folio, deps, spy) {
+  FOLIO_PROXIMO = folio;
+  try {
+    return await capturarLogs(async () => {
+      await handleWebhook({ body: {} }, makeRes(), deps);
+      assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta sale igual: nunca se frena al cliente');
+      assert.ok(await esperar(() => alertasDeVidrio(spy).length > 0), 'el aviso al dueño se intentó');
+      await dejarCorrer();
+    });
+  } finally { FOLIO_PROXIMO = 'CM-FR-004-2026-9999'; }
+}
+
+test('🔔 B3 [r7] el texto libre lo rechaza la ventana de 24 h (131047) ⇒ el aviso sale por la PLANTILLA con el folio y la etiqueta; ningún falso «no salió»', async () => {
+  // CAUSA RAÍZ: el aviso tenía un solo canal (texto libre). Si el dueño no le escribió al bot en 24 h, Meta lo
+  // rechaza y quedaba una línea de log que nadie lee. Las escalaciones ya tenían el respaldo por plantilla.
+  const { deps, spy } = armar({ ventanas: SATEN_1500 });
+  conResultadoDeAviso(deps, spy, RECHAZO_VENTANA);
+  deps.sendAvisoVidrioTemplate = async (folio, etiquetas) => { spy.plantillas.push({ folio, etiquetas }); return { ok: true }; };
+  const logs = await correrConFolio('CM-FR-004-2026-9801', deps, spy);
+  assert.deepEqual(spy.plantillas, [{ folio: 'CM-FR-004-2026-9801', etiquetas: ['4+12+4 satén (baño)'] }],
+    `la plantilla sale UNA vez, con el folio y la etiqueta: ${JSON.stringify(spy.plantillas)}`);
+  assert.ok(logs.some((l) => /vidrio\.aviso_por_plantilla.*CM-FR-004-2026-9801/.test(l)), JSON.stringify(logs.filter((l) => /vidrio\./.test(l))));
+  assert.ok(!logs.some((l) => /vidrio\.aviso_no_salio/.test(l)), 'el dueño SÍ se enteró');
+  assert.deepEqual(eventosDeAvisoFallido(spy), [], 'y no hay nada que gritar en el panel');
+});
+
+test('🔔 B3 [r7] la plantilla TAMBIÉN falla ⇒ log + UN evento visible en la conversación del cliente (como la escalación #888)', async () => {
+  const { deps, spy, telefono } = armar({ ventanas: SATEN_1500 });
+  conResultadoDeAviso(deps, spy, RECHAZO_VENTANA);
+  deps.sendAvisoVidrioTemplate = async (folio, etiquetas) => { spy.plantillas.push({ folio, etiquetas }); return { ok: false, error: 'ADMIN_PIN_missing' }; };
+  const logs = await correrConFolio('CM-FR-004-2026-9802', deps, spy);
+  assert.equal(spy.plantillas.length, 1, 'se intentó la plantilla');
+  assert.ok(logs.some((l) => /vidrio\.aviso_no_salio.*CM-FR-004-2026-9802.*131047.*ADMIN_PIN_missing/.test(l)), JSON.stringify(logs.filter((l) => /vidrio\./.test(l))));
+
+  const eventos = eventosDeAvisoFallido(spy);
+  assert.equal(eventos.length, 1, JSON.stringify(spy.eventos));
+  assert.equal(eventos[0].channel, 'whatsapp');
+  assert.equal(eventos[0].external_id, telefono, 'en la conversación del cliente, que es donde se mira');
+  assert.equal(eventos[0].direction, 'outbound');
+  assert.equal(eventos[0].actor_type, 'system');
+  assert.match(eventos[0].body, /CM-FR-004-2026-9802/);
+  assert.match(eventos[0].body, /NO salió/);
+  assert.equal(eventos[0].metadata.folio, 'CM-FR-004-2026-9802');
+  assert.match(String(eventos[0].metadata.motivo_plantilla), /ADMIN_PIN_missing/);
+});
+
+test('🔔 B3 [r7] la plantilla que LANZA no tumba el turno: la propuesta sale, queda el log y el evento', async () => {
+  const { deps, spy } = armar({ ventanas: SATEN_1500 });
+  conResultadoDeAviso(deps, spy, RECHAZO_VENTANA);
+  deps.sendAvisoVidrioTemplate = async () => { throw new Error('boom'); };
+  const logs = await correrConFolio('CM-FR-004-2026-9803', deps, spy);
+  assert.ok(logs.some((l) => /vidrio\.aviso_no_salio.*CM-FR-004-2026-9803.*excepcion/.test(l)), JSON.stringify(logs.filter((l) => /vidrio\./.test(l))));
+  assert.equal(eventosDeAvisoFallido(spy).length, 1);
+});
+
+test('🔔 B3 [r7] otro tipo de falla (no la ventana) NO dispara la plantilla: sigue siendo solo el log', async () => {
+  const { deps, spy } = armar({ ventanas: SATEN_1500 });
+  conResultadoDeAviso(deps, spy, { sent: false, reason: 'no_owner_phone' });
+  const logs = await correrConFolio('CM-FR-004-2026-9804', deps, spy);
+  assert.deepEqual(spy.plantillas, []);
+  assert.ok(logs.some((l) => /vidrio\.aviso_no_salio.*CM-FR-004-2026-9804.*no_owner_phone/.test(l)));
 });
 
 /* ── D · la pausa antes del precio, si se mando ALGUN informe (decision 4, r4) ───────── */

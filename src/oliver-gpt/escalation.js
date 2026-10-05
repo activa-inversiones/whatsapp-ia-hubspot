@@ -42,10 +42,11 @@ export function isEscalationRequest(text) {
   return false;
 }
 
-// Aviso GARANTIZADO al dueño por PLANTILLA de WhatsApp (bypasa la ventana 24h).
-// Usa 'informe_diario' (plantilla YA APROBADA) por self-call a /admin/send-template.
-// 4 params: fecha, resumen, linea3, linea4. El detalle del lead queda en el cockpit.
-export async function sendEscalationTemplate(name, motivo, deps = {}) {
+// [2026-10-05 · r7] NÚCLEO COMPARTIDO de las plantillas al dueño: 'informe_diario' (YA APROBADA, 4 params:
+// fecha, resumen, linea3, linea4) por self-call a /admin/send-template. Lo usan la escalación y el aviso del
+// satén perdido: una sola copia, para que no se desincronicen (el PIN, el teléfono del dueño, el timeout).
+// Devuelve lo que contesta el endpoint (`{ok, ...}`); sin PIN o si el fetch lanza, `{ok:false, error}`.
+async function enviarInformeDiario({ resumen, linea3, linea4 }, deps = {}) {
   const fetchFn = deps.fetchFn || fetch;
   const PIN = process.env.ADMIN_PIN || process.env.OLIVER_ADMIN_PIN || '';
   const owner = process.env.OWNER_NOTIFICATION_PHONE || process.env.ESCALATION_PHONE || process.env.MARCELO_PHONE || '56957296035';
@@ -53,14 +54,7 @@ export async function sendEscalationTemplate(name, motivo, deps = {}) {
   const base = (process.env.SELF_URL || `http://127.0.0.1:${process.env.PORT || 8080}`).replace(/\/$/, '');
   let fecha = '';
   try { fecha = new Date().toLocaleDateString('es-CL', { timeZone: 'America/Santiago' }); } catch { fecha = new Date().toISOString().slice(0, 10); }
-  const body = {
-    template: 'informe_diario',
-    phone: owner,
-    fecha,
-    resumen: `ESCALACION: ${String(name || 'un cliente').slice(0, 40)} pide hablar contigo AHORA`,
-    linea3: String(motivo || 'pide hablar con humano').replace(/[\[\]]/g, '').slice(0, 90),
-    linea4: 'Revisa/toma el chat en ops.activalabs.ai (Oliver CRM)',
-  };
+  const body = { template: 'informe_diario', phone: owner, fecha, resumen, linea3, linea4 };
   try {
     const r = await fetchFn(`${base}/admin/send-template?pin=${encodeURIComponent(PIN)}`, {
       method: 'POST',
@@ -74,4 +68,32 @@ export async function sendEscalationTemplate(name, motivo, deps = {}) {
   }
 }
 
-export default { escalationMessage, isEscalationRequest, sendEscalationTemplate, BOOKINGS_URL };
+// Aviso GARANTIZADO al dueño por PLANTILLA de WhatsApp (bypasa la ventana 24h).
+// El detalle del lead queda en el cockpit.
+export async function sendEscalationTemplate(name, motivo, deps = {}) {
+  return enviarInformeDiario({
+    resumen: `ESCALACION: ${String(name || 'un cliente').slice(0, 40)} pide hablar contigo AHORA`,
+    linea3: String(motivo || 'pide hablar con humano').replace(/[[\]]/g, '').slice(0, 90),
+    linea4: 'Revisa/toma el chat en ops.activalabs.ai (Oliver CRM)',
+  }, deps);
+}
+
+// Un parámetro de plantilla de Meta no admite saltos de línea, tabuladores ni rachas de espacios (error 132018).
+const paramLimpio = (s, max) => String(s ?? '').replace(/[[\]]/g, '').replace(/\s+/g, ' ').trim().slice(0, max);
+
+// [2026-10-05 · r7] El aviso al dueño de «la propuesta dice satén y se cotizó con vidrio claro», por la MISMA
+// plantilla aprobada de la escalación (`informe_diario`; crear una nueva requiere aprobación de Meta y mientras
+// tanto el aviso no sale). Es el respaldo del texto libre, que Meta rechaza (131047) si el dueño no le escribió
+// al bot en las últimas 24 h. El FOLIO va en `resumen` (corto: no se trunca) y las ETIQUETAS en `linea3`.
+// NO es una escalación: no dice que un cliente espera al dueño AHORA.
+export async function sendAvisoVidrioTemplate(folio, etiquetas, deps = {}) {
+  const dice = (Array.isArray(etiquetas) ? etiquetas : [etiquetas])
+    .map((e) => paramLimpio(e, 80)).filter(Boolean).map((e) => `"${e}"`).join(' y ');
+  return enviarInformeDiario({
+    resumen: paramLimpio(`AVISO DE PRECIO: propuesta ${folio}`, 90),
+    linea3: paramLimpio(`dice ${dice} pero se cotizó con vidrio claro; revisar precio`, 300),
+    linea4: 'Revisa la propuesta en ops.activalabs.ai (Oliver CRM)',
+  }, deps);
+}
+
+export default { escalationMessage, isEscalationRequest, sendEscalationTemplate, sendAvisoVidrioTemplate, BOOKINGS_URL };

@@ -256,3 +256,32 @@ test('HVN-13 [r6]: control — solo `timedOut === true` cuenta: `false`/ausente/
     assert.equal(calls.length, 2);
   }
 });
+
+// ── (e) [05-oct · r7] la rama `catch` TAMBIÉN dice POR QUÉ no envió ────────────────────────────────
+// CAUSA RAÍZ: todas las demás salidas con `sent:false` traen `reason` (`cooldown`, `standard_lead`,
+// `no_owner_phone`, `envio_fallido`, `envio_dudoso`), pero el `catch` devolvía `{sent:false, error}` SIN
+// `reason`. tools.js (`notificar_marcelo`) arma `motivo: result?.reason` ⇒ quedaba `undefined` justo
+// cuando el notificador reventó, y el LLM no podía distinguir «lanzó» de «sin confirmación».
+test('HVN-14 [r7]: un waSend que LANZA ⇒ sent:false, reason:\'excepcion\' y el texto en `error` (antes `reason` era undefined)', async () => {
+  const phone = '56977777772';
+  const lanza = async () => { throw new Error('socket hang up'); };
+  const r = await notifyHighValue(lanza, phone, realHighValueSession(), 'auto');
+  assert.equal(r.sent, false);
+  assert.equal(r.reason, 'excepcion', 'todo no-envío trae su motivo; el catch era el único que no');
+  assert.match(String(r.error), /socket hang up/, 'y el detalle sigue viajando en `error`');
+  // Sin cooldown (como siempre): el reintento con el canal sano tiene que salir.
+  const waSend = makeWaSendMock();
+  assert.equal((await notifyHighValue(waSend, phone, realHighValueSession(), 'auto')).sent, true);
+});
+
+test('HVN-15 [r7]: de punta a punta — notificar_marcelo con el notificador REAL que lanza ⇒ `motivo:\'excepcion\'` (no undefined)', async () => {
+  const { runTool } = await import('../src/oliver-gpt/tools.js');
+  const lanza = async () => { throw new Error('boom'); };
+  // La misma forma que cablea webhook.js: ctx.notifyMarcelo({reason, data}) → notifyHighValue(..., reason).
+  const ctx = { notifyMarcelo: ({ reason, data }) => notifyHighValue(lanza, '56977777773', { data, history: [] }, reason) };
+  const r = await runTool('notificar_marcelo', { motivo: 'pide humano' }, ctx);
+  assert.equal(r.ok, true);
+  assert.equal(r.enviado, false);
+  assert.equal(r.motivo, 'excepcion', 'el LLM ve que el aviso reventó, no un motivo vacío');
+  assert.match(r.reason, /^oliver_gpt:pide humano/, '`reason` sigue siendo el motivo de ENTRADA');
+});

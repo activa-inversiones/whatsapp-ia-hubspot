@@ -52,7 +52,7 @@ import { sendChannelDocument as realSendChannelDocument } from '../../services/m
 import { stripMontos, stripAccionesFalsas, quoteDataComplete } from './pdf-intent.js'; // [#2] filtro anti precio-suelto + [PDF-RACE] guard de completitud + [Ronda 4] anti acciones-falsas (compartidos con webhook.js)
 // [2026-07-02 dedupe] escalación desde el módulo COMPARTIDO — las copias locales causaron el bug
 // del título viejo de Marcelo en IG/FB (se actualizó escalation.js y las copias quedaron atrás).
-import { escalationMessage, isEscalationRequest, sendEscalationTemplate } from './escalation.js';
+import { escalationMessage, isEscalationRequest, sendEscalationTemplate, sendAvisoVidrioTemplate } from './escalation.js'; // [2026-10-05 r7] + el respaldo por plantilla del aviso del satén
 
 /* =========================================================================
  * ESTADO IN-MEMORY (piloto) — por canal+sender.
@@ -700,10 +700,23 @@ export async function handleChannelTurn(
           // aunque el folio se REUSE en una corrección). No cambia el precio: es carril plata.
           // [r5] El callback DEVUELVE la promesa: `avisarVidrio` mira lo que resuelve y, si el aviso no
           // salió (Meta lo rechazó, sin teléfono del dueño...), lo deja en el log como `vidrio.aviso_no_salio`.
+          // [r7] Y si el texto libre lo rechaza la ventana de 24 h (131047: el dueño no le escribió al bot), el MISMO
+          // aviso sale por la PLANTILLA aprobada de las escalaciones (la misma que en WhatsApp: el dueño recibe
+          // todo por WhatsApp aunque el cliente sea de IG/FB); si esa también falla, queda un evento visible en la
+          // conversación del cliente (como la escalación #888). Ver `avisarVidrio`.
           avisarVidrio(_avisosVidrio, quoteNumber, (aviso, texto) => log('warn', aviso, `${convKey}: ${texto}`),
             (texto) => safe('generarPdf.vidrio.aviso', () =>
               notifyHighValue(sendWhatsAppText, senderId,
-                { data: { ...state, name: input.name || state.name || senderName }, history }, `[${channel}] ${texto}`)));
+                { data: { ...state, name: input.name || state.name || senderName }, history }, `[${channel}] ${texto}`)),
+            {
+              plantilla: (etiquetas) => safe('generarPdf.vidrio.plantilla', () =>
+                (deps.sendAvisoVidrioTemplate || sendAvisoVidrioTemplate)(quoteNumber, etiquetas)),
+              alPanel: ({ body, metadata }) => safe('generarPdf.vidrio.panel', () => bridge.pushConversationEvent({
+                channel, external_id: senderId, direction: 'outbound', actor_type: 'system',
+                actor_name: 'Sistema', message_type: 'text', body,
+                metadata: { source: 'oliver_gpt_channel', ...metadata },
+              })),
+            });
           // Evicción por antigüedad (no clear() ciego, que abría ventana de doble-folio en carga).
           if (RECENT_QUOTES.size > 500) {
             const cutoff = Date.now() - QUOTE_DEDUP_MS;

@@ -283,7 +283,10 @@ async function notifyHighValue(waSendFn, customerPhone, session, reason = "auto"
     return { sent: true, score, tier: score.tier };
   } catch (e) {
     console.error("[highValueNotifier] Error enviando alerta:", e.message);
-    return { sent: false, error: e.message };
+    // [2026-10-05 · r7] TODO no-envío trae su `reason`; este era el único que no. `tools.js` (`notificar_marcelo`)
+    // arma `motivo: result?.reason`: sin esto quedaba `undefined` justo cuando el envío reventó, y el LLM no podía
+    // distinguirlo de «sin confirmación». El detalle sigue en `error`. Sin cooldown, como siempre (HVN-10).
+    return { sent: false, reason: "excepcion", error: e.message };
   }
 }
 

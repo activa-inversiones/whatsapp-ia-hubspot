@@ -367,3 +367,145 @@ test('🔴 [r6] control — lo que SÍ es satén sigue siéndolo, también pegad
     assert.equal(elegirVidrio(e, '4+12+4').aviso, 'vidrio.bano_perdido', `"${e}" sigue avisando «satén perdido»`);
   }
 });
+
+/* ── r7 · el aviso del satén llega AUNQUE el dueño no le haya escrito al bot en 24 h ────────────────── */
+
+// CAUSA RAÍZ: el aviso al dueño tenía UN solo canal, el texto libre (`notifyHighValue` → waSend). Fuera de la
+// ventana de 24 h Meta lo rechaza (131047) y, tras r5, eso quedaba SOLO como una línea de log
+// (`vidrio.aviso_no_salio`) que nadie lee: el dueño no se enteraba de que una propuesta dice satén y se cobró
+// vidrio claro. Las escalaciones ya tienen el segundo canal (plantilla aprobada, que PASA la ventana) y el
+// evento en el panel (#888); el aviso del satén no tenía ninguno de los dos.
+//
+// Contrato de `avisarVidrio(..., respaldo)`; `respaldo` es OPCIONAL (sin él, todo es como en r5):
+//   · plantilla(etiquetas) → {ok}   manda el MISMO aviso por la plantilla aprobada
+//   · alPanel({body, metadata})     deja el evento visible en el panel de la conversación
+// Las pruebas usan un folio DISTINTO cada una: la regla «una vez por folio» es estado del módulo.
+const RECHAZO_VENTANA = () => ({ sent: false, reason: 'envio_fallido', code: 131047, error: '{"error":{"code":131047}}' });
+const conRespaldo = (plantilla) => {
+  const visto = { plantilla: [], panel: [] };
+  return {
+    visto,
+    respaldo: {
+      plantilla: async (etiquetas) => { visto.plantilla.push(etiquetas); return plantilla(); },
+      alPanel: async (evento) => { visto.panel.push(evento); },
+    },
+  };
+};
+
+test('🔔 [r7] el texto libre lo rechaza la ventana de 24 h (131047) ⇒ el MISMO aviso sale por la PLANTILLA, con folio y etiqueta', async () => {
+  const folio = 'CM-FR-004-2026-0701';
+  const { visto, respaldo } = conRespaldo(async () => ({ ok: true }));
+  const lineas = [];
+  await avisarVidrio(SATEN(), folio, (a, t) => lineas.push(`${a} ${t}`), async () => RECHAZO_VENTANA(), respaldo);
+  assert.deepEqual(visto.plantilla, [['4+12+4 satén (baño)']], 'una plantilla, con la etiqueta (el folio lo pone quien la manda)');
+  assert.ok(lineas.some((l) => new RegExp(`^vidrio\\.aviso_por_plantilla.*${folio}`).test(l)),
+    `queda dicho que salió por plantilla: ${JSON.stringify(lineas)}`);
+  assert.deepEqual(lineas.filter((l) => l.startsWith('vidrio.aviso_no_salio')), [], 'el dueño SÍ se enteró: no es una falla');
+  assert.deepEqual(visto.panel, [], 'y entonces no hay nada que gritar en el panel');
+});
+
+for (const [i, [caso, plantilla, esperaMotivo]] of [
+  ['la plantilla responde ok:false', async () => ({ ok: false, error: 'ADMIN_PIN_missing' }), /ADMIN_PIN_missing/],
+  ['la plantilla no confirma nada ({})', async () => ({}), /sin_confirmacion/],
+  ['la plantilla lanzó (safe() devuelve null)', async () => null, /excepcion/],
+  ['la plantilla rechaza la promesa', async () => { throw new Error('socket hang up'); }, /socket hang up/],
+].entries()) {
+  test(`🔔 [r7] el texto lo rechaza la ventana Y ${caso} ⇒ queda el log con AMBOS motivos y UN evento en el panel`, async () => {
+    const folio = `CM-FR-004-2026-072${i}`;
+    const { visto, respaldo } = conRespaldo(plantilla);
+    const lineas = [];
+    await avisarVidrio(SATEN(), folio, (a, t) => lineas.push(`${a} ${t}`), async () => RECHAZO_VENTANA(), respaldo);
+
+    const noSalio = lineas.filter((l) => l.startsWith('vidrio.aviso_no_salio'));
+    assert.equal(noSalio.length, 1, JSON.stringify(lineas));
+    assert.match(noSalio[0], new RegExp(folio));
+    assert.match(noSalio[0], /131047/, 'el motivo del texto libre');
+    assert.match(noSalio[0], esperaMotivo, 'y el de la plantilla');
+    assert.ok(!lineas.some((l) => l.startsWith('vidrio.aviso_por_plantilla')), 'no se dice que salió lo que no salió');
+
+    // El MISMO mecanismo de la escalación #888: un evento en la conversación (es lo que se mira desde el
+    // panel; un console.log en Railway se pierde entre miles de líneas), con la marca `aviso_fallido`.
+    assert.equal(visto.panel.length, 1, `un evento en el panel: ${JSON.stringify(visto.panel)}`);
+    const { body, metadata } = visto.panel[0];
+    assert.match(body, new RegExp(folio));
+    assert.match(body, /satén/);
+    assert.match(body, /NO salió/, 'dice qué pasó, no un código');
+    assert.match(body, /a mano/, 'y qué hacer');
+    assert.equal(metadata.aviso_fallido, true);
+    assert.equal(metadata.folio, folio);
+    assert.match(String(metadata.motivo_notify), /131047/);
+    assert.match(String(metadata.motivo_plantilla), esperaMotivo);
+  });
+}
+
+test('🔔 [r7] SOLO la ventana de 24 h cae a la plantilla: timeout (pudo llegar), otra falla, cooldown y enviado NO reenvían', async () => {
+  // `envio_dudoso` es un timeout: Meta pudo haber entregado el texto. Mandar además la plantilla puede
+  // duplicar el aviso al dueño (la misma razón por la que highValueNotifier fija cooldown ahí, r6).
+  const casos = [
+    ['timeout (envio_dudoso)', { sent: false, reason: 'envio_dudoso', error: 'timeout of 15000ms exceeded', timedOut: true }],
+    ['envio_dudoso aunque traiga el código de la ventana', { sent: false, reason: 'envio_dudoso', code: 131047, timedOut: true }],
+    ['rechazo de Meta que NO es la ventana (190: token)', { sent: false, reason: 'envio_fallido', code: 190, error: 'token' }],
+    ['rechazo sin código', { sent: false, reason: 'envio_fallido', error: 'salida_bloqueada' }],
+    ['código de la ventana como TEXTO (no es un número de Meta)', { sent: false, reason: 'envio_fallido', code: '131047' }],
+    ['cooldown (ya se le avisó)', { sent: false, reason: 'cooldown' }],
+    ['enviado', { sent: true, tier: 'MEDIUM' }],
+    ['standard_lead', { sent: false, reason: 'standard_lead' }],
+  ];
+  for (const [i, [caso, resultado]] of casos.entries()) {
+    const { visto, respaldo } = conRespaldo(async () => ({ ok: true }));
+    await avisarVidrio(SATEN(), `CM-FR-004-2026-074${i}`, () => {}, async () => resultado, respaldo);
+    assert.deepEqual(visto.plantilla, [], `${caso}: no se manda plantilla`);
+  }
+  // Y sin satén perdido no hay aviso alguno, ni siquiera ante un rechazo de ventana.
+  const sinSaten = [];
+  aplicarVidrio({ glass_label: 'Laminado 6+6' }, '4+12+4', { avisos: sinSaten });
+  const { visto, respaldo } = conRespaldo(async () => ({ ok: true }));
+  await avisarVidrio(sinSaten, 'CM-FR-004-2026-0750', () => {}, async () => RECHAZO_VENTANA(), respaldo);
+  assert.deepEqual(visto.plantilla, []);
+  assert.deepEqual(visto.panel, []);
+});
+
+test('🔔 [r7] UNA plantilla por folio y etiquetas (el folio se reusa en una corrección); si FALLÓ, el reintento sí vuelve a intentar', async () => {
+  const folio = 'CM-FR-004-2026-0760';
+  const ok = conRespaldo(async () => ({ ok: true }));
+  const intento = (conResp, avisos = SATEN()) =>
+    avisarVidrio(avisos, folio, () => {}, async () => RECHAZO_VENTANA(), conResp.respaldo);
+  await intento(ok);
+  await intento(ok);
+  assert.equal(ok.visto.plantilla.length, 1, 'el mismo aviso dos veces ⇒ el dueño recibe UNA plantilla, no dos');
+
+  // Otra etiqueta en el mismo folio es OTRO aviso (igual que el cooldown del texto: su clave lleva las etiquetas).
+  const otras = [];
+  aplicarVidrio({ glass_label: 'Termopanel 5+12+5 esmerilado' }, '5+12+5', { avisos: otras });
+  await intento(ok, otras);
+  assert.equal(ok.visto.plantilla.length, 2);
+
+  // Una plantilla que FALLÓ no marca nada: el reintento tiene que poder salir. Y el evento del panel es uno solo.
+  const folioB = 'CM-FR-004-2026-0761';
+  let sana = false;
+  const seRecupera = conRespaldo(async () => (sana ? { ok: true } : { ok: false, error: 'timeout' }));
+  const intentoB = () => avisarVidrio(SATEN(), folioB, () => {}, async () => RECHAZO_VENTANA(), seRecupera.respaldo);
+  await intentoB();
+  await intentoB();
+  assert.equal(seRecupera.visto.plantilla.length, 2, 'una plantilla que falló no silencia al reintento');
+  assert.equal(seRecupera.visto.panel.length, 1, 'el mismo folio y el mismo problema ⇒ UN evento en el panel, no uno por intento');
+  sana = true;
+  await intentoB();
+  assert.equal(seRecupera.visto.plantilla.length, 3, 'y cuando se recupera, sale');
+  assert.equal(seRecupera.visto.panel.length, 1);
+});
+
+test('🔔 [r7] compatibilidad: sin `respaldo` todo es como en r5 (solo el log); un `alPanel` que lanza no rompe nada', async () => {
+  const lineas = [];
+  await avisarVidrio(SATEN(), 'CM-FR-004-2026-0770', (a, t) => lineas.push(`${a} ${t}`), async () => RECHAZO_VENTANA());
+  assert.equal(lineas.filter((l) => l.startsWith('vidrio.aviso_no_salio')).length, 1);
+
+  const rompe = { plantilla: async () => ({ ok: false, error: 'x' }), alPanel: async () => { throw new Error('panel caido'); } };
+  await assert.doesNotReject(async () => {
+    await avisarVidrio(SATEN(), 'CM-FR-004-2026-0771', () => {}, async () => RECHAZO_VENTANA(), rompe);
+  });
+  // `plantilla` que no es función ⇒ se ignora (no se inventa un canal).
+  const l2 = [];
+  await avisarVidrio(SATEN(), 'CM-FR-004-2026-0772', (a, t) => l2.push(a), async () => RECHAZO_VENTANA(), { alPanel: async () => {} });
+  assert.ok(l2.includes('vidrio.aviso_no_salio'));
+});

@@ -41,15 +41,16 @@ let _seq = 0;
  * @param {Array<{text:string, cotiza?:boolean, llm?:object}>} opts.turnos
  */
 function armar(opts = {}) {
-  const spy = { pdfs: [], documentos: [], quoteEvents: [], deals: [], sondas: [], textos: [], alertas: [] };
+  const spy = { pdfs: [], documentos: [], quoteEvents: [], deals: [], sondas: [], textos: [], alertas: [], eventos: [], plantillas: [] };
   const senderId = `IG_paridad_${++_seq}`;
+  spy.senderId = senderId;
   const conv = new Map();
 
   const deps = {
     conv, seen: new Set(), locks: new Map(),
     bridge: {
       getConversationControl: async () => ({ ai_paused: false, operator_status: 'ai' }),
-      pushConversationEvent: async () => ({}),
+      pushConversationEvent: async (p) => { spy.eventos.push(p); return {}; },
       pushLeadEvent: async () => ({}),
       pushQuoteEvent: async (p) => { spy.quoteEvents.push(p); return {}; },
     },
@@ -57,6 +58,12 @@ function armar(opts = {}) {
     // `opts.avisoDueno`: lo que devuelve el notificador (el real NO lanza: devuelve `{sent:false,...}`).
     notifyHighValue: async (_envio, cliente, _sesion, motivo) => { spy.alertas.push({ cliente, motivo: String(motivo) }); return opts.avisoDueno || { sent: true }; },
     sendWhatsAppText: async () => ({ ok: true }),
+    // [r7] La plantilla de respaldo al dueño (escalation.js → /admin/send-template). `opts.plantilla` es lo que
+    // devuelve; por defecto FALLA y no sale a ninguna parte (la suite corre sin red ni ADMIN_PIN).
+    sendAvisoVidrioTemplate: async (folio, etiquetas) => {
+      spy.plantillas.push({ folio, etiquetas });
+      return opts.plantilla || { ok: false, error: 'plantilla_no_cableada_en_el_test' };
+    },
     generatePdf: async (data, numero) => {
       spy.pdfs.push({
         numero, opcion: data.opcion || null, receptor: data.receptor || null,
@@ -111,7 +118,7 @@ async function correr(opts = {}) {
   process.env.SALES_OS_URL = 'https://sales-os.test';
   process.env.SALES_OS_OPERATOR_TOKEN = 'test-token';
   global.fetch = async (url) => (String(url).includes('/internal/quotes/next-number')
-    ? { ok: true, json: async () => ({ quote_number: 'CM-FR-004-2026-0392' }) }
+    ? { ok: true, json: async () => ({ quote_number: opts.folio || 'CM-FR-004-2026-0392' }) }
     : { ok: false, json: async () => ({}) });
 
   try {
@@ -399,6 +406,56 @@ test('🔔 IG [05-oct · r5 · Thermos MEDIO-BAJO] el aviso al dueño NO salió 
     assert.ok(l2.some((l) => /vidrio\.bano_perdido/.test(l)), 'control: el aviso del tablero sí salió');
     assert.ok(!l2.some((l) => /vidrio\.aviso_no_salio/.test(l)), JSON.stringify(avisoDueno));
   }
+});
+
+const SATEN_IG = {
+  vidrioMotor: '4+12+4',
+  item: { producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
+    measures: '1500x1000', color: 'Blanco', qty: 1, unit_price: PRECIO.Blanco, glass_label: '4+12+4 satén (baño)' },
+  turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1000 para el baño' }],
+};
+const RECHAZO_VENTANA_IG = { sent: false, reason: 'envio_fallido', code: 131047, error: '{"error":{"code":131047}}' };
+/** Un turno con el folio y la plantilla dados, esperando a que el aviso (y lo que le sigue) termine. */
+async function correrSaten(extra) {
+  let corrida;
+  const lineas = await capturarLogs(async () => {
+    corrida = await correr({ ...SATEN_IG, avisoDueno: RECHAZO_VENTANA_IG, ...extra });
+    await new Promise((r) => { setTimeout(r, 80); });
+  });
+  return { corrida, lineas };
+}
+
+test('🔔 IG [05-oct · r7] el texto libre lo rechaza la ventana de 24 h (131047) ⇒ el aviso sale por la PLANTILLA con el folio y la etiqueta', async () => {
+  // Mismo contrato que WhatsApp (webhook.vientos.test.js): el aviso tenía un solo canal y moría en la ventana.
+  const { corrida, lineas } = await correrSaten({ folio: 'CM-FR-004-2026-0801', plantilla: { ok: true } });
+  assert.equal(corrida.pdfs.length, 3, 'las propuestas salen igual: nunca se frena al cliente');
+  assert.deepEqual(corrida.plantillas, [{ folio: 'CM-FR-004-2026-0801', etiquetas: ['4+12+4 satén (baño)'] }],
+    `una plantilla, aunque A, B y C compartan folio: ${JSON.stringify(corrida.plantillas)}`);
+  assert.ok(lineas.some((l) => /vidrio\.aviso_por_plantilla.*CM-FR-004-2026-0801/.test(l)), JSON.stringify(lineas.filter((l) => /vidrio\./.test(l))));
+  assert.ok(!lineas.some((l) => /vidrio\.aviso_no_salio/.test(l)), 'el dueño SÍ se enteró');
+  assert.deepEqual(corrida.eventos.filter((e) => e?.metadata?.aviso_fallido === true), []);
+});
+
+test('🔔 IG [05-oct · r7] la plantilla TAMBIÉN falla ⇒ log + UN evento visible en la conversación de IG (como la escalación #888)', async () => {
+  const { corrida, lineas } = await correrSaten({ folio: 'CM-FR-004-2026-0802', plantilla: { ok: false, error: 'ADMIN_PIN_missing' } });
+  assert.equal(corrida.plantillas.length, 1);
+  assert.ok(lineas.some((l) => /vidrio\.aviso_no_salio.*CM-FR-004-2026-0802.*131047.*ADMIN_PIN_missing/.test(l)), JSON.stringify(lineas.filter((l) => /vidrio\./.test(l))));
+  const eventos = corrida.eventos.filter((e) => e?.metadata?.aviso_fallido === true);
+  assert.equal(eventos.length, 1, JSON.stringify(corrida.eventos));
+  assert.equal(eventos[0].channel, 'instagram', 'en el canal del cliente, que es donde se mira');
+  assert.equal(eventos[0].external_id, corrida.senderId);
+  assert.equal(eventos[0].direction, 'outbound');
+  assert.equal(eventos[0].actor_type, 'system');
+  assert.match(eventos[0].body, /CM-FR-004-2026-0802/);
+  assert.match(eventos[0].body, /NO salió/);
+  assert.equal(eventos[0].metadata.folio, 'CM-FR-004-2026-0802');
+  assert.match(String(eventos[0].metadata.motivo_plantilla), /ADMIN_PIN_missing/);
+});
+
+test('🔔 IG [05-oct · r7] otro tipo de falla (no la ventana) NO dispara la plantilla: sigue siendo solo el log', async () => {
+  const { corrida, lineas } = await correrSaten({ folio: 'CM-FR-004-2026-0803', avisoDueno: { sent: false, reason: 'no_owner_phone' } });
+  assert.deepEqual(corrida.plantillas, []);
+  assert.ok(lineas.some((l) => /vidrio\.aviso_no_salio.*CM-FR-004-2026-0803.*no_owner_phone/.test(l)));
 });
 
 test('🔔 IG [05-oct · r4] sin satén perdido NO se avisa al dueño del vidrio', async () => {

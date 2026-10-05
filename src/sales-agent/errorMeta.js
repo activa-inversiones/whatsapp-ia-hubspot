@@ -43,8 +43,11 @@ export const RESULTADO = {
  * 24 h o número que no recibe. Otro documento al mismo número en el mismo turno falla igual — y
  * si lleva folio ISO, lo quema sin registro. Son un subconjunto de CODIGOS_NO_PROCESADO.
  */
-const CODIGOS_DESTINATARIO = new Set([
+const CODIGOS_FUERA_DE_VENTANA = new Set([
   131047, // Re-engagement: fuera de la ventana de 24 h. Meta rechaza antes de encolar.
+]);
+const CODIGOS_DESTINATARIO = new Set([
+  ...CODIGOS_FUERA_DE_VENTANA,
   131026, // Mensaje no entregable: el número no está en WhatsApp / no puede recibir.
 ]);
 
@@ -127,6 +130,16 @@ export function clasificar(r) {
 export function rechazoDelDestinatario(r) {
   const code = codigoDe(r);
   return code !== null && CODIGOS_DESTINATARIO.has(code);
+}
+
+/**
+ * [2026-10-05 · r7] ¿Meta rechazó el TEXTO LIBRE por estar fuera de la ventana de 24 h (131047)? Es el único
+ * rechazo en que una PLANTILLA aprobada SÍ pasa al mismo destinatario (131026, número que no recibe, la
+ * rechazaría igual). Es un fallo CONOCIDO: Meta no encoló nada, así que mandar la plantilla no puede duplicar.
+ */
+export function fueraDeVentana24h(r) {
+  const code = codigoDe(r);
+  return code !== null && CODIGOS_FUERA_DE_VENTANA.has(code);
 }
 
 /** Atajo: ¿se puede reintentar automáticamente sin riesgo de duplicar? */
