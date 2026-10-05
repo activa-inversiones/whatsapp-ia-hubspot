@@ -374,6 +374,34 @@ test('(n-c) notificar_marcelo: reason oliver_gpt evita bloqueo tier STANDARD', a
   assert.equal(filterFn('STANDARD', capturedReason), false, 'el filtro NO debe bloquear una escalacion explicita STANDARD');
 });
 
+// (n-d) [05-oct · r6 · Thermos BAJO] el LLM tiene que poder distinguir «ya se avisó» de «falló».
+// CAUSA RAÍZ: el tool_result solo traía `enviado:false` + el `reason` de ENTRADA (`oliver_gpt:…`); el
+// motivo por el que el notificador NO envió (`cooldown` = ya avisado · `envio_dudoso` = timeout ·
+// `envio_fallido` = Meta rechazó) se quedaba en `result.reason` y se perdía. Con `enviado:false` a secas,
+// el LLM no sabe si reintentar, escalar de otra forma o quedarse tranquilo.
+test('(n-d) notificar_marcelo: devuelve `motivo` = por qué NO se envió (cooldown ≠ falla), sin pisar `reason`', async () => {
+  for (const [res, motivoEsperado] of [
+    [{ sent: false, reason: 'cooldown' }, 'cooldown'],
+    [{ sent: false, reason: 'envio_dudoso', error: 'timeout of 15000ms exceeded' }, 'envio_dudoso'],
+    [{ sent: false, reason: 'envio_fallido', code: 131047 }, 'envio_fallido'],
+    [{ sent: false, reason: 'no_owner_phone' }, 'no_owner_phone'],
+  ]) {
+    const r = await runTool('notificar_marcelo', { motivo: 'pide humano' }, { notifyMarcelo: async () => res });
+    assert.equal(r.ok, true);
+    assert.equal(r.enviado, false);
+    assert.equal(r.motivo, motivoEsperado, `el LLM ve por qué no salió (${JSON.stringify(res)})`);
+    assert.match(r.reason, /^oliver_gpt:pide humano/, '`reason` sigue siendo el motivo de ENTRADA, no se pisa');
+  }
+  // Salió: no hay motivo de no-envío que contar.
+  const ok = await runTool('notificar_marcelo', { motivo: 'x' }, { notifyMarcelo: async () => ({ sent: true, tier: 'HIGH' }) });
+  assert.equal(ok.enviado, true);
+  assert.equal(ok.motivo, undefined);
+  // safe() devuelve null si el notificador lanzó: sigue siendo enviado:false, sin romper.
+  const nulo = await runTool('notificar_marcelo', { motivo: 'x' }, { notifyMarcelo: async () => null });
+  assert.equal(nulo.enviado, false);
+  assert.equal(nulo.motivo, undefined);
+});
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Tests herméticos F1 — send_media y guardar_lead (sin red, sin WA real).
 // ──────────────────────────────────────────────────────────────────────────────

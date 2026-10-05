@@ -204,3 +204,55 @@ test('HVN-10 [r5]: control — un waSend que LANZA ya devolvía sent:false+error
   const second = await notifyHighValue(waSend, phone, realHighValueSession(), 'auto');
   assert.equal(second.sent, true, 'tampoco fijó cooldown');
 });
+
+// ── (d) [05-oct · r6 · Thermos BAJO-MEDIO] un TIMEOUT no es un rechazo: Meta pudo haber entregado ──
+// CAUSA RAÍZ: la salida de r5 trata TODO `{ok:false}` como «no salió, sin cooldown». Pero el adapter
+// (whatsapp-adapter.js, errorEstructurado) marca `timedOut:true` cuando vence el axios de 15 s: la
+// request YA SALIÓ y Meta pudo haber entregado el aviso (errorMeta.clasificar lo llama DESCONOCIDO, no
+// «fallo conocido»). Sin cooldown, cada reintento reenvía ⇒ el dueño recibe duplicados, y tools.js
+// (falloDeCotizacion) llama a notifyMarcelo UNA VEZ POR VENTANA fuera de alcance ⇒ N ventanas = N envíos.
+// Contrato que se fija: `timedOut === true` ⇒ SÍ se fija el cooldown y se devuelve `envio_dudoso`.
+// Cualquier otro `{ok:false}` (rechazo de Meta, salida bloqueada, sin credenciales) sigue SIN cooldown (HVN-07/09).
+const sinRespuesta = () => ({ ok: false, error: 'timeout of 15000ms exceeded', status: undefined, code: undefined, timedOut: true, netCode: 'ECONNABORTED' });
+
+test('HVN-11 [r6]: timeout del adapter ({ok:false, timedOut:true}) ⇒ sent:false/envio_dudoso Y fija cooldown: dos llamadas ⇒ UN solo envío', async () => {
+  const phone = '56988888881';
+  const calls = [];
+  const waSend = async (to, msg) => { calls.push({ to, msg }); return sinRespuesta(); };
+  const first = await notifyHighValue(waSend, phone, realHighValueSession(), 'auto');
+  assert.equal(first.sent, false, 'no se puede afirmar que salió');
+  assert.equal(first.reason, 'envio_dudoso', 'y se dice la verdad: no sabemos si Meta lo entregó');
+  assert.match(String(first.error), /timeout/, 'el texto del timeout viaja en `error` (es lo que leen los llamadores)');
+  const second = await notifyHighValue(waSend, phone, realHighValueSession(), 'auto');
+  assert.equal(second.sent, false);
+  assert.equal(second.reason, 'cooldown', 'el reintento NO reenvía: el aviso pudo haber llegado');
+  assert.equal(calls.length, 1, 'un timeout que pudo entregar no se reenvía: el dueño no recibe duplicados');
+});
+
+test('HVN-12 [r6]: N ventanas fuera de alcance con el envío en timeout ⇒ 1 solo envío (la amplificación de falloDeCotizacion)', async () => {
+  // Misma forma que tools.js falloDeCotizacion: mismo teléfono, mismo reason `oliver_gpt:producto_fuera_de_alcance:…`,
+  // sesión sin monto (tier STANDARD, que las escalaciones explícitas de oliver_gpt: nunca bloquean).
+  const phone = '56988888882';
+  const calls = [];
+  const waSend = async (to, msg) => { calls.push({ to, msg }); return sinRespuesta(); };
+  const sesion = { data: { items: [] }, history: [] };
+  const resultados = [];
+  for (let i = 0; i < 3; i++) {
+    resultados.push(await notifyHighValue(waSend, phone, sesion, 'oliver_gpt:producto_fuera_de_alcance:andes'));
+  }
+  assert.equal(calls.length, 1, '3 ventanas ⇒ 1 aviso, no 3');
+  assert.deepEqual(resultados.map((r) => r.reason), ['envio_dudoso', 'cooldown', 'cooldown']);
+});
+
+test('HVN-13 [r6]: control — solo `timedOut === true` cuenta: `false`/ausente/«true» siguen SIN cooldown (rechazo verificable)', async () => {
+  for (const [i, timedOut] of [false, undefined, 'true', 1].entries()) {
+    const calls = [];
+    const waSend = async (to, msg) => { calls.push({ to, msg }); return { ok: false, error: 'x', timedOut }; };
+    const phone = `5699999991${i}`;
+    const first = await notifyHighValue(waSend, phone, realHighValueSession(), 'auto');
+    assert.equal(first.reason, 'envio_fallido', `timedOut=${JSON.stringify(timedOut)}`);
+    const second = await notifyHighValue(waSend, phone, realHighValueSession(), 'auto');
+    assert.equal(second.reason, 'envio_fallido', `sin cooldown (timedOut=${JSON.stringify(timedOut)})`);
+    assert.equal(calls.length, 2);
+  }
+});

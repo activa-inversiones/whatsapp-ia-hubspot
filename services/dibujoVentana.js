@@ -172,7 +172,8 @@ function claveVidrio(v, ambiente) {
   // "satinado" y "saten" son el mismo vidrio; "mate", "opaco" y "translucido" son como lo
   // nombra el cliente. Todos van al mismo dibujo: el que NO se ve para ningun lado.
   // [2026-10-05 · r5] La lista de palabras vive en ./vidrioSatinado.js (UNA sola definicion: el
-  // aviso al dueño por saten perdido, services/vidrioCotizado.js, usa la misma). Mismo resultado de siempre.
+  // aviso al dueño por saten perdido, services/vidrioCotizado.js, usa la misma). Mismo resultado de siempre,
+  // salvo que [r6] las palabras van ancladas: «material» y «capacidad» ya NO se dibujan como saten.
   if (dicePalabraSaten(t)) return "satinado";
   if (t.includes("gris") || t.includes("grey")) return "gris";
   // 🔴 [2026-08-31, regla del dueno] SI ES BANO, VA SATEN. Textual: "con o sin tilde debe ser

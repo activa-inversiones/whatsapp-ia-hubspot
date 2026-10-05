@@ -263,6 +263,18 @@ async function notifyHighValue(waSendFn, customerPhone, session, reason = "auto"
     // NO se fija cooldown y se dice la verdad, con el motivo y el código para quien lo lea.
     if (envioRechazado(envio)) {
       const error = typeof envio === "object" && envio.error != null ? String(envio.error) : "envio_rechazado";
+      // [2026-10-05 · r6 · Thermos BAJO-MEDIO] UN TIMEOUT NO ES UN RECHAZO. `timedOut:true` (el axios de
+      // 15 s del adapter venció) significa que la request YA SALIÓ y Meta pudo haber entregado el aviso;
+      // errorMeta.clasificar lo llama DESCONOCIDO. Tratarlo como falla limpia (sin cooldown) hacía que cada
+      // reintento reenviara ⇒ duplicados al dueño, y tools.js falloDeCotizacion llama aquí UNA VEZ POR
+      // VENTANA fuera de alcance ⇒ N ventanas = N envíos. Ante la duda NO se reenvía: se fija el cooldown
+      // y se dice `envio_dudoso` (ni «enviado» ni «falló»). Solo `=== true`: el resto de {ok:false}
+      // (rechazo de Meta, salida bloqueada, sin credenciales) es una falla CONOCIDA y sigue sin cooldown.
+      if (envio.timedOut === true) {
+        alertCooldown.set(cooldownKey, { at: Date.now(), tier: score.tier });
+        console.error(`[highValueNotifier] Alerta ${tierLabel} para ${customerPhone} en DUDA (timeout; Meta pudo haberla entregado): ${error.slice(0, 300)}`);
+        return { sent: false, reason: "envio_dudoso", error, code: envio.code, status: envio.status, timedOut: true, score };
+      }
       console.error(`[highValueNotifier] Alerta ${tierLabel} para ${customerPhone} NO salió (code=${envio?.code ?? "-"}): ${error.slice(0, 300)}`);
       return { sent: false, reason: "envio_fallido", error, code: envio?.code, status: envio?.status, score };
     }

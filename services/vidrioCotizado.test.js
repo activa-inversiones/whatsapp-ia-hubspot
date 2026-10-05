@@ -10,6 +10,7 @@ import {
   motorCotizo, vidrioDelMotor, precioCoincide, elegirVidrio, aplicarVidrio, avisarVidrio, textoBanoPerdido,
 } from './vidrioCotizado.js';
 import { claveVidrio } from './dibujoVentana.js';
+import { dicePalabraSaten } from './vidrioSatinado.js';
 
 const cotizado = (extra = {}) => ({ unit_price: 130000, confidence: 'high', glass_label: '5+12+5', ...extra });
 
@@ -332,7 +333,37 @@ test('🔴 [r5] UNA sola definición: esBano (vidrioCotizado) y claveVidrio (dib
   // porque esBano también aplica la regla del ambiente a la etiqueta ("baño" suelto).
   for (const e of ['4+12+4 satén (baño)', '4+12+4 saten', 'satinado', 'esmerilado', 'Esmerilada', 'acidado', 'mate', 'opaco',
     'translucido', 'translúcido', 'Termopanel DVH baño', 'DVH 4+12+4 BAÑO', 'wc', 'Termopanel ducha',
-    'Termopanel DVH', '4+12+4', 'DVH 5/12/5', 'laminado 6+6', 'Termopanel urbano', 'low-e']) {
+    'Termopanel DVH', '4+12+4', 'DVH 5/12/5', 'laminado 6+6', 'Termopanel urbano', 'low-e',
+    'Termopanel DVH material guardian', 'capacidad']) {
     assert.equal(elegirVidrio(e, '4+12+4').aviso === 'vidrio.bano_perdido', claveVidrio(e, e) === 'satinado', `"${e}"`);
+  }
+});
+
+/* ── r6 · Thermos BAJO: «mate» y «acid» son PALABRAS, no pedazos de palabra ─────────────────────────── */
+
+// CAUSA RAÍZ: `PALABRAS_SATEN` era una regex de SUBCADENA sin ancla (heredada tal cual del `t.includes(...)`
+// de claveVidrio): «mate» calzaba dentro de «MATErial» y «acid» dentro de «capACIDad». Un rótulo
+// «Termopanel DVH material guardian» se dibujaba satén (opaco) y, peor, disparaba el aviso al dueño por
+// «satén perdido» contra un vidrio claro que estaba bien.
+// Se ancla al INICIO de palabra con «no precedido por una LETRA», NO con `\b`: `\b` trata `_` y los dígitos
+// como letras, y «dvh_acidado» / «4+12+4mate» —que calzaban antes— dejarían de calzar (regresión).
+test('🔴 [r6] «material» y «capacidad» NO son satén: ni el dibujo, ni el aviso, ni dicePalabraSaten', () => {
+  for (const e of ['material', 'Materiales', 'Termopanel DVH material guardian', 'MATERIAL', 'matemática', 'capacidad', 'Capacidad de carga',
+    'Termopanel capacidad 4+12+4', 'tenacidad', 'veracidad']) {
+    assert.equal(dicePalabraSaten(e), false, `dicePalabraSaten("${e}")`);
+    assert.equal(claveVidrio(e), 'incoloro', `claveVidrio("${e}") dibuja un vidrio que se ve`);
+    assert.notEqual(elegirVidrio(e, '4+12+4').aviso, 'vidrio.bano_perdido', `"${e}" no avisa «satén perdido»`);
+    assert.deepEqual(elegirVidrio(e, '5+12+5'), { vidrio: '5+12+5', aviso: null }, `"${e}": manda el motor sin avisos`);
+  }
+});
+
+test('🔴 [r6] control — lo que SÍ es satén sigue siéndolo, también pegado a `_`, dígitos y signos (no se rompió nada)', () => {
+  for (const e of ['mate', 'Mate', 'MATE', 'mates', 'mateado', 'Mateada', 'vidrios mateados', 'Termopanel mate 4+12+4', 'vidrio mate.', 'DVH (mate)', 'DVH,mate', 'baño-mate',
+    'acidado', 'Acidado', 'DVH acidado', 'vidrio acido', 'dvh_acidado', 'dvh_mate', '4+12+4mate', '4+12+4saten', 'dvh_saten',
+    'Termopanel/acidado', 'satén', 'SATÉN', 'Satinado por norma', 'satinada', 'esmerilado', 'Esmerilada', 'opaco', 'dvh_opaco',
+    'translúcido', 'Translucido', '4+12+4 translúcida']) {
+    assert.equal(dicePalabraSaten(e), true, `dicePalabraSaten("${e}")`);
+    assert.equal(claveVidrio(e), 'satinado', `claveVidrio("${e}")`);
+    assert.equal(elegirVidrio(e, '4+12+4').aviso, 'vidrio.bano_perdido', `"${e}" sigue avisando «satén perdido»`);
   }
 });

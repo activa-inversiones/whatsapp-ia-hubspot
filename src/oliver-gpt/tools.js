@@ -1164,7 +1164,11 @@ export async function runTool(name, input = {}, ctx = {}) {
           telefono_llm: input.telefono_cliente || '',
         },
       });
-      return { ok: true, enviado: result?.sent ?? false, tier: result?.tier, reason };
+      // [2026-10-05 · r6 · Thermos BAJO] `motivo` = POR QUÉ el notificador NO envió (`cooldown` = ya se
+      // avisó · `envio_dudoso` = timeout, pudo llegar · `envio_fallido` = Meta rechazó · `no_owner_phone`…).
+      // Sin esto `enviado:false` no distingue «ya avisado» de «falló» y el LLM no sabe qué decirle al
+      // cliente. `reason` sigue siendo el motivo de ENTRADA (`oliver_gpt:…`); no se pisa.
+      return { ok: true, enviado: result?.sent ?? false, tier: result?.tier, reason, motivo: result?.reason };
     }
 
     case 'send_media': {

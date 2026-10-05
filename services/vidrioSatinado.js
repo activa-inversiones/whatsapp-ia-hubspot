@@ -10,8 +10,18 @@
 /** Minúsculas y sin tildes ni ñ («Satén», «BAÑO» y «bano» caen en lo mismo). */
 export const sinTildes = (v) => String(v ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 
-/** «satinado» y «saten» son el mismo vidrio; «mate», «opaco» y «translúcido» son como lo nombra el cliente. */
-const PALABRAS_SATEN = /satin|saten|acid|esmeril|mate|opaco|transluc/;
+/**
+ * «satinado» y «saten» son el mismo vidrio; «mate», «opaco» y «translúcido» son como lo nombra el cliente.
+ *
+ * [2026-10-05 · r6 · Thermos BAJO] Se anclan al INICIO DE PALABRA (no precedidas por una letra) y «mate»
+ * además a su FIN. Sin ancla, «mate» calzaba dentro de «MATErial» y «acid» dentro de «capACIDad»: un
+ * «Termopanel DVH material guardian» se dibujaba satén y disparaba el aviso de «satén perdido».
+ * «mate» acepta sus flexiones (mates, mateado/a/os/as) y NADA más: «material», «matemática»… no calzan.
+ * ⚠️ NO simplificar a `\b`: `\b` cuenta `_` y los dígitos como letras, y «dvh_acidado» / «4+12+4mate»
+ * (que calzaban antes) dejarían de calzar. El texto llega SIN TILDES y en minúsculas (`sinTildes`), así que
+ * «letra» es `[a-z]`.
+ */
+const PALABRAS_SATEN = /(?<![a-z])(?:satin|saten|acid|esmeril|opaco|transluc|mate(?:s|ad[oa]s?)?(?![a-z]))/;
 
 /** Regla del dueño (31-ago): «si dice baño ponerle satén», con o sin tilde, con o sin la ñ. */
 const AMBIENTE_BANO = /\bbanos?\b|\bwc\b|\btoilet|\bbanera|\bducha/;
