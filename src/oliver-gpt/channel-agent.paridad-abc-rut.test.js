@@ -25,6 +25,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { handleChannelTurn } from './channel-agent.js';
+import { capturarLogs } from './capturarLogs.testutil.js';
 
 // Precio por color, DISTINTO en cada uno — como en la lista real (medido en el motor sobre el
 // marco doble riel S70: Blanco $30.385 · Nogal $49.974 · New Black $54.356). Sin precios
@@ -40,7 +41,7 @@ let _seq = 0;
  * @param {Array<{text:string, cotiza?:boolean, llm?:object}>} opts.turnos
  */
 function armar(opts = {}) {
-  const spy = { pdfs: [], documentos: [], quoteEvents: [], deals: [], sondas: [], textos: [] };
+  const spy = { pdfs: [], documentos: [], quoteEvents: [], deals: [], sondas: [], textos: [], alertas: [] };
   const senderId = `IG_paridad_${++_seq}`;
   const conv = new Map();
 
@@ -52,7 +53,8 @@ function armar(opts = {}) {
       pushLeadEvent: async () => ({}),
       pushQuoteEvent: async (p) => { spy.quoteEvents.push(p); return {}; },
     },
-    notifyHighValue: async () => ({ sent: true }),
+    // El canal de avisos al dueño (highValueNotifier): (envio, id del cliente, sesion, motivo).
+    notifyHighValue: async (_envio, cliente, _sesion, motivo) => { spy.alertas.push({ cliente, motivo: String(motivo) }); return { sent: true }; },
     sendWhatsAppText: async () => ({ ok: true }),
     generatePdf: async (data, numero) => {
       spy.pdfs.push({
@@ -334,21 +336,55 @@ test('🔴 IG [05-oct · paridad con WhatsApp] A, B y C imprimen el vidrio con q
 });
 
 test('🔴 IG [05-oct · B3] satén con el baño perdido: A, B y C conservan el satén y queda el aviso con el folio', async () => {
-  const lineas = [];
-  const original = console.log;
-  console.log = (...a) => { lineas.push(a.map(String).join(' ')); };
   let spy;
-  try {
+  const lineas = await capturarLogs(async () => {
     spy = await correr({
       vidrioMotor: '4+12+4',
       item: { producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
         measures: '1500x1000', color: 'Blanco', qty: 1, unit_price: PRECIO.Blanco, glass_label: '4+12+4 satén (baño)' },
       turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1000 para el baño' }],
     });
-  } finally { console.log = original; }
+  });
   assert.equal(spy.pdfs.length, 3);
+  // B y C imprimen lo MISMO que A: satén. No es casualidad: `elegirVidrio` conserva el satén cuando
+  // el motor cotizo claro, en las tres. Y A avisa por todas (B y C no avisan a proposito).
   for (const p of spy.pdfs) assert.equal(p.vidrio, '4+12+4 satén (baño)', `${p.numero} perdio el rastro del baño`);
   assert.ok(lineas.some((l) => /vidrio\.bano_perdido.*CM-FR-004-2026-0392/.test(l)), 'falta el aviso con el folio');
+});
+
+test('🔔 IG [05-oct · r4] satén perdido: UN aviso al dueño con el folio y la etiqueta, por el canal de escalaciones de IG', async () => {
+  let corrida;
+  await capturarLogs(async () => {
+    corrida = await correr({
+      vidrioMotor: '4+12+4',
+      item: { producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
+        measures: '1500x1000', color: 'Blanco', qty: 1, unit_price: PRECIO.Blanco, glass_label: '4+12+4 satén (baño)' },
+      turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1000 para el baño' }],
+    });
+  });
+  await new Promise((r) => { setTimeout(r, 60); });
+  const alertas = corrida.alertas.filter((a) => /revisar precio/.test(a.motivo));
+  assert.equal(alertas.length, 1, `un aviso por folio (A, B y C son el mismo folio): ${JSON.stringify(corrida.alertas)}`);
+  assert.match(alertas[0].motivo, /^\[instagram\] /, 'el prefijo de canal manda el aviso al inbox correcto');
+  assert.match(alertas[0].motivo, /CM-FR-004-2026-0392/);
+  assert.match(alertas[0].motivo, /"4\+12\+4 satén \(baño\)"/);
+  assert.match(alertas[0].motivo, /vidrio claro; revisar precio/);
+  assert.deepEqual(corrida.pdfs.map((p) => p.unit_price).sort((a, b) => a - b),
+    [PRECIO.Blanco, PRECIO.Nogal, PRECIO['New Black']], 'los precios no cambian');
+});
+
+test('🔔 IG [05-oct · r4] sin satén perdido NO se avisa al dueño del vidrio', async () => {
+  let corrida;
+  await capturarLogs(async () => {
+    corrida = await correr({
+      vidrioMotor: '4+12+4',
+      item: { producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
+        measures: '1500x1000', color: 'Blanco', qty: 1, unit_price: PRECIO.Blanco, glass_label: 'Laminado 6+6' },
+      turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1000' }],
+    });
+  });
+  await new Promise((r) => { setTimeout(r, 60); });
+  assert.deepEqual(corrida.alertas.filter((a) => /revisar precio/.test(a.motivo)), []);
 });
 
 test('🔒 IG: si el cliente SI dijo el color, sale UNA sola y se reporta su monto — como siempre', async () => {

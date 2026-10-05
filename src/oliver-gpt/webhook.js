@@ -3247,7 +3247,7 @@ Comuna: ${datos.comuna}`
 
               // [2026-10-05] Y el VIDRIO, igual que el Uw: el que el motor cobro (propuesta 0588,
               // `vidrio: null` ⇒ vientos sin_datos). Regla y ramas: services/vidrioCotizado.test.js.
-              aplicarVidrio(it, vidrioDelMotor(_t), { avisos: _avisosVidrio, precioCoincide: precioCoincide(_t, it.unit_price) });
+              aplicarVidrio(it, vidrioDelMotor(_t), { avisos: _avisosVidrio, mismoPrecio: precioCoincide(_t, it.unit_price) });
 
               // 🔴 [2026-08-26] LA COMPOSICION DE LA VENTANA VIAJA AL DIBUJO. Sin esto el PDF
               // dibujaba las tres compuestas de Paula como UN PAÑO UNICO: el dibujo necesita
@@ -3595,8 +3595,16 @@ Comuna: ${datos.comuna}`
           try { await (deps.escribirEstado || escribirEstado)(_claveQuote, _marcaQuote, 15 * 60); }
           catch { /* el guardia en memoria sigue cubriendo esta instancia */ }
           if (RECENT_QUOTES.size > 500) RECENT_QUOTES.clear(); // backstop de memoria
-          // [2026-10-05] Los avisos del vidrio, ya con su folio (van al tablero; no cambian nada).
-          avisarVidrio(_avisosVidrio, quoteNumber, (aviso, texto) => log('warn', aviso, `${from}: ${texto}`));
+          // [2026-10-05] Los avisos del vidrio, ya con su folio: al tablero (log) y, si el satén se
+          // perdió, UN aviso al dueño por el canal de escalaciones de siempre (highValueNotifier;
+          // su cooldown por teléfono+motivo, y el motivo lleva el folio, lo deja en uno por folio).
+          // Fire-and-forget como los demás avisos con el mutex tomado. No cambia el precio:
+          // eso es carril plata y va a propuesta.
+          avisarVidrio(_avisosVidrio, quoteNumber, (aviso, texto) => log('warn', aviso, `${from}: ${texto}`),
+            (texto) => {
+              safe('generarPdf.vidrio.aviso', () =>
+                notifyHighValue(enviarSinPausa, turno.cliente, { data: { ...state }, history }, `[whatsapp] ${texto}`));
+            });
 
           // ── 🎨 [2026-08-31] LOS FOLIOS DE LAS TRES OPCIONES, DE UNA SOLA VEZ ──
           // Un solo correlativo ISO y las variantes por LETRA: 0392 · 0392-B · 0392-C. Es el
@@ -4248,7 +4256,8 @@ Comuna: ${datos.comuna}`
                 : (VIENTOS_OMITIDO_POR_TERMICO[resultadoInforme] || await enviarVientosConTecho());
               log('info', 'generarPdf.secuencia', `${from}: vientos → ${resVientos || 'sin_resultado'}`);
               if (resultadoInforme === 'enviado') {
-                // Paso 6 de la secuencia: el video cae ENTRE el informe y la propuesta.
+                // Paso 6 de la secuencia: el video cae ENTRE el informe y la propuesta (solo con
+                // la secuencia completa: el video acompaña al térmico).
                 // 🔴 [Codex P1, compuerta] CON SU PROPIO TECHO. El techo del informe no
                 // cubre este await: un sendWaVideo colgado dejaba al cliente SIN PROPUESTA.
                 // Si el video se cuelga, se sigue de largo — el candado de tanda ya quedó
@@ -4259,11 +4268,14 @@ Comuna: ${datos.comuna}`
                   safe('generarPdf.video.secuencia', () => enviarVideoCortesia(SEQ_VIDEO_MS)),
                   new Promise((res) => { venceVideo = setTimeout(res, techoVideoMs); }),
                 ]).finally(() => { if (venceVideo) clearTimeout(venceVideo); });
-                // 🔴 [Gemini, compuerta + dueño "dale pausa"] AIRE ANTES DEL PRECIO — con
-                // video o sin él. Sin esto, el precio caía 9 s después del informe (medido
-                // en la prueba real del 27-ago): el cliente recién abría el documento y ya
-                // tenía la propuesta encima. Solo en el camino 'enviado': un informe
-                // repetido o caído no gana demora.
+              }
+              // 🔴 [Gemini, compuerta + dueño "dale pausa"] AIRE ANTES DEL PRECIO — con
+              // video o sin él. Sin esto, el precio caía 9 s después del informe (medido
+              // en la prueba real del 27-ago): el cliente recién abría el documento y ya
+              // tenía la propuesta encima. [05-oct] Si salió ALGÚN informe —el térmico o el
+              // de vientos—, no solo el térmico: con el térmico caído, el de vientos y el
+              // precio caían pegados. Un informe repetido o caído (o ninguno) no gana demora.
+              if (resultadoInforme === 'enviado' || resVientos === 'enviado') {
                 await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: SEQ_PRECIO_MS });
               }
               // Despues, derecho a la propuesta. En timeout el térmico puede llegar después por
@@ -4625,6 +4637,10 @@ Comuna: ${datos.comuna}`
                       color:          _colorOp,
                       qty:            Number(it.qty) || 1,
                       unit_price:     Number(_p.unit_price) || 0,   // del motor, para ESTE color
+                      // Misma regla que A: manda el vidrio del motor, salvo el satén/baño, que se
+                      // conserva ⇒ B y C imprimen LO MISMO que A (probado en el test de paridad).
+                      // NO avisan a propósito: A y el bloque del Uw ya avisaron de este mismo item
+                      // y de esta misma etiqueta; repetirlo acá sería ruido (y otro WhatsApp al dueño).
                       glass_label:    elegirVidrio(it.glass_label, vidrioDelMotor(_p)).vidrio || VIDRIO_RESPALDO,
                       ambiente:       it.ambiente || '',
                       termico:        _p.termico || null,

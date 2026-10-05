@@ -10,13 +10,17 @@ import { aperturaFueExplicita, detectHojas, FABRICATION_LIMITS as _LIMITES } fro
 import { colorFueExplicito } from './normalizers.js';        // [2026-08-29] el color se mide en lo que dijo el CLIENTE
 import { COLORES_PROPUESTA } from './propuestas-color.js';   // [2026-08-31] sin color → tres propuestas A/B/C
 import { needsName } from '../../services/oliverName.js';    // [2026-09-03] la lista de genéricos vive en UN solo lugar
+import { VIDRIO_RESPALDO } from '../../services/vidrioCotizado.js'; // [2026-10-05] el respaldo del vidrio vive en UN solo lugar
 
 /** ¿El cliente está afirmando que quiere el PDF? (incluye afirmaciones cortas). */
 export function isPdfAffirmative(text) {
   const t = String(text || '').trim().toLowerCase();
   if (/\b(env[ií]a(mela|melo|la|lo)?|m[aá]nda(mela|melo|la|lo)?|quiero (el|la|mi) (pdf|cotiza|propuesta)|el pdf|la propuesta formal)\b/.test(t)) return true;
   // afirmación corta — solo cuenta si el bot venía OFRECIENDO el PDF (ver lastAssistantOfferedPdf).
-  return /^(s[ií]|ok(ey)?|dale|ya|perfecto|listo|de acuerdo|claro|por ?fa(vor)?|bueno|obvio|as[ií] es|s[ií]\s*por ?favor)[\s.!👍🙌✅]*$/.test(t);
+  // [2026-10-05] Bandera `u`: sin ella eslint (no-misleading-character-class) frena el commit al tocar
+  // este archivo — el mismo arreglo que ya lleva la copia de channel-agent.js (mismo resultado en
+  // frases validas; solo cambia ante surrogates sueltos, es decir texto roto).
+  return /^(s[ií]|ok(ey)?|dale|ya|perfecto|listo|de acuerdo|claro|por ?fa(vor)?|bueno|obvio|as[ií] es|s[ií]\s*por ?favor)[\s.!👍🙌✅]*$/u.test(t);
 }
 
 /** ¿El último mensaje del asistente venía ofreciendo el PDF/propuesta formal? */
@@ -51,7 +55,7 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
         color: t.input?.color || defaultColor || '',
         qty: Number(t.result.cantidad) || Number(t.input?.cantidad) || 1,
         unit_price: Number(t.result.unit_price) || 0,
-        glass_label: t.result.glass_label || 'Termopanel DVH',
+        glass_label: t.result.glass_label || VIDRIO_RESPALDO,
         // [2026-08-26] La composicion y la hoja viajan con el item del pending_quote: sin
         // esto el PDF determinista dibujaba la compuesta como un paño (0358 de Paula) y toda
         // corredera con el grueso por defecto.

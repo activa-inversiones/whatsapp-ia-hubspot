@@ -39,6 +39,16 @@ export const RESULTADO = {
 };
 
 /**
+ * [2026-10-05] Los rechazos que hablan del DESTINATARIO, no del mensaje: fuera de la ventana de
+ * 24 h o número que no recibe. Otro documento al mismo número en el mismo turno falla igual — y
+ * si lleva folio ISO, lo quema sin registro. Son un subconjunto de CODIGOS_NO_PROCESADO.
+ */
+const CODIGOS_DESTINATARIO = new Set([
+  131047, // Re-engagement: fuera de la ventana de 24 h. Meta rechaza antes de encolar.
+  131026, // Mensaje no entregable: el número no está en WhatsApp / no puede recibir.
+]);
+
+/**
  * Códigos de la WhatsApp Cloud API que significan, sin ambigüedad, que el mensaje
  * NO fue procesado. Reintentar uno de estos no puede duplicar nada.
  *
@@ -47,10 +57,14 @@ export const RESULTADO = {
  * (link a la doc de Meta o caso real en logs) escrito acá al lado.
  */
 export const CODIGOS_NO_PROCESADO = new Set([
-  131047, // Re-engagement: fuera de la ventana de 24 h. Meta rechaza antes de encolar.
-  131026, // Mensaje no entregable: el número no está en WhatsApp / no puede recibir.
+  ...CODIGOS_DESTINATARIO,
   132000, // Number of parameters mismatch: la plantilla no cuadra. Rechazo de validación.
 ]);
+
+/** El código numérico de Meta del resultado, o null si no trae uno válido (un string no cuenta). */
+function codigoDe(r) {
+  return r && Number.isFinite(r.code) ? Number(r.code) : null;
+}
 
 /** Errores de transporte que garantizan que la request NUNCA llegó a salir. */
 const NUNCA_SALIO = new Set([
@@ -93,8 +107,9 @@ export function clasificar(r) {
   }
 
   // La whitelist manda. Nunca la familia del status.
-  if (Number.isFinite(r.code) && CODIGOS_NO_PROCESADO.has(Number(r.code))) {
-    return out(RESULTADO.FALLO_CONOCIDO, `codigo_${r.code}`);
+  const code = codigoDe(r);
+  if (code !== null && CODIGOS_NO_PROCESADO.has(code)) {
+    return out(RESULTADO.FALLO_CONOCIDO, `codigo_${code}`);
   }
 
   // Todo lo demás —5xx incluido, código desconocido incluido, sin código incluido—
@@ -102,20 +117,16 @@ export function clasificar(r) {
   if (Number.isFinite(r.status) && r.status >= 500) {
     return out(RESULTADO.DESCONOCIDO, `status_${r.status}_ambiguo`);
   }
-  if (Number.isFinite(r.code)) {
-    return out(RESULTADO.DESCONOCIDO, `codigo_${r.code}_no_verificado`);
+  if (code !== null) {
+    return out(RESULTADO.DESCONOCIDO, `codigo_${code}_no_verificado`);
   }
   return out(RESULTADO.DESCONOCIDO, 'sin_clasificar');
 }
 
-/**
- * [2026-10-05] Los rechazos que hablan del DESTINATARIO, no del mensaje: fuera de la ventana de
- * 24 h (131047) o número que no recibe (131026). Otro documento al mismo número en el mismo
- * turno falla igual — y si lleva folio ISO, lo quema sin registro.
- */
-const CODIGOS_DESTINATARIO = new Set([131047, 131026]);
+/** ¿Meta rechazó el envío por el DESTINATARIO (24 h / número que no recibe)? Ver CODIGOS_DESTINATARIO. */
 export function rechazoDelDestinatario(r) {
-  return Boolean(r) && Number.isFinite(r.code) && CODIGOS_DESTINATARIO.has(Number(r.code));
+  const code = codigoDe(r);
+  return code !== null && CODIGOS_DESTINATARIO.has(code);
 }
 
 /** Atajo: ¿se puede reintentar automáticamente sin riesgo de duplicar? */

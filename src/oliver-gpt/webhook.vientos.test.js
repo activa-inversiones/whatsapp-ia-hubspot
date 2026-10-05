@@ -19,6 +19,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleWebhook, huellaDelInforme } from './webhook.js';
+import { capturarLogs } from './capturarLogs.testutil.js';
 
 process.env.ACTIVA_ENGINE_URL = 'http://motor.test';
 
@@ -61,7 +62,7 @@ const makeRes = () => ({ sendStatus() { return this; } });
 /** Arnes minimo: KV en memoria, envios a una linea de tiempo, THERMAL y PDFs falsos. */
 function armar({ informeEnvio = { ok: true, msgId: 'doc.1' }, informeCuelga = false, thermalCaido = false, ventanas = VENTANAS, nombre = 'Dady' } = {}) {
   const telefono = `5697${String(++SEQ).padStart(7, '0')}`;
-  const spy = { linea: [], textos: [], propuestas: [], vientos: [] };
+  const spy = { linea: [], textos: [], propuestas: [], vientos: [], alertas: [] };
   const estado = new Map();
   let tok = 0;
   const vigente = (e) => e && (!e.expira || e.expira > Date.now());
@@ -122,7 +123,8 @@ function armar({ informeEnvio = { ok: true, msgId: 'doc.1' }, informeCuelga = fa
       pushLeadEvent: async () => ({ ok: true }),
       pushQuoteEvent: async () => ({ ok: true }),
     },
-    notifyHighValue: async () => ({ sent: true }),
+    // El canal de avisos al dueño (highValueNotifier): (envio, telefono del cliente, sesion, motivo).
+    notifyHighValue: async (envio, cliente, sesion, motivo) => { spy.alertas.push({ cliente, motivo: String(motivo) }); return { sent: true }; },
   };
   return { deps, spy, telefono, estado };
 }
@@ -216,14 +218,6 @@ test('🌬️ B [anti-alucinacion] con el motor CAIDO no se inventa vidrio: la p
 
 const huellaUltima = () => huellaDelInforme({ comuna: 'Temuco', producto: VENTANAS.at(-1).producto, glassLabel: VENTANAS.at(-1).vidrio });
 
-/** Corre `fn` capturando lo que el bot loguea (los `warn` van por console.log). */
-async function conLogs(fn) {
-  const lineas = [];
-  const original = console.log;
-  console.log = (...a) => { lineas.push(a.map(String).join(' ')); original(...a); };
-  try { await fn(); } finally { console.log = original; }
-  return lineas;
-}
 const rechazoMeta = (code) => ({ informeEnvio: { ok: false, error: 'rechazo', status: 400, code } });
 
 for (const [caso, preparar] of [
@@ -256,7 +250,7 @@ for (const [caso, preparar, motivo] of [
 ]) {
   test(`🌬️ C termico '${caso}' ⇒ el de vientos NO se intenta en este turno y queda registrado por que`, async () => {
     const { deps, spy } = preparar();
-    const logs = await conLogs(async () => {
+    const logs = await capturarLogs(async () => {
       await handleWebhook({ body: {} }, makeRes(), deps);
       assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta sale siempre');
     });
@@ -284,7 +278,7 @@ test('🌬️ B3/B4 satén con el baño perdido NO se reemplaza; otro producto S
     { producto: 'Corredera SLIDING H80 Doble Riel S75', medidas: '1500x1000', vidrio: '4+12+4 satén (baño)', cantidad: 1, precio: 100000 },
     { producto: 'Corredera SLIDING H80 Doble Riel S75', medidas: '1400x1000', vidrio: 'DVH 4/12/4 low-e', cantidad: 1, precio: 100000 },
   ] });
-  const logs = await conLogs(async () => {
+  const logs = await capturarLogs(async () => {
     await handleWebhook({ body: {} }, makeRes(), deps);
     assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta sale');
   });
@@ -292,4 +286,89 @@ test('🌬️ B3/B4 satén con el baño perdido NO se reemplaza; otro producto S
   const linea = (aviso) => logs.find((l) => l.includes(aviso)) || '';
   assert.match(linea('vidrio.bano_perdido'), /CM-FR-004-2026-9999.*satén/, `logs: ${logs.filter((l) => /vidrio\./.test(l))}`);
   assert.match(linea('vidrio.producto_distinto'), /CM-FR-004-2026-9999.*DVH 4\/12\/4 low-e/);
+});
+
+/* ── B3 · el aviso al DUEÑO (decision 1 del coordinador, r4) ─────────────────────────── */
+
+const alertasDeVidrio = (spy) => spy.alertas.filter((a) => /revisar precio/.test(a.motivo));
+const dejarCorrer = (ms = 60) => new Promise((r) => { setTimeout(r, ms); });
+
+test('🔔 B3 satén perdido ⇒ UN aviso al dueño con el folio y la etiqueta (dos satenes, un solo mensaje); el precio NO se toca', async () => {
+  const { deps, spy } = armar({ ventanas: [
+    { producto: 'Corredera SLIDING H80 Doble Riel S75', medidas: '1500x1000', vidrio: '4+12+4 satén (baño)', cantidad: 1, precio: 100000 },
+    { producto: 'Corredera SLIDING H80 Doble Riel S75', medidas: '1400x1000', vidrio: 'Termopanel 4+12+4 esmerilado', cantidad: 1, precio: 100000 },
+    { producto: 'Corredera SLIDING H80 Doble Riel S75', medidas: '1300x1000', vidrio: 'DVH 4/12/4 low-e', cantidad: 1, precio: 100000 },
+  ] });
+  await capturarLogs(async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta sale');
+    assert.ok(await esperar(() => alertasDeVidrio(spy).length > 0), `falta el aviso al dueño: ${JSON.stringify(spy.alertas)}`);
+    await dejarCorrer();
+  });
+  const alertas = alertasDeVidrio(spy);
+  assert.equal(alertas.length, 1, `un aviso por folio, no uno por ventana: ${JSON.stringify(alertas)}`);
+  assert.match(alertas[0].motivo, /^\[whatsapp\] /, 'mismo molde que las otras escalaciones del canal');
+  assert.match(alertas[0].motivo, /CM-FR-004-2026-9999/);
+  assert.match(alertas[0].motivo, /"4\+12\+4 satén \(baño\)"/);
+  assert.match(alertas[0].motivo, /"Termopanel 4\+12\+4 esmerilado"/);
+  assert.match(alertas[0].motivo, /vidrio claro; revisar precio/);
+  assert.doesNotMatch(alertas[0].motivo, /low-e/, 'el otro producto va al tablero, no al celular del dueño');
+  assert.deepEqual(spy.propuestas[0]?.items.map((i) => i.unit_price), [100000, 100000, 100000], 'el precio no cambia: es carril plata');
+});
+
+test('🔔 B4 solo otro producto (sin satén perdido) ⇒ NO se avisa al dueño', async () => {
+  const { deps, spy } = armar({ ventanas: [
+    { producto: 'Corredera SLIDING H80 Doble Riel S75', medidas: '1400x1000', vidrio: 'DVH 4/12/4 low-e', cantidad: 1, precio: 100000 },
+  ] });
+  await capturarLogs(async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta sale');
+    await dejarCorrer();
+  });
+  assert.deepEqual(alertasDeVidrio(spy), []);
+});
+
+/* ── D · la pausa antes del precio, si se mando ALGUN informe (decision 4, r4) ───────── */
+
+const PAUSA_PRECIO_MS = Number(process.env.SEQUENCE_PRECIO_MS || 35_000);
+/** Lo que paso entre el ULTIMO informe entregado y la propuesta (las pausas quedan en la linea de tiempo). */
+const entreInformesYPropuesta = (spy) => {
+  const ultimo = Math.max(pos(spy, 'informe'), pos(spy, 'vientos'));
+  return spy.linea.slice(ultimo + 1, pos(spy, 'propuesta'));
+};
+const conPausasEnLaLinea = (x) => {
+  x.deps.dormir = async (ms) => { x.spy.linea.push(`dormir:${ms}`); };
+  return x;
+};
+
+test('⏸️ D solo salio el de VIENTOS (el termico fallo) ⇒ igual hay pausa antes de la propuesta', async () => {
+  // Antes la pausa solo estaba en el camino "termico enviado": con el termico caido, el de
+  // vientos y el precio caian pegados.
+  const x = conPausasEnLaLinea(armar({ thermalCaido: true }));
+  await handleWebhook({ body: {} }, makeRes(), x.deps);
+  assert.ok(await esperar(() => pos(x.spy, 'propuesta') >= 0), 'la propuesta sale');
+  assert.equal(cuenta(x.spy, 'informe'), 0, 'control: el termico no salio');
+  assert.equal(cuenta(x.spy, 'vientos'), 1, 'control: el de vientos si');
+  assert.ok(entreInformesYPropuesta(x.spy).includes(`dormir:${PAUSA_PRECIO_MS}`),
+    `falta la pausa antes del precio — linea: ${JSON.stringify(x.spy.linea)}`);
+});
+
+test('⏸️ D salieron los DOS informes ⇒ la pausa antes de la propuesta se hace UNA vez (y el video sigue entre medio)', async () => {
+  const x = conPausasEnLaLinea(armar());
+  await handleWebhook({ body: {} }, makeRes(), x.deps);
+  assert.ok(await esperar(() => pos(x.spy, 'propuesta') >= 0), 'la propuesta sale');
+  const entre = entreInformesYPropuesta(x.spy);
+  assert.equal(entre.filter((e) => e === `dormir:${PAUSA_PRECIO_MS}`).length, 1, `linea: ${JSON.stringify(x.spy.linea)}`);
+  assert.equal(cuenta(x.spy, 'video'), 1, 'el video de cortesia acompaña a la secuencia completa');
+  assert.ok(pos(x.spy, 'video') < pos(x.spy, 'propuesta'));
+});
+
+test('⏸️ D ningun informe salio (los dos ya recibidos) ⇒ NO hay pausa antes del precio', async () => {
+  const x = conPausasEnLaLinea(armar());
+  x.deps.escribirEstado(`informe_termico:${x.telefono}:${huellaUltima()}`, { at: Date.now() - 3600_000 }, 3000);
+  x.deps.escribirEstado(`informe_vientos:${x.telefono}:${huellaUltima()}`, { at: Date.now() - 3600_000 }, 3000);
+  await handleWebhook({ body: {} }, makeRes(), x.deps);
+  assert.ok(await esperar(() => pos(x.spy, 'propuesta') >= 0), 'la propuesta sale');
+  assert.equal(cuenta(x.spy, 'informe') + cuenta(x.spy, 'vientos'), 0, 'control: no salio ningun informe');
+  assert.ok(!x.spy.linea.includes(`dormir:${PAUSA_PRECIO_MS}`), `pausa de mas — linea: ${JSON.stringify(x.spy.linea)}`);
 });

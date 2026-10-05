@@ -3,7 +3,9 @@
 // Traducida a test: NINGÚN caso ambiguo puede salir reintentable.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { clasificar, sePuedeReintentar, RESULTADO, CODIGOS_NO_PROCESADO, VERSION } from './errorMeta.js';
+import {
+  clasificar, sePuedeReintentar, rechazoDelDestinatario, RESULTADO, CODIGOS_NO_PROCESADO, VERSION,
+} from './errorMeta.js';
 
 // ─── EL CASO QUE LO ORIGINA ──────────────────────────────────────────────────
 
@@ -88,14 +90,26 @@ test('expone VERSION', () => {
   assert.match(VERSION, /^\d+\.\d+\.\d+$/);
 });
 
-test('[2026-10-05] rechazoDelDestinatario: solo los codigos que hablan del NUMERO, no del mensaje', async () => {
+test('[2026-10-05] rechazoDelDestinatario: solo los codigos que hablan del NUMERO, no del mensaje', () => {
   // Si Meta rechazo un documento por el destinatario (fuera de la ventana de 24 h, o numero que
   // no recibe), mandarle otro en el mismo turno falla igual y quema un folio ISO sin registro.
-  const { rechazoDelDestinatario } = await import('./errorMeta.js');
   assert.equal(rechazoDelDestinatario({ ok: false, status: 400, code: 131047 }), true, 'fuera de ventana');
   assert.equal(rechazoDelDestinatario({ ok: false, status: 400, code: 131026 }), true, 'no entregable');
   for (const otro of [{ ok: false, code: 132000 }, { ok: false, timedOut: true }, { ok: false, status: 503 },
-    { ok: false, netCode: 'ENOTFOUND' }, { ok: true, wamid: 'w' }, null, undefined]) {
+    { ok: false, netCode: 'ENOTFOUND' }, { ok: true, wamid: 'w' }, null, undefined,
+    { ok: false, code: '131047' }, { ok: false, code: NaN }]) {
     assert.equal(rechazoDelDestinatario(otro), false, JSON.stringify(otro));
   }
+});
+
+test('[r4] guardia de deriva: todo rechazo del destinatario es tambien un FALLO_CONOCIDO reintentable', () => {
+  // Las dos listas tienen que seguir contando la misma historia: lo que `rechazoDelDestinatario`
+  // reconoce como "Meta no lo proceso por el numero" esta en la whitelist de no-procesados.
+  for (const code of [131047, 131026]) {
+    assert.equal(rechazoDelDestinatario({ code }), true);
+    assert.equal(CODIGOS_NO_PROCESADO.has(code), true, `${code} salio de la whitelist`);
+    assert.equal(clasificar({ ok: false, status: 400, code }).resultado, RESULTADO.FALLO_CONOCIDO);
+  }
+  assert.equal(clasificar({ ok: false, status: 400, code: 132000 }).resultado, RESULTADO.FALLO_CONOCIDO,
+    '132000 sigue en la whitelist aunque no sea del destinatario');
 });

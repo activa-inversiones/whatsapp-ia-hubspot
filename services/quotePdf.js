@@ -18,6 +18,7 @@ import { dibujarVentanaIso } from "./dibujoIsometrico.js";
 import { receptorParaDocumento } from "./receptorCliente.js";
 import { identificarCliente, destinatarioLegal } from "./bloqueIdentidadPdf.js";
 import { dibujarPieDocumento, sellarConfidencialidad, dibujarInsigniaEnergetica } from "./pieDocumentoPdf.js";
+import { VIDRIO_RESPALDO } from "./vidrioCotizado.js"; // [2026-10-05] el respaldo del vidrio vive en UN solo lugar
 
 const NAVY = "#0B3D6F", GOLD = "#C4993B", GRAY = "#6B7B8D", DARK = "#1A2332", LINE = "#E2E8F0";
 
@@ -212,7 +213,7 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         const label = it.producto_label || (it.product || "Ventana").replace(/_/g, " ");
         const ms = medidas(it.measures);
         const m2 = ((ms.ancho / 1000) * (ms.alto / 1000)).toFixed(2);
-        const vidrio = it.glass_label || "Termopanel DVH";
+        const vidrio = it.glass_label || VIDRIO_RESPALDO;
         // 🔴 [2026-08-26, reporte del dueño] LAS LETRAS SE PISABAN. Cada linea se dibujaba
         // en un offset FIJO (y+22, y+38, y+51...), asi que un titulo largo —el de una
         // compuesta lo es— saltaba a dos lineas y se montaba sobre la descripcion. En una

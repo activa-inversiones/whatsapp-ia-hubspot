@@ -105,7 +105,7 @@ function itemsFromQuoteCalls(toolCalls, defaultColor) {
       color: t.input?.color || defaultColor || '',
       qty: Number(t.result.cantidad) || Number(t.input?.cantidad) || 1,
       unit_price: Number(t.result.unit_price) || 0,
-      glass_label: t.result.glass_label || 'Termopanel DVH',
+      glass_label: t.result.glass_label || VIDRIO_RESPALDO,
       ambiente: t.input?.ambiente || '',
     }))
     .filter(it => Number(it.unit_price) > 0);
@@ -694,8 +694,16 @@ export async function handleChannelTurn(
               message: 'Dame un momentito para emitir tu Propuesta Técnica Económica con su folio; si se demora, Marcelo te la hace llegar enseguida.' };
           }
           RECENT_QUOTES.set(dedupKey, { quote_number: quoteNumber, at: Date.now() });
-          // [2026-10-05] Los avisos del vidrio, ya con su folio (van al tablero; no cambian nada).
-          avisarVidrio(_avisosVidrio, quoteNumber, (aviso, texto) => log('warn', aviso, `${convKey}: ${texto}`));
+          // [2026-10-05] Los avisos del vidrio, ya con su folio: al tablero (log) y, si el satén se
+          // perdió, UN aviso al dueño por el canal de escalaciones de siempre (highValueNotifier;
+          // su cooldown por id+motivo, y el motivo lleva el folio, lo deja en uno por folio —
+          // aunque el folio se REUSE en una corrección). No cambia el precio: es carril plata.
+          avisarVidrio(_avisosVidrio, quoteNumber, (aviso, texto) => log('warn', aviso, `${convKey}: ${texto}`),
+            (texto) => {
+              safe('generarPdf.vidrio.aviso', () =>
+                notifyHighValue(sendWhatsAppText, senderId,
+                  { data: { ...state, name: input.name || state.name || senderName }, history }, `[${channel}] ${texto}`));
+            });
           // Evicción por antigüedad (no clear() ciego, que abría ventana de doble-folio en carga).
           if (RECENT_QUOTES.size > 500) {
             const cutoff = Date.now() - QUOTE_DEDUP_MS;
@@ -861,6 +869,10 @@ export async function handleChannelTurn(
                       color:          _colorOp,
                       qty:            Number(it.qty) || 1,
                       unit_price:     Number(_p.unit_price) || 0,
+                      // Misma regla que A: manda el vidrio del motor, salvo el satén/baño, que se
+                      // conserva ⇒ B y C imprimen LO MISMO que A (probado en el test de paridad).
+                      // NO avisan a propósito: A ya avisó de este mismo item y de esta misma
+                      // etiqueta; repetirlo acá sería ruido (y otro WhatsApp al dueño).
                       glass_label:    elegirVidrio(it.glass_label, vidrioDelMotor(_p)).vidrio || VIDRIO_RESPALDO,
                       ambiente:       it.ambiente || '',
                       termico:        _p.termico || null,
