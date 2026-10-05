@@ -3600,11 +3600,12 @@ Comuna: ${datos.comuna}`
           // su cooldown por teléfono+motivo, y el motivo lleva el folio, lo deja en uno por folio).
           // Fire-and-forget como los demás avisos con el mutex tomado. No cambia el precio:
           // eso es carril plata y va a propuesta.
+          // [r5] El callback DEVUELVE la promesa: `avisarVidrio` mira lo que resuelve y, si el aviso no
+          // salió (Meta lo rechazó, sin teléfono del dueño...), lo deja en el log como `vidrio.aviso_no_salio`
+          // con el folio. `safe()` ya devuelve null si el notificador lanza. Nadie espera esta promesa acá.
           avisarVidrio(_avisosVidrio, quoteNumber, (aviso, texto) => log('warn', aviso, `${from}: ${texto}`),
-            (texto) => {
-              safe('generarPdf.vidrio.aviso', () =>
-                notifyHighValue(enviarSinPausa, turno.cliente, { data: { ...state }, history }, `[whatsapp] ${texto}`));
-            });
+            (texto) => safe('generarPdf.vidrio.aviso', () =>
+              notifyHighValue(enviarSinPausa, turno.cliente, { data: { ...state }, history }, `[whatsapp] ${texto}`)));
 
           // ── 🎨 [2026-08-31] LOS FOLIOS DE LAS TRES OPCIONES, DE UNA SOLA VEZ ──
           // Un solo correlativo ISO y las variantes por LETRA: 0392 · 0392-B · 0392-C. Es el

@@ -54,7 +54,8 @@ function armar(opts = {}) {
       pushQuoteEvent: async (p) => { spy.quoteEvents.push(p); return {}; },
     },
     // El canal de avisos al dueño (highValueNotifier): (envio, id del cliente, sesion, motivo).
-    notifyHighValue: async (_envio, cliente, _sesion, motivo) => { spy.alertas.push({ cliente, motivo: String(motivo) }); return { sent: true }; },
+    // `opts.avisoDueno`: lo que devuelve el notificador (el real NO lanza: devuelve `{sent:false,...}`).
+    notifyHighValue: async (_envio, cliente, _sesion, motivo) => { spy.alertas.push({ cliente, motivo: String(motivo) }); return opts.avisoDueno || { sent: true }; },
     sendWhatsAppText: async () => ({ ok: true }),
     generatePdf: async (data, numero) => {
       spy.pdfs.push({
@@ -371,6 +372,33 @@ test('🔔 IG [05-oct · r4] satén perdido: UN aviso al dueño con el folio y l
   assert.match(alertas[0].motivo, /vidrio claro; revisar precio/);
   assert.deepEqual(corrida.pdfs.map((p) => p.unit_price).sort((a, b) => a - b),
     [PRECIO.Blanco, PRECIO.Nogal, PRECIO['New Black']], 'los precios no cambian');
+});
+
+test('🔔 IG [05-oct · r5 · Thermos MEDIO-BAJO] el aviso al dueño NO salió (Meta rechazó, 131047) ⇒ queda `vidrio.aviso_no_salio` con el folio', async () => {
+  const satenPerdido = {
+    vidrioMotor: '4+12+4',
+    item: { producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
+      measures: '1500x1000', color: 'Blanco', qty: 1, unit_price: PRECIO.Blanco, glass_label: '4+12+4 satén (baño)' },
+    turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1000 para el baño' }],
+  };
+  let corrida;
+  const lineas = await capturarLogs(async () => {
+    corrida = await correr({ ...satenPerdido, avisoDueno: { sent: false, reason: 'envio_fallido', code: 131047, error: '{"error":{"code":131047}}' } });
+    await new Promise((r) => { setTimeout(r, 60); });
+  });
+  assert.equal(corrida.pdfs.length, 3, 'las propuestas salen igual: nunca se frena al cliente');
+  assert.ok(lineas.some((l) => /vidrio\.aviso_no_salio.*CM-FR-004-2026-0392.*envio_fallido.*131047/.test(l)),
+    `falta vidrio.aviso_no_salio con el folio: ${JSON.stringify(lineas.filter((l) => /vidrio\./.test(l)))}`);
+
+  // cooldown = «ya se le avisó»: no es falla. Y sent:true tampoco.
+  for (const avisoDueno of [{ sent: false, reason: 'cooldown' }, { sent: true }]) {
+    const l2 = await capturarLogs(async () => {
+      await correr({ ...satenPerdido, avisoDueno });
+      await new Promise((r) => { setTimeout(r, 60); });
+    });
+    assert.ok(l2.some((l) => /vidrio\.bano_perdido/.test(l)), 'control: el aviso del tablero sí salió');
+    assert.ok(!l2.some((l) => /vidrio\.aviso_no_salio/.test(l)), JSON.stringify(avisoDueno));
+  }
 });
 
 test('🔔 IG [05-oct · r4] sin satén perdido NO se avisa al dueño del vidrio', async () => {

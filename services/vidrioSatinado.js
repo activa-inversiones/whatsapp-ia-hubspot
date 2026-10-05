@@ -1,0 +1,23 @@
+// services/vidrioSatinado.js — [2026-10-05 · r5] QUÉ HACE QUE UN VIDRIO SEA «SATÉN». UNA sola definición.
+//
+// Antes había dos listas: la de `dibujoVentana.claveVidrio` (satin, saten, acid, esmeril, mate,
+// opaco, transluc) y la de `vidrioCotizado.esBano` (solo saten, bano, esmeril), que decía ser
+// «la misma» y no lo era. Resultado: el PDF dibujaba un vidrio opaco que el aviso al dueño por
+// satén perdido no reconocía (hallazgo BAJO de Thermos, 449b255..30cca6d). Las dos importan de acá.
+//
+// Sin dependencias: lo importan el dibujo (pdfkit) y la regla del vidrio del bot.
+
+/** Minúsculas y sin tildes ni ñ («Satén», «BAÑO» y «bano» caen en lo mismo). */
+export const sinTildes = (v) => String(v ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+/** «satinado» y «saten» son el mismo vidrio; «mate», «opaco» y «translúcido» son como lo nombra el cliente. */
+const PALABRAS_SATEN = /satin|saten|acid|esmeril|mate|opaco|transluc/;
+
+/** Regla del dueño (31-ago): «si dice baño ponerle satén», con o sin tilde, con o sin la ñ. */
+const AMBIENTE_BANO = /\bbanos?\b|\bwc\b|\btoilet|\bbanera|\bducha/;
+
+/** ¿El rótulo del vidrio nombra un vidrio que NO se ve a través (satén, esmerilado, acidado, mate, opaco, translúcido)? */
+export const dicePalabraSaten = (v) => PALABRAS_SATEN.test(sinTildes(v));
+
+/** ¿El texto nombra un recinto que va con satén (baño, WC, toilet, bañera, ducha)? */
+export const esAmbienteBano = (a) => AMBIENTE_BANO.test(sinTildes(a));

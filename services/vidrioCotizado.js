@@ -6,14 +6,28 @@
 // Ramas probadas en vidrioCotizado.test.js.
 
 import { vidrioDesdeEtiqueta } from './vientosThermal.js';
+import { dicePalabraSaten, esAmbienteBano, sinTildes } from './vidrioSatinado.js';
 
 /** Lo que se imprime cuando nadie sabe el vidrio (ni el LLM ni el motor). */
 export const VIDRIO_RESPALDO = 'Termopanel DVH';
 
-const _plano = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const _plano = sinTildes;
 
-/** Satén, baño o esmerilado: el vidrio que NO se ve a traves (el mismo que `dibujoVentana.claveVidrio`). */
-const esBano = (t) => /saten|bano|esmeril/.test(_plano(t));
+/**
+ * Satén, esmerilado, acidado, mate, opaco, translúcido o baño: el vidrio que NO se ve a traves.
+ * [r5] Es la MISMA definicion que `dibujoVentana.claveVidrio` (ambos importan ./vidrioSatinado.js):
+ * antes esta era una lista aparte (solo saten|bano|esmeril) que decia ser «la misma» y no cubria
+ * satinado, acidado, mate, opaco ni translucido.
+ */
+const esBano = (t) => dicePalabraSaten(t) || esAmbienteBano(t);
+
+/**
+ * Los dos termopaneles CLAROS que el motor elige por AREA (`enginePricer.pickGlassId`, umbral 2 m²:
+ * <2 m² ⇒ 4+12+4, ≥2 m² ⇒ 5+12+5; los rotula asi en enginePricer.js, `item.glass_label`).
+ * Cambiar de uno a otro es la regla de area del motor, no un producto distinto.
+ */
+const CLAROS_POR_AREA = new Set(['4,12,4', '5,12,5']);
+const _espesores = (v) => `${v.ext_mm},${v.camara_mm},${v.int_mm}`;
 
 /** Productos que el motor NO cotiza: si la etiqueta decia uno de estos, reemplazarla es borrarle al cliente lo que pidio. */
 const OTRO_PRODUCTO = /low[\s-]?e|lamin|control\s*solar|asimetric|monolitic|selective|templad|tintad|bronce|\bgris\b|\bverde\b|reflect|catedral/;
@@ -22,7 +36,11 @@ const OTRO_PRODUCTO = /low[\s-]?e|lamin|control\s*solar|asimetric|monolitic|sele
 function otroEspesor(etiqueta, vidrioMotor) {
   const a = vidrioDesdeEtiqueta(etiqueta);
   const b = vidrioDesdeEtiqueta(vidrioMotor);
-  return Boolean(a && b) && (a.ext_mm !== b.ext_mm || a.camara_mm !== b.camara_mm || a.int_mm !== b.int_mm);
+  if (!a || !b) return false;
+  if (_espesores(a) === _espesores(b)) return false;
+  // [r5 · Thermos BAJO] 4+12+4 ↔ 5+12+5 es la regla de AREA del motor (ver CLAROS_POR_AREA), no otro producto.
+  if (CLAROS_POR_AREA.has(_espesores(a)) && CLAROS_POR_AREA.has(_espesores(b))) return false;
+  return true;
 }
 
 const esOtroProducto = (etiqueta, vidrioMotor) =>
@@ -85,9 +103,29 @@ export function textoBanoPerdido(folio, etiquetas) {
 }
 
 /**
+ * Por qué el aviso al dueño NO salió, en una frase para el log; `null` si no hay falla que declarar.
+ * `r` es lo que devuelve `notifyHighValue` (a traves de `safe()`, que devuelve null si el notificador lanzo).
+ * `cooldown` NO es falla: es «ya se le aviso» de este folio (el aviso es uno por folio, a proposito).
+ */
+function motivoSinAviso(r) {
+  if (r && r.sent === true) return null;
+  if (r && r.reason === 'cooldown') return null;
+  if (r === null || r === undefined) return 'excepcion';
+  const partes = [r.reason, r.code != null ? `code=${r.code}` : null, r.error ? String(r.error).slice(0, 200) : null].filter(Boolean);
+  return partes.join(' ') || 'sin_confirmacion';
+}
+
+/**
  * Loguea los avisos juntados, UNA vez cada uno, con el folio del documento. Y si hay satén
  * perdido, llama UNA vez a `avisarDueno(texto)` (el canal de avisos del bot, de quien llama) con
  * el folio y todas las etiquetas. El precio no se toca: eso es carril plata y va a propuesta.
+ *
+ * [r5 · Thermos MEDIO-BAJO] Si `avisarDueno` devuelve una promesa, SE MIRA lo que resuelve: el
+ * aviso que no salio (Meta lo rechazo, no hay telefono del dueño, el notificador lanzo) queda en el
+ * log como `vidrio.aviso_no_salio` con el folio. Antes se tiraba a la basura y un satén perdido
+ * podia quedar sin ningun rastro. Devuelve esa promesa (que NUNCA rechaza) para poder esperarla
+ * en un test; los llamadores no necesitan esperarla. Un `avisarDueno` que no devuelve promesa
+ * (los de antes) sigue andando igual.
  */
 export function avisarVidrio(avisos, folio, logWarn, avisarDueno = null) {
   const vistos = new Set();
@@ -99,5 +137,15 @@ export function avisarVidrio(avisos, folio, logWarn, avisarDueno = null) {
     logWarn(a.aviso, `${folio}: etiqueta "${a.original}" · vidrio del motor "${a.motor}"`);
     if (a.aviso === 'vidrio.bano_perdido' && !etiquetasBano.includes(a.original)) etiquetasBano.push(a.original);
   }
-  if (etiquetasBano.length && typeof avisarDueno === 'function') avisarDueno(textoBanoPerdido(folio, etiquetasBano));
+  if (!etiquetasBano.length || typeof avisarDueno !== 'function') return undefined;
+
+  const salida = avisarDueno(textoBanoPerdido(folio, etiquetasBano));
+  if (!salida || typeof salida.then !== 'function') return undefined;
+  const declarar = (motivo) => {
+    if (!motivo) return;
+    try {
+      logWarn('vidrio.aviso_no_salio', `${folio}: el aviso al dueño por el satén NO salió (${motivo}) — revisar el precio de esta propuesta a mano`);
+    } catch { /* declarar no puede romper la entrega de la propuesta */ }
+  };
+  return salida.then((r) => declarar(motivoSinAviso(r)), (err) => declarar(`excepcion: ${err?.message || err}`));
 }

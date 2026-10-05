@@ -698,12 +698,12 @@ export async function handleChannelTurn(
           // perdió, UN aviso al dueño por el canal de escalaciones de siempre (highValueNotifier;
           // su cooldown por id+motivo, y el motivo lleva el folio, lo deja en uno por folio —
           // aunque el folio se REUSE en una corrección). No cambia el precio: es carril plata.
+          // [r5] El callback DEVUELVE la promesa: `avisarVidrio` mira lo que resuelve y, si el aviso no
+          // salió (Meta lo rechazó, sin teléfono del dueño...), lo deja en el log como `vidrio.aviso_no_salio`.
           avisarVidrio(_avisosVidrio, quoteNumber, (aviso, texto) => log('warn', aviso, `${convKey}: ${texto}`),
-            (texto) => {
-              safe('generarPdf.vidrio.aviso', () =>
-                notifyHighValue(sendWhatsAppText, senderId,
-                  { data: { ...state, name: input.name || state.name || senderName }, history }, `[${channel}] ${texto}`));
-            });
+            (texto) => safe('generarPdf.vidrio.aviso', () =>
+              notifyHighValue(sendWhatsAppText, senderId,
+                { data: { ...state, name: input.name || state.name || senderName }, history }, `[${channel}] ${texto}`)));
           // Evicción por antigüedad (no clear() ciego, que abría ventana de doble-folio en carga).
           if (RECENT_QUOTES.size > 500) {
             const cutoff = Date.now() - QUOTE_DEDUP_MS;

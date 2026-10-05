@@ -138,3 +138,69 @@ test('HVN-06: control — dos alertas del MISMO tier para el mismo teléfono/rea
   assert.equal(second.reason, 'cooldown');
   assert.equal(waSend.calls.length, 1, 'no debe reenviar spam del mismo tier dentro de las 2h');
 });
+
+// ── (c) [05-oct · r5 · Thermos MEDIO-BAJO] un envío que Meta RECHAZA no es un envío ──────────────
+// CAUSA RAÍZ (medida leyendo el contrato de los dos lados): `sendWhatsAppText` —el waSendFn con
+// que llaman webhook.js y channel-agent.js— NO LANZA cuando Meta rechaza: devuelve `{ok:false, ...}`
+// (whatsapp-adapter.js, errorEstructurado). Pero `notifyHighValue` solo miraba si el `await`
+// LANZABA (try/catch): un `{ok:false}` pasaba por el camino feliz ⇒ fijaba el cooldown de 2 h y
+// devolvía `sent:true`. El aviso al dueño se perdía en silencio Y la repetición quedaba silenciada
+// 2 h. 131047 = «re-engagement»: pasa cuando el dueño no le escribió al bot en las últimas 24 h.
+// Contrato que se fija: SOLO un rechazo EXPLÍCITO (`{ok:false}` / `false`) cuenta como no-enviado.
+// `waSend` de index.js no devuelve nada (undefined) y los fakes devuelven `true`: eso sigue siendo enviado.
+const rechazoMeta = (extra = {}) => async () => ({
+  ok: false, error: '{"error":{"code":131047,"message":"Re-engagement message"}}', status: 400, code: 131047, timedOut: false, ...extra,
+});
+
+test('HVN-07 [r5]: Meta rechaza el envío ({ok:false, code:131047}) ⇒ sent:false con el motivo y el código, y SIN cooldown', async () => {
+  const phone = '56944444441';
+  const first = await notifyHighValue(rechazoMeta(), phone, realHighValueSession(), 'auto');
+  assert.equal(first.sent, false, 'un envío rechazado por Meta NO es un aviso enviado');
+  assert.equal(first.reason, 'envio_fallido');
+  assert.equal(first.code, 131047, 'el código de Meta viaja: sin él nadie distingue "fuera de ventana" de otra falla');
+  assert.match(String(first.error), /131047/, 'el texto del rechazo viaja en `error` (es lo que leen los llamadores)');
+
+  // Sin cooldown: el aviso NUNCA llegó, así que el reintento (con el canal ya sano) tiene que salir.
+  const waSend = makeWaSendMock();
+  const second = await notifyHighValue(waSend, phone, realHighValueSession(), 'auto');
+  assert.equal(second.sent, true, 'un envío que falló no puede silenciar 2 h al siguiente');
+  assert.equal(waSend.calls.length, 1);
+});
+
+test('HVN-08 [r5]: lo que NO es un rechazo explícito sigue contando como enviado (undefined de index.js:waSend, true, {ok:true})', async () => {
+  for (const [i, devuelve] of [[1, undefined], [2, true], [3, { ok: true, msgId: 'wamid.1' }], [4, { ok: true }]]) {
+    const calls = [];
+    const waSend = async (to, msg) => { calls.push({ to, msg }); return devuelve; };
+    const phone = `5695555555${i}`;
+    const first = await notifyHighValue(waSend, phone, realHighValueSession(), 'auto');
+    assert.equal(first.sent, true, `waSend que devuelve ${JSON.stringify(devuelve)} cuenta como enviado`);
+    const second = await notifyHighValue(waSend, phone, realHighValueSession(), 'auto');
+    assert.equal(second.sent, false);
+    assert.equal(second.reason, 'cooldown', `y fija el cooldown (devuelve ${JSON.stringify(devuelve)})`);
+    assert.equal(calls.length, 1);
+  }
+});
+
+test('HVN-09 [r5]: `false` y las salidas bloqueadas / sin credenciales ({ok:false, error}) también son no-enviado', async () => {
+  const casos = [
+    ['false a secas', async () => false, 'envio_fallido'],
+    ['salida bloqueada por el embudo', async () => ({ ok: false, error: 'salida_bloqueada', motivos: ['tool_call'] }), 'envio_fallido'],
+    ['credenciales de Meta ausentes', async () => ({ ok: false, error: 'meta_credentials_missing' }), 'envio_fallido'],
+  ];
+  for (const [i, [nombre, waSend, reason]] of casos.entries()) {
+    const r = await notifyHighValue(waSend, `5696666666${i}`, realHighValueSession(), 'auto');
+    assert.equal(r.sent, false, nombre);
+    assert.equal(r.reason, reason, nombre);
+  }
+});
+
+test('HVN-10 [r5]: control — un waSend que LANZA ya devolvía sent:false+error y no fijaba cooldown (no se rompió)', async () => {
+  const phone = '56977777771';
+  const lanza = async () => { throw new Error('socket hang up'); };
+  const first = await notifyHighValue(lanza, phone, realHighValueSession(), 'auto');
+  assert.equal(first.sent, false);
+  assert.match(String(first.error), /socket hang up/);
+  const waSend = makeWaSendMock();
+  const second = await notifyHighValue(waSend, phone, realHighValueSession(), 'auto');
+  assert.equal(second.sent, true, 'tampoco fijó cooldown');
+});

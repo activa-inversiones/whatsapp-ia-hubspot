@@ -39,6 +39,7 @@
 // cortas claras y oscuras) / "liso" (solo el brillo). `brillo` = factor de la hebra especular.
 import { esMonorrielPorForma } from "./formaMonorriel.js";
 import { esquinaDesdeLabel, partesEsquinaNormalizadas } from "./formaEsquina.js";
+import { dicePalabraSaten, esAmbienteBano } from "./vidrioSatinado.js";
 
 const COLORES = {
   blanco:    { f: "#F4F4F1", e: "#000000", nombre: "Blanco", veta: null, textura: "liso", brillo: 1.08 },
@@ -170,17 +171,16 @@ function claveVidrio(v, ambiente) {
   if (t.includes("bronce")) return "bronce";
   // "satinado" y "saten" son el mismo vidrio; "mate", "opaco" y "translucido" son como lo
   // nombra el cliente. Todos van al mismo dibujo: el que NO se ve para ningun lado.
-  if (t.includes("satin") || t.includes("saten") || t.includes("acid") || t.includes("esmeril")
-      || t.includes("mate") || t.includes("opaco") || t.includes("transluc")) return "satinado";
+  // [2026-10-05 · r5] La lista de palabras vive en ./vidrioSatinado.js (UNA sola definicion: el
+  // aviso al dueño por saten perdido, services/vidrioCotizado.js, usa la misma). Mismo resultado de siempre.
+  if (dicePalabraSaten(t)) return "satinado";
   if (t.includes("gris") || t.includes("grey")) return "gris";
   // 🔴 [2026-08-31, regla del dueno] SI ES BANO, VA SATEN. Textual: "con o sin tilde debe ser
   // ingresado asi; si dice bano ponerle [saten], porque el cliente puede decir o escribir de
   // cualquier manera". El motor ya cotiza el bano con saten, pero el DIBUJO dependia de que
   // el rotulo del vidrio lo dijera. Esta es la red: el ambiente manda igual. Se compara sin
   // tildes y sin la enie, asi "bano", "baNo", "BAÑO" y "wc" caen todos en el mismo lugar.
-  const amb = String(ambiente || "").toLowerCase().normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "").replace(/\u00f1/g, "n");
-  if (/\bbanos?\b|\bwc\b|\btoilet|\bbanera|\bducha/.test(amb)) return "satinado";
+  if (esAmbienteBano(ambiente)) return "satinado";
   return "incoloro";
 }
 

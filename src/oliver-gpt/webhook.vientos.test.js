@@ -328,6 +328,61 @@ test('🔔 B4 solo otro producto (sin satén perdido) ⇒ NO se avisa al dueño'
   assert.deepEqual(alertasDeVidrio(spy), []);
 });
 
+/** El notificador del dueño con el resultado que se le diga (el real devuelve `{sent:false,...}` y no lanza). */
+const conResultadoDeAviso = (deps, spy, resultado) => {
+  deps.notifyHighValue = async (_envio, cliente, _sesion, motivo) => { spy.alertas.push({ cliente, motivo: String(motivo) }); return resultado; };
+};
+const SATEN_1500 = [{ producto: 'Corredera SLIDING H80 Doble Riel S75', medidas: '1500x1000', vidrio: '4+12+4 satén (baño)', cantidad: 1, precio: 100000 }];
+
+test('🔔 B3 [r5 · Thermos MEDIO-BAJO] el aviso al dueño NO salió (Meta rechazó, 131047) ⇒ queda `vidrio.aviso_no_salio` con el folio; la propuesta sale igual', async () => {
+  // Antes: `notifyHighValue` devolvia `sent:true` aunque Meta rechazara, y este llamador igual tiraba el
+  // resultado ⇒ un satén perdido podia quedar SIN ningun rastro de que el dueño no se entero.
+  const { deps, spy } = armar({ ventanas: SATEN_1500 });
+  conResultadoDeAviso(deps, spy, { sent: false, reason: 'envio_fallido', code: 131047, error: '{"error":{"code":131047}}' });
+  const logs = await capturarLogs(async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta sale igual: nunca se frena al cliente');
+    assert.ok(await esperar(() => alertasDeVidrio(spy).length > 0), 'el aviso se intento');
+    await dejarCorrer();
+  });
+  assert.ok(logs.some((l) => /vidrio\.aviso_no_salio.*CM-FR-004-2026-9999.*envio_fallido.*131047/.test(l)),
+    `falta vidrio.aviso_no_salio con el folio: ${JSON.stringify(logs.filter((l) => /vidrio\./.test(l)))}`);
+});
+
+test('🔔 B3 [r5] el notificador LANZA ⇒ también queda `vidrio.aviso_no_salio` (excepcion), y cooldown ⇒ NO se declara falla', async () => {
+  const lanza = armar({ ventanas: SATEN_1500 });
+  lanza.deps.notifyHighValue = async () => { lanza.spy.alertas.push({ cliente: '', motivo: 'revisar precio' }); throw new Error('boom'); };
+  const logs1 = await capturarLogs(async () => {
+    await handleWebhook({ body: {} }, makeRes(), lanza.deps);
+    assert.ok(await esperar(() => pos(lanza.spy, 'propuesta') >= 0));
+    await esperar(() => lanza.spy.alertas.length > 0);
+    await dejarCorrer();
+  });
+  assert.ok(logs1.some((l) => /vidrio\.aviso_no_salio.*CM-FR-004-2026-9999.*excepcion/.test(l)), JSON.stringify(logs1.filter((l) => /vidrio\./.test(l))));
+
+  const cooldown = armar({ ventanas: SATEN_1500 });
+  conResultadoDeAviso(cooldown.deps, cooldown.spy, { sent: false, reason: 'cooldown' });
+  const logs2 = await capturarLogs(async () => {
+    await handleWebhook({ body: {} }, makeRes(), cooldown.deps);
+    assert.ok(await esperar(() => pos(cooldown.spy, 'propuesta') >= 0));
+    await esperar(() => alertasDeVidrio(cooldown.spy).length > 0);
+    await dejarCorrer();
+  });
+  assert.ok(logs2.some((l) => /vidrio\.bano_perdido/.test(l)), 'control: el aviso del tablero sí salió');
+  assert.ok(!logs2.some((l) => /vidrio\.aviso_no_salio/.test(l)), 'cooldown = «ya se le avisó»: no es una falla');
+});
+
+test('🔔 B3 [r5] el aviso SALIÓ (sent:true) ⇒ no se declara ninguna falla', async () => {
+  const { deps, spy } = armar({ ventanas: SATEN_1500 });
+  const logs = await capturarLogs(async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+    assert.ok(await esperar(() => alertasDeVidrio(spy).length > 0));
+    await dejarCorrer();
+  });
+  assert.ok(!logs.some((l) => /vidrio\.aviso_no_salio/.test(l)), JSON.stringify(logs.filter((l) => /vidrio\./.test(l))));
+});
+
 /* ── D · la pausa antes del precio, si se mando ALGUN informe (decision 4, r4) ───────── */
 
 const PAUSA_PRECIO_MS = Number(process.env.SEQUENCE_PRECIO_MS || 35_000);

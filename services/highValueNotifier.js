@@ -38,6 +38,13 @@ const COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 horas
 const TIER_RANK = { STANDARD: 0, MEDIUM: 1, HIGH: 2 };
 
 /**
+ * ¿El waSendFn dijo EXPLÍCITAMENTE que no envió? Solo `false` o `{ok:false}` cuentan.
+ * Todo lo demás se asume enviado, como siempre: el `waSend` de index.js no devuelve nada
+ * (undefined) y los fakes devuelven `true`.
+ */
+const envioRechazado = (r) => r === false || (r !== null && typeof r === "object" && r.ok === false);
+
+/**
  * Evalúa si un lead es de alto valor basado en múltiples señales
  */
 function evaluateLeadValue(session) {
@@ -246,7 +253,19 @@ async function notifyHighValue(waSendFn, customerPhone, session, reason = "auto"
   ].filter(Boolean).join("\n");
 
   try {
-    await waSendFn(OWNER_PHONE, alertMsg);
+    const envio = await waSendFn(OWNER_PHONE, alertMsg);
+    // [2026-10-05 · r5 · Thermos MEDIO-BAJO] EL ENVÍO PUEDE «TERMINAR BIEN» SIN HABER SALIDO.
+    // `sendWhatsAppText` (el waSendFn de webhook.js y channel-agent.js) no lanza cuando Meta
+    // rechaza: devuelve `{ok:false, code, error...}` (whatsapp-adapter.js). Acá solo se miraba si
+    // el await LANZABA, así que un rechazo (131047: el dueño no le escribió al bot en 24 h; salida
+    // bloqueada; credenciales ausentes) caía al camino feliz: fijaba el cooldown de 2 h y devolvía
+    // `sent:true`. El aviso se perdía y, además, el siguiente quedaba mudo 2 h.
+    // NO se fija cooldown y se dice la verdad, con el motivo y el código para quien lo lea.
+    if (envioRechazado(envio)) {
+      const error = typeof envio === "object" && envio.error != null ? String(envio.error) : "envio_rechazado";
+      console.error(`[highValueNotifier] Alerta ${tierLabel} para ${customerPhone} NO salió (code=${envio?.code ?? "-"}): ${error.slice(0, 300)}`);
+      return { sent: false, reason: "envio_fallido", error, code: envio?.code, status: envio?.status, score };
+    }
     alertCooldown.set(cooldownKey, { at: Date.now(), tier: score.tier });
     console.log(`[highValueNotifier] Alerta ${tierLabel} enviada para ${customerPhone}`);
     return { sent: true, score, tier: score.tier };
