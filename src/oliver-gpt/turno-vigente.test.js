@@ -12,7 +12,7 @@
 // documentos. Una persona se detiene cuando el otro empieza a hablar; Oliver no.
 //
 // POR QUE NO SE ENTERABA: el lock por telefono. La secuencia larga (mensaje de valor ->
-// informe -> video -> vientos -> anticipo -> propuesta, con pausas deliberadas que suman
+// termico -> vientos -> video -> anticipo -> propuesta, con pausas deliberadas que suman
 // 2-3 minutos) tiene el lock tomado. El mensaje nuevo del cliente queda ENCOLADO esperando
 // a que termine. La secuencia no tiene forma de saber que llego.
 //
@@ -23,11 +23,10 @@
 //   y fotografia la marca DE B -> la comparacion da igual y no aborta nunca.
 // Por eso el turno se numera AL LLEGAR, antes del lock, y cada turno lleva SU numero.
 //
-// Y no se aborta en cualquier lado. Codex tambien mostro que "no abortar si el folio ya se
-// genero" se traga el arreglo entero (el folio y el PDF se crean ANTES de los informes, asi
-// que la excepcion aplicaria siempre) y ademas obliga a mandar una propuesta que el cliente
-// acaba de corregir. La regla correcta es al reves: **se corta ANTES de quemar el folio**,
-// no despues. Nunca queda un correlativo ISO quemado sin documento.
+// QUE SE CORTA (al 05-oct): SOLO el video de cortesia. La propuesta no se corta nunca (Codex:
+// el folio y el PDF ya existen cuando corre la secuencia), y el informe de vientos dejo de
+// cortarse el 05-oct: el "proximo turno" que lo iba a mandar no existe, y el cliente se quedaba
+// sin el (webhook.vientos.test.js, caso A). Los cortes van ANTES de reservar cualquier marca.
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';

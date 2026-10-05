@@ -65,6 +65,7 @@ import { elegirVideo, mensajeDelVideo, mediaIdsDisponibles } from '../../service
 // informe de vientos a la secuencia de Oliver"). THERMAL calcula (se pide por HTTP, regla
 // de la casa), Oliver arma el PDF y lo entrega como 2o documento.
 import { pedirVientos, ventanasParaVientos } from '../../services/vientosThermal.js';
+import { aplicarVidrioDelMotor, vidrioDelPrecio } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor
 import { generarInformeVientosPdf } from '../../services/informeVientosPdf.js';
 import { decidirDocumentosCotizacion, leerEntregasLocales, marcarEntregaLocal } from '../../services/documentosCotizacion.js'; // [2026-09-30] selector de documentos por cotización
 import { numerarVentanas } from '../../services/etiquetaVentana.js'; // [2026-09-19] el numero se congela antes de filtrar
@@ -844,19 +845,6 @@ export function turnoVigente(telefono, miTurno) {
 
 /** Solo para los tests: deja la numeracion como recien arrancado el proceso. */
 export function _resetTurnos() { SEQ_TURNO = 0; TURNO_VIGENTE.clear(); }
-
-/**
- * [2026-10-05] Si la ventana llego SIN vidrio, le pone el vidrio con que el MOTOR la cotizo.
- * Solo si el motor la cotizo de verdad (precio > 0): sin cotizacion real no hay vidrio que
- * copiar y no se inventa uno. Un vidrio que la ventana ya traia NO se pisa.
- * Por que existe: ver el bloque del Uw en `generarPdf` (caso YONNY, propuesta 0588).
- */
-function completarVidrioCotizado(item, cotizado) {
-  if (!item || String(item.glass_label || '').trim()) return;
-  if (!cotizado || !(Number(cotizado.unit_price) > 0)) return;
-  const vidrio = String(cotizado.glass_label || '').trim();
-  if (vidrio) item.glass_label = vidrio;
-}
 
 export async function handleWebhook(req, res, deps = {}) {
   // ── (1) ACK INMEDIATO a Meta. Nada antes de esto puede lanzar. ──────────
@@ -3165,6 +3153,7 @@ Comuna: ${datos.comuna}`
                   _it.total_price = Number(x.total_price) || Number(x.unit_price) * (Number(_it.qty) || 1);
                   _it.source      = x.source || _it.source;
                   _it.confidence  = x.confidence;
+                  aplicarVidrioDelMotor(_it, x);   // [2026-10-05] la A con el vidrio que cobra, como B y C
                 });
                 _colorAok = _cand;
                 break;
@@ -3244,19 +3233,9 @@ Comuna: ${datos.comuna}`
               }
               it.termico = _t?.termico || null; // motor manda; sin termico → null
 
-              // 🔴 [2026-10-05] EL VIDRIO CON QUE EL MOTOR COTIZO, CUANDO EL ITEM NO TRAE NINGUNO.
-              // `glass_label` es opcional en la tool del PDF y el LLM a veces lo omite. El motor
-              // igual elige el vidrio de cada ventana (por area, `pickGlassId`) y con ESE vidrio
-              // calcula el precio y el Uw que la propuesta imprime — pero aca se devolvia el Uw y
-              // no el vidrio. MEDIDO: 5 propuestas en 30 dias con `"vidrio": null` en la BD; en la
-              // 0588 (YONNY, 03-oct) las opciones B y C —mismas ventanas, otro color— decian
-              // "5+12+5"/"4+12+4" (esas si copian `_p.glass_label`) y la A "Termopanel DVH", y el
-              // informe de vientos descarto las dos ventanas por "sin vidrio legible" (sin_datos).
-              // ⛔ NO SE INVENTA: se copia SOLO si el motor cotizo esta ventana de verdad (precio
-              // > 0). Si el motor no contesto, no hay un vidrio real que copiar y queda vacio.
-              // Y un vidrio que ya traia el item NO se pisa.
-              // Guardia: webhook.secuencia-informe.test.js, "caso YONNY 0588" + "anti-alucinacion".
-              completarVidrioCotizado(it, _t);
+              // [2026-10-05] Y el VIDRIO, igual que el Uw: el que el motor cobro (propuesta 0588,
+              // `vidrio: null` ⇒ vientos sin_datos). Regla y ramas: services/vidrioCotizado.test.js.
+              aplicarVidrioDelMotor(it, _t);
 
               // 🔴 [2026-08-26] LA COMPOSICION DE LA VENTANA VIAJA AL DIBUJO. Sin esto el PDF
               // dibujaba las tres compuestas de Paula como UN PAÑO UNICO: el dibujo necesita
@@ -3778,7 +3757,8 @@ Comuna: ${datos.comuna}`
           const enviarVideoCortesia = async (demoraMs) => {
               // 🔴 [2026-09-03] SI EL CLIENTE YA ESCRIBIO, EL VIDEO NO SALE.
               //
-              // Es el primer corte del arreglo de las rafagas, y se elige el video a proposito:
+              // Es el UNICO corte del arreglo de las rafagas (el del informe de vientos se quito el
+              // 05-oct: ver `enviarInformeVientos`), y se elige el video a proposito:
               // es la pieza mas prescindible de la secuencia y la que llega mas tarde (50 s
               // despues del PDF). Cortar aca baja la rafaga sin poder costar una cotizacion.
               //
@@ -3857,17 +3837,9 @@ Comuna: ${datos.comuna}`
           // (mismo criterio anti-spam que el térmico). Folio serie LOCAL propia INF-V
           // mientras sales-os no tenga la serie CM-FR de vientos (tablero #541).
           const enviarInformeVientos = async ({ forzar = false } = {}) => {
-            // 🔁 [2026-10-05] EL INFORME DE VIENTOS YA NO SE CORTA CUANDO EL CLIENTE ESCRIBE.
-            // Desde el 03-sep (85a7dd6) se cortaba aca con un log que decia "queda para el
-            // proximo turno" — y ese proximo turno NO EXISTE: este informe solo se manda desde
-            // `generarPdf`, asi que si el cliente no volvia a pedir un PDF no le llegaba NUNCA.
-            // Medido 04-oct (propuesta 0590): el cliente pregunto "Usted de donde son" en medio
-            // de la secuencia, recibio termico y propuesta, y el de vientos jamas.
-            // Reclamo del dueño (05-oct): *"solo esta saliendo cotizaciones e informe termico"*.
-            // Manda su regla del 30-sep: primero los informes, despues la propuesta, sin perder
-            // el orden. El termico y la propuesta nunca se cortaron; el de vientos ahora tampoco.
-            // Solo el VIDEO de cortesia se sigue cortando (ver `enviarVideoCortesia`).
-            // Guardia: webhook.secuencia-informe.test.js, "caso nacho 0590".
+            // 🔁 [2026-10-05] NO se corta si el cliente escribe: el "proximo turno" que lo iba a
+            // mandar no existe (propuesta 0590). Informes antes de la propuesta (dueño, 30-sep).
+            // Guardia: webhook.vientos.test.js, caso A.
             if (!turnoVigente(from, miTurno)) {
               log('info', 'rafaga.vientos', `${from}: el cliente escribio; el informe de vientos sale igual (no se corta)`);
             }
@@ -4283,15 +4255,16 @@ Comuna: ${datos.comuna}`
                 // tenía la propuesta encima. Solo en el camino 'enviado': un informe
                 // repetido o caído no gana demora.
                 await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: SEQ_PRECIO_MS });
-              } else if (resultadoInforme === 'no_seleccionado' && docsSel.vientos) {
-                // [2026-09-30] Térmico desmarcado pero vientos marcado a mano: sale solo el de
-                // vientos, con su techo, y sin video (el video acompaña a la secuencia completa).
+              } else if (docsSel.vientos) {
+                // [2026-10-05] Sin térmico entregado AHORA ('no_seleccionado', 'ya_enviado',
+                // 'fallo', 'timeout', 'en_curso') el de vientos sale igual, solo y sin video:
+                // lo deciden el selector y su propio candado, no el térmico. Guardia:
+                // webhook.vientos.test.js, caso C.
                 const resV2 = await enviarVientosConTecho('solo');
-                log('info', 'generarPdf.secuencia', `${from}: vientos (sin térmico) → ${resV2 || 'sin_resultado'}`);
+                log('info', 'generarPdf.secuencia', `${from}: vientos (térmico ${resultadoInforme}) → ${resV2 || 'sin_resultado'}`);
               }
-              // 'ya_enviado' / 'en_curso' / 'timeout' / 'fallo': se sigue derecho a la
-              // propuesta. En timeout el informe puede llegar después por su cuenta —
-              // ese es el comportamiento clasico de hoy, no un estado nuevo.
+              // Despues, derecho a la propuesta. En timeout el térmico puede llegar después por
+              // su cuenta — comportamiento clásico de hoy, no un estado nuevo.
             } catch (e) {
               // JAMÁS bloquea la propuesta: el peor resultado posible de esta secuencia
               // sería un cliente sin precio, y ese resultado no existe por diseño.
@@ -4649,7 +4622,7 @@ Comuna: ${datos.comuna}`
                       color:          _colorOp,
                       qty:            Number(it.qty) || 1,
                       unit_price:     Number(_p.unit_price) || 0,   // del motor, para ESTE color
-                      glass_label:    _p.glass_label || it.glass_label || 'Termopanel DVH',
+                      glass_label:    vidrioDelPrecio(_p, _p.unit_price) || it.glass_label || 'Termopanel DVH',
                       ambiente:       it.ambiente || '',
                       termico:        _p.termico || null,
                       compuesta:      _p.compuesta || it.compuesta || undefined,

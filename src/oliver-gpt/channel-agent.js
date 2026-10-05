@@ -41,6 +41,7 @@ import { foliosDeOpciones, letrasReservadas, textoDeOpciones } from './propuesta
 // el unico modulo 11 del repo y la unica compuerta de procedencia.
 import { extraerReceptor, receptorParaDocumento, fusionarReceptor } from '../../services/receptorCliente.js';
 import { priceAllEngine as realPriceAllEngine } from '../../services/enginePricer.js';   // precio REAL por color (motor LOCAL)
+import { aplicarVidrioDelMotor, vidrioDelPrecio } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor (misma regla que WhatsApp)
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
 import * as realBridge from '../../services/salesOsBridge.js';
 import { sendWhatsAppText as realSendWhatsAppText } from '../sales-agent/whatsapp-adapter.js';
@@ -80,7 +81,9 @@ function isPdfAffirmative(text) {
   const t = String(text || '').trim().toLowerCase();
   if (/\b(env[ií]a(mela|melo|la|lo)?|m[aá]nda(mela|melo|la|lo)?|quiero (el|la|mi) (pdf|cotiza|propuesta)|el pdf|la propuesta formal)\b/.test(t)) return true;
   // afirmación corta — solo cuenta si el bot venía OFRECIENDO el PDF (ver lastAssistantOfferedPdf).
-  return /^(s[ií]|ok(ey)?|dale|ya|perfecto|listo|de acuerdo|claro|por ?fa(vor)?|bueno|obvio|as[ií] es|s[ií]\s*por ?favor)[\s.!👍🙌✅]*$/.test(t);
+  // [2026-10-05] Bandera `u`: sin ella eslint (no-misleading-character-class) frena el commit.
+  // Medido: mismo resultado en 310 frases validas; solo cambia ante surrogates sueltos (texto roto).
+  return /^(s[ií]|ok(ey)?|dale|ya|perfecto|listo|de acuerdo|claro|por ?fa(vor)?|bueno|obvio|as[ií] es|s[ií]\s*por ?favor)[\s.!👍🙌✅]*$/u.test(t);
 }
 function lastAssistantOfferedPdf(history) {
   for (let i = (history || []).length - 1; i >= 0; i--) {
@@ -632,6 +635,7 @@ export async function handleChannelTurn(
                   _it.total_price = Number(x.total_price) || Number(x.unit_price) * (Number(_it.qty) || 1);
                   _it.source      = x.source || _it.source;
                   _it.confidence  = x.confidence;
+                  aplicarVidrioDelMotor(_it, x);   // [2026-10-05] la A con el vidrio que cobra, como B y C
                 });
                 _colorAok = _cand;
                 break;
@@ -853,7 +857,7 @@ export async function handleChannelTurn(
                       color:          _colorOp,
                       qty:            Number(it.qty) || 1,
                       unit_price:     Number(_p.unit_price) || 0,
-                      glass_label:    _p.glass_label || it.glass_label || 'Termopanel DVH',
+                      glass_label:    vidrioDelPrecio(_p, _p.unit_price) || it.glass_label || 'Termopanel DVH',
                       ambiente:       it.ambiente || '',
                       termico:        _p.termico || null,
                     };

@@ -58,7 +58,7 @@ function armar(opts = {}) {
       spy.pdfs.push({
         numero, opcion: data.opcion || null, receptor: data.receptor || null,
         color: data.items?.[0]?.color || null, unit_price: data.items?.[0]?.unit_price || 0,
-        measures: data.items?.[0]?.measures || '',
+        measures: data.items?.[0]?.measures || '', vidrio: data.items?.[0]?.glass_label || null,
       });
       return Buffer.from(`%PDF-1.4 ${numero}`);
     },
@@ -78,7 +78,7 @@ function armar(opts = {}) {
         if (!p) { it.confidence = 'manual'; continue; }
         it.unit_price = p; it.total_price = p * (Number(it.qty) || 1);
         it.source = 'activa_engine'; it.confidence = 'high';
-        it.producto_label = it.product; it.glass_label = '4+12+4';
+        it.producto_label = it.product; it.glass_label = opts.vidrioMotor || '4+12+4';
       }
       return { ok: true, total: 0, source: 'activa_engine', escalate: false };
     },
@@ -317,6 +317,20 @@ test('🔴💰 IG: se reporta el monto MAS BAJO de las entregadas, y una sola co
     assert.ok(!e.gclid && !e.fbclid && !e.ctwa_clid && !e.ttclid,
       'sin click-ids: no dispara conversion');
   }
+});
+
+test('🔴 IG [05-oct · paridad con WhatsApp] A, B y C imprimen el vidrio con que el MOTOR las cotizo', async () => {
+  // El LLM manda "Termopanel DVH" (el ejemplo de la tool, sin espesor). La B y la C ya salian
+  // con el vidrio del motor; la A, que se recotiza en la MISMA sonda, se quedaba con el del LLM.
+  // Regla unica en services/vidrioCotizado.js (probada ahi, rama por rama).
+  const spy = await correr({
+    vidrioMotor: '5+12+5',
+    item: { producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
+      measures: '2000x2000', color: 'Blanco', qty: 1, unit_price: PRECIO.Blanco, glass_label: 'Termopanel DVH' },
+    turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 2000x2000' }],
+  });
+  assert.equal(spy.pdfs.length, 3, `se esperaban A, B y C: ${spy.documentos.join(', ')}`);
+  for (const p of spy.pdfs) assert.equal(p.vidrio, '5+12+5', `${p.numero} imprime "${p.vidrio}", no el vidrio cobrado`);
 });
 
 test('🔒 IG: si el cliente SI dijo el color, sale UNA sola y se reporta su monto — como siempre', async () => {
