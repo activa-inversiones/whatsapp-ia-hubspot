@@ -41,7 +41,7 @@ import { foliosDeOpciones, letrasReservadas, textoDeOpciones } from './propuesta
 // el unico modulo 11 del repo y la unica compuerta de procedencia.
 import { extraerReceptor, receptorParaDocumento, fusionarReceptor } from '../../services/receptorCliente.js';
 import { priceAllEngine as realPriceAllEngine } from '../../services/enginePricer.js';   // precio REAL por color (motor LOCAL)
-import { motorCotizo, vidrioDelMotor, elegirVidrio, aplicarVidrio, avisarVidrio, VIDRIO_RESPALDO } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor (misma regla que WhatsApp)
+import { motorCotizo, vidrioDelMotor, precioCoincide, elegirVidrio, aplicarVidrio, avisarVidrio, VIDRIO_RESPALDO } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor (misma regla que WhatsApp)
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
 import * as realBridge from '../../services/salesOsBridge.js';
 import { sendWhatsAppText as realSendWhatsAppText } from '../sales-agent/whatsapp-adapter.js';
@@ -151,6 +151,30 @@ async function safe(label, fn) {
   }
 }
 
+/**
+ * [#1088] Tope TOTAL de la sonda del vidrio (la recotización de un solo color), no por lote. El cliente HTTP del motor
+ * espera hasta 15 s POR LLAMADA (engine-client.js) y `priceAllEngine` agrupa de a 6 en serie: con el motor colgado la
+ * sonda sola tardaba 15 s por cada 6 ítems (7 ítems = 30 s, 13 = 45 s) con el mutex del cliente tomado y un tope de turno
+ * de 50 s (TURN_TIMEOUT_MS). 8 s es, a propósito, bastante menos que UNA llamada colgada y que el turno, y deja de sobra
+ * para el correlativo, el PDF y el envío que vienen después; a cambio da holgura para varios lotes de un motor sano
+ * (no hay una medición de producción de su latencia: WhatsApp hace la misma recotización sin tope). Vencido, el documento
+ * sale con la etiqueta que traía y queda `vidrio.sonda_sin_tiempo`.
+ * ⚠️ Las llamadas en vuelo NO se cancelan (`priceAllEngine` no recibe una señal de aborto): terminan solas, dentro de su
+ * propio timeout de 15 s, y su resultado se descarta.
+ */
+export const SONDA_VIDRIO_TOPE_MS = 8000;
+const SIN_TIEMPO = Symbol('sin_tiempo');
+
+/** `promesa`, o SIN_TIEMPO si no termina en `ms`. El temporizador no queda vivo; si `promesa` rechaza después, nadie lo ve. */
+async function conTope(promesa, ms) {
+  let timer = null;
+  try {
+    return await Promise.race([promesa, new Promise((resolve) => { timer = setTimeout(resolve, ms, SIN_TIEMPO); })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 const ATTRIBUTION_STATE_KEYS = [
   'ctwa_clid', 'ad_id', 'gclid', 'fbclid', 'ttclid',
   'landing_lead_id', 'landingRefCaptured', 'ctwaCaptured',
@@ -242,7 +266,8 @@ export async function handleChannelTurn(
   const attachPdfToDeal       = deps.attachPdfToDeal        || realAttachPdfToDeal;
   const sendChannelDocument   = deps.sendChannelDocument   || realSendChannelDocument;
   const priceAllFn            = deps.priceAllEngine        || realPriceAllEngine;   // [2026-08-31] precio por color, inyectable para poder probarlo
-  const loadSession           = deps.loadSession            || realLoadSession;
+  const sondaVidrioTopeMs     = Number(deps.sondaVidrioTopeMs) || SONDA_VIDRIO_TOPE_MS;   // [#1088] inyectable para no esperar 8 s en los tests
+  const loadSession          = deps.loadSession            || realLoadSession;
   const persistSession        = deps.persistSession         || realPersistSession;
   const conv = deps.conv || CONV;
   const seen = deps.seen || SEEN;
@@ -595,6 +620,55 @@ export async function handleChannelTurn(
             (Number(it.ancho_mm) > 0 && Number(it.alto_mm) > 0) ? `${it.ancho_mm}x${it.alto_mm}mm` : (it.measures || '');
           // [2026-10-05] Avisos del vidrio (baño perdido, otro producto): se loguean con el folio.
           const _avisosVidrio = [];
+
+          // 🔧 [#1088] SIN TERNA (el cliente nombró UN color), EL VIDRIO DEL MOTOR TAMBIÉN LLEGA AL DOCUMENTO.
+          // `aplicarVidrio` solo corría dentro de la sonda de la opción A, que existe únicamente con terna: con un color
+          // dicho por el cliente el documento imprimía la etiqueta del LLM y un «satén» perdido no avisaba. WhatsApp lo
+          // resuelve por otro camino con la MISMA regla: el bloque «Uw SIEMPRE del MOTOR» (webhook.js, `_therm`) recotiza TODAS las
+          // ventanas en cada emisión y aplica `aplicarVidrio(it, vidrioDelMotor(t), { mismoPrecio: precioCoincide(...) })`.
+          // Esto es ese mismo mecanismo (misma sonda que la opción A de abajo, mismas funciones). 💰 NO escribe ningún
+          // monto ni el color: solo `glass_label` y los avisos; `precioCoincide` impide estampar el vidrio de otro cálculo.
+          // Cuesta UNA recotización al motor, con tope TOTAL (SONDA_VIDRIO_TOPE_MS); si no contesta a tiempo o no cotiza, el
+          // documento sale igual con lo que había (nunca se frena al cliente) y queda dicho en el log, no en silencio.
+          if (!(_coloresTerna && _coloresTerna.length > 1)) {
+            try {
+              const _sondaV = {
+                items: (input.items || []).map((it) => ({
+                  product:     it.producto_label || it.product || 'Ventana',
+                  measures:    _measuresForEngine(it),
+                  color:       it.color || '',
+                  qty:         Number(it.qty) || 1,
+                  ambiente:    it.ambiente || '',
+                  descripcion: it.descripcion || it.ambiente || '',
+                  orientacion: it.compuesta?.orientacion || it.orientacion || undefined,
+                  partes:      Array.isArray(it.compuesta?.partes) ? it.compuesta.partes : undefined,
+                })),
+                comuna: input.comuna || state.comuna || '',
+                texto_cliente: _textoCliente,
+              };
+              const _folioPrevio = (lq && lq.quote_number) || null;     // el folio de esta emisión aún no se pidió: solo hay uno si es una revisión
+              const _r = await conTope(priceAllFn(_sondaV), sondaVidrioTopeMs);
+              if (_r === SIN_TIEMPO) {
+                log('warn', 'vidrio.sonda_sin_tiempo',
+                  `${convKey}: ${JSON.stringify({ folio: _folioPrevio, items: _sondaV.items.length, ms: sondaVidrioTopeMs })} — sale con la etiqueta que traía`);
+              } else {
+                (input.items || []).forEach((it, k) => {
+                  const _x = _sondaV.items[k];
+                  aplicarVidrio(it, vidrioDelMotor(_x), { avisos: _avisosVidrio, mismoPrecio: precioCoincide(_x, it.unit_price) });
+                });
+                if (!_sondaV.items.some(motorCotizo)) {
+                  // `priceAllEngine` NO lanza ante un 429 o un fallo: devuelve ok:false y deja `confidence:'manual'`; sin este
+                  // log la sonda fallaba sin dejar rastro (y cada intento gasta una de las 20 llamadas/min por IP del motor).
+                  const _motivo = [_r && _r.reason, ...new Set(_sondaV.items.map((x) => x.confidence && `confidence=${x.confidence}`)),
+                    (_sondaV.items.find((x) => x.price_warning) || {}).price_warning].filter(Boolean).join(' · ').slice(0, 240) || 'sin_respuesta';
+                  log('warn', 'vidrio.sonda_sin_cotizacion',
+                    `${convKey}: ${JSON.stringify({ folio: _folioPrevio, items: _sondaV.items.length, motivo: _motivo })} — sale con la etiqueta que traía`);
+                }
+              }
+            } catch (e) {
+              log('error', 'generarPdf.vidrio', `${convKey}: el motor no contestó para el vidrio; sale con lo que había: ${e?.message || e}`);
+            }
+          }
 
           // ⛔ [2026-08-31] LA OPCION A TAMBIEN SE COTIZA PARA SU COLOR.
           // No alcanza con cambiarle la etiqueta arriba: el precio que trae `input.items` lo
