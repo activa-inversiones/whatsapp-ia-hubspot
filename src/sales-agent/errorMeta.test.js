@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  clasificar, sePuedeReintentar, rechazoDelDestinatario, fueraDeVentana24h, RESULTADO, CODIGOS_NO_PROCESADO, VERSION,
+  clasificar, sePuedeReintentar, rechazoDelDestinatario, RESULTADO, CODIGOS_NO_PROCESADO, VERSION,
 } from './errorMeta.js';
 
 // ─── EL CASO QUE LO ORIGINA ──────────────────────────────────────────────────
@@ -100,17 +100,6 @@ test('[2026-10-05] rechazoDelDestinatario: solo los codigos que hablan del NUMER
     { ok: false, code: '131047' }, { ok: false, code: NaN }]) {
     assert.equal(rechazoDelDestinatario(otro), false, JSON.stringify(otro));
   }
-});
-
-test('[2026-10-05 · r7] fueraDeVentana24h: SOLO 131047 (la plantilla pasa); 131026 y todo lo demás no', () => {
-  // La plantilla aprobada pasa la ventana de 24 h; si el número no recibe nada (131026) la rechaza igual.
-  assert.equal(fueraDeVentana24h({ ok: false, status: 400, code: 131047 }), true);
-  for (const otro of [{ ok: false, code: 131026 }, { ok: false, code: 132000 }, { ok: false, timedOut: true }, { ok: false, status: 503 },
-    { ok: true, wamid: 'w' }, null, undefined, {}, { ok: false, code: '131047' }, { ok: false, code: NaN }]) {
-    assert.equal(fueraDeVentana24h(otro), false, JSON.stringify(otro));
-  }
-  // Y sigue siendo UN subconjunto de los rechazos del destinatario: si alguien la saca de uno, esto se entera.
-  assert.equal(rechazoDelDestinatario({ code: 131047 }), true);
 });
 
 test('[r4] guardia de deriva: todo rechazo del destinatario es tambien un FALLO_CONOCIDO reintentable', () => {

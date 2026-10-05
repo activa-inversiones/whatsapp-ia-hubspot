@@ -7,8 +7,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  motorCotizo, vidrioDelMotor, precioCoincide, elegirVidrio, aplicarVidrio, avisarVidrio, textoBanoPerdido,
+  motorCotizo, vidrioDelMotor, precioCoincide, elegirVidrio, aplicarVidrio, textoBanoPerdido,
+  fraseBanoPerdido, motivoDeEnvio, AVISO_VIDRIO_REPETIR_MS,
 } from './vidrioCotizado.js';
+import { COOLDOWN_MS } from './highValueNotifier.js';
 import { claveVidrio } from './dibujoVentana.js';
 import { dicePalabraSaten } from './vidrioSatinado.js';
 
@@ -156,161 +158,40 @@ test('[C3] aplicarVidrio: `avisos` es obligatorio; escribe en el item y junta el
   assert.deepEqual(avisos.map((x) => x.aviso), ['vidrio.producto_distinto', 'vidrio.bano_perdido']);
 });
 
-test('avisarVidrio loguea cada aviso UNA vez con el folio (el bloque del Uw vuelve a pasar por el mismo item)', () => {
-  const avisos = [];
-  const b = { glass_label: '4+12+4 satén (baño)' };
-  aplicarVidrio({ glass_label: 'Laminado 6+6' }, '4+12+4', { avisos });
-  aplicarVidrio(b, '4+12+4', { avisos });
-  aplicarVidrio(b, '4+12+4', { avisos });          // el bloque del Uw vuelve a pasar: no duplica el log
-
-  const lineas = [];
-  avisarVidrio(avisos, 'CM-FR-004-2026-0601', (aviso, texto) => lineas.push(`${aviso} ${texto}`));
-  assert.equal(lineas.length, 2, JSON.stringify(lineas));
-  assert.match(lineas[0], /^vidrio\.producto_distinto .*CM-FR-004-2026-0601.*Laminado 6\+6.*4\+12\+4/);
-  assert.match(lineas[1], /^vidrio\.bano_perdido .*CM-FR-004-2026-0601.*satén/);
+// [r8] La orquestación del aviso (`avisarVidrio`: canales, deduplicación, qué cuenta como «avisado») vive en
+// avisarVidrio.test.js. Acá, solo las funciones PURAS que ese módulo y escalation.js comparten.
+test('[r8] fraseBanoPerdido / textoBanoPerdido: UNA sola frase para el texto, el panel y la plantilla', () => {
+  const dos = ['4+12+4 satén (baño)', 'Termopanel 5+12+5 esmerilado'];
+  assert.equal(fraseBanoPerdido(['4+12+4 satén (baño)']), 'dice "4+12+4 satén (baño)" pero se cotizó con vidrio claro');
+  assert.equal(fraseBanoPerdido(dos), 'dice "4+12+4 satén (baño)" y "Termopanel 5+12+5 esmerilado" pero se cotizó con vidrio claro');
+  // El texto que lee el dueño NO cambió con la extracción (el cooldown de highValueNotifier se calcula sobre él).
+  assert.equal(textoBanoPerdido('CM-FR-004-2026-0601', dos),
+    'La propuesta CM-FR-004-2026-0601 dice "4+12+4 satén (baño)" y "Termopanel 5+12+5 esmerilado" pero se cotizó con vidrio claro; revisar precio.');
 });
 
-test('🔔 [r4 · decision 1] satén perdido ⇒ UN aviso al DUEÑO por folio, con el folio y todas las etiquetas', () => {
-  const avisos = [];
-  aplicarVidrio({ glass_label: '4+12+4 satén (baño)' }, '4+12+4', { avisos });
-  aplicarVidrio({ glass_label: '4+12+4 satén (baño)' }, '4+12+4', { avisos });   // misma etiqueta: una vez
-  aplicarVidrio({ glass_label: 'Termopanel 5+12+5 esmerilado' }, '5+12+5', { avisos });
-  aplicarVidrio({ glass_label: 'Laminado 6+6' }, '4+12+4', { avisos });          // otro producto: NO es para el dueño
-
-  const alDueno = [];
-  avisarVidrio(avisos, 'CM-FR-004-2026-0601', () => {}, (texto) => alDueno.push(texto));
-  assert.equal(alDueno.length, 1, `un solo aviso por folio: ${JSON.stringify(alDueno)}`);
-  assert.match(alDueno[0], /CM-FR-004-2026-0601/);
-  assert.match(alDueno[0], /"4\+12\+4 satén \(baño\)"/);
-  assert.match(alDueno[0], /"Termopanel 5\+12\+5 esmerilado"/);
-  assert.match(alDueno[0], /vidrio claro; revisar precio/);
-  assert.doesNotMatch(alDueno[0], /Laminado/);
-  assert.equal(alDueno[0], textoBanoPerdido('CM-FR-004-2026-0601', ['4+12+4 satén (baño)', 'Termopanel 5+12+5 esmerilado']));
+test('[r8] motivoDeEnvio: el porqué de un envío que no salió, de cualquiera de los dos canales (nunca vacío)', () => {
+  // Texto: lo que devuelve notifyHighValue.
+  assert.equal(motivoDeEnvio({ sent: false, reason: 'envio_fallido', code: 131047, error: '{"e":1}' }), 'envio_fallido code=131047 {"e":1}');
+  assert.equal(motivoDeEnvio({ sent: false, reason: 'no_owner_phone' }), 'no_owner_phone');
+  assert.equal(motivoDeEnvio({ sent: false, reason: 'excepcion', error: 'boom' }), 'excepcion boom');
+  // Plantilla: la FORMA REAL de /admin/send-template es {ok, template, phone, result}, y el error de Meta vive en `result.error`.
+  assert.equal(motivoDeEnvio({ ok: false, template: 'informe_diario', phone: '569', result: { ok: false, error: 'meta_credentials_missing' } }),
+    'meta_credentials_missing');
+  assert.equal(motivoDeEnvio({ ok: false, error: 'ADMIN_PIN_missing' }), 'ADMIN_PIN_missing', 'el fallo propio de escalation.js: `error` arriba');
+  // Un `error` vacío ('' / null) no deja el motivo vacío: cae a lo siguiente (`||`, no `??`).
+  assert.equal(motivoDeEnvio({ ok: false, error: '', result: { error: 'x' } }), 'x');
+  assert.equal(motivoDeEnvio({ ok: false, error: '', reason: 'raro' }), 'raro');
+  // Sin nada que decir.
+  assert.equal(motivoDeEnvio(null), 'excepcion', 'el envío lanzó y safe() lo tragó');
+  assert.equal(motivoDeEnvio(undefined), 'excepcion');
+  assert.equal(motivoDeEnvio({}), 'sin_confirmacion');
+  assert.equal(motivoDeEnvio({ ok: false, error: '' }), 'sin_confirmacion');
+  assert.equal(motivoDeEnvio({ error: 'x'.repeat(500) }).length, 200, 'acotado: va a un log y a un evento del panel');
 });
 
-test('🔔 [r4] sin satén perdido NO se molesta al dueño; sin canal de aviso solo se loguea', () => {
-  const avisos = [];
-  aplicarVidrio({ glass_label: 'Laminado 6+6' }, '4+12+4', { avisos });
-  aplicarVidrio({ glass_label: 'Termopanel DVH' }, '4+12+4', { avisos });
-  const alDueno = [];
-  avisarVidrio(avisos, 'CM-FR-004-2026-0601', () => {}, (t) => alDueno.push(t));
-  assert.deepEqual(alDueno, [], 'producto_distinto va al tablero, no al celular del dueño');
-  avisarVidrio([], 'CM-FR-004-2026-0601', () => {}, (t) => alDueno.push(t));
-  assert.deepEqual(alDueno, []);
-
-  const bano = [];
-  aplicarVidrio({ glass_label: '4+12+4 satén (baño)' }, '4+12+4', { avisos: bano });
-  const lineas = [];
-  assert.doesNotThrow(() => avisarVidrio(bano, 'CM-FR-004-2026-0601', (a, t) => lineas.push(`${a} ${t}`)));
-  assert.equal(lineas.length, 1, 'sin canal de aviso al dueño, el log del tablero igual sale');
-});
-
-test('🔔 [r4] UNA vez por folio DE VERDAD: con el notificador REAL, el mismo folio dos veces ⇒ un solo WhatsApp', async () => {
-  // La unicidad por folio la da el cooldown de highValueNotifier (clave = telefono + motivo), y
-  // el motivo lleva el folio y las etiquetas: el mismo folio con las mismas etiquetas es la
-  // misma clave. Se prueba con el modulo real, no con un doble que diga lo que uno quiere oir.
-  process.env.OWNER_NOTIFICATION_PHONE = '56900000001';   // el modulo lo lee al importarse
-  const { notifyHighValue } = await import('./highValueNotifier.js');
-  const enviados = [];
-  const waSend = async (a, t) => { enviados.push({ a, t }); };
-  const sesion = { data: { items: [] }, history: [] };
-  const avisos = [];
-  aplicarVidrio({ glass_label: '4+12+4 satén (baño)' }, '4+12+4', { avisos });
-
-  for (const folio of ['CM-FR-004-2026-0601', 'CM-FR-004-2026-0601', 'CM-FR-004-2026-0602']) {
-    let pendiente = null;
-    avisarVidrio(avisos, folio, () => {}, (texto) => { pendiente = notifyHighValue(waSend, '56911112222', sesion, `[whatsapp] ${texto}`); });
-    await pendiente;
-  }
-  assert.equal(enviados.length, 2, `0601 una vez y 0602 una vez: ${JSON.stringify(enviados.map((e) => e.t.match(/CM-FR-\S+/)?.[0]))}`);
-  assert.ok(enviados.every((e) => e.a === '56900000001'), 'va al dueño');
-  assert.match(enviados[0].t, /CM-FR-004-2026-0601.*vidrio claro; revisar precio/s);
-});
-
-/* ── r5 · Thermos MEDIO-BAJO: el aviso al dueño que NO salió no puede ser silencioso ───────────────── */
-
-// CAUSA RAÍZ: `sendWhatsAppText` no lanza cuando Meta rechaza (devuelve `{ok:false}`) y
-// `notifyHighValue` lo tomaba por enviado (ver highValueNotifier.test.js, HVN-07). Esa mitad la
-// arregla el notificador; ESTA es la otra: los dos llamadores del aviso del satén tiraban el
-// resultado a la basura (`safe(...)` sin mirar lo que devuelve) ⇒ aunque el notificador diga
-// `sent:false`, nadie lo escribía en ningún lado. `avisarVidrio` es la UNICA definición de eso.
-const SATEN = () => {
-  const avisos = [];
-  aplicarVidrio({ glass_label: '4+12+4 satén (baño)' }, '4+12+4', { avisos });
-  return avisos;
-};
-const FOLIO = 'CM-FR-004-2026-0601';
-
-for (const [caso, resultado, esperaEnLinea] of [
-  ['Meta rechazó (131047, fuera de la ventana de 24 h)',
-    { sent: false, reason: 'envio_fallido', code: 131047, error: '{"error":{"code":131047}}' }, /envio_fallido.*131047/],
-  ['no hay teléfono del dueño configurado', { sent: false, reason: 'no_owner_phone' }, /no_owner_phone/],
-  ['el notificador lanzó (safe() devuelve null)', null, /excepcion/],
-  ['el notificador no confirmó nada', {}, /sin_confirmacion/],
-  ['standard_lead (no puede pasar por acá, pero si pasara el dueño NO se enteró)', { sent: false, reason: 'standard_lead' }, /standard_lead/],
-]) {
-  test(`🔔 [r5] aviso al dueño que NO salió — ${caso} ⇒ warn \`vidrio.aviso_no_salio\` con el folio`, async () => {
-    const lineas = [];
-    await avisarVidrio(SATEN(), FOLIO, (aviso, texto) => lineas.push(`${aviso} ${texto}`), async () => resultado);
-    const noSalio = lineas.filter((l) => l.startsWith('vidrio.aviso_no_salio'));
-    assert.equal(noSalio.length, 1, `una línea, con el folio y el motivo: ${JSON.stringify(lineas)}`);
-    assert.match(noSalio[0], new RegExp(FOLIO));
-    assert.match(noSalio[0], esperaEnLinea);
-    assert.ok(lineas.some((l) => l.startsWith('vidrio.bano_perdido')), 'el aviso normal del tablero sigue saliendo');
-  });
-}
-
-test('🔔 [r5] el notificador que RECHAZA (promesa rechazada) tampoco revienta nada: se loguea y la propuesta sigue', async () => {
-  const lineas = [];
-  await assert.doesNotReject(async () => {
-    await avisarVidrio(SATEN(), FOLIO, (a, t) => lineas.push(`${a} ${t}`), () => Promise.reject(new Error('socket hang up')));
-  });
-  assert.ok(lineas.some((l) => /^vidrio\.aviso_no_salio.*socket hang up/.test(l)), JSON.stringify(lineas));
-});
-
-test('🔔 [r5] sent:true ⇒ nada extra; cooldown ⇒ NO es falla (el dueño YA fue avisado de este folio) y tampoco se loguea como tal', async () => {
-  for (const resultado of [{ sent: true, tier: 'MEDIUM' }, { sent: false, reason: 'cooldown' }]) {
-    const lineas = [];
-    await avisarVidrio(SATEN(), FOLIO, (a, t) => lineas.push(`${a} ${t}`), async () => resultado);
-    assert.deepEqual(lineas.filter((l) => l.startsWith('vidrio.aviso_no_salio')), [], JSON.stringify(resultado));
-    assert.equal(lineas.length, 1, 'solo el vidrio.bano_perdido de siempre');
-  }
-});
-
-test('🔔 [r5] compatibilidad: un `avisarDueno` que no devuelve promesa (los de antes) sigue andando y no inventa fallas', async () => {
-  const lineas = [];
-  const llamadas = [];
-  await avisarVidrio(SATEN(), FOLIO, (a, t) => lineas.push(`${a} ${t}`), (texto) => { llamadas.push(texto); });
-  assert.equal(llamadas.length, 1);
-  assert.deepEqual(lineas.filter((l) => l.startsWith('vidrio.aviso_no_salio')), []);
-  // Y sin satén perdido no hay aviso al dueño, así que tampoco hay nada que declarar.
-  const sinSaten = [];
-  aplicarVidrio({ glass_label: 'Laminado 6+6' }, '4+12+4', { avisos: sinSaten });
-  const l2 = [];
-  await avisarVidrio(sinSaten, FOLIO, (a, t) => l2.push(a), async () => ({ sent: false, reason: 'envio_fallido' }));
-  assert.deepEqual(l2, ['vidrio.producto_distinto']);
-});
-
-test('🔔 [r5] DE PUNTA A PUNTA con el notificador REAL: Meta rechaza (131047) ⇒ queda vidrio.aviso_no_salio y el reintento SÍ le avisa al dueño', async () => {
-  process.env.OWNER_NOTIFICATION_PHONE = '56900000001';   // el modulo lo lee al importarse
-  const { notifyHighValue } = await import('./highValueNotifier.js');
-  const sesion = { data: { items: [] }, history: [] };
-  const folio = 'CM-FR-004-2026-0777';
-  const rechaza = async () => ({ ok: false, error: '{"error":{"code":131047}}', status: 400, code: 131047 });
-  const enviados = [];
-  const sana = async (a, t) => { enviados.push({ a, t }); return { ok: true, msgId: 'wamid.1' }; };
-
-  const lineas1 = [];
-  await avisarVidrio(SATEN(), folio, (a, t) => lineas1.push(`${a} ${t}`),
-    (texto) => notifyHighValue(rechaza, '56911113333', sesion, `[whatsapp] ${texto}`));
-  assert.ok(lineas1.some((l) => new RegExp(`^vidrio\\.aviso_no_salio.*${folio}.*131047`).test(l)), JSON.stringify(lineas1));
-
-  // Antes del fix el cooldown quedaba fijado por el envío fallido y ESTE aviso salía mudo 2 h.
-  const lineas2 = [];
-  await avisarVidrio(SATEN(), folio, (a, t) => lineas2.push(`${a} ${t}`),
-    (texto) => notifyHighValue(sana, '56911113333', sesion, `[whatsapp] ${texto}`));
-  assert.equal(enviados.length, 1, 'el reintento le avisa al dueño');
-  assert.deepEqual(lineas2.filter((l) => l.startsWith('vidrio.aviso_no_salio')), []);
+test('[r8] la ventana de repetición ES el cooldown del texto: UNA constante, importada (no otra copia de «2 h»)', () => {
+  // Si fuera MENOR, vencería la marca y volvería a salir la plantilla mientras el texto sigue en cooldown.
+  assert.equal(AVISO_VIDRIO_REPETIR_MS, COOLDOWN_MS);
 });
 
 /* ── r5 · Thermos BAJO: «satén» es UNA definición, la del dibujo ───────────────────────────────────── */
@@ -368,144 +249,4 @@ test('🔴 [r6] control — lo que SÍ es satén sigue siéndolo, también pegad
   }
 });
 
-/* ── r7 · el aviso del satén llega AUNQUE el dueño no le haya escrito al bot en 24 h ────────────────── */
 
-// CAUSA RAÍZ: el aviso al dueño tenía UN solo canal, el texto libre (`notifyHighValue` → waSend). Fuera de la
-// ventana de 24 h Meta lo rechaza (131047) y, tras r5, eso quedaba SOLO como una línea de log
-// (`vidrio.aviso_no_salio`) que nadie lee: el dueño no se enteraba de que una propuesta dice satén y se cobró
-// vidrio claro. Las escalaciones ya tienen el segundo canal (plantilla aprobada, que PASA la ventana) y el
-// evento en el panel (#888); el aviso del satén no tenía ninguno de los dos.
-//
-// Contrato de `avisarVidrio(..., respaldo)`; `respaldo` es OPCIONAL (sin él, todo es como en r5):
-//   · plantilla(etiquetas) → {ok}   manda el MISMO aviso por la plantilla aprobada
-//   · alPanel({body, metadata})     deja el evento visible en el panel de la conversación
-// Las pruebas usan un folio DISTINTO cada una: la regla «una vez por folio» es estado del módulo.
-const RECHAZO_VENTANA = () => ({ sent: false, reason: 'envio_fallido', code: 131047, error: '{"error":{"code":131047}}' });
-const conRespaldo = (plantilla) => {
-  const visto = { plantilla: [], panel: [] };
-  return {
-    visto,
-    respaldo: {
-      plantilla: async (etiquetas) => { visto.plantilla.push(etiquetas); return plantilla(); },
-      alPanel: async (evento) => { visto.panel.push(evento); },
-    },
-  };
-};
-
-test('🔔 [r7] el texto libre lo rechaza la ventana de 24 h (131047) ⇒ el MISMO aviso sale por la PLANTILLA, con folio y etiqueta', async () => {
-  const folio = 'CM-FR-004-2026-0701';
-  const { visto, respaldo } = conRespaldo(async () => ({ ok: true }));
-  const lineas = [];
-  await avisarVidrio(SATEN(), folio, (a, t) => lineas.push(`${a} ${t}`), async () => RECHAZO_VENTANA(), respaldo);
-  assert.deepEqual(visto.plantilla, [['4+12+4 satén (baño)']], 'una plantilla, con la etiqueta (el folio lo pone quien la manda)');
-  assert.ok(lineas.some((l) => new RegExp(`^vidrio\\.aviso_por_plantilla.*${folio}`).test(l)),
-    `queda dicho que salió por plantilla: ${JSON.stringify(lineas)}`);
-  assert.deepEqual(lineas.filter((l) => l.startsWith('vidrio.aviso_no_salio')), [], 'el dueño SÍ se enteró: no es una falla');
-  assert.deepEqual(visto.panel, [], 'y entonces no hay nada que gritar en el panel');
-});
-
-for (const [i, [caso, plantilla, esperaMotivo]] of [
-  ['la plantilla responde ok:false', async () => ({ ok: false, error: 'ADMIN_PIN_missing' }), /ADMIN_PIN_missing/],
-  ['la plantilla no confirma nada ({})', async () => ({}), /sin_confirmacion/],
-  ['la plantilla lanzó (safe() devuelve null)', async () => null, /excepcion/],
-  ['la plantilla rechaza la promesa', async () => { throw new Error('socket hang up'); }, /socket hang up/],
-].entries()) {
-  test(`🔔 [r7] el texto lo rechaza la ventana Y ${caso} ⇒ queda el log con AMBOS motivos y UN evento en el panel`, async () => {
-    const folio = `CM-FR-004-2026-072${i}`;
-    const { visto, respaldo } = conRespaldo(plantilla);
-    const lineas = [];
-    await avisarVidrio(SATEN(), folio, (a, t) => lineas.push(`${a} ${t}`), async () => RECHAZO_VENTANA(), respaldo);
-
-    const noSalio = lineas.filter((l) => l.startsWith('vidrio.aviso_no_salio'));
-    assert.equal(noSalio.length, 1, JSON.stringify(lineas));
-    assert.match(noSalio[0], new RegExp(folio));
-    assert.match(noSalio[0], /131047/, 'el motivo del texto libre');
-    assert.match(noSalio[0], esperaMotivo, 'y el de la plantilla');
-    assert.ok(!lineas.some((l) => l.startsWith('vidrio.aviso_por_plantilla')), 'no se dice que salió lo que no salió');
-
-    // El MISMO mecanismo de la escalación #888: un evento en la conversación (es lo que se mira desde el
-    // panel; un console.log en Railway se pierde entre miles de líneas), con la marca `aviso_fallido`.
-    assert.equal(visto.panel.length, 1, `un evento en el panel: ${JSON.stringify(visto.panel)}`);
-    const { body, metadata } = visto.panel[0];
-    assert.match(body, new RegExp(folio));
-    assert.match(body, /satén/);
-    assert.match(body, /NO salió/, 'dice qué pasó, no un código');
-    assert.match(body, /a mano/, 'y qué hacer');
-    assert.equal(metadata.aviso_fallido, true);
-    assert.equal(metadata.folio, folio);
-    assert.match(String(metadata.motivo_notify), /131047/);
-    assert.match(String(metadata.motivo_plantilla), esperaMotivo);
-  });
-}
-
-test('🔔 [r7] SOLO la ventana de 24 h cae a la plantilla: timeout (pudo llegar), otra falla, cooldown y enviado NO reenvían', async () => {
-  // `envio_dudoso` es un timeout: Meta pudo haber entregado el texto. Mandar además la plantilla puede
-  // duplicar el aviso al dueño (la misma razón por la que highValueNotifier fija cooldown ahí, r6).
-  const casos = [
-    ['timeout (envio_dudoso)', { sent: false, reason: 'envio_dudoso', error: 'timeout of 15000ms exceeded', timedOut: true }],
-    ['envio_dudoso aunque traiga el código de la ventana', { sent: false, reason: 'envio_dudoso', code: 131047, timedOut: true }],
-    ['rechazo de Meta que NO es la ventana (190: token)', { sent: false, reason: 'envio_fallido', code: 190, error: 'token' }],
-    ['rechazo sin código', { sent: false, reason: 'envio_fallido', error: 'salida_bloqueada' }],
-    ['código de la ventana como TEXTO (no es un número de Meta)', { sent: false, reason: 'envio_fallido', code: '131047' }],
-    ['cooldown (ya se le avisó)', { sent: false, reason: 'cooldown' }],
-    ['enviado', { sent: true, tier: 'MEDIUM' }],
-    ['standard_lead', { sent: false, reason: 'standard_lead' }],
-  ];
-  for (const [i, [caso, resultado]] of casos.entries()) {
-    const { visto, respaldo } = conRespaldo(async () => ({ ok: true }));
-    await avisarVidrio(SATEN(), `CM-FR-004-2026-074${i}`, () => {}, async () => resultado, respaldo);
-    assert.deepEqual(visto.plantilla, [], `${caso}: no se manda plantilla`);
-  }
-  // Y sin satén perdido no hay aviso alguno, ni siquiera ante un rechazo de ventana.
-  const sinSaten = [];
-  aplicarVidrio({ glass_label: 'Laminado 6+6' }, '4+12+4', { avisos: sinSaten });
-  const { visto, respaldo } = conRespaldo(async () => ({ ok: true }));
-  await avisarVidrio(sinSaten, 'CM-FR-004-2026-0750', () => {}, async () => RECHAZO_VENTANA(), respaldo);
-  assert.deepEqual(visto.plantilla, []);
-  assert.deepEqual(visto.panel, []);
-});
-
-test('🔔 [r7] UNA plantilla por folio y etiquetas (el folio se reusa en una corrección); si FALLÓ, el reintento sí vuelve a intentar', async () => {
-  const folio = 'CM-FR-004-2026-0760';
-  const ok = conRespaldo(async () => ({ ok: true }));
-  const intento = (conResp, avisos = SATEN()) =>
-    avisarVidrio(avisos, folio, () => {}, async () => RECHAZO_VENTANA(), conResp.respaldo);
-  await intento(ok);
-  await intento(ok);
-  assert.equal(ok.visto.plantilla.length, 1, 'el mismo aviso dos veces ⇒ el dueño recibe UNA plantilla, no dos');
-
-  // Otra etiqueta en el mismo folio es OTRO aviso (igual que el cooldown del texto: su clave lleva las etiquetas).
-  const otras = [];
-  aplicarVidrio({ glass_label: 'Termopanel 5+12+5 esmerilado' }, '5+12+5', { avisos: otras });
-  await intento(ok, otras);
-  assert.equal(ok.visto.plantilla.length, 2);
-
-  // Una plantilla que FALLÓ no marca nada: el reintento tiene que poder salir. Y el evento del panel es uno solo.
-  const folioB = 'CM-FR-004-2026-0761';
-  let sana = false;
-  const seRecupera = conRespaldo(async () => (sana ? { ok: true } : { ok: false, error: 'timeout' }));
-  const intentoB = () => avisarVidrio(SATEN(), folioB, () => {}, async () => RECHAZO_VENTANA(), seRecupera.respaldo);
-  await intentoB();
-  await intentoB();
-  assert.equal(seRecupera.visto.plantilla.length, 2, 'una plantilla que falló no silencia al reintento');
-  assert.equal(seRecupera.visto.panel.length, 1, 'el mismo folio y el mismo problema ⇒ UN evento en el panel, no uno por intento');
-  sana = true;
-  await intentoB();
-  assert.equal(seRecupera.visto.plantilla.length, 3, 'y cuando se recupera, sale');
-  assert.equal(seRecupera.visto.panel.length, 1);
-});
-
-test('🔔 [r7] compatibilidad: sin `respaldo` todo es como en r5 (solo el log); un `alPanel` que lanza no rompe nada', async () => {
-  const lineas = [];
-  await avisarVidrio(SATEN(), 'CM-FR-004-2026-0770', (a, t) => lineas.push(`${a} ${t}`), async () => RECHAZO_VENTANA());
-  assert.equal(lineas.filter((l) => l.startsWith('vidrio.aviso_no_salio')).length, 1);
-
-  const rompe = { plantilla: async () => ({ ok: false, error: 'x' }), alPanel: async () => { throw new Error('panel caido'); } };
-  await assert.doesNotReject(async () => {
-    await avisarVidrio(SATEN(), 'CM-FR-004-2026-0771', () => {}, async () => RECHAZO_VENTANA(), rompe);
-  });
-  // `plantilla` que no es función ⇒ se ignora (no se inventa un canal).
-  const l2 = [];
-  await avisarVidrio(SATEN(), 'CM-FR-004-2026-0772', (a, t) => l2.push(a), async () => RECHAZO_VENTANA(), { alPanel: async () => {} });
-  assert.ok(l2.includes('vidrio.aviso_no_salio'));
-});

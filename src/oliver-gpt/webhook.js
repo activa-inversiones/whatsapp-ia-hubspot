@@ -225,7 +225,8 @@ export async function atribuirLandingRef({ from, leadId, refStatus = null, name 
   return { ctx, ingesta };
 }
 import { isVisionUnreadable } from '../../services/oliverVision.js'; // [F3b] detector imagen ilegible
-import { isEscalationRequest, escalationMessage, sendEscalationTemplate, sendAvisoVidrioTemplate } from './escalation.js'; // [2026-06-18] escalación determinista compartida · [2026-10-05 r7] + el respaldo por plantilla del aviso del satén
+import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from './escalation.js'; // [2026-06-18] escalación determinista compartida
+import { crearCanalesAvisoVidrio, almacenDeAvisos } from './canalesAvisoVidrio.js'; // [2026-10-05 r8] los tres canales del aviso por satén perdido (UNA fábrica para WhatsApp e IG/FB)
 import { agregarCotizacionDelTurno, tieneMontoUtil } from './cotizacionDelTurno.js'; // [2026-09-15 tridente] contrato total_neto + agrega TODO el turno
 import { clasificar as clasificarEnvio, RESULTADO as RESULTADO_META, rechazoDelDestinatario } from '../sales-agent/errorMeta.js';
 import { mensajeEntregaDudosa, tocaAvisar, claveAviso } from '../../services/avisoEntregaDudosa.js';
@@ -902,8 +903,6 @@ export async function handleWebhook(req, res, deps = {}) {
     const handleTurn      = deps.handleTurn      || realHandleTurn;
     const bridge          = deps.bridge          || realBridge;
     const notifyHighValue = deps.notifyHighValue  || realNotifyHighValue;
-    // [2026-10-05 · r7] Respaldo por PLANTILLA del aviso del satén perdido (pasa la ventana de 24 h; ver `avisarVidrio`).
-    const avisoVidrioTemplateFn = deps.sendAvisoVidrioTemplate || sendAvisoVidrioTemplate;
     // 🔴 [2026-09-16 · Kimi, compuerta] AVISO DE ENTREGA DUDOSA.
     // Cuando el clasificador dice DESCONOCIDO no se reintenta (reintentar lo que quizá
     // llegó es mandarle al cliente el mismo documento dos veces). Pero NO reintentar sin
@@ -3602,25 +3601,19 @@ Comuna: ${datos.comuna}`
           // su cooldown por teléfono+motivo, y el motivo lleva el folio, lo deja en uno por folio).
           // Fire-and-forget como los demás avisos con el mutex tomado. No cambia el precio:
           // eso es carril plata y va a propuesta.
-          // [r5] El callback DEVUELVE la promesa: `avisarVidrio` mira lo que resuelve y, si el aviso no
-          // salió (Meta lo rechazó, sin teléfono del dueño...), lo deja en el log como `vidrio.aviso_no_salio`
-          // con el folio. `safe()` ya devuelve null si el notificador lanza. Nadie espera esta promesa acá.
-          // [r7] Y si el texto libre lo rechaza la ventana de 24 h (131047: el dueño no le escribió al bot), el MISMO
-          // aviso sale por la PLANTILLA aprobada de las escalaciones; si esa también falla, queda un evento visible
-          // en la conversación del cliente (como la escalación #888, `escalate.marcarAvisoFallido`). Ver `avisarVidrio`.
-          avisarVidrio(_avisosVidrio, quoteNumber, (aviso, texto) => log('warn', aviso, `${from}: ${texto}`),
-            (texto) => safe('generarPdf.vidrio.aviso', () =>
-              notifyHighValue(enviarSinPausa, turno.cliente, { data: { ...state }, history }, `[whatsapp] ${texto}`)),
-            {
-              plantilla: (etiquetas) => safe('generarPdf.vidrio.plantilla', () => avisoVidrioTemplateFn(quoteNumber, etiquetas)),
-              alPanel: ({ body, metadata }) => safe('generarPdf.vidrio.panel', () => bridge.pushConversationEvent({
-                // El evento es un REGISTRO de la propuesta ⇒ del CLIENTE del turno, no del chat de quien escribe
-                // (webhook.turno-registros.test.js; un vendedor cotiza a nombre de su cliente).
-                channel: 'whatsapp', external_id: turno.cliente, direction: 'outbound', actor_type: 'system',
-                actor_name: 'Sistema', message_type: 'text', body,
-                metadata: { source: 'oliver_gpt_webhook', ...metadata },
-              })),
-            });
+          // [r8] Texto Y plantilla, siempre, una vez por folio; si ninguno sale, un evento en la conversación del
+          // cliente (como la escalación #888). Nadie espera esta promesa acá (nunca rechaza). Ver `avisarVidrio`.
+          // El cliente del turno (`turno.cliente`), NO `from`: es un REGISTRO de la propuesta y su cooldown es del
+          // cliente (webhook.turno-registros.test.js; un vendedor cotiza a nombre de su cliente).
+          avisarVidrio({
+            avisos: _avisosVidrio, folio: quoteNumber, logWarn: (aviso, texto) => log('warn', aviso, `${from}: ${texto}`),
+            canales: crearCanalesAvisoVidrio({
+              safe, bridge, channel: 'whatsapp', externalId: turno.cliente, source: 'oliver_gpt_webhook',
+              notifyFn: notifyHighValue, waSend: enviarSinPausa, cliente: turno.cliente, sesion: { data: { ...state }, history },
+              plantillaFn: deps.sendAvisoVidrioTemplate,
+            }),
+            estado: almacenDeAvisos(deps),
+          });
 
           // ── 🎨 [2026-08-31] LOS FOLIOS DE LAS TRES OPCIONES, DE UNA SOLA VEZ ──
           // Un solo correlativo ISO y las variantes por LETRA: 0392 · 0392-B · 0392-C. Es el

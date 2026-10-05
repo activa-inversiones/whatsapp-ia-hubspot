@@ -15,6 +15,8 @@
 //
 // ESM, Node 18+.
 
+import { fraseBanoPerdido } from '../../services/vidrioCotizado.js'; // [r8] la frase del aviso por satén: UNA sola para texto, panel y plantilla
+
 // [2026-07-07] Link CORTO propio (caso real: cliente "no podía pinchar" el link). La URL de Bookings
 // lleva un '@' en el path → WhatsApp la parte como si fuera un email y el tap no abre. Ahora se entrega
 // ops.activalabs.ai/agenda (redirige en sales-os al Bookings real; destino configurable allá con
@@ -42,10 +44,23 @@ export function isEscalationRequest(text) {
   return false;
 }
 
-// [2026-10-05 · r7] NÚCLEO COMPARTIDO de las plantillas al dueño: 'informe_diario' (YA APROBADA, 4 params:
+// Un parámetro de plantilla de Meta no admite saltos de línea, tabuladores ni rachas de espacios (error 132018).
+const limpiarParametro = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
+// Recorta por PUNTO DE CÓDIGO (no por unidad UTF-16: `slice` parte un emoji y deja un par sustituto suelto) y lo dice con «…».
+const recortarPuntos = (s, max) => {
+  const puntos = [...s];
+  return puntos.length > max ? `${puntos.slice(0, max - 1).join('')}…` : s;
+};
+
+// [2026-10-05 · r7/r8] NÚCLEO COMPARTIDO de las plantillas al dueño: 'informe_diario' (YA APROBADA, 4 params:
 // fecha, resumen, linea3, linea4) por self-call a /admin/send-template. Lo usan la escalación y el aviso del
-// satén perdido: una sola copia, para que no se desincronicen (el PIN, el teléfono del dueño, el timeout).
-// Devuelve lo que contesta el endpoint (`{ok, ...}`); sin PIN o si el fetch lanza, `{ok:false, error}`.
+// satén perdido: una sola copia, para que no se desincronicen (el PIN, el teléfono del dueño, el timeout, y
+// ahora la limpieza de parámetros: antes solo la hacía el aviso del satén y el NOMBRE del cliente de la escalación
+// llega tal cual de WhatsApp).
+// Devuelve lo que contesta el endpoint: `{ok, template, phone, result}` (index.js:5280; el error de Meta vive en
+// `result.error`); sin PIN o si el fetch lanza, `{ok:false, error}`. Si lo que lanzó fue el ABORT por timeout (10 s,
+// que vence antes que el axios de 20 s del endpoint) se marca `timedOut:true`: la request YA salió y el endpoint
+// puede seguir y entregar la plantilla; el llamador debe tratarlo como DUDOSO, no como «no salió».
 async function enviarInformeDiario({ resumen, linea3, linea4 }, deps = {}) {
   const fetchFn = deps.fetchFn || fetch;
   const PIN = process.env.ADMIN_PIN || process.env.OLIVER_ADMIN_PIN || '';
@@ -54,7 +69,10 @@ async function enviarInformeDiario({ resumen, linea3, linea4 }, deps = {}) {
   const base = (process.env.SELF_URL || `http://127.0.0.1:${process.env.PORT || 8080}`).replace(/\/$/, '');
   let fecha = '';
   try { fecha = new Date().toLocaleDateString('es-CL', { timeZone: 'America/Santiago' }); } catch { fecha = new Date().toISOString().slice(0, 10); }
-  const body = { template: 'informe_diario', phone: owner, fecha, resumen, linea3, linea4 };
+  const body = {
+    template: 'informe_diario', phone: owner, fecha,
+    resumen: limpiarParametro(resumen), linea3: limpiarParametro(linea3), linea4: limpiarParametro(linea4),
+  };
   try {
     const r = await fetchFn(`${base}/admin/send-template?pin=${encodeURIComponent(PIN)}`, {
       method: 'POST',
@@ -64,7 +82,8 @@ async function enviarInformeDiario({ resumen, linea3, linea4 }, deps = {}) {
     });
     return await r.json().catch(() => ({ ok: r.ok }));
   } catch (e) {
-    return { ok: false, error: e.message };
+    const abortado = e?.name === 'TimeoutError' || e?.name === 'AbortError';
+    return { ok: false, error: e.message, ...(abortado ? { timedOut: true } : {}) };
   }
 }
 
@@ -78,20 +97,23 @@ export async function sendEscalationTemplate(name, motivo, deps = {}) {
   }, deps);
 }
 
-// Un parámetro de plantilla de Meta no admite saltos de línea, tabuladores ni rachas de espacios (error 132018).
-const paramLimpio = (s, max) => String(s ?? '').replace(/[[\]]/g, '').replace(/\s+/g, ' ').trim().slice(0, max);
-
-// [2026-10-05 · r7] El aviso al dueño de «la propuesta dice satén y se cotizó con vidrio claro», por la MISMA
+// [2026-10-05 · r7/r8] El aviso al dueño de «la propuesta dice satén y se cotizó con vidrio claro», por la MISMA
 // plantilla aprobada de la escalación (`informe_diario`; crear una nueva requiere aprobación de Meta y mientras
-// tanto el aviso no sale). Es el respaldo del texto libre, que Meta rechaza (131047) si el dueño no le escribió
-// al bot en las últimas 24 h. El FOLIO va en `resumen` (corto: no se trunca) y las ETIQUETAS en `linea3`.
+// tanto el aviso no sale). Sale SIEMPRE junto al texto libre (que fuera de la ventana de 24 h Meta acepta con 200 y
+// falla después: ver `avisarVidrio`). El FOLIO va en `resumen` (corto) y las ETIQUETAS en `linea3`.
 // NO es una escalación: no dice que un cliente espera al dueño AHORA.
+// [r8 · BAJO-4] Se recortan las ETIQUETAS (por punto de código, máx. 60 cada una y las 5 primeras, con «(+N más)») y
+// el sufijo queda COMPLETO: antes un `slice(0, 300)` sobre el texto entero se comía «revisar precio» y podía partir
+// un emoji por la mitad. La frase es la de `fraseBanoPerdido`, la misma del texto al dueño y del panel.
+const MAX_ETIQUETAS_EN_PLANTILLA = 5;
+const MAX_PUNTOS_POR_ETIQUETA = 60;
 export async function sendAvisoVidrioTemplate(folio, etiquetas, deps = {}) {
-  const dice = (Array.isArray(etiquetas) ? etiquetas : [etiquetas])
-    .map((e) => paramLimpio(e, 80)).filter(Boolean).map((e) => `"${e}"`).join(' y ');
+  const todas = (Array.isArray(etiquetas) ? etiquetas : [etiquetas]).map(limpiarParametro).filter(Boolean);
+  const vistas = todas.slice(0, MAX_ETIQUETAS_EN_PLANTILLA).map((e) => recortarPuntos(e, MAX_PUNTOS_POR_ETIQUETA));
+  const faltan = todas.length - vistas.length;
   return enviarInformeDiario({
-    resumen: paramLimpio(`AVISO DE PRECIO: propuesta ${folio}`, 90),
-    linea3: paramLimpio(`dice ${dice} pero se cotizó con vidrio claro; revisar precio`, 300),
+    resumen: `AVISO DE PRECIO: propuesta ${recortarPuntos(limpiarParametro(folio), 60)}`,
+    linea3: `${fraseBanoPerdido(vistas)}${faltan > 0 ? ` (+${faltan} más)` : ''}; revisar precio`,
     linea4: 'Revisa la propuesta en ops.activalabs.ai (Oliver CRM)',
   }, deps);
 }

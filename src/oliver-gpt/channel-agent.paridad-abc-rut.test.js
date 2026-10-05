@@ -26,6 +26,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { handleChannelTurn } from './channel-agent.js';
 import { capturarLogs } from './capturarLogs.testutil.js';
+import { claveAviso } from '../../services/avisoEntregaDudosa.js';
 
 // Precio por color, DISTINTO en cada uno — como en la lista real (medido en el motor sobre el
 // marco doble riel S70: Blanco $30.385 · Nogal $49.974 · New Black $54.356). Sin precios
@@ -33,6 +34,32 @@ import { capturarLogs } from './capturarLogs.testutil.js';
 const PRECIO = { Blanco: 300000, Nogal: 430000, 'New Black': 465000 };
 
 let _seq = 0;
+
+/** deps.{leer,escribir,reservar,liberarReserva}Estado con un Map propio; la marca queda visible en `spy.estado`. */
+function almacenFalsoPorTest(spy) {
+  const kv = new Map();
+  spy.estado = kv;
+  let tok = 0;
+  const vigente = (e) => e && (!e.expira || e.expira > Date.now());
+  const poner = (k, v, ttl = 300) => { kv.set(k, { valor: v, expira: Date.now() + ttl * 1000 }); return v; };
+  return {
+    leerEstado: async (k) => (vigente(kv.get(k)) ? kv.get(k).valor : null),
+    escribirEstado: poner,
+    reservarEstado: (k, ttl = 300) => { if (vigente(kv.get(k))) return null; const t = `t${++tok}`; poner(k, t, ttl); return t; },
+    liberarReserva: (k, t) => { const e = kv.get(k); if (!t || !vigente(e) || e.valor !== t) return false; kv.delete(k); return true; },
+  };
+}
+
+/** Espera POR CONDICIÓN (sin timers a ojo): cede el event loop hasta que `cond()` o se acaba el tope. */
+async function esperar(cond, ms = 4000) {
+  const fin = Date.now() + ms;
+  while (Date.now() < fin) {
+    if (cond()) return true;
+    await new Promise((r) => { setImmediate(r); });
+  }
+  return false;
+}
+const vaciar = () => new Promise((r) => { setImmediate(r); });
 
 /**
  * @param {object} opts
@@ -58,12 +85,16 @@ function armar(opts = {}) {
     // `opts.avisoDueno`: lo que devuelve el notificador (el real NO lanza: devuelve `{sent:false,...}`).
     notifyHighValue: async (_envio, cliente, _sesion, motivo) => { spy.alertas.push({ cliente, motivo: String(motivo) }); return opts.avisoDueno || { sent: true }; },
     sendWhatsAppText: async () => ({ ok: true }),
-    // [r7] La plantilla de respaldo al dueño (escalation.js → /admin/send-template). `opts.plantilla` es lo que
-    // devuelve; por defecto FALLA y no sale a ninguna parte (la suite corre sin red ni ADMIN_PIN).
+    // [r8] La plantilla al dueño (escalation.js → /admin/send-template), con la FORMA REAL de la respuesta del
+    // endpoint (index.js:5280): {ok, template, phone, result}. `opts.plantilla` es lo que devuelve; por defecto
+    // sale bien y no toca ninguna red (la suite corre sin ADMIN_PIN).
     sendAvisoVidrioTemplate: async (folio, etiquetas) => {
       spy.plantillas.push({ folio, etiquetas });
-      return opts.plantilla || { ok: false, error: 'plantilla_no_cableada_en_el_test' };
+      return opts.plantilla || { ok: true, template: 'informe_diario', phone: '56900000009', result: { ok: true, msgId: 'wamid.T1' } };
     },
+    // [r8] El almacén de «ya avisado» (reserva + marca), POR TEST y con la semántica de estadoPersistente.js: el
+    // folio del correlativo falso es siempre el mismo, así que un almacén compartido filtraría la marca entre tests.
+    ...almacenFalsoPorTest(spy),
     generatePdf: async (data, numero) => {
       spy.pdfs.push({
         numero, opcion: data.opcion || null, receptor: data.receptor || null,
@@ -360,53 +391,11 @@ test('🔴 IG [05-oct · B3] satén con el baño perdido: A, B y C conservan el 
   assert.ok(lineas.some((l) => /vidrio\.bano_perdido.*CM-FR-004-2026-0392/.test(l)), 'falta el aviso con el folio');
 });
 
-test('🔔 IG [05-oct · r4] satén perdido: UN aviso al dueño con el folio y la etiqueta, por el canal de escalaciones de IG', async () => {
-  let corrida;
-  await capturarLogs(async () => {
-    corrida = await correr({
-      vidrioMotor: '4+12+4',
-      item: { producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
-        measures: '1500x1000', color: 'Blanco', qty: 1, unit_price: PRECIO.Blanco, glass_label: '4+12+4 satén (baño)' },
-      turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1000 para el baño' }],
-    });
-  });
-  await new Promise((r) => { setTimeout(r, 60); });
-  const alertas = corrida.alertas.filter((a) => /revisar precio/.test(a.motivo));
-  assert.equal(alertas.length, 1, `un aviso por folio (A, B y C son el mismo folio): ${JSON.stringify(corrida.alertas)}`);
-  assert.match(alertas[0].motivo, /^\[instagram\] /, 'el prefijo de canal manda el aviso al inbox correcto');
-  assert.match(alertas[0].motivo, /CM-FR-004-2026-0392/);
-  assert.match(alertas[0].motivo, /"4\+12\+4 satén \(baño\)"/);
-  assert.match(alertas[0].motivo, /vidrio claro; revisar precio/);
-  assert.deepEqual(corrida.pdfs.map((p) => p.unit_price).sort((a, b) => a - b),
-    [PRECIO.Blanco, PRECIO.Nogal, PRECIO['New Black']], 'los precios no cambian');
-});
-
-test('🔔 IG [05-oct · r5 · Thermos MEDIO-BAJO] el aviso al dueño NO salió (Meta rechazó, 131047) ⇒ queda `vidrio.aviso_no_salio` con el folio', async () => {
-  const satenPerdido = {
-    vidrioMotor: '4+12+4',
-    item: { producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
-      measures: '1500x1000', color: 'Blanco', qty: 1, unit_price: PRECIO.Blanco, glass_label: '4+12+4 satén (baño)' },
-    turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1000 para el baño' }],
-  };
-  let corrida;
-  const lineas = await capturarLogs(async () => {
-    corrida = await correr({ ...satenPerdido, avisoDueno: { sent: false, reason: 'envio_fallido', code: 131047, error: '{"error":{"code":131047}}' } });
-    await new Promise((r) => { setTimeout(r, 60); });
-  });
-  assert.equal(corrida.pdfs.length, 3, 'las propuestas salen igual: nunca se frena al cliente');
-  assert.ok(lineas.some((l) => /vidrio\.aviso_no_salio.*CM-FR-004-2026-0392.*envio_fallido.*131047/.test(l)),
-    `falta vidrio.aviso_no_salio con el folio: ${JSON.stringify(lineas.filter((l) => /vidrio\./.test(l)))}`);
-
-  // cooldown = «ya se le avisó»: no es falla. Y sent:true tampoco.
-  for (const avisoDueno of [{ sent: false, reason: 'cooldown' }, { sent: true }]) {
-    const l2 = await capturarLogs(async () => {
-      await correr({ ...satenPerdido, avisoDueno });
-      await new Promise((r) => { setTimeout(r, 60); });
-    });
-    assert.ok(l2.some((l) => /vidrio\.bano_perdido/.test(l)), 'control: el aviso del tablero sí salió');
-    assert.ok(!l2.some((l) => /vidrio\.aviso_no_salio/.test(l)), JSON.stringify(avisoDueno));
-  }
-});
+/* ── r8: el CABLEADO de IG/FB hacia los tres canales del aviso ──────────────────────────────────────────
+ * La lógica (texto Y plantilla siempre, una vez por folio, qué cuenta como «avisado») se prueba en
+ * services/avisarVidrio.test.js y services/avisoVidrio.integracion.test.js. Acá solo se verifica que
+ * channel-agent.js conecta cada canal a donde corresponde: el id del remitente, el prefijo del canal, el
+ * folio, el KV que inyecta el llamador. */
 
 const SATEN_IG = {
   vidrioMotor: '4+12+4',
@@ -414,51 +403,57 @@ const SATEN_IG = {
     measures: '1500x1000', color: 'Blanco', qty: 1, unit_price: PRECIO.Blanco, glass_label: '4+12+4 satén (baño)' },
   turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1000 para el baño' }],
 };
-const RECHAZO_VENTANA_IG = { sent: false, reason: 'envio_fallido', code: 131047, error: '{"error":{"code":131047}}' };
-/** Un turno con el folio y la plantilla dados, esperando a que el aviso (y lo que le sigue) termine. */
-async function correrSaten(extra) {
+const avisosDeVidrio = (spy) => spy.alertas.filter((a) => /revisar precio/.test(a.motivo));
+const eventosFallidos = (spy) => spy.eventos.filter((e) => e?.metadata?.aviso_fallido === true);
+/** Un turno de IG con un satén perdido; espera POR CONDICIÓN a que el aviso (texto y plantilla) se haya intentado. */
+async function correrSaten(extra = {}) {
   let corrida;
-  const lineas = await capturarLogs(async () => {
-    corrida = await correr({ ...SATEN_IG, avisoDueno: RECHAZO_VENTANA_IG, ...extra });
-    await new Promise((r) => { setTimeout(r, 80); });
+  await capturarLogs(async () => {
+    corrida = await correr({ ...SATEN_IG, ...extra });
+    assert.ok(await esperar(() => avisosDeVidrio(corrida).length > 0 && corrida.plantillas.length > 0),
+      `falta el aviso: ${JSON.stringify({ a: corrida.alertas, p: corrida.plantillas })}`);
+    await vaciar();
   });
-  return { corrida, lineas };
+  return corrida;
 }
 
-test('🔔 IG [05-oct · r7] el texto libre lo rechaza la ventana de 24 h (131047) ⇒ el aviso sale por la PLANTILLA con el folio y la etiqueta', async () => {
-  // Mismo contrato que WhatsApp (webhook.vientos.test.js): el aviso tenía un solo canal y moría en la ventana.
-  const { corrida, lineas } = await correrSaten({ folio: 'CM-FR-004-2026-0801', plantilla: { ok: true } });
+test('🔔 IG satén perdido ⇒ texto Y plantilla, UN aviso de cada uno (A, B y C son el mismo folio), con el id del cliente y el folio', async () => {
+  const corrida = await correrSaten();
   assert.equal(corrida.pdfs.length, 3, 'las propuestas salen igual: nunca se frena al cliente');
-  assert.deepEqual(corrida.plantillas, [{ folio: 'CM-FR-004-2026-0801', etiquetas: ['4+12+4 satén (baño)'] }],
-    `una plantilla, aunque A, B y C compartan folio: ${JSON.stringify(corrida.plantillas)}`);
-  assert.ok(lineas.some((l) => /vidrio\.aviso_por_plantilla.*CM-FR-004-2026-0801/.test(l)), JSON.stringify(lineas.filter((l) => /vidrio\./.test(l))));
-  assert.ok(!lineas.some((l) => /vidrio\.aviso_no_salio/.test(l)), 'el dueño SÍ se enteró');
-  assert.deepEqual(corrida.eventos.filter((e) => e?.metadata?.aviso_fallido === true), []);
+  // TEXTO: por el notificador, con el prefijo del canal y el id del remitente (el cooldown es del cliente).
+  const alertas = avisosDeVidrio(corrida);
+  assert.equal(alertas.length, 1, `un aviso por folio: ${JSON.stringify(corrida.alertas)}`);
+  assert.match(alertas[0].motivo, /^\[instagram\] /, 'el prefijo de canal manda el aviso al inbox correcto');
+  assert.equal(alertas[0].cliente, corrida.senderId);
+  assert.match(alertas[0].motivo, /CM-FR-004-2026-0392/);
+  assert.match(alertas[0].motivo, /"4\+12\+4 satén \(baño\)"/);
+  // PLANTILLA: sale AUNQUE el texto salió (sent:true): ver services/avisarVidrio.test.js (causa raíz de r7).
+  assert.deepEqual(corrida.plantillas, [{ folio: 'CM-FR-004-2026-0392', etiquetas: ['4+12+4 satén (baño)'] }]);
+  assert.deepEqual(eventosFallidos(corrida), []);
+  assert.ok(corrida.estado.get(claveAviso('vidrio', 'CM-FR-004-2026-0392'))?.valor?.at > 0, 'la marca quedó escrita con deps.escribirEstado');
+  assert.deepEqual(corrida.pdfs.map((p) => p.unit_price).sort((a, b) => a - b),
+    [PRECIO.Blanco, PRECIO.Nogal, PRECIO['New Black']], 'los precios no cambian');
 });
 
-test('🔔 IG [05-oct · r7] la plantilla TAMBIÉN falla ⇒ log + UN evento visible en la conversación de IG (como la escalación #888)', async () => {
-  const { corrida, lineas } = await correrSaten({ folio: 'CM-FR-004-2026-0802', plantilla: { ok: false, error: 'ADMIN_PIN_missing' } });
-  assert.equal(corrida.plantillas.length, 1);
-  assert.ok(lineas.some((l) => /vidrio\.aviso_no_salio.*CM-FR-004-2026-0802.*131047.*ADMIN_PIN_missing/.test(l)), JSON.stringify(lineas.filter((l) => /vidrio\./.test(l))));
-  const eventos = corrida.eventos.filter((e) => e?.metadata?.aviso_fallido === true);
+test('🔔 IG ninguno de los dos canales salió ⇒ UN evento de sistema en la conversación de IG del cliente (como la escalación #888)', async () => {
+  const corrida = await correrSaten({
+    avisoDueno: { sent: false, reason: 'envio_fallido', code: 131047, error: '{"error":{"code":131047}}' },
+    plantilla: { ok: false, template: 'informe_diario', phone: '56900000009', result: { ok: false, error: 'meta_credentials_missing' } },
+  });
+  assert.equal(corrida.pdfs.length, 3, 'las propuestas salen igual: nunca se frena al cliente');
+  const eventos = eventosFallidos(corrida);
   assert.equal(eventos.length, 1, JSON.stringify(corrida.eventos));
   assert.equal(eventos[0].channel, 'instagram', 'en el canal del cliente, que es donde se mira');
   assert.equal(eventos[0].external_id, corrida.senderId);
   assert.equal(eventos[0].direction, 'outbound');
   assert.equal(eventos[0].actor_type, 'system');
-  assert.match(eventos[0].body, /CM-FR-004-2026-0802/);
-  assert.match(eventos[0].body, /NO salió/);
-  assert.equal(eventos[0].metadata.folio, 'CM-FR-004-2026-0802');
-  assert.match(String(eventos[0].metadata.motivo_plantilla), /ADMIN_PIN_missing/);
+  assert.equal(eventos[0].metadata.source, 'oliver_gpt_channel');
+  assert.equal(eventos[0].metadata.folio, 'CM-FR-004-2026-0392');
+  assert.match(String(eventos[0].metadata.motivo_template), /meta_credentials_missing/);
+  assert.equal(corrida.estado.has(claveAviso('vidrio', 'CM-FR-004-2026-0392')), false, 'no llegó ⇒ SIN marca: el reintento tiene que poder salir');
 });
 
-test('🔔 IG [05-oct · r7] otro tipo de falla (no la ventana) NO dispara la plantilla: sigue siendo solo el log', async () => {
-  const { corrida, lineas } = await correrSaten({ folio: 'CM-FR-004-2026-0803', avisoDueno: { sent: false, reason: 'no_owner_phone' } });
-  assert.deepEqual(corrida.plantillas, []);
-  assert.ok(lineas.some((l) => /vidrio\.aviso_no_salio.*CM-FR-004-2026-0803.*no_owner_phone/.test(l)));
-});
-
-test('🔔 IG [05-oct · r4] sin satén perdido NO se avisa al dueño del vidrio', async () => {
+test('🔔 IG sin satén perdido NO se avisa al dueño del vidrio: ni texto ni plantilla ni evento', async () => {
   let corrida;
   await capturarLogs(async () => {
     corrida = await correr({
@@ -467,9 +462,9 @@ test('🔔 IG [05-oct · r4] sin satén perdido NO se avisa al dueño del vidrio
         measures: '1500x1000', color: 'Blanco', qty: 1, unit_price: PRECIO.Blanco, glass_label: 'Laminado 6+6' },
       turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1000' }],
     });
+    await vaciar();
   });
-  await new Promise((r) => { setTimeout(r, 60); });
-  assert.deepEqual(corrida.alertas.filter((a) => /revisar precio/.test(a.motivo)), []);
+  assert.deepEqual([avisosDeVidrio(corrida), corrida.plantillas, eventosFallidos(corrida)], [[], [], []]);
 });
 
 test('🔒 IG: si el cliente SI dijo el color, sale UNA sola y se reporta su monto — como siempre', async () => {

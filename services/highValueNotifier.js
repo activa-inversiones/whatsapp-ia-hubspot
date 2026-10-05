@@ -351,4 +351,5 @@ export {
   checkStaleHighValue,
   HIGH_VALUE_THRESHOLD,
   MEDIUM_VALUE_THRESHOLD,
+  COOLDOWN_MS, // [r8] la ventana del «ya se le avisó» del texto; vidrioCotizado.js la importa (UNA constante, no otra copia de «2 h»)
 };

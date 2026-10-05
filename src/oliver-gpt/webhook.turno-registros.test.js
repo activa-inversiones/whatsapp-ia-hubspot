@@ -13,7 +13,11 @@ import { fileURLToPath } from 'node:url';
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const lineas = fs.readFileSync(path.join(dir, 'webhook.js'), 'utf8').split('\n');
-const PROHIBIDOS = [/external_id:\s*from\b/, /\bphone:\s*from\b/, /telefono:\s*String\(from\)/, /\bphone:\s*raw\?\.from\b/];
+// [r8] + `externalId: from` / `cliente: from`: el aviso por satén ya no llama a notifyHighValue ni a pushConversationEvent
+// en webhook.js (lo hace la fábrica de canales, canalesAvisoVidrio.js) y recibe el cliente por NOMBRE de argumento.
+// La segunda guardia de abajo (que mira `notifyHighValue(` en este archivo) ya no lo ve; esta sí.
+const PROHIBIDOS = [/external_id:\s*from\b/, /\bphone:\s*from\b/, /telefono:\s*String\(from\)/, /\bphone:\s*raw\?\.from\b/,
+  /\bexternalId:\s*from\b/, /\bcliente:\s*from\b/];
 
 test('ningún registro usa `from`: solo líneas marcadas [chat] (lista blanca explícita)', () => {
   const malas = [];
