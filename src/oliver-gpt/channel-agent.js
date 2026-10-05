@@ -41,7 +41,7 @@ import { foliosDeOpciones, letrasReservadas, textoDeOpciones } from './propuesta
 // el unico modulo 11 del repo y la unica compuerta de procedencia.
 import { extraerReceptor, receptorParaDocumento, fusionarReceptor } from '../../services/receptorCliente.js';
 import { priceAllEngine as realPriceAllEngine } from '../../services/enginePricer.js';   // precio REAL por color (motor LOCAL)
-import { aplicarVidrioDelMotor, vidrioDelPrecio } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor (misma regla que WhatsApp)
+import { motorCotizo, vidrioDelMotor, elegirVidrio, aplicarVidrio, avisarVidrio, VIDRIO_RESPALDO } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor (misma regla que WhatsApp)
 import { notifyHighValue as realNotifyHighValue } from '../../services/highValueNotifier.js';
 import * as realBridge from '../../services/salesOsBridge.js';
 import { sendWhatsAppText as realSendWhatsAppText } from '../sales-agent/whatsapp-adapter.js';
@@ -592,6 +592,8 @@ export async function handleChannelTurn(
           });
           const _measuresForEngine = (it) =>
             (Number(it.ancho_mm) > 0 && Number(it.alto_mm) > 0) ? `${it.ancho_mm}x${it.alto_mm}mm` : (it.measures || '');
+          // [2026-10-05] Avisos del vidrio (baño perdido, otro producto): se loguean con el folio.
+          const _avisosVidrio = [];
 
           // ⛔ [2026-08-31] LA OPCION A TAMBIEN SE COTIZA PARA SU COLOR.
           // No alcanza con cambiarle la etiqueta arriba: el precio que trae `input.items` lo
@@ -625,7 +627,7 @@ export async function handleChannelTurn(
                 };
                 await priceAllFn(_sondaA);
                 const _todas = _sondaA.items.length === (input.items || []).length
-                  && _sondaA.items.every((x) => Number(x.unit_price) > 0 && x.confidence === 'high');
+                  && _sondaA.items.every(motorCotizo);
                 if (!_todas) { _sinCotizar.push(_cand); continue; }
                 _sondaA.items.forEach((x, k) => {
                   const _it = (input.items || [])[k];
@@ -635,7 +637,7 @@ export async function handleChannelTurn(
                   _it.total_price = Number(x.total_price) || Number(x.unit_price) * (Number(_it.qty) || 1);
                   _it.source      = x.source || _it.source;
                   _it.confidence  = x.confidence;
-                  aplicarVidrioDelMotor(_it, x);   // [2026-10-05] la A con el vidrio que cobra, como B y C
+                  aplicarVidrio(_it, vidrioDelMotor(x), { avisos: _avisosVidrio });   // [2026-10-05] como B y C
                 });
                 _colorAok = _cand;
                 break;
@@ -692,6 +694,8 @@ export async function handleChannelTurn(
               message: 'Dame un momentito para emitir tu Propuesta Técnica Económica con su folio; si se demora, Marcelo te la hace llegar enseguida.' };
           }
           RECENT_QUOTES.set(dedupKey, { quote_number: quoteNumber, at: Date.now() });
+          // [2026-10-05] Los avisos del vidrio, ya con su folio (van al tablero; no cambian nada).
+          avisarVidrio(_avisosVidrio, quoteNumber, (aviso, texto) => log('warn', aviso, `${convKey}: ${texto}`));
           // Evicción por antigüedad (no clear() ciego, que abría ventana de doble-folio en carga).
           if (RECENT_QUOTES.size > 500) {
             const cutoff = Date.now() - QUOTE_DEDUP_MS;
@@ -781,7 +785,7 @@ export async function handleChannelTurn(
               producto_label: it.producto_label || it.product || 'Ventana',
               measures: it.measures || '', color: it.color || '',
               qty: Number(it.qty) || 1, unit_price: Number(it.unit_price) || 0,
-              glass_label: it.glass_label || 'Termopanel DVH', ambiente: it.ambiente || '',
+              glass_label: it.glass_label || VIDRIO_RESPALDO, ambiente: it.ambiente || '',
             })),
             quote_num: quoteNumber,
           };
@@ -837,7 +841,7 @@ export async function handleChannelTurn(
                 };
                 await priceAllFn(_sonda);
                 const _todosConPrecio = _sonda.items.length === (input.items || []).length
-                  && _sonda.items.every((x) => Number(x.unit_price) > 0 && x.confidence === 'high');
+                  && _sonda.items.every(motorCotizo);
                 if (!_todosConPrecio) {
                   log('error', 'generarPdf.opcion',
                     `${convKey}: opcion ${_letraOp} (${_colorOp}) DESCARTADA - el motor no cotizo ese color para todos los items; ${_numOp} no se emite`);
@@ -857,7 +861,7 @@ export async function handleChannelTurn(
                       color:          _colorOp,
                       qty:            Number(it.qty) || 1,
                       unit_price:     Number(_p.unit_price) || 0,
-                      glass_label:    vidrioDelPrecio(_p, _p.unit_price) || it.glass_label || 'Termopanel DVH',
+                      glass_label:    elegirVidrio(it.glass_label, vidrioDelMotor(_p)).vidrio || VIDRIO_RESPALDO,
                       ambiente:       it.ambiente || '',
                       termico:        _p.termico || null,
                     };

@@ -87,3 +87,15 @@ test('la whitelist arranca chica y a propósito', () => {
 test('expone VERSION', () => {
   assert.match(VERSION, /^\d+\.\d+\.\d+$/);
 });
+
+test('[2026-10-05] rechazoDelDestinatario: solo los codigos que hablan del NUMERO, no del mensaje', async () => {
+  // Si Meta rechazo un documento por el destinatario (fuera de la ventana de 24 h, o numero que
+  // no recibe), mandarle otro en el mismo turno falla igual y quema un folio ISO sin registro.
+  const { rechazoDelDestinatario } = await import('./errorMeta.js');
+  assert.equal(rechazoDelDestinatario({ ok: false, status: 400, code: 131047 }), true, 'fuera de ventana');
+  assert.equal(rechazoDelDestinatario({ ok: false, status: 400, code: 131026 }), true, 'no entregable');
+  for (const otro of [{ ok: false, code: 132000 }, { ok: false, timedOut: true }, { ok: false, status: 503 },
+    { ok: false, netCode: 'ENOTFOUND' }, { ok: true, wamid: 'w' }, null, undefined]) {
+    assert.equal(rechazoDelDestinatario(otro), false, JSON.stringify(otro));
+  }
+});

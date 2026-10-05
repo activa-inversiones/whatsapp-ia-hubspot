@@ -108,6 +108,16 @@ export function clasificar(r) {
   return out(RESULTADO.DESCONOCIDO, 'sin_clasificar');
 }
 
+/**
+ * [2026-10-05] Los rechazos que hablan del DESTINATARIO, no del mensaje: fuera de la ventana de
+ * 24 h (131047) o número que no recibe (131026). Otro documento al mismo número en el mismo
+ * turno falla igual — y si lleva folio ISO, lo quema sin registro.
+ */
+const CODIGOS_DESTINATARIO = new Set([131047, 131026]);
+export function rechazoDelDestinatario(r) {
+  return Boolean(r) && Number.isFinite(r.code) && CODIGOS_DESTINATARIO.has(Number(r.code));
+}
+
 /** Atajo: ¿se puede reintentar automáticamente sin riesgo de duplicar? */
 export function sePuedeReintentar(r) {
   return clasificar(r).reintentable === true;

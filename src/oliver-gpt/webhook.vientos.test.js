@@ -8,8 +8,10 @@
 //       turno", que no existe (propuesta 0590, 04-oct).
 //   B · ventanas sin vidrio legible aunque el motor SI lo eligio (propuesta 0588, 03-oct). La
 //       regla del vidrio se prueba unitaria en services/vidrioCotizado.test.js; aca, el cableado.
-//   C · el de vientos solo se intentaba si el termico salia 'enviado': con el termico 'fallo',
-//       'ya_enviado' o 'timeout' no se intentaba aunque el cliente nunca lo hubiera recibido.
+//   C · el de vientos solo se intentaba si el termico salia 'enviado': con el termico 'fallo'
+//       o 'ya_enviado' no se intentaba aunque el cliente nunca lo hubiera recibido. Excepciones
+//       (decision del coordinador, 05-oct): termico en 'timeout' (sigue corriendo de fondo) o
+//       rechazado por Meta POR EL DESTINATARIO ⇒ no se intenta en ese turno.
 //
 // Hermetico: `global.fetch` falso (correlativo + MOTOR DE PRECIOS FALSO) y `ACTIVA_ENGINE_URL`
 // apuntando a un host de prueba, asi que nada puede salir a produccion aunque algo se escape.
@@ -57,7 +59,7 @@ let SEQ = 0;
 const makeRes = () => ({ sendStatus() { return this; } });
 
 /** Arnes minimo: KV en memoria, envios a una linea de tiempo, THERMAL y PDFs falsos. */
-function armar({ informeEnvio = { ok: true, msgId: 'doc.1' }, informeCuelga = false, ventanas = VENTANAS, nombre = 'Dady' } = {}) {
+function armar({ informeEnvio = { ok: true, msgId: 'doc.1' }, informeCuelga = false, thermalCaido = false, ventanas = VENTANAS, nombre = 'Dady' } = {}) {
   const telefono = `5697${String(++SEQ).padStart(7, '0')}`;
   const spy = { linea: [], textos: [], propuestas: [], vientos: [] };
   const estado = new Map();
@@ -82,7 +84,8 @@ function armar({ informeEnvio = { ok: true, msgId: 'doc.1' }, informeCuelga = fa
     liberarReserva: (k, t) => { const e = estado.get(k); if (!t || !vigente(e) || e.valor !== t) return false; estado.delete(k); return true; },
     parseInbound: () => ({ ok: true, from: telefono, text: `soy ${nombre}, dos ventanas correderas`, msgId: `wamid.${Math.random()}`, type: 'text' }),
     sendWhatsAppText: async (to, t) => { spy.textos.push(String(t)); spy.linea.push('texto'); return { ok: true, msgId: `m${spy.linea.length}` }; },
-    pedirInformeComuna: async () => ({ comuna: 'Temuco', regimen: 'PDA', uw_max_Wm2K: 3.2, zona_termica_NCh1079: 'F', criterio_ref: 'PDA' }),
+    pedirInformeComuna: async () => (thermalCaido ? null
+      : { comuna: 'Temuco', regimen: 'PDA', uw_max_Wm2K: 3.2, zona_termica_NCh1079: 'F', criterio_ref: 'PDA' }),
     generarInformeTermicoPdf: async () => (informeCuelga ? new Promise(() => {}) : Buffer.alloc(1024, 7)),
     laminasParaInforme: async () => null,
     laminaTermopanel: async () => null,
@@ -213,14 +216,23 @@ test('🌬️ B [anti-alucinacion] con el motor CAIDO no se inventa vidrio: la p
 
 const huellaUltima = () => huellaDelInforme({ comuna: 'Temuco', producto: VENTANAS.at(-1).producto, glassLabel: VENTANAS.at(-1).vidrio });
 
+/** Corre `fn` capturando lo que el bot loguea (los `warn` van por console.log). */
+async function conLogs(fn) {
+  const lineas = [];
+  const original = console.log;
+  console.log = (...a) => { lineas.push(a.map(String).join(' ')); original(...a); };
+  try { await fn(); } finally { console.log = original; }
+  return lineas;
+}
+const rechazoMeta = (code) => ({ informeEnvio: { ok: false, error: 'rechazo', status: 400, code } });
+
 for (const [caso, preparar] of [
-  ['fallo (Meta rechaza el termico)', () => armar({ informeEnvio: { ok: false, error: 'rechazo', status: 400, code: 131047 } })],
+  ['fallo de THERMAL (no hay datos de la comuna)', () => armar({ thermalCaido: true })],
   ['ya_enviado (candado del termico vigente)', () => {
     const x = armar();
     x.deps.escribirEstado(`informe_termico:${x.telefono}:${huellaUltima()}`, { at: Date.now() - 3600_000 }, 3000);
     return x;
   }],
-  ['timeout (el termico se cuelga)', () => armar({ informeCuelga: true })],
 ]) {
   test(`🌬️ C termico '${caso}' y el cliente SIN informe de vientos ⇒ el de vientos sale igual, antes de la propuesta`, async () => {
     // Antes: solo se intentaba si el termico devolvia 'enviado' (o 'no_seleccionado'). Su
@@ -233,10 +245,51 @@ for (const [caso, preparar] of [
   });
 }
 
+for (const [caso, preparar, motivo] of [
+  // [M1] El termico sigue corriendo de fondo: mandar el de vientos sumaba hasta 55 s al precio y
+  // podia dejar el orden vientos → propuesta → termico.
+  ['timeout (el termico sigue corriendo de fondo)', () => armar({ informeCuelga: true }), 'omitido_timeout_termico'],
+  // [B2] Meta rechazo AL DESTINATARIO: el de vientos fallaria igual y quemaria un folio CM-FR-007
+  // sin registro.
+  ['rechazado por Meta: fuera de la ventana de 24 h (131047)', () => armar(rechazoMeta(131047)), 'omitido_rechazo_destinatario'],
+  ['rechazado por Meta: numero no entregable (131026)', () => armar(rechazoMeta(131026)), 'omitido_rechazo_destinatario'],
+]) {
+  test(`🌬️ C termico '${caso}' ⇒ el de vientos NO se intenta en este turno y queda registrado por que`, async () => {
+    const { deps, spy } = preparar();
+    const logs = await conLogs(async () => {
+      await handleWebhook({ body: {} }, makeRes(), deps);
+      assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta sale siempre');
+    });
+    assert.equal(cuenta(spy, 'vientos'), 0, `linea: ${JSON.stringify(spy.linea)}`);
+    assert.equal(spy.vientos.length, 0, 'ni siquiera se le pide al motor de vientos');
+    assert.ok(logs.some((l) => l.includes(`vientos → ${motivo}`)), `falta el registro "${motivo}"`);
+  });
+}
+
 test('🌬️ C control: el de vientos YA recibido (su candado vigente) no se repite aunque el termico falle', async () => {
-  const x = armar({ informeEnvio: { ok: false, error: 'rechazo', status: 400, code: 131047 } });
+  const x = armar({ thermalCaido: true });
   x.deps.escribirEstado(`informe_vientos:${x.telefono}:${huellaUltima()}`, { at: Date.now() - 3600_000 }, 3000);
   await handleWebhook({ body: {} }, makeRes(), x.deps);
   assert.ok(await esperar(() => pos(x.spy, 'propuesta') >= 0));
   assert.equal(cuenta(x.spy, 'vientos'), 0, 'su propio candado manda');
+});
+
+/* ── B3/B4 · lo que el reemplazo del vidrio NO debe callar ──────────────────────────── */
+
+test('🌬️ B3/B4 satén con el baño perdido NO se reemplaza; otro producto SI, y los dos quedan avisados con el folio', async () => {
+  // B3: la etiqueta dice satén y la recotizacion del PDF (sin ambiente) eligio claro ⇒ queda el
+  // rastro del recinto + warn `vidrio.bano_perdido`. B4: "low-e" no es lo que se cobra ⇒ se
+  // reemplaza (como siempre desde la r2) + warn `vidrio.producto_distinto` con la etiqueta original.
+  const { deps, spy } = armar({ ventanas: [
+    { producto: 'Corredera SLIDING H80 Doble Riel S75', medidas: '1500x1000', vidrio: '4+12+4 satén (baño)', cantidad: 1, precio: 100000 },
+    { producto: 'Corredera SLIDING H80 Doble Riel S75', medidas: '1400x1000', vidrio: 'DVH 4/12/4 low-e', cantidad: 1, precio: 100000 },
+  ] });
+  const logs = await conLogs(async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta sale');
+  });
+  assert.deepEqual(spy.propuestas[0]?.items.map((i) => i.glass_label), ['4+12+4 satén (baño)', '4+12+4']);
+  const linea = (aviso) => logs.find((l) => l.includes(aviso)) || '';
+  assert.match(linea('vidrio.bano_perdido'), /CM-FR-004-2026-9999.*satén/, `logs: ${logs.filter((l) => /vidrio\./.test(l))}`);
+  assert.match(linea('vidrio.producto_distinto'), /CM-FR-004-2026-9999.*DVH 4\/12\/4 low-e/);
 });

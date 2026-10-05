@@ -65,7 +65,7 @@ import { elegirVideo, mensajeDelVideo, mediaIdsDisponibles } from '../../service
 // informe de vientos a la secuencia de Oliver"). THERMAL calcula (se pide por HTTP, regla
 // de la casa), Oliver arma el PDF y lo entrega como 2o documento.
 import { pedirVientos, ventanasParaVientos } from '../../services/vientosThermal.js';
-import { aplicarVidrioDelMotor, vidrioDelPrecio } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor
+import { motorCotizo, vidrioDelMotor, precioCoincide, elegirVidrio, aplicarVidrio, avisarVidrio, VIDRIO_RESPALDO } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor
 import { generarInformeVientosPdf } from '../../services/informeVientosPdf.js';
 import { decidirDocumentosCotizacion, leerEntregasLocales, marcarEntregaLocal } from '../../services/documentosCotizacion.js'; // [2026-09-30] selector de documentos por cotización
 import { numerarVentanas } from '../../services/etiquetaVentana.js'; // [2026-09-19] el numero se congela antes de filtrar
@@ -111,6 +111,13 @@ const SEQ_VIDEO_MS = msEnv(process.env.SEQUENCE_VIDEO_MS, 20_000);
 // [2026-08-28] Pausa humana antes del informe de VIENTOS (2o documento de la secuencia).
 // 6 s originales → 25 s por la misma orden de ritmo del dueño.
 const SEQ_VIENTOS_MS = msEnv(process.env.SEQUENCE_VIENTOS_MS, 25_000);
+// [2026-10-05] Resultados del térmico con los que el de vientos NO se intenta en ese turno:
+// timeout = el térmico sigue corriendo de fondo (sumaría hasta 55 s y podría quedar después
+// del precio); rechazo del destinatario = fallaría igual y quemaría un folio CM-FR-007.
+const VIENTOS_OMITIDO_POR_TERMICO = Object.freeze({
+  timeout: 'omitido_timeout_termico',
+  rechazo_destinatario: 'omitido_rechazo_destinatario',
+});
 // [Dueño, 28-ago] Pausa entre el ANTICIPO de la propuesta (qué contiene, con ancho y
 // alto nombrados) y el PDF: tiempo para leerlo antes de que caiga el documento.
 const ANTICIPO_MS = msEnv(process.env.PROPUESTA_ANTICIPO_MS, 8_000);
@@ -220,7 +227,7 @@ export async function atribuirLandingRef({ from, leadId, refStatus = null, name 
 import { isVisionUnreadable } from '../../services/oliverVision.js'; // [F3b] detector imagen ilegible
 import { isEscalationRequest, escalationMessage, sendEscalationTemplate } from './escalation.js'; // [2026-06-18] escalación determinista compartida
 import { agregarCotizacionDelTurno, tieneMontoUtil } from './cotizacionDelTurno.js'; // [2026-09-15 tridente] contrato total_neto + agrega TODO el turno
-import { clasificar as clasificarEnvio, RESULTADO as RESULTADO_META } from '../sales-agent/errorMeta.js';
+import { clasificar as clasificarEnvio, RESULTADO as RESULTADO_META, rechazoDelDestinatario } from '../sales-agent/errorMeta.js';
 import { mensajeEntregaDudosa, tocaAvisar, claveAviso } from '../../services/avisoEntregaDudosa.js';
 import {
   mensajeCerebroRespaldo, causaDelRespaldo, claveAvisoRespaldo, RESPALDO_REPETIR_MS,
@@ -1904,7 +1911,8 @@ export async function handleWebhook(req, res, deps = {}) {
     // espera a sus propias tools.
 
       // [2026-08-27 · #524] Devuelve una promesa con el RESULTADO ('enviado' | 'ya_enviado' |
-      // 'en_curso' | 'fallo' | null si algo lanzó): la secuencia informe-primero necesita
+      // 'en_curso' | 'fallo' | 'rechazo_destinatario' [05-oct: Meta rechazó por el número] |
+      // null si algo lanzó): la secuencia informe-primero necesita
       // saber qué pasó para decidir si manda el video y cuándo suelta la propuesta. Los
       // llamadores fire-and-forget existentes no leen el retorno y no cambian en nada.
       // `mensajePrevio`: el mensaje de valor de la Variante B — solo se envía si el informe
@@ -2417,7 +2425,9 @@ export async function handleWebhook(req, res, deps = {}) {
             // [Codex/Gemini, compuerta #524] Idem: el cliente ya leyó la promesa del
             // informe — si Meta lo rechazó, se le avisa antes de que llegue el precio.
             await avisarRecuperacion();
-            return 'fallo';
+            // [2026-10-05] Rechazo POR EL DESTINATARIO (24 h / no recibe): la secuencia no
+            // intenta el de vientos en este turno (fallaria igual y quemaria un folio CM-FR-007).
+            return rechazoDelDestinatario(envio) ? 'rechazo_destinatario' : 'fallo';
           }
           // Se marca DESPUÉS de que salió DE VERDAD: si el envío falla, el próximo turno reintenta.
           // Con fecha: el candado solo vale si es posterior al ultimo RESET (candadoVigente).
@@ -3038,6 +3048,8 @@ Comuna: ${datos.comuna}`
           });
           const _measuresForEngine = (it) =>
             (Number(it.ancho_mm) > 0 && Number(it.alto_mm) > 0) ? `${it.ancho_mm}x${it.alto_mm}mm` : (it.measures || '');
+          // [2026-10-05] Avisos del vidrio (baño perdido, otro producto): se loguean con el folio.
+          const _avisosVidrio = [];
 
           // ── BLINDAJE label↔precio (2026-06-24) — INVARIANTE: el precio DEBE corresponder a la
           // apertura que el cliente VE en el label. Causa raíz del bug 0064/0065/0066: una FIJA salía
@@ -3143,7 +3155,7 @@ Comuna: ${datos.comuna}`
                 };
                 await priceAllFn(_sondaA);
                 const _todas = _sondaA.items.length === (input.items || []).length
-                  && _sondaA.items.every((x) => Number(x.unit_price) > 0 && x.confidence === 'high');
+                  && _sondaA.items.every(motorCotizo);
                 if (!_todas) { _sinCotizar.push(_cand); continue; }
                 _sondaA.items.forEach((x, k) => {
                   const _it = (input.items || [])[k];
@@ -3153,7 +3165,7 @@ Comuna: ${datos.comuna}`
                   _it.total_price = Number(x.total_price) || Number(x.unit_price) * (Number(_it.qty) || 1);
                   _it.source      = x.source || _it.source;
                   _it.confidence  = x.confidence;
-                  aplicarVidrioDelMotor(_it, x);   // [2026-10-05] la A con el vidrio que cobra, como B y C
+                  aplicarVidrio(_it, vidrioDelMotor(x), { avisos: _avisosVidrio });   // [2026-10-05] como B y C
                 });
                 _colorAok = _cand;
                 break;
@@ -3235,7 +3247,7 @@ Comuna: ${datos.comuna}`
 
               // [2026-10-05] Y el VIDRIO, igual que el Uw: el que el motor cobro (propuesta 0588,
               // `vidrio: null` ⇒ vientos sin_datos). Regla y ramas: services/vidrioCotizado.test.js.
-              aplicarVidrioDelMotor(it, _t);
+              aplicarVidrio(it, vidrioDelMotor(_t), { avisos: _avisosVidrio, precioCoincide: precioCoincide(_t, it.unit_price) });
 
               // 🔴 [2026-08-26] LA COMPOSICION DE LA VENTANA VIAJA AL DIBUJO. Sin esto el PDF
               // dibujaba las tres compuestas de Paula como UN PAÑO UNICO: el dibujo necesita
@@ -3583,6 +3595,8 @@ Comuna: ${datos.comuna}`
           try { await (deps.escribirEstado || escribirEstado)(_claveQuote, _marcaQuote, 15 * 60); }
           catch { /* el guardia en memoria sigue cubriendo esta instancia */ }
           if (RECENT_QUOTES.size > 500) RECENT_QUOTES.clear(); // backstop de memoria
+          // [2026-10-05] Los avisos del vidrio, ya con su folio (van al tablero; no cambian nada).
+          avisarVidrio(_avisosVidrio, quoteNumber, (aviso, texto) => log('warn', aviso, `${from}: ${texto}`));
 
           // ── 🎨 [2026-08-31] LOS FOLIOS DE LAS TRES OPCIONES, DE UNA SOLA VEZ ──
           // Un solo correlativo ISO y las variantes por LETRA: 0392 · 0392-B · 0392-C. Es el
@@ -3739,7 +3753,7 @@ Comuna: ${datos.comuna}`
               color:          it.color || '',
               qty:            Number(it.qty) || 1,
               unit_price:     Number(it.unit_price) || 0,  // NUNCA inventado: viene del motor
-              glass_label:    it.glass_label || 'Termopanel DVH',
+              glass_label:    it.glass_label || VIDRIO_RESPALDO,
               ambiente:       it.ambiente || '',
               termico:        it.termico || null,   // [thermal] Uw aditivo (null = no se muestra)
             })),
@@ -3838,11 +3852,7 @@ Comuna: ${datos.comuna}`
           // mientras sales-os no tenga la serie CM-FR de vientos (tablero #541).
           const enviarInformeVientos = async ({ forzar = false } = {}) => {
             // 🔁 [2026-10-05] NO se corta si el cliente escribe: el "proximo turno" que lo iba a
-            // mandar no existe (propuesta 0590). Informes antes de la propuesta (dueño, 30-sep).
-            // Guardia: webhook.vientos.test.js, caso A.
-            if (!turnoVigente(from, miTurno)) {
-              log('info', 'rafaga.vientos', `${from}: el cliente escribio; el informe de vientos sale igual (no se corta)`);
-            }
+            // mandar no existe (propuesta 0590). Guardia: webhook.vientos.test.js, caso A.
             const ultimaV = (input.items || []).at(-1) || {};
             const _huellaV = huellaDelInforme({
               comuna: clientComuna, producto: ultimaV.producto_label || ultimaV.product || '',
@@ -4109,12 +4119,12 @@ Comuna: ${datos.comuna}`
           } catch (e) { log('error', 'generarPdf.docsSel', e?.message || e); }
           const docsForzar = docsSel?.origen === 'manual';
           // El informe de vientos con su propio techo (motor + PDF + pausa + envío): regalo
-          // que jamás retiene la propuesta. Un solo lugar para los dos caminos que lo usan.
-          const enviarVientosConTecho = async (etiqueta) => {
+          // que jamás retiene la propuesta.
+          const enviarVientosConTecho = async () => {
             const techoMs = Number(deps.seqVientosTimeoutMs ?? (SEQ_VIENTOS_MS + 30_000));
             let vence = null;
             return Promise.race([
-              safe(`generarPdf.vientos.${etiqueta}`, () => enviarInformeVientos({ forzar: docsForzar })),
+              safe('generarPdf.vientos.secuencia', () => enviarInformeVientos({ forzar: docsForzar })),
               new Promise((res) => { vence = setTimeout(() => res('timeout'), techoMs); }),
             ]).finally(() => { if (vence) clearTimeout(vence); });
           };
@@ -4230,14 +4240,14 @@ Comuna: ${datos.comuna}`
                 new Promise((res) => { venceTimeout = setTimeout(() => res('timeout'), techoInformeMs); }),
               ]).finally(() => { if (venceTimeout) clearTimeout(venceTimeout); });
               log('info', 'generarPdf.secuencia', `${from}: informe-primero → ${resultadoInforme || 'sin_resultado'}`);
+              // 🌬️ Paso 5-bis: el INFORME DE VIENTOS, después del térmico y antes del video y
+              // del precio. Lo deciden el selector y su propio candado, NO el térmico (05-oct),
+              // salvo dos casos que se registran: térmico en 'timeout' (sigue corriendo de fondo)
+              // y rechazo de Meta por el destinatario. Guardia: webhook.vientos.test.js, caso C.
+              const resVientos = !docsSel.vientos ? 'no_seleccionado'
+                : (VIENTOS_OMITIDO_POR_TERMICO[resultadoInforme] || await enviarVientosConTecho());
+              log('info', 'generarPdf.secuencia', `${from}: vientos → ${resVientos || 'sin_resultado'}`);
               if (resultadoInforme === 'enviado') {
-                // 🌬️ Paso 5-bis: el INFORME DE VIENTOS, después del térmico y antes del
-                // video. Con su propio techo: regalo que jamás retiene el precio.
-                // El techo cubre pausa + motor + PDF + envío: con la pausa de ritmo en
-                // 25 s, un techo fijo de 30 s la habría convertido en timeout permanente.
-                const resVientos = !docsSel.vientos ? 'no_seleccionado' : await enviarVientosConTecho('secuencia');
-                log('info', 'generarPdf.secuencia', `${from}: vientos → ${resVientos || 'sin_resultado'}`);
-
                 // Paso 6 de la secuencia: el video cae ENTRE el informe y la propuesta.
                 // 🔴 [Codex P1, compuerta] CON SU PROPIO TECHO. El techo del informe no
                 // cubre este await: un sendWaVideo colgado dejaba al cliente SIN PROPUESTA.
@@ -4255,13 +4265,6 @@ Comuna: ${datos.comuna}`
                 // tenía la propuesta encima. Solo en el camino 'enviado': un informe
                 // repetido o caído no gana demora.
                 await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: SEQ_PRECIO_MS });
-              } else if (docsSel.vientos) {
-                // [2026-10-05] Sin térmico entregado AHORA ('no_seleccionado', 'ya_enviado',
-                // 'fallo', 'timeout', 'en_curso') el de vientos sale igual, solo y sin video:
-                // lo deciden el selector y su propio candado, no el térmico. Guardia:
-                // webhook.vientos.test.js, caso C.
-                const resV2 = await enviarVientosConTecho('solo');
-                log('info', 'generarPdf.secuencia', `${from}: vientos (térmico ${resultadoInforme}) → ${resV2 || 'sin_resultado'}`);
               }
               // Despues, derecho a la propuesta. En timeout el térmico puede llegar después por
               // su cuenta — comportamiento clásico de hoy, no un estado nuevo.
@@ -4587,7 +4590,7 @@ Comuna: ${datos.comuna}`
                 return null;
               }
               const _todosConPrecio = _sonda.items.length === (input.items || []).length
-                && _sonda.items.every((x) => Number(x.unit_price) > 0 && x.confidence === 'high');
+                && _sonda.items.every(motorCotizo);
               return _todosConPrecio ? _sonda : null;
             }));
 
@@ -4622,7 +4625,7 @@ Comuna: ${datos.comuna}`
                       color:          _colorOp,
                       qty:            Number(it.qty) || 1,
                       unit_price:     Number(_p.unit_price) || 0,   // del motor, para ESTE color
-                      glass_label:    vidrioDelPrecio(_p, _p.unit_price) || it.glass_label || 'Termopanel DVH',
+                      glass_label:    elegirVidrio(it.glass_label, vidrioDelMotor(_p)).vidrio || VIDRIO_RESPALDO,
                       ambiente:       it.ambiente || '',
                       termico:        _p.termico || null,
                       compuesta:      _p.compuesta || it.compuesta || undefined,

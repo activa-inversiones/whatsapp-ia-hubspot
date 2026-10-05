@@ -333,6 +333,24 @@ test('🔴 IG [05-oct · paridad con WhatsApp] A, B y C imprimen el vidrio con q
   for (const p of spy.pdfs) assert.equal(p.vidrio, '5+12+5', `${p.numero} imprime "${p.vidrio}", no el vidrio cobrado`);
 });
 
+test('🔴 IG [05-oct · B3] satén con el baño perdido: A, B y C conservan el satén y queda el aviso con el folio', async () => {
+  const lineas = [];
+  const original = console.log;
+  console.log = (...a) => { lineas.push(a.map(String).join(' ')); };
+  let spy;
+  try {
+    spy = await correr({
+      vidrioMotor: '4+12+4',
+      item: { producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
+        measures: '1500x1000', color: 'Blanco', qty: 1, unit_price: PRECIO.Blanco, glass_label: '4+12+4 satén (baño)' },
+      turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1000 para el baño' }],
+    });
+  } finally { console.log = original; }
+  assert.equal(spy.pdfs.length, 3);
+  for (const p of spy.pdfs) assert.equal(p.vidrio, '4+12+4 satén (baño)', `${p.numero} perdio el rastro del baño`);
+  assert.ok(lineas.some((l) => /vidrio\.bano_perdido.*CM-FR-004-2026-0392/.test(l)), 'falta el aviso con el folio');
+});
+
 test('🔒 IG: si el cliente SI dijo el color, sale UNA sola y se reporta su monto — como siempre', async () => {
   const spy = await correr({
     item: { producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
