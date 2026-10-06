@@ -150,8 +150,9 @@ export async function procesarComandoCliente({
     'El PDF te llega a vos para que se lo mandes.\n\n' +
     // [Thermos conjunto #6] Lo que llega antes de esta confirmación no tiene cliente al que asignarse.
     'Las fotos o audios del cliente mándalos DESPUÉS de esta confirmación.\n\n' +
-    'Vale para UNA propuesta: cuando se envíe el PDF vuelve a tu nombre (para corregirla, manda ' +
-    `de nuevo este mismo comando). Para cancelar antes: *CLIENTE OFF*. Vence a las ${Math.round(vigenciaMs() / 3600000)} h.` +
+    // [2026-10-06] Decision del dueño: queda fijado hasta cambiar de cliente (tope de seguridad: vigenciaMs, 24 h).
+    'Queda fijado mientras cotices para este cliente, también para corregir la propuesta. Para otro cliente ' +
+    `manda CLIENTE con sus datos; para terminar, *CLIENTE OFF*. Vence a las ${Math.round(vigenciaMs() / 3600000)} h.` +
     // [2026-10-06] Si las ventanas venian debajo del comando, se avisa: este mensaje NO se cotiza (el comando
     // se procesa fuera del turno de Oliver, con su propio lock); hay que mandarlas aparte.
     (traeMasLineas(texto) ? '\n\n📋 Las ventanas que venían debajo del comando NO las cotizo desde este mensaje: ' +
@@ -166,5 +167,7 @@ export async function procesarComandoCliente({
 export function mensajeTrasPdf(atribucion) {
   if (!atribucion?.phone) return '';
   const nombre = atribucion.name || 'el cliente';
-  return `✅ Propuesta de *${nombre}* emitida. Para corregirla manda CLIENTE ${atribucion.name || 'Nombre'} +${atribucion.phone}`;
+  // [2026-10-06] La atribucion ya no se consume con el PDF (decision del dueño): se sigue cotizando para el cliente.
+  return `✅ Propuesta de *${nombre}* emitida. Sigues cotizando para ${nombre}: para corregirla, dime qué cambiar. ` +
+    'Para otro cliente manda CLIENTE Nombre +569…; para terminar, *CLIENTE OFF*.';
 }

@@ -452,7 +452,10 @@ test('calidad 1 r10: index.js y webhook.js usan la MISMA instancia de lock (serv
   assert.match(wh, /import \{ acquireLock, LOCKS \} from '\.\.\/\.\.\/services\/lockTelefono\.js'/);
 });
 
-test('«Cliente explícito» 30-sep: tras el PDF la atribución se CONSUME y se dice cómo corregir', async () => {
+// 🔁 [2026-10-06] TEST DADO VUELTA POR DECISION DEL DUEÑO (opcion a), textual: «este fijado hasta que cambie de
+// cliente… debo pedir modificaciones y cosas asi para enviar nuevamente la cotizacion». Antes defendia que la
+// atribucion se CONSUMIA con el PDF (decision del 30-sep); ahora defiende que SIGUE fijada (tope 24 h).
+test('06-oct (dueño): tras el PDF la atribución SIGUE fijada y se dice cómo corregir o cambiar de cliente', async () => {
   prepararVendedor();
   fijar(VENDEDOR, CLIENTE, 'Juan Pérez');
   const ev = []; const pdf = []; const textos = [];
@@ -460,9 +463,9 @@ test('«Cliente explícito» 30-sep: tras el PDF la atribución se CONSUME y se 
   try { await correr(makeDeps(VENDEDOR, 'wamid.VEND.CONSUME', ev, pdf, { textos, medida: '1300x1000' })); despues = obtener(VENDEDOR); }
   finally { _reiniciarParaTests(); resetAtribucion(); }
   assert.ok(ev.find((e) => e.status === 'sent'), 'se emitió');
-  assert.equal(despues, null, 'tras el PDF no queda ningún cliente fijado');
+  assert.equal(despues?.phone, CLIENTE, 'tras el PDF sigue fijado Juan (para corregir sin re-mandar el comando)');
   assert.ok(textos.some((x) => x.to === VENDEDOR
-    && /Propuesta de \*Juan Pérez\* emitida\. Para corregirla manda CLIENTE Juan Pérez \+56987654321/.test(x.t)),
+    && /Propuesta de \*Juan Pérez\* emitida\. Sigues cotizando para Juan Pérez/.test(x.t)),
     `el vendedor recibe cómo corregir (textos: ${JSON.stringify(textos.map((x) => x.t))})`);
 });
 

@@ -183,7 +183,10 @@ test('«Cliente explícito» 30-sep: CLIENTE fija; CLIENTE OFF termina; el TTL c
   assert.match(msg, /Cotizando para \*Juan Pérez\*/);
   assert.deepEqual(pushes, [], '[r11 #6] el comando ya no crea el lead (se crea al cotizar)');
   assert.equal(obtener(VENDEDOR).phone, JUAN);
-  assert.match(mensajeTrasPdf(obtener(VENDEDOR)), /Propuesta de \*Juan Pérez\* emitida\. Para corregirla manda CLIENTE Juan Pérez \+56987654321/);
+  // 🔁 [2026-10-06] TEST DADO VUELTA POR DECISION DEL DUEÑO (opcion a), textual: «este fijado hasta que cambie de
+  // cliente… debo pedir modificaciones y cosas asi para enviar nuevamente la cotizacion». Antes defendia que la
+  // atribucion se CONSUMIA con el PDF (decision del 30-sep); ahora defiende que SIGUE fijada (tope 24 h).
+  assert.match(mensajeTrasPdf(obtener(VENDEDOR)), /Propuesta de \*Juan Pérez\* emitida\. Sigues cotizando para Juan Pérez/);
   await procesarComandoCliente({ waId: VENDEDOR, listaVigente: () => true, autorizar: () => true, texto: 'CLIENTE OFF', pushLead: async () => {} });
   assert.equal(obtener(VENDEDOR), null, 'CLIENTE OFF la termina');
 
@@ -193,7 +196,7 @@ test('«Cliente explícito» 30-sep: CLIENTE fija; CLIENTE OFF termina; el TTL c
     Date.now = () => t;
     fijar(VENDEDOR, JUAN, 'Juan');
     t += VIGENCIA_MS - 1000; assert.ok(obtener(VENDEDOR), 'dentro de la vigencia');
-    t += 2000;               assert.equal(obtener(VENDEDOR), null, 'usarla no la renovó: vence a las 2 h de fijada');
+    t += 2000;               assert.equal(obtener(VENDEDOR), null, 'usarla no la renovó: vence a las 24 h de fijada');
   } finally { Date.now = realNow; _reset(); }
 });
 

@@ -29,7 +29,8 @@ export function vigenciaMs() {
   // [r16 #4] Un valor no numérico, 0, negativo o infinito NO es una vigencia: se usa la de 2 h.
   // (Con NaN, `Date.now() - fijadoAt > NaN` es siempre false ⇒ la atribución no vencía nunca.)
   const v = Number(process.env.ATRIBUCION_VIGENCIA_MS);
-  return Number.isFinite(v) && v > 0 ? v : 2 * 60 * 60 * 1000;
+  // [2026-10-06] 24 h (antes 2 h): el cliente queda fijado hasta que se cambie; este es el tope de seguridad (dueño).
+  return Number.isFinite(v) && v > 0 ? v : 24 * 60 * 60 * 1000;
 }
 
 /** Hora de un mensaje de WhatsApp en ms (acepta segundos de Meta, ms o ISO). null si no hay. */

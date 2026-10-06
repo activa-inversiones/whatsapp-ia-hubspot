@@ -13,7 +13,6 @@
 //   `delivered` dejaría la atribución abierta indefinidamente si el acuse no llega.
 
 import { cambiarCarpeta, escribirCarpeta, leerCarpeta, CARPETA_PROPIA } from './sesionCarpetas.js';
-import { limpiarSiMisma } from './atribucionStore.js';
 import { completo } from './telefono.js';
 import { mensajeTrasPdf } from './comandoCliente.js';
 
@@ -90,8 +89,10 @@ export async function trasEmitir({ turno, state, history, kv, enviar, log = () =
     } catch { /* el aviso no tumba el turno */ }
     return { hecho: true, consumida: false };
   }
-  limpiarSiMisma(turno.quienEscribe, a.gen);
-  state.carpeta_cerrada = turno.cliente;
+  // [2026-10-06] DECISION DEL DUEÑO (opcion a), textual: «este fijado hasta que cambie de cliente… debo pedir
+  // modificaciones y cosas asi para enviar nuevamente la cotizacion». La atribucion YA NO se consume con el PDF:
+  // sigue fijada (tope 24 h, vigenciaMs) hasta otro CLIENTE o CLIENTE OFF. Antes: limpiarSiMisma + carpeta_cerrada,
+  // y corregir obligaba a re-mandar el comando («el vendedor es una tortura», caso 0597/0598).
   turno._carpetaPorCerrar = true;   // [L4 r10] al final del turno se reescribe completa (alCerrarTurno)
   try { await enviar(mensajeTrasPdf(a)); } catch { /* el aviso no tumba el turno */ }
   return { hecho: true, consumida: true };

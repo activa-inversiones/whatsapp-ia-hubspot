@@ -10,13 +10,13 @@ const J = '56987654321';
 
 function turnoCon(a) { return { quienEscribe: V, cliente: J, atribucion: a, _trasEmitirHecho: false }; }
 
-test('r16 #4: ATRIBUCION_VIGENCIA_MS no numérico, 0 o negativo → la vigencia por defecto (2 h)', async () => {
+test('r16 #4: ATRIBUCION_VIGENCIA_MS no numérico, 0 o negativo → la vigencia por defecto (24 h, decision del dueño 06-oct)', async () => {
   const { vigenciaMs } = await import('./atribucionStore.js');
   const prev = process.env.ATRIBUCION_VIGENCIA_MS;
   try {
     for (const malo of ['abc', '0', '-5', 'Infinity', '']) {
       process.env.ATRIBUCION_VIGENCIA_MS = malo;
-      assert.equal(vigenciaMs(), 2 * 60 * 60 * 1000, `"${malo}"`);
+      assert.equal(vigenciaMs(), 24 * 60 * 60 * 1000, `"${malo}"`);
     }
     process.env.ATRIBUCION_VIGENCIA_MS = '1000';
     assert.equal(vigenciaMs(), 1000);
@@ -45,14 +45,17 @@ test('falla al guardar el folio → NO consume y avisa', async () => {
   _resetAtribuciones();
 });
 
-test('guardado OK → consume (misma gen) y manda el mensaje UNA vez por turno', async () => {
+// 🔁 [2026-10-06] TEST DADO VUELTA POR DECISION DEL DUEÑO (opcion a), textual: «este fijado hasta que cambie de
+// cliente… debo pedir modificaciones y cosas asi para enviar nuevamente la cotizacion». Antes defendia que la
+// atribucion se CONSUMIA con el PDF (decision del 30-sep); ahora defiende que SIGUE fijada (tope 24 h).
+test('guardado OK → la atribucion SIGUE fijada y el mensaje sale UNA vez por turno', async () => {
   _resetAtribuciones();
   const a = fijar(V, J, 'Juan');
   const enviados = [];
   const turno = turnoCon(a);
   const o = { turno, state: {}, history: [], kv: { escribir: async () => ({ ok: true }) }, enviar: async (t) => enviados.push(t) };
   await trasEmitir(o); await trasEmitir(o);
-  assert.equal(obtener(V), null);
+  assert.equal(obtener(V)?.phone, J, 'sigue cotizando para Juan tras el PDF');
   assert.equal(enviados.length, 1);
   _resetAtribuciones();
 });
