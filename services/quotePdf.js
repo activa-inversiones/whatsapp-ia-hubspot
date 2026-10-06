@@ -65,6 +65,12 @@ export function lineaReceptorPropuesta(data = {}) {
   return partes.join("  ·  ");
 }
 
+/** [2026-10-06] Texto de la franja «reemplaza a…» o '' si esta propuesta no reemplaza a ninguna. Pura (testeable). */
+export function leyendaReemplaza(data = {}) {
+  const ant = String(data.reemplaza_a || '').trim();
+  return ant ? `ESTA PROPUESTA REEMPLAZA A LA N° ${ant}: considere solo esta versión.` : '';
+}
+
 function header(doc, quoteNumber) {
   doc.rect(0, 0, doc.page.width, 90).fill(NAVY);
   doc.fillColor("#fff").fontSize(22).font("Helvetica-Bold").text("ACTIVA INVERSIONES", 50, 26);
@@ -112,6 +118,17 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
         doc.fillColor("#B3261E").fontSize(9).font("Helvetica-Bold")
           .text(`PROPUESTA PARCIAL${data.partial_note ? ": " + data.partial_note : ": no incluye todos los ítems solicitados; el resto lo cotiza Marcelo directamente"}`,
             58, y + 6, { width: doc.page.width - 116 });
+        y += 30;
+      }
+
+      // 🔁 [2026-10-06 · decision del dueño] «REEMPLAZA A LA PROPUESTA N° X». Una correccion ya entregada sale con
+      // letra (0598 → 0598-B) y no pisa la anterior; pero los dos PDF se llaman casi igual y el cliente podria
+      // quedarse con el mas barato. Textual: *«para no perder lo que le estamos enviando y cliente no tome la
+      // cotizacion mas economica que tenga el mismo nombre»*. Opcion A elegida: letras + esta leyenda.
+      const _reemplaza = leyendaReemplaza(data);
+      if (_reemplaza) {
+        doc.rect(50, y, doc.page.width - 100, 22).fill("#FFF4E5");
+        doc.fillColor("#8A4B00").fontSize(9).font("Helvetica-Bold").text(_reemplaza, 58, y + 6, { width: doc.page.width - 116 });
         y += 30;
       }
 

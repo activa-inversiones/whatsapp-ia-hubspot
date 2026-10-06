@@ -3549,12 +3549,14 @@ Comuna: ${datos.comuna}`
           // todavia no recibio, sigue siendo la misma y conserva su numero — que es lo que se
           // arreglo el 08-ago con el caso Jessica (3 correlativos quemados en 5 minutos).
           let esRevision = false;
+          let reemplazaA = null;   // [2026-10-06] folio de la propuesta ENTREGADA que esta corrige (leyenda del PDF)
           const _lq = state.last_quote;
           const _dec = numeroDeDocumento({ lastQuote: _lq, sig: _quoteSig, ventanaMs: FOLIO_REUSO_MS });
           if (_dec.numero) {
             quoteNumber = _dec.numero;
             descuentoMercadoPct = Number(_lq.descuento_mercado_pct) || 0;
             esRevision = _dec.motivo === 'revision';
+            if (_dec.motivo === 'alternativa' && _lq?.quote_number) reemplazaA = _lq.quote_number;
             log(_dec.motivo === 'sin_letras' ? 'warn' : 'info', 'generarPdf.folio',
               `${from}: ${quoteNumber} (${_dec.motivo})`);
           }
@@ -3784,6 +3786,7 @@ Comuna: ${datos.comuna}`
               termico:        it.termico || null,   // [thermal] Uw aditivo (null = no se muestra)
             })),
             quote_num: quoteNumber,
+            reemplaza_a: reemplazaA || undefined,   // [2026-10-06] franja «reemplaza a la N° …» (decision del dueño)
           };
           const pdfBuffer = await generatePdf(pdfData, quoteNumber);
 
