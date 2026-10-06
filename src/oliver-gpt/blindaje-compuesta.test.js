@@ -21,6 +21,7 @@ import fs from 'node:fs';
 // función pura de texto, y probarla importa más que la elegancia de cómo se obtiene.
 const src = fs.readFileSync(new URL('./webhook.js', import.meta.url), 'utf8');
 const cuerpo = src.match(/function aperturaFromLabel\(text\)\s*\{([\s\S]*?)\n\}/)[1];
+// eslint-disable-next-line no-new-func -- test: aperturaFromLabel es privada del webhook; se prueba su cuerpo real (06-oct)
 const aperturaFromLabel = new Function('text', cuerpo);
 
 test('🔴 una compuesta se declara COMPUESTA, no ambigua', () => {
@@ -65,4 +66,14 @@ test('🔴 la sonda del blindaje le pasa al motor lo que necesita para el EJE', 
   assert.match(sonda, /orientacion:/, 'la sonda manda la orientación');
   assert.match(sonda, /partes:/, 'y los paños');
   assert.match(sonda, /texto_cliente:/, 'y el texto del cliente, que decide el orden de las medidas');
+});
+
+test('🛡️ [2026-10-06] la corredera de 3 hojas "central fija" ENTRA al blindaje (no es una FIJA)', () => {
+  // Codex, tridente: la etiqueta nueva del motor "... 3 hojas, central fija" caia a null ⇒ sin revision de precio.
+  assert.equal(aperturaFromLabel('Corredera SLIDING H98 Doble Riel S75 3 hojas, central fija'), 'CORREDERA');
+  assert.equal(aperturaFromLabel('Corredera SLIDING H98 Doble Riel S75 4 hojas'), 'CORREDERA');
+  assert.equal(aperturaFromLabel('Corredera SLIDING H98 Triple Riel S75 3 hojas'), 'CORREDERA');
+  // Un fijo de verdad junto a una corredera SIGUE siendo ambiguo (no se adivina).
+  assert.equal(aperturaFromLabel('Corredera con paño fijo lateral'), null);
+  assert.equal(aperturaFromLabel('Fijo S60'), 'FIJA');
 });

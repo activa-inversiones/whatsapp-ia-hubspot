@@ -33,11 +33,6 @@ function celularesDelTexto(texto) {
   return [...vistos].map(([numero, crudo]) => ({ crudo, numero }));
 }
 
-/**
- * Parsea "CLIENTE Juan Pérez +56 9 1234 5678" (o al revés). Regla SIMPLE (Thermos conjunto, H):
- * se saca el RUT, se toman los celulares chilenos y se acepta SOLO si queda exactamente uno.
- * @returns {{ok:true, phone:string, name:string}|{ok:true, limpiar:true}|{ok:false, error:string}}
- */
 /** La primera linea con texto del mensaje (el comando); lo de abajo es otra cosa (ventanas, notas). */
 export function primeraLinea(texto) {
   return (String(texto || '').split(/\r?\n/).map((l) => l.trim()).find(Boolean)) || '';
@@ -47,6 +42,11 @@ export function traeMasLineas(texto) {
   return String(texto || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).length > 1;
 }
 
+/**
+ * Parsea "CLIENTE Juan Pérez +56 9 1234 5678" (o al revés). Regla SIMPLE (Thermos conjunto, H):
+ * se saca el RUT, se toman los celulares chilenos y se acepta SOLO si queda exactamente uno.
+ * @returns {{ok:true, phone:string, name:string}|{ok:true, limpiar:true}|{ok:false, error:string}}
+ */
 export function parseComandoCliente(texto) {
   // [2026-10-06] Solo la PRIMERA linea es el comando: el dueño escribio «CLIENTE Alex Clark +569…» y las ventanas
   // debajo, y como `.` no cruza saltos de linea el patron no calzaba ⇒ «⚠️ no_es_comando» crudo (2 veces ese dia).

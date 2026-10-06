@@ -264,7 +264,11 @@ function aperturaFromLabel(text) {
   if (/\bproyectant/.test(t)) f.add('PROYECTANTE');
   if (/\bcorrediz/.test(t) || /\bcorrederas?\b/.test(t) || /\bdeslizant/.test(t) || /\bsliding\b/.test(t)) f.add('CORREDERA');
   if (/\bbatient/.test(t) && !/\boscilo/.test(t)) f.add('BATIENTE');
-  if (/\bfij[ao]s?\b/.test(t)) f.add('FIJA');
+  // [2026-10-06] "central fija" / "centro fija" / "del medio fija" es la hoja del medio de una CORREDERA de 3
+  // hojas, no una ventana fija. Sin esto la etiqueta nueva del motor ("... 3 hojas, central fija") se leia como
+  // CORREDERA + FIJA ⇒ null ⇒ el item quedaba FUERA del blindaje de precio (lo cazo Codex en el tridente).
+  const tSinCentral = t.replace(/\b(?:central|centro|del\s+medio)\s+fij[ao]s?\b/g, ' ');
+  if (/\bfij[ao]s?\b/.test(tSinCentral)) f.add('FIJA');
   return f.size === 1 ? [...f][0] : null;
 }
 
@@ -5395,7 +5399,7 @@ Comuna: ${datos.comuna}`
     // TURNO: se recalcula cada vez y se borra antes de persistir (dar de baja = cliente normal).
     state.modo_interno = modoInternoOliver(from);
     // [2026-10-06] Y si hay cliente fijado (CLIENTE), el LLM lo sabe. Del turno, como modo_interno.
-    state.cliente_fijado = atribucion ? { name: atribucion.name || '', phone: atribucion.phone } : null;
+    state.cliente_fijado = atribucion ? { name: String(atribucion.name || '').slice(0, 60), phone: atribucion.phone } : null;   // tope: texto libre del comando va al LLM
     if (state.modo_interno) log('info', 'modo_interno', `${from} es del equipo: turno en modo INTERNO`);
 
     const turn = await handleTurn({ history, userText, state, toolCtx });

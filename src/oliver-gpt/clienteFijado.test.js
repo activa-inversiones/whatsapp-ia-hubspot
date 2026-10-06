@@ -26,3 +26,11 @@ test('sin cliente fijado no aparece la linea (el dueño puede cotizar para si)',
   const c = txt(buildSessionContext({ modo_interno: true }));
   assert.doesNotMatch(c, /CLIENTE YA FIJADO/);
 });
+
+// Codex (tridente 06-oct): el test de arriba arma el estado a mano y seguiria verde si se borrara el cableado.
+import { readFileSync } from 'node:fs';
+test('🛡️ el webhook SI le pasa el cliente fijado al turno (y lo borra antes de persistir)', () => {
+  const src = readFileSync(new URL('./webhook.js', import.meta.url), 'utf8');
+  assert.match(src, /state\.cliente_fijado\s*=\s*atribucion\s*\?/, 'el turno lleva el cliente fijado');
+  assert.match(src, /delete newState\.cliente_fijado/, 'y no se guarda en la sesion');
+});
