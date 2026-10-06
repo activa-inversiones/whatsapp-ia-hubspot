@@ -68,7 +68,8 @@ export function lineaReceptorPropuesta(data = {}) {
 /** [2026-10-06] Texto de la franja «reemplaza a…» o '' si esta propuesta no reemplaza a ninguna. Pura (testeable). */
 export function leyendaReemplaza(data = {}) {
   const ant = String(data.reemplaza_a || '').trim();
-  return ant ? `ESTA PROPUESTA REEMPLAZA A LA N° ${ant}: considere solo esta versión.` : '';
+  // Sin "considere solo esta": en una terna de colores la A lleva la franja y la B/C siguen siendo validas.
+  return ant ? `ESTA PROPUESTA REEMPLAZA A LA N° ${ant} (versión anterior).` : '';
 }
 
 function header(doc, quoteNumber) {

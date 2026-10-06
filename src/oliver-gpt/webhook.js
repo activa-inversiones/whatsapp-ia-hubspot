@@ -338,6 +338,19 @@ const RATE_MAP = new Map();
  *
  * @returns {{numero:string|null, motivo:string}} numero null = pedir correlativo nuevo
  */
+/**
+ * [2026-10-06] ¿Esta propuesta REEMPLAZA a la anterior (franja «reemplaza a la N° X»)? Decision del dueño (opcion A).
+ * Solo si sale con letra nueva (motivo 'alternativa': la anterior ya se entrego y el contenido cambio) Y cambio el
+ * PROYECTO (ventanas), no solo el color: una alternativa de color es valida junto a la otra (caso Paula). Sin firma
+ * previa (propuestas anteriores al cambio) no se pone. Guardia: reemplazoDe.test.js.
+ * @returns {string|null} folio reemplazado, o null
+ */
+export function reemplazoDe({ motivo, lastQuote, sigProyecto } = {}) {
+  const lq = lastQuote;
+  if (motivo !== 'alternativa' || !lq?.quote_number || !lq.sig_proyecto || !sigProyecto) return null;
+  return lq.sig_proyecto !== sigProyecto ? lq.quote_number : null;
+}
+
 export function numeroDeDocumento({ lastQuote, sig, ventanaMs, ahora = Date.now() } = {}) {
   // [2026-08-31] Las letras salen de `propuestas-color.js`: la terna A/B/C compone folios con
   // las MISMAS y dos copias del alfabeto se desincronizan igual que dos copias de una regla.
@@ -3569,7 +3582,10 @@ Comuna: ${datos.comuna}`
             quoteNumber = _dec.numero;
             descuentoMercadoPct = Number(_lq.descuento_mercado_pct) || 0;
             esRevision = _dec.motivo === 'revision';
-            if (_dec.motivo === 'alternativa' && _lq?.quote_number) reemplazaA = _lq.quote_number;
+            // [2026-10-06] Leyenda SOLO si cambio el PROYECTO (ventanas), no solo el color: una alternativa de color
+            // (caso Paula, negra y blanca) es VALIDA junto a la otra y no la "reemplaza" (Thermos x2). Sin firma previa
+            // (propuestas de antes del deploy) no se pone: no se adivina.
+            reemplazaA = reemplazoDe({ motivo: _dec.motivo, lastQuote: _lq, sigProyecto: _sigProyecto });
             log(_dec.motivo === 'sin_letras' ? 'warn' : 'info', 'generarPdf.folio',
               `${from}: ${quoteNumber} (${_dec.motivo})`);
           }
@@ -4657,6 +4673,7 @@ Comuna: ${datos.comuna}`
                 //    folio: asi las tres propuestas son la misma propuesta, no tres distintas.
                 const _pdfOp = {
                   ...pdfData,
+                  reemplaza_a: undefined,   // [2026-10-06] las opciones de color de la terna NO se reemplazan entre si (Thermos)
                   quote_num: _numOp,
                   default_color: _colorOp,
                   opcion: { letra: _letraOp, color: _colorOp },
@@ -5119,6 +5136,7 @@ Comuna: ${datos.comuna}`
               // La firma y la base viajan con el rastro: sin ellas no se puede saber si el
               // proximo PDF es una correccion de este o un documento distinto.
               sig: _quoteSig,
+              sig_proyecto: _sigProyecto,   // [2026-10-06] siempre: decide si la proxima es correccion (leyenda) o alternativa de color
               quote_base: String(quoteNumber).replace(/-[A-Z]$/, ''),
               // [2026-08-31] `_letrasTerna` = las letras que la terna A/B/C ya reservo. Se
               // cuentan aunque el envio haya fallado: reciclar una letra pondria dos

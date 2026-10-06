@@ -15,3 +15,7 @@ test('🛡️ el PDF con reemplaza_a se genera (la franja no rompe el documento)
     items: [{ product: 'Fijo S60', measures: '1000x1000', color: 'Blanco', qty: 1, unit_price: 100000 }] }, 'CM-FR-004-2026-0598-B');
   assert.ok(Buffer.isBuffer(buf) && buf.length > 1000);
 });
+
+test('🛡️ el texto no dice "considere solo esta" (en una terna, las otras opciones siguen valiendo)', () => {
+  assert.doesNotMatch(leyendaReemplaza({ reemplaza_a: 'X' }), /solo esta/i);
+});
