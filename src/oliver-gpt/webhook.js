@@ -267,7 +267,9 @@ function aperturaFromLabel(text) {
   // [2026-10-06] "central fija" / "centro fija" / "del medio fija" es la hoja del medio de una CORREDERA de 3
   // hojas, no una ventana fija. Sin esto la etiqueta nueva del motor ("... 3 hojas, central fija") se leia como
   // CORREDERA + FIJA ⇒ null ⇒ el item quedaba FUERA del blindaje de precio (lo cazo Codex en el tridente).
-  const tSinCentral = t.replace(/\b(?:central|centro|del\s+medio)\s+fij[ao]s?\b/g, ' ');
+  // SOLO la frase exacta que escribe el MOTOR ("3 hojas, central fija"): un texto libre como "corredera + ventana
+  // del medio fija" tiene un fijo de verdad y sigue siendo ambiguo (Codex r2: el patron amplio lo tragaba).
+  const tSinCentral = t.replace(/\b\d\s*hojas,\s*central\s+fija\b/g, ' ');
   if (/\bfij[ao]s?\b/.test(tSinCentral)) f.add('FIJA');
   return f.size === 1 ? [...f][0] : null;
 }

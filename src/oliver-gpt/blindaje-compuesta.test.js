@@ -75,5 +75,8 @@ test('🛡️ [2026-10-06] la corredera de 3 hojas "central fija" ENTRA al blind
   assert.equal(aperturaFromLabel('Corredera SLIDING H98 Triple Riel S75 3 hojas'), 'CORREDERA');
   // Un fijo de verdad junto a una corredera SIGUE siendo ambiguo (no se adivina).
   assert.equal(aperturaFromLabel('Corredera con paño fijo lateral'), null);
+  // Codex r2: texto libre con un fijo de verdad NO se traga (solo la frase exacta del motor).
+  assert.equal(aperturaFromLabel('Corredera + ventana del medio fija'), null);
+  assert.equal(aperturaFromLabel('Corredera con hoja central fija'), null);
   assert.equal(aperturaFromLabel('Fijo S60'), 'FIJA');
 });

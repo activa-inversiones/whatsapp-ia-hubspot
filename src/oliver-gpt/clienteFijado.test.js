@@ -33,4 +33,10 @@ test('🛡️ el webhook SI le pasa el cliente fijado al turno (y lo borra antes
   const src = readFileSync(new URL('./webhook.js', import.meta.url), 'utf8');
   assert.match(src, /state\.cliente_fijado\s*=\s*atribucion\s*\?/, 'el turno lleva el cliente fijado');
   assert.match(src, /delete newState\.cliente_fijado/, 'y no se guarda en la sesion');
+  // Codex r2: el ORDEN importa — se asigna ANTES de llamar al cerebro y se borra DESPUES.
+  const iAsig = src.search(/state\.cliente_fijado\s*=\s*atribucion\s*\?/);
+  const iTurno = src.indexOf('await handleTurn(', iAsig);
+  const iBorra = src.indexOf('delete newState.cliente_fijado', iAsig);
+  assert.ok(iAsig > 0 && iTurno > iAsig, 'se asigna antes del turno del LLM');
+  assert.ok(iBorra > iTurno, 'y se borra despues del turno');
 });
