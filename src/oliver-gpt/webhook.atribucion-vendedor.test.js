@@ -514,3 +514,20 @@ test('decisión dueño 30-sep: sin atribución (cliente normal) el payload y los
   assert.equal(media.find((m) => /Propuesta/.test(m.ai_description || ''))?.phone, FROM);
   assert.equal(conversaciones.find((c) => c.metadata?.source === 'oliver_gpt_pdf')?.external_id, FROM);
 });
+
+// [2026-10-06] Caso real del dueño: tras «✅ Cotizando para X» el LLM decia «Falta fijar el cliente» (7 de 8).
+// COMPORTAMIENTO (Codex r3 pidio no leer el fuente): el cerebro RECIBE el cliente fijado en el estado del turno, y
+// la sesion que se guarda NO lo conserva (es del turno, como modo_interno).
+test('🛡️ 06-oct: con CLIENTE fijado, el cerebro recibe state.cliente_fijado y la sesion guardada no lo conserva', async () => {
+  prepararVendedor();
+  fijar(VENDEDOR, CLIENTE, 'Juan Pérez');
+  const ev = []; const pdf = []; const vistos = []; const guardados = [];
+  const deps = makeDeps(VENDEDOR, 'wamid.VEND.FIJADO', ev, pdf, { medida: '1700x1100' });
+  const turnoReal = deps.handleTurn;
+  deps.handleTurn = async (args) => { vistos.push(JSON.parse(JSON.stringify(args.state.cliente_fijado ?? null))); return turnoReal(args); };
+  deps.persistSession = (from, st) => { guardados.push(JSON.parse(JSON.stringify(st || {}))); };
+  try { await correr(deps); } finally { _reiniciarParaTests(); resetAtribucion(); }
+  assert.deepEqual(vistos[0], { name: 'Juan Pérez', phone: CLIENTE }, 'el LLM tiene que saber que el cliente ya esta fijado');
+  assert.ok(guardados.length > 0, 'el turno tiene que guardar la sesion');
+  for (const g of guardados) assert.equal(g.cliente_fijado, undefined, 'el cliente fijado es del turno, no de la sesion');
+});

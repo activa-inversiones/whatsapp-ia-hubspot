@@ -78,5 +78,6 @@ test('🛡️ [2026-10-06] la corredera de 3 hojas "central fija" ENTRA al blind
   // Codex r2: texto libre con un fijo de verdad NO se traga (solo la frase exacta del motor).
   assert.equal(aperturaFromLabel('Corredera + ventana del medio fija'), null);
   assert.equal(aperturaFromLabel('Corredera con hoja central fija'), null);
+  assert.equal(aperturaFromLabel('Corredera 4 hojas, central fija'), null, 'solo 3 hojas: el motor no la escribe con 4');
   assert.equal(aperturaFromLabel('Fijo S60'), 'FIJA');
 });

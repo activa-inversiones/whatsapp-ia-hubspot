@@ -27,16 +27,5 @@ test('sin cliente fijado no aparece la linea (el dueño puede cotizar para si)',
   assert.doesNotMatch(c, /CLIENTE YA FIJADO/);
 });
 
-// Codex (tridente 06-oct): el test de arriba arma el estado a mano y seguiria verde si se borrara el cableado.
-import { readFileSync } from 'node:fs';
-test('🛡️ el webhook SI le pasa el cliente fijado al turno (y lo borra antes de persistir)', () => {
-  const src = readFileSync(new URL('./webhook.js', import.meta.url), 'utf8');
-  assert.match(src, /state\.cliente_fijado\s*=\s*atribucion\s*\?/, 'el turno lleva el cliente fijado');
-  assert.match(src, /delete newState\.cliente_fijado/, 'y no se guarda en la sesion');
-  // Codex r2: el ORDEN importa — se asigna ANTES de llamar al cerebro y se borra DESPUES.
-  const iAsig = src.search(/state\.cliente_fijado\s*=\s*atribucion\s*\?/);
-  const iTurno = src.indexOf('await handleTurn(', iAsig);
-  const iBorra = src.indexOf('delete newState.cliente_fijado', iAsig);
-  assert.ok(iAsig > 0 && iTurno > iAsig, 'se asigna antes del turno del LLM');
-  assert.ok(iBorra > iTurno, 'y se borra despues del turno');
-});
+// El cableado del webhook (el turno recibe el cliente fijado y la sesion no lo guarda) se prueba por
+// COMPORTAMIENTO en webhook.atribucion-vendedor.test.js (Codex r3: no leer el fuente).

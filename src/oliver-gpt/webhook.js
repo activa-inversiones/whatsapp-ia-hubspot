@@ -269,7 +269,7 @@ function aperturaFromLabel(text) {
   // CORREDERA + FIJA ⇒ null ⇒ el item quedaba FUERA del blindaje de precio (lo cazo Codex en el tridente).
   // SOLO la frase exacta que escribe el MOTOR ("3 hojas, central fija"): un texto libre como "corredera + ventana
   // del medio fija" tiene un fijo de verdad y sigue siendo ambiguo (Codex r2: el patron amplio lo tragaba).
-  const tSinCentral = t.replace(/\b\d\s*hojas,\s*central\s+fija\b/g, ' ');
+  const tSinCentral = t.replace(/\b3\s*hojas,\s*central\s+fija\b/g, ' ');   // el motor la escribe SOLO para 3 hojas (Codex r3)
   if (/\bfij[ao]s?\b/.test(tSinCentral)) f.add('FIJA');
   return f.size === 1 ? [...f][0] : null;
 }
