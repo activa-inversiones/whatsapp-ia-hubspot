@@ -529,5 +529,9 @@ test('🛡️ 06-oct: con CLIENTE fijado, el cerebro recibe state.cliente_fijado
   try { await correr(deps); } finally { _reiniciarParaTests(); resetAtribucion(); }
   assert.deepEqual(vistos[0], { name: 'Juan Pérez', phone: CLIENTE }, 'el LLM tiene que saber que el cliente ya esta fijado');
   assert.ok(guardados.length > 0, 'el turno tiene que guardar la sesion');
-  for (const g of guardados) assert.equal(g.cliente_fijado, undefined, 'el cliente fijado es del turno, no de la sesion');
+  // persistSession recibe { history, state } (Codex r4: revisar g.cliente_fijado era un falso verde).
+  for (const g of guardados) {
+    assert.ok(g.state && typeof g.state === 'object', `persistSession sin state: ${JSON.stringify(Object.keys(g))}`);
+    assert.equal(g.state.cliente_fijado, undefined, 'el cliente fijado es del turno, no de la sesion');
+  }
 });
