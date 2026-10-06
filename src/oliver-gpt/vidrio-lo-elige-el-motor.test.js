@@ -78,7 +78,7 @@ test('✅ V5 calcular_por_area cotiza SIN glass_id (el motor elige el vidrio)', 
     assert.equal(r.ok, true, `debe cotizar sin glass_id: ${JSON.stringify(r)}`);
     const cotizacion = bodies.find((b) => b.url.endsWith('/api/quotes/calculate'));
     assert.ok(cotizacion, 'el precio sale de /api/quotes/calculate (priceAllEngine), no del endpoint por área');
-    assert.equal(cotizacion.body.glass_id, 34, '1,5 m² ⇒ 4+12+4 por la regla del motor');
+    assert.equal(cotizacion.body.glass_id, 1607, '1,5 m² ⇒ 4+12+4 por la regla del motor');
   } finally {
     globalThis.fetch = originalFetch;
   }

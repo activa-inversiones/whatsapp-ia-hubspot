@@ -23,6 +23,7 @@ import { detectarProductoFueraDeAlcance } from "./productoFueraDeAlcance.js";
 // la misma pregunta y le mostro al cliente una ventana que no era la que se le cotizo.
 // NO volver a definirlas aca: la regla es una sola funcion que resuelve.
 import { detectHojas, esMonorrielPorForma } from "./formaMonorriel.js";
+import { VIDRIO_BASE } from "./vidriosBase.js";
 import { leerMedidaTriple, esBowPorForma, esquinaDesdeLabel } from "./formaEsquina.js";
 export { detectHojas, esMonorrielPorForma };
 
@@ -30,15 +31,17 @@ export { detectHojas, esMonorrielPorForma };
 const DEFAULT_GLASS_ID = Number(process.env.ACTIVA_ENGINE_DEFAULT_GLASS_ID) || 44;
 
 // ── Selección de vidrio por ÁREA + AMBIENTE (regla del dueño 2026-06-06) ──────
-//   < 2 m²  → 4+12+4 claro (id 34)
-//   ≥ 2 m²  → 5+12+5 claro (id 61)
-//   Baño/WC → 4+12+4 satén (id 38)  [detección por nombre del ambiente]
+//   < 2 m²  → 4+12+4 claro (id 1607)
+//   ≥ 2 m²  → 5+12+5 claro (id 1608)
+//   Baño/WC → 4+12+4 satén (id 1609)  [detección por nombre del ambiente]
+// [2026-10-06] Antes 34/61/38: copias MANUALES del motor que el sync de Winart no actualiza.
+// Regla del dueño, textual: *"los vidrios modificados en winart o agregados deben estar en el
+// motor ... esos son los termopaneles base que usaremos"*. 1607/1608/1609 son sus «Propio» de
+// Winart (Thermoflex). Mismo precio el dia del cambio ($42.679 / $54.306 / $50.000, medido).
 // IDs configurables por env por si cambian en el catálogo del motor.
-const GLASS_STD     = Number(process.env.GLASS_ID_STD)            || 34;
-const GLASS_LARGE   = Number(process.env.GLASS_ID_LARGE)          || 61;
-const GLASS_BANO    = Number(process.env.GLASS_ID_BANO)           || 38;
+const { STD: GLASS_STD, LARGE: GLASS_LARGE, BANO: GLASS_BANO } = VIDRIO_BASE;   // fuente única: vidriosBase.js
 const GLASS_AREA_M2 = Number(process.env.GLASS_AREA_THRESHOLD_M2) || 2;
-function pickGlassId(ancho_mm, alto_mm, ambiente) {
+export function pickGlassId(ancho_mm, alto_mm, ambiente) {
   const amb = String(ambiente || '').toLowerCase();
   if (/ba[ñn]o|wc|w\/c|water/.test(amb)) return GLASS_BANO;   // baño → satén
   const area = (Number(ancho_mm) / 1000) * (Number(alto_mm) / 1000);

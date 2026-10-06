@@ -248,7 +248,7 @@ test('🔴 #947 · desde la TOOL: la bow window de 4 paños llega al motor ENTER
     assert.equal(b.partes[3].partes.reduce((s, p) => s + p.alto_mm, 0), 1540);
     // El vidrio se elige por el paño MAS GRANDE (1830x1540 = 2,8 m2 -> 5+12+5), igual que en la
     // notacion de tres medidas manda el central. No por el lateral de 330 que va primero.
-    assert.equal(b.glass_id, 61);
+    assert.equal(b.glass_id, 1608);
     assert.equal(r.ok, true);
     // La medida que ve el cliente es la de SU ventana (#887), no la del primer paño.
     assert.equal(r.medidas_resueltas, '4315x1540mm');
@@ -332,7 +332,7 @@ test('🔴 #947 · el VIDRIO de la esquina es el del paño mayor por los TRES ca
     assert.equal(enviados.length, 3);
     for (const [i, b] of enviados.entries()) {
       assert.equal(b.tipo, 'ESQUINA', `camino ${i + 1}`);
-      assert.equal(b.glass_id, 34, `camino ${i + 1}: 4+12+4, el del paño mayor (1,44 m2), no el del total (2,4 m2)`);
+      assert.equal(b.glass_id, 1607, `camino ${i + 1}: 4+12+4, el del paño mayor (1,44 m2), no el del total (2,4 m2)`);
     }
   });
 });
@@ -374,7 +374,7 @@ test('🔴 #947 · Codex r2 GRAVE 3 · lista "alto por ancho": el alto es el que
     assert.equal(b.alto_mm, 1540, 'ni 330 (2a cifra del par) ni 1830 (el pre-pass dio vuelta el par)');
     assert.equal(b.ancho_mm, 4315);
     assert.deepEqual(b.partes.map((p) => p.ancho_mm), [330, 1830, 1830, 325]);
-    assert.equal(b.glass_id, 61, 'el vidrio por el paño mayor 1830x1540, no por un par invertido');
+    assert.equal(b.glass_id, 1608, 'el vidrio por el paño mayor 1830x1540, no por un par invertido');
   });
 });
 
@@ -552,7 +552,7 @@ test('📌 #947 · Codex r3 GRAVE 1 · DECISIÓN: el vidrio de la esquina va por
     await runTool('calcular_cotizacion', { tipo: 'FIJA', medidas_texto: '400x1540x1830', descripcion_producto: 'bow window',
       color: 'BLANCO', comuna: 'Temuco', cantidad: 1 }, {});
     assert.deepEqual(enviados[0].partes.map((p) => p.ancho_mm), [1830, 400, 1830]);
-    assert.equal(enviados[0].glass_id, 61, 'por el lateral de 1830x1540, no por el central de 400');
+    assert.equal(enviados[0].glass_id, 1608, 'por el lateral de 1830x1540, no por el central de 400');
   });
 });
 
@@ -637,7 +637,7 @@ test('🔴 #947 · Codex r4 GRAVE 6 · por ETIQUETA con "alto por ancho" en el t
     assert.equal(enviados[0].alto_mm, 1540);
     assert.equal(enviados[0].ancho_mm, 4315);
     assert.equal(items[0].measures, '4315x1540mm');
-    assert.equal(enviados[0].glass_id, 61);
+    assert.equal(enviados[0].glass_id, 1608);
   });
 });
 
@@ -711,6 +711,6 @@ test('🔴 #947 · MEDIDO (propuesta 0557) · por la etiqueta que REESCRIBE el L
     assert.deepEqual(enviados[0].partes.map((p) => p.ancho_mm), [330, 1830, 1830, 325]);
     assert.deepEqual(enviados[0].partes[3].partes.map((p) => [p.tipo, p.alto_mm]), [['PROYECTANTE', 770], ['FIJA', 770]]);
     assert.equal(enviados[0].angulo, 90);
-    assert.equal(enviados[0].glass_id, 61);
+    assert.equal(enviados[0].glass_id, 1608);
   });
 });

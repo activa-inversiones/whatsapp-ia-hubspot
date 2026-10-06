@@ -25,9 +25,9 @@ import { claveAvisoVidrio } from '../../services/vidrioCotizado.js';
 process.env.ACTIVA_ENGINE_URL = 'http://motor.test';
 
 // El motor FALSO: el precio y el Uw dependen del vidrio que el propio motor elige (por area,
-// como `pickGlassId`: 34 = 4+12+4 · 61 = 5+12+5 · 38 = satén), igual que en produccion.
-const PRECIO_VIDRIO = { 34: 100000, 38: 120000, 61: 130000 };
-const UW_VIDRIO = { 34: 2.68, 38: 2.66, 61: 2.7 };
+// como `pickGlassId`: 1607 = 4+12+4 · 1608 = 5+12+5 · 1609 = satén), igual que en produccion.
+const PRECIO_VIDRIO = { 1607: 100000, 1609: 120000, 1608: 130000 };
+const UW_VIDRIO = { 1607: 2.68, 1609: 2.66, 1608: 2.7 };
 let motorCaido = false;
 
 global.fetch = async (url, opts = {}) => {

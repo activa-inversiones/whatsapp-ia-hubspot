@@ -18,6 +18,7 @@ import '../../services/quotePdf.js';
 import { priceAllEngine } from '../../services/enginePricer.js'; // [2026-06-14] pricer completo de V1 (serie SLIDING+hojas+vidrio auto)
 import { esquinaDesdePanos, esBowPorForma, paresDelTexto } from '../../services/formaEsquina.js'; // [2026-09-26 · #947] la bow window paño por paño
 import { detectarProductoFueraDeAlcance } from '../../services/productoFueraDeAlcance.js'; // [Ronda 2] guarda temprana en calcular_por_area
+import { VIDRIO_BASE } from '../../services/vidriosBase.js'; // [2026-10-06] relleno = 4+12+4 base de Winart
 
 // Rango plausible de una ventana/puerta en mm. Fuera de esto = dato dudoso (no cotizar a ciegas).
 const MEDIDA_MIN_MM = 150;
@@ -429,7 +430,7 @@ export const TOOL_DEFS = [
           comuna: { type: 'string', description: 'Comuna de despacho/instalacion. Opcional.' },
           cantidad: { type: 'integer', description: 'Cantidad de ventanas iguales. Opcional, default 1.' },
         },
-        required: ['tipo', 'area_m2', 'descripcion_producto'],   // [2026-10-05] sin glass_id: el handler usa 34 de relleno solo para derivar medidas
+        required: ['tipo', 'area_m2', 'descripcion_producto'],   // [2026-10-05] sin glass_id: el handler usa el 4+12+4 base de relleno solo para derivar medidas
         additionalProperties: false,
       },
     },
@@ -1086,7 +1087,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         _ra = await calcularPorArea({
           tipo: input.tipo,
           area_m2: input.area_m2,
-          glass_id: input.glass_id || 34, // vidrio dummy permitido: solo derivamos medidas; el precio se recalcula con priceAllEngine
+          glass_id: input.glass_id || VIDRIO_BASE.STD, // vidrio dummy permitido: solo derivamos medidas; el precio se recalcula con priceAllEngine
           proporcion: input.proporcion,
           color: input.color,
           comuna: input.comuna,

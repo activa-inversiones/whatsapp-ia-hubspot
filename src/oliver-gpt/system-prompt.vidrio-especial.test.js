@@ -157,13 +157,13 @@ test('🚿 A9 la regla del baño está en el prompt: se pregunta cuál ventana S
 
 /* =========================================================================
  * B) EL CAMINO TÉCNICO DEL BAÑO — caracterización: confirmar, no suponer
- *    calcular_cotizacion({ambiente:'baño'}) → priceAllEngine → pickGlassId → glass_id 38 en el POST al motor.
+ *    calcular_cotizacion({ambiente:'baño'}) → priceAllEngine → pickGlassId → glass_id 1609 en el POST al motor.
  *    Estos tests están en VERDE desde el principio (el camino ya existía): no prueban código nuevo, FIJAN
  *    el camino para que un refactor no lo corte (ver la prueba de mutación en el informe).
  * ========================================================================= */
 
-const GLASS_CLARO = 34;   // 4+12+4 (< 2 m²)
-const GLASS_SATEN = 38;   // 4+12+4S (baño)
+const GLASS_CLARO = 1607;   // 4+12+4 (< 2 m²)
+const GLASS_SATEN = 1609;   // 4+12+4S (baño)
 
 /** Corre runTool con un fetch espía y devuelve los bodies que el bot le mandó al motor. */
 async function cotizarEspiando(llamadas) {
@@ -191,7 +191,7 @@ test('🚿 B1 calcular_cotizacion acepta `ambiente` en su esquema', () => {
   assert.match(props.ambiente.description, /ba[ñn]o/i);
 });
 
-test('🚿 B2 ambiente "baño" llega al motor como vidrio SATÉN (glass_id 38); sin ambiente, claro (34)', async () => {
+test('🚿 B2 ambiente "baño" llega al motor como vidrio SATÉN (glass_id 1609); sin ambiente, claro (1607)', async () => {
   const { bodies, resultados } = await cotizarEspiando([
     { ...VENTANA, ambiente: 'baño' },
     { ...VENTANA },

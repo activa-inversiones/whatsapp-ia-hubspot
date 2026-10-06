@@ -15,6 +15,7 @@
 // ESM, fetch nativo (Node 18+).
 
 import { detectarProductoFueraDeAlcance } from '../../services/productoFueraDeAlcance.js';
+import { VIDRIO_BASE, VIDRIO_LEGACY } from '../../services/vidriosBase.js'; // [2026-10-06] termopaneles base = «Propio» de Winart
 
 const BASE_URL = () =>
   (process.env.ACTIVA_ENGINE_URL || 'https://ops.activalabs.ai').trim().replace(/\/+$/, ''); // .trim(): robusto a espacios/tabs en la var de Railway
@@ -64,7 +65,8 @@ export const FAMILIAS_VIDRIO = Object.freeze(['TERMOPANEL', 'MONOLITICO']);
 //   61 = TP-M-5+12+5   (DVH 5+12+5)        $54.306/m2
 // Guard DURO en exigirGlassId(): cualquier otro glass_id se rechaza → el LLM jamas
 // cotiza con un vidrio fuera de catalogo, aunque alucine un id. Editar aqui para cambiar.
-export const ALLOWED_GLASS_IDS = Object.freeze([34, 38, 61]);
+// [2026-10-06] Base = los «Propio» de Winart, desde la fuente única (services/vidriosBase.js).
+export const ALLOWED_GLASS_IDS = Object.freeze([VIDRIO_BASE.STD, VIDRIO_BASE.BANO, VIDRIO_BASE.LARGE, ...VIDRIO_LEGACY]);
 
 class EngineError extends Error {
   constructor(message, { status, body } = {}) {
@@ -108,7 +110,7 @@ function exigirGlassId(glass_id) {
   if (!ALLOWED_GLASS_IDS.includes(n)) {
     throw new EngineError(
       `glass_id ${n} no permitido. Activa solo cotiza 3 termopaneles DVH: ` +
-      `34 (4+12+4), 38 (4+12+4 saten), 61 (5+12+5).`
+      `${VIDRIO_BASE.STD} (4+12+4), ${VIDRIO_BASE.BANO} (4+12+4 saten), ${VIDRIO_BASE.LARGE} (5+12+5).`
     );
   }
   return n;
