@@ -1198,6 +1198,12 @@ export function buildSessionContext(state = {}) {
   if (s.modo_interno === true) {
     lineas.push(TEXTO_MODO_INTERNO);
   }
+  // [2026-10-06] El cliente fijado con CLIENTE (atribucion del turno) se le DICE al LLM: sin esto adivinaba y
+  // pedia el comando justo despues de confirmarlo. Guardia: clienteFijado.test.js.
+  if (s.cliente_fijado && s.cliente_fijado.phone) {
+    lineas.push(`✅ CLIENTE YA FIJADO para esta propuesta: ${s.cliente_fijado.name || 'sin nombre'} (+${s.cliente_fijado.phone}). ` +
+      'YA ESTÁ: no pidas el comando CLIENTE ni el nombre o teléfono del cliente. Cotiza con lo que te mandan.');
+  }
 
   // Va DESPUÉS de los datos y con el mayor énfasis del bloque: si el cliente ya
   // compró, esto manda sobre el flujo de venta entero.

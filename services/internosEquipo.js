@@ -181,7 +181,10 @@ export const TEXTO_MODO_INTERNO = [
   '• NO ofrezcas seguimiento, visita, llamada ni "le escribo mañana": él maneja al cliente.',
   '• Trato directo y breve, de colega. Nada de saludos de bienvenida ni presentación de la empresa.',
   '• Si falta un dato para cotizar (medida, color, comuna), pídelo en una sola línea. No inventes datos.',
-  '• La cotización es del CLIENTE, no tuya: antes de cotizar tiene que haber un cliente fijado con el comando CLIENTE Nombre +569XXXXXXXX.',
+  // [2026-10-06] Antes decia «antes de cotizar tiene que haber un cliente fijado» y el LLM, que NO sabia si lo
+  // habia, contestaba «Falta fijar el cliente» justo despues de la confirmacion (7 de 8 veces ese dia). La regla
+  // la aplica el CODIGO (webhook corta antes del LLM si falta); si hay cliente, el contexto lo dice abajo.
+  '• El cliente de la cotización lo maneja el sistema con el comando CLIENTE: NUNCA le pidas a quien te escribe ese comando, ni el nombre ni el teléfono del cliente. Si te llega este turno, cotiza.',
 ].join('\n');
 
 // [2026-09-30] Decisión del dueño: la cotización de un vendedor cuenta al CLIENTE. Lo que

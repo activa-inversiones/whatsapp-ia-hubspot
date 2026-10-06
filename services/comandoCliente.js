@@ -38,8 +38,19 @@ function celularesDelTexto(texto) {
  * se saca el RUT, se toman los celulares chilenos y se acepta SOLO si queda exactamente uno.
  * @returns {{ok:true, phone:string, name:string}|{ok:true, limpiar:true}|{ok:false, error:string}}
  */
+/** La primera linea con texto del mensaje (el comando); lo de abajo es otra cosa (ventanas, notas). */
+export function primeraLinea(texto) {
+  return (String(texto || '').split(/\r?\n/).map((l) => l.trim()).find(Boolean)) || '';
+}
+/** ¿Trae algo debajo del comando? (p. ej. las ventanas en el mismo mensaje) */
+export function traeMasLineas(texto) {
+  return String(texto || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).length > 1;
+}
+
 export function parseComandoCliente(texto) {
-  const m = /^\s*cliente\b\s*(.*)$/i.exec(String(texto || '').trim());
+  // [2026-10-06] Solo la PRIMERA linea es el comando: el dueño escribio «CLIENTE Alex Clark +569…» y las ventanas
+  // debajo, y como `.` no cruza saltos de linea el patron no calzaba ⇒ «⚠️ no_es_comando» crudo (2 veces ese dia).
+  const m = /^\s*cliente\b\s*(.*)$/i.exec(primeraLinea(texto));
   if (!m) return { ok: false, error: 'no_es_comando' };
   const resto = m[1].trim();
   if (!resto) return { ok: false, error: `Falta el nombre y el teléfono. Ej: ${EJEMPLO}` };
@@ -69,7 +80,7 @@ export function parseComandoCliente(texto) {
  * trae un teléfono largo o es la forma corta exacta (Codex 08-ago: "Cliente me pidió otra medida").
  */
 export function pareceComando(texto) {
-  const t = String(texto || '').trim();
+  const t = primeraLinea(texto);
   if (!/^\/?\s*cliente\b/i.test(t)) return false;
   const resto = t.replace(/^\/?\s*cliente\b/i, '').trim();
   if (!resto) return true;
@@ -103,7 +114,9 @@ export async function procesarComandoCliente({
   try { autorizado = autorizar() === true; } catch { autorizado = false; }
   if (!autorizado) return '⚠️ Tu número no está habilitado para usar CLIENTE en este momento. Avísale al administrador.';
   const r = parseComandoCliente(texto || '');
-  if (!r.ok) return `⚠️ ${r.error}`;
+  if (!r.ok) return r.error === 'no_es_comando'
+    ? `⚠️ No entendí el comando. Escríbelo en la primera línea, así: ${EJEMPLO}`   // nunca el codigo crudo
+    : `⚠️ ${r.error}`;
   if (r.limpiar) {
     limpiar(waId, { desde });
     return '✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.';
@@ -139,6 +152,10 @@ export async function procesarComandoCliente({
     'Las fotos o audios del cliente mándalos DESPUÉS de esta confirmación.\n\n' +
     'Vale para UNA propuesta: cuando se envíe el PDF vuelve a tu nombre (para corregirla, manda ' +
     `de nuevo este mismo comando). Para cancelar antes: *CLIENTE OFF*. Vence a las ${Math.round(vigenciaMs() / 3600000)} h.` +
+    // [2026-10-06] Si las ventanas venian debajo del comando, se avisa: este mensaje NO se cotiza (el comando
+    // se procesa fuera del turno de Oliver, con su propio lock); hay que mandarlas aparte.
+    (traeMasLineas(texto) ? '\n\n📋 Las ventanas que venían debajo del comando NO las cotizo desde este mensaje: ' +
+      'mándamelas de nuevo en un mensaje aparte y salen a nombre de este cliente.' : '') +
     (_escribio ? '' :
       '\n\n⚠️ Como nunca escribió al bot, el seguimiento automático NO le va a llegar ' +
       'hasta que él te escriba por acá. Es a propósito: no podemos mandarle mensajes ' +

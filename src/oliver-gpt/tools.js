@@ -354,7 +354,10 @@ export const TOOL_DEFS = [
               '(ej: "ventanal plegable para el quincho", "puerta abatible de dos hojas"). ' +
               'INCLÚYELA SIEMPRE: activa una verificación determinista del alcance del catálogo ' +
               '(mosquiteros, plegables, formas irregulares y líneas no soportadas se ' +
-              'escalan solas a Marcelo). No la resumas ni la traduzcas: copia al cliente.',
+              'escalan solas a Marcelo). No la resumas ni la traduzcas: copia al cliente. ' +
+              // [2026-10-06] Propuesta 0598: «corredera 4 hojas» con varias ventanas en un mensaje salio con 2.
+              'Si el cliente dijo cuántas hojas lleva ESTA ventana (ej: "corredera 4 hojas"), ese número va SIEMPRE ' +
+              'acá, en la ventana que corresponde: con varias ventanas en un mensaje es la única forma de que llegue.',
           },
           glass_id: {
             type: 'integer',

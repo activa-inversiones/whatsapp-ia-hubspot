@@ -5394,6 +5394,8 @@ Comuna: ${datos.comuna}`
     // y el dueño le prendió «Cotizar con Oliver en modo interno». Igual que `ya_compro`, es del
     // TURNO: se recalcula cada vez y se borra antes de persistir (dar de baja = cliente normal).
     state.modo_interno = modoInternoOliver(from);
+    // [2026-10-06] Y si hay cliente fijado (CLIENTE), el LLM lo sabe. Del turno, como modo_interno.
+    state.cliente_fijado = atribucion ? { name: atribucion.name || '', phone: atribucion.phone } : null;
     if (state.modo_interno) log('info', 'modo_interno', `${from} es del equipo: turno en modo INTERNO`);
 
     const turn = await handleTurn({ history, userText, state, toolCtx });
@@ -5415,6 +5417,7 @@ Comuna: ${datos.comuna}`
     delete newState.ya_compro;
     delete newState.modo_interno; // [#1059 b] del turno, no de la sesión
     delete state.modo_interno;
+    delete newState.cliente_fijado; delete state.cliente_fijado; // [2026-10-06] del turno, no de la sesión
     // 🔴 [2026-08-25] LOS RELOJES DE LOS GATES, POR LA MISMA RAZON EXACTA QUE `last_quote`.
     // `agent.handleTurn` saca la foto del estado AL EMPEZAR (`{ ...state }`) y el webhook se
     // queda con esa copia, asi que todo lo que una tool escriba DURANTE el turno queda afuera.
