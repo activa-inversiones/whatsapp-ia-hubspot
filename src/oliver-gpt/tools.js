@@ -203,10 +203,11 @@ export const TOOL_DEFS = [
     function: {
       name: 'listar_vidrios',
       description:
-        'Lista los vidrios disponibles por familia. Devuelve cada vidrio con su id ' +
-        '(que es el glass_id que se usa al cotizar), code, price_m2_clp e is_termopanel. ' +
+        'SOLO CONSULTA: lista los vidrios del catálogo por familia (id, code, price_m2_clp e is_termopanel). ' +
         "Aqui 'tipo' SI es la familia de vidrio (TERMOPANEL o MONOLITICO). " +
-        'Use esta tool ANTES de cotizar para obtener el glass_id del vidrio que el cliente quiere.',
+        'NO sirve para cotizar: el vidrio de una cotización lo elige el motor solo (por tamaño y ambiente, y ' +
+        'Low-E solo si el cliente lo pidió) y NO se le pasa glass_id a calcular_cotizacion. ' +
+        'Un vidrio que aparezca en la lista NO está por eso a la venta: lo que se ofrece al cliente lo dice el prompt.',
       parameters: {
         type: 'object',
         properties: {
@@ -230,8 +231,8 @@ export const TOOL_DEFS = [
       description:
         'Calcula el precio de una ventana puntual. IMPORTANTE: el campo "tipo" es la ' +
         'APERTURA de la ventana (corredera, proyectante, fija, batiente, oscilobatiente), ' +
-        'NO el tipo de vidrio. El termopanel es un vidrio: para usarlo, primero llama ' +
-        'listar_vidrios y pasa su glass_id. Nunca pongas tipo:"TERMOPANEL". ' +
+        'NO el tipo de vidrio. El termopanel es un vidrio y lo elige el motor solo: ' +
+        'nunca pongas tipo:"TERMOPANEL". ' +
         'DEVUELVE el campo "unit_price" (precio unitario NETO, sin IVA): es EXACTAMENTE el ' +
         'valor que debes pasar como unit_price a generar_pdf_cotizacion. NO uses total_con_iva ' +
         'ni precio_por_m2. EL VIDRIO Y LA SERIE SE ELIGEN SOLOS (por tamaño y ambiente) — NO ' +
@@ -395,7 +396,7 @@ export const TOOL_DEFS = [
       name: 'calcular_por_area',
       description:
         'Calcula el precio a partir del area total en metros cuadrados. El campo "tipo" ' +
-        'es la APERTURA (no el vidrio) y glass_id es obligatorio. El area va en "area_m2".',
+        'es la APERTURA (no el vidrio). El area va en "area_m2". El vidrio lo elige el motor solo: no se pasa glass_id.',
       parameters: {
         type: 'object',
         properties: {
@@ -412,7 +413,7 @@ export const TOOL_DEFS = [
           },
           glass_id: {
             type: 'integer',
-            description: 'Id del vidrio (de listar_vidrios). Obligatorio.',
+            description: 'IGNORADO — el vidrio se elige AUTOMÁTICAMENTE por tamaño/ambiente (el precio sale de priceAllEngine). No lo pases.',
           },
           proporcion: {
             type: 'string',
@@ -428,7 +429,7 @@ export const TOOL_DEFS = [
           comuna: { type: 'string', description: 'Comuna de despacho/instalacion. Opcional.' },
           cantidad: { type: 'integer', description: 'Cantidad de ventanas iguales. Opcional, default 1.' },
         },
-        required: ['tipo', 'area_m2', 'glass_id', 'descripcion_producto'],
+        required: ['tipo', 'area_m2', 'descripcion_producto'],   // [2026-10-05] sin glass_id: el handler usa 34 de relleno solo para derivar medidas
         additionalProperties: false,
       },
     },

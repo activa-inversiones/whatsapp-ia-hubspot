@@ -57,8 +57,8 @@ export const TOOL_DEFS = [
   {
     name: "listar_vidrios",
     description:
-      "Lista los vidrios disponibles para un tipo (Low-E, control solar, laminado, asimétrico). " +
-      "Úsala para recomendar el vidrio que calza con el dolor del cliente (frío/calor/ruido/seguridad).",
+      "Lista los vidrios del catálogo para un tipo (SOLO CONSULTA, y para obtener el glass_id al cotizar). " +
+      "NO la uses para recomendar vidrios especiales: que un vidrio aparezca en la lista no significa que esté a la venta.",
     input_schema: {
       type: "object",
       properties: {

@@ -41,6 +41,14 @@ function dec(x, n = 2) {
 }
 
 /**
+ * [2026-10-05] La frase bajo el gráfico de radiación solar. Nombra SOLO lo que la empresa vende: el dueño no
+ * confirmó el control solar (decisión del 05-oct), y este documento va firmado. Sin cifras de mejora.
+ */
+export function notaRadiacionSolar(anualKwhM2Dia) {
+  return `Promedio del año: ${dec(anualKwhM2Dia, 1)} kWh/m² al día. En verano el sol pega fuerte: un vidrio adecuado (con Low-E) también ayuda a controlar ese calor.`;
+}
+
+/**
  * @param {object} datos  respuesta del motor THERMAL /api/v1/vientos (ventanas+demanda)
  * @param {object} opts   { nombre, comuna, numeroInforme, ilegibles, firma }
  * @param {string} opts.rut          [2026-08-30] RUT del RECEPTOR (empresa o persona), tal
@@ -574,7 +582,7 @@ function dibujarPaginaClima(doc, clima, nSec) {
       rad.mensual_kwh_m2_dia.slice(0, 12).map((v) => (esNum(v) ? Number(v) : null)),
       [GOLD, '#DCC27E', '#8A6D1C'],
       esNum(rad.anual_kwh_m2_dia)
-        ? `Promedio del año: ${dec(rad.anual_kwh_m2_dia, 1)} kWh/m² al día. En verano el sol pega fuerte: un vidrio adecuado (con control solar o Low-E) también ayuda a controlar ese calor.`
+        ? notaRadiacionSolar(rad.anual_kwh_m2_dia)
         : null,
     );
   }

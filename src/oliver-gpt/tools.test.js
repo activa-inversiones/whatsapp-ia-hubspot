@@ -61,7 +61,14 @@ test("(a bis) calcular_por_area: enum 'tipo' = aperturas SIN TERMOPANEL y usa ar
   assert.ok(props.area_m2, "debe existir el parametro 'area_m2'");
   assert.ok(!props.m2, "no debe existir el parametro 'm2'");
   assert.ok(def.function.parameters.required.includes('area_m2'));
-  assert.ok(def.function.parameters.required.includes('glass_id'));
+  // 🔄 ASERCIÓN DADA VUELTA A PROPÓSITO (2026-10-05, orden del coordinador, ronda Low-E automático, punto 6a;
+  // el informe de 15ea601 lo había dejado listado como residuo). Antes: `required.includes('glass_id')`.
+  // Por qué: el vidrio lo elige el motor (`priceAllEngine`); el handler de calcular_por_area ya reemplazaba el
+  // glass_id por 34 de relleno («solo derivamos medidas; el precio se recalcula»), así que pedírselo al LLM
+  // —«de listar_vidrios»— solo lo obligaba a llamar una tool que `calcular_cotizacion` prohíbe usar.
+  // La decisión queda defendida en vidrio-lo-elige-el-motor.test.js (V3).
+  assert.ok(!def.function.parameters.required.includes('glass_id'),
+    'glass_id ya NO es obligatorio en calcular_por_area: el motor elige el vidrio');
 });
 
 test('(a) APERTURAS del engine-client coincide con las esperadas', () => {
