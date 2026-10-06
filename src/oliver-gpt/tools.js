@@ -205,8 +205,8 @@ export const TOOL_DEFS = [
       description:
         'SOLO CONSULTA: lista los vidrios del catálogo por familia (id, code, price_m2_clp e is_termopanel). ' +
         "Aqui 'tipo' SI es la familia de vidrio (TERMOPANEL o MONOLITICO). " +
-        'NO sirve para cotizar: el vidrio de una cotización lo elige el motor solo (por tamaño y ambiente, y ' +
-        'Low-E solo si el cliente lo pidió) y NO se le pasa glass_id a calcular_cotizacion. ' +
+        'NO sirve para cotizar: el vidrio de una cotización lo elige el motor solo (termopanel estándar por ' +
+        'tamaño, satén si el ambiente es baño) y NO se le pasa glass_id a calcular_cotizacion. ' +
         'Un vidrio que aparezca en la lista NO está por eso a la venta: lo que se ofrece al cliente lo dice el prompt.',
       parameters: {
         type: 'object',
