@@ -224,7 +224,8 @@ test('🌬️ B [anti-alucinacion] con el motor CAIDO no se inventa vidrio: la p
 
 /* ── C · el de vientos no depende de como le fue al termico ──────────────────────────── */
 
-const huellaUltima = () => huellaDelInforme({ comuna: 'Temuco', producto: VENTANAS.at(-1).producto, glassLabel: VENTANAS.at(-1).vidrio });
+// [2026-10-06] la huella incluye las ventanas del proyecto (opcion 2 del dueño)
+const huellaUltima = () => huellaDelInforme({ comuna: 'Temuco', producto: VENTANAS.at(-1).producto, glassLabel: VENTANAS.at(-1).vidrio, ventanas: VENTANAS });
 
 const rechazoMeta = (code) => ({ informeEnvio: { ok: false, error: 'rechazo', status: 400, code } });
 

@@ -340,6 +340,7 @@ test('🌬️ el candado de 30 días evita el informe de vientos repetido', asyn
   // El candado ya puesto para la huella REAL del proyecto del test (última ventana):
   const huella = huellaDelInforme({
     comuna: 'Temuco', producto: 'Ventana PVC H98 corredera 3 hojas', glassLabel: 'DVH 5/12/5',
+    ventanas: VENTANAS,   // [2026-10-06] la huella incluye las ventanas (opcion 2 del dueño)
   });
   await deps.escribirEstado(`informe_vientos:${telefono}:${huella}`, { at: Date.now() }, 300);
   await handleWebhook({ body: {} }, makeRes(), deps);
@@ -781,6 +782,7 @@ test('📑 marcar el TÉRMICO a mano lo manda aunque el candado de 30 días diga
   // proyecto, el default NO manda nada. Marcado a mano, sí.
   const huella = huellaDelInforme({
     comuna: 'Temuco', producto: 'Ventana PVC H98 corredera 3 hojas', glassLabel: 'DVH 5/12/5',
+    ventanas: VENTANAS,   // [2026-10-06] la huella incluye las ventanas (opcion 2 del dueño)
   });
   const hace2h = Date.now() - 2 * 3600 * 1000;
   const conCandados = async () => {

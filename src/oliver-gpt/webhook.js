@@ -435,8 +435,11 @@ export function huellaDelInforme({ comuna = '', producto = '', glassLabel = '', 
   // paso a 4 hojas y el candado de 30 dias no mando nada. El COLOR no entra: cambiar solo el color no repite los
   // informes. Acepta las dos formas de item (propuesta: measures/producto_label/glass_label; informe: medidas/producto/vidrio).
   if (Array.isArray(ventanas) && ventanas.length) {
-    const firma = ventanas.map((v) => [v.measures || v.medidas || '', v.producto_label || v.producto || v.product || '',
-      v.glass_label || v.vidrio || '', v.qty ?? v.cantidad ?? 1].map(norm).join(':')).sort().join(';');
+    // Medidas SOLO por sus numeros: "2000x1400" y "2000x1400mm" son la misma ventana (si no, un cambio de formato
+    // entre turnos reenviaria los informes sin que cambie nada).
+    const medidas = (v) => (String(v.measures || v.medidas || '').match(/\d+/g) || []).join('x');
+    const firma = ventanas.map((v) => [medidas(v), norm(v.producto_label || v.producto || v.product || ''),
+      norm(v.glass_label || v.vidrio || ''), String(Number(v.qty ?? v.cantidad ?? 1) || 1)].join(':')).sort().join(';');
     partes.push(createHash('sha1').update(firma).digest('hex').slice(0, 12));
   }
   // Sin ningun dato la huella queda vacia: se cae al candado por telefono de siempre, que es

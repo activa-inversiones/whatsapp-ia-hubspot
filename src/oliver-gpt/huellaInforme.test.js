@@ -29,3 +29,9 @@ test('el orden de las ventanas no cambia la huella; las dos formas de item (prop
 test('sin ventanas, la huella es la de siempre (comuna|producto|vidrio)', () => {
   assert.equal(huellaDelInforme(base).split('|').length, 3);
 });
+
+test('🛡️ "2000x1400" y "2000x1400mm" son la misma ventana (el formato no reenvia informes)', () => {
+  const a = [{ producto_label: 'Fijo S60', measures: '2000x1400', glass_label: '4+12+4', qty: 1 }];
+  const b = [{ producto_label: 'Fijo S60', measures: '2000x1400mm', glass_label: '4+12+4', qty: 1 }];
+  assert.equal(huellaDelInforme({ ...base, ventanas: a }), huellaDelInforme({ ...base, ventanas: b }));
+});
