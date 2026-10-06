@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'; // [2026-10-06] huella de las ventanas de los informes
 // src/oliver-gpt/webhook.js
 //
 // HANDLER DE PRODUCCIÓN AISLADO — Oliver GPT (plan F4).
@@ -422,13 +423,22 @@ export function candadoVigente(candado, resetAt = 0) {
  * es UN informe, y agregarle una novena no lo convierte en otro. Por eso las medidas no
  * entran en la huella — si entraran, cada ventana nueva dispararia un informe.
  */
-export function huellaDelInforme({ comuna = '', producto = '', glassLabel = '' } = {}) {
+export function huellaDelInforme({ comuna = '', producto = '', glassLabel = '', ventanas = null } = {}) {
   const norm = (v) => String(v || '')
     .toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // "cunco" y "Cuncó" son la misma comuna
     .replace(/[^a-z0-9]+/g, '')
     .slice(0, 40);
   const partes = [norm(comuna), norm(producto), norm(glassLabel)];
+  // 🔁 [2026-10-06] DECISION DEL DUEÑO (opcion 2): si la propuesta corregida CAMBIA LAS VENTANAS (medidas, producto
+  // con sus hojas, vidrio, cantidad), es otro proyecto y le corresponden informes nuevos. Caso 0597→0598: la V3
+  // paso a 4 hojas y el candado de 30 dias no mando nada. El COLOR no entra: cambiar solo el color no repite los
+  // informes. Acepta las dos formas de item (propuesta: measures/producto_label/glass_label; informe: medidas/producto/vidrio).
+  if (Array.isArray(ventanas) && ventanas.length) {
+    const firma = ventanas.map((v) => [v.measures || v.medidas || '', v.producto_label || v.producto || v.product || '',
+      v.glass_label || v.vidrio || '', v.qty ?? v.cantidad ?? 1].map(norm).join(':')).sort().join(';');
+    partes.push(createHash('sha1').update(firma).digest('hex').slice(0, 12));
+  }
   // Sin ningun dato la huella queda vacia: se cae al candado por telefono de siempre, que es
   // el comportamiento viejo. Degradar al anterior es preferible a inventar una huella.
   return partes.every((x) => !x) ? '' : partes.join('|');
@@ -1935,7 +1945,7 @@ export async function handleWebhook(req, res, deps = {}) {
         // proyecto distinto y le corresponde el suyo.
         // [2026-09-30] El candado del informe es del CLIENTE para el que se cotiza, no del
         // vendedor que escribe (claves.informeTermico; sin atribución = from).
-        const _huella = huellaDelInforme({ comuna, producto, glassLabel });
+        const _huella = huellaDelInforme({ comuna, producto, glassLabel, ventanas });
         const clave = claves.informeTermico(_huella);
         const _tel = claves.cliente; // dígitos del CLIENTE (logs e informe_valor)
         return safe('informeTermico', async () => {
@@ -3885,7 +3895,7 @@ Comuna: ${datos.comuna}`
             const ultimaV = (input.items || []).at(-1) || {};
             const _huellaV = huellaDelInforme({
               comuna: clientComuna, producto: ultimaV.producto_label || ultimaV.product || '',
-              glassLabel: ultimaV.glass_label || '',
+              glassLabel: ultimaV.glass_label || '', ventanas: input.items || [],   // [2026-10-06] cambia ventanas => informe nuevo
             });
             const claveV = claves.informeVientos(_huellaV); // [2026-09-30] candado de vientos del cliente
             try {
