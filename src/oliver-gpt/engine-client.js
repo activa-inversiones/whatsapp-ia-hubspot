@@ -15,7 +15,7 @@
 // ESM, fetch nativo (Node 18+).
 
 import { detectarProductoFueraDeAlcance } from '../../services/productoFueraDeAlcance.js';
-import { VIDRIO_BASE, VIDRIO_LEGACY } from '../../services/vidriosBase.js'; // [2026-10-06] termopaneles base = «Propio» de Winart
+import { VIDRIO_BASE, traducirVidrioLegacy } from '../../services/vidriosBase.js'; // [2026-10-06] termopaneles base = «Propio» de Winart
 
 const BASE_URL = () =>
   (process.env.ACTIVA_ENGINE_URL || 'https://ops.activalabs.ai').trim().replace(/\/+$/, ''); // .trim(): robusto a espacios/tabs en la var de Railway
@@ -66,7 +66,7 @@ export const FAMILIAS_VIDRIO = Object.freeze(['TERMOPANEL', 'MONOLITICO']);
 // Guard DURO en exigirGlassId(): cualquier otro glass_id se rechaza → el LLM jamas
 // cotiza con un vidrio fuera de catalogo, aunque alucine un id. Editar aqui para cambiar.
 // [2026-10-06] Base = los «Propio» de Winart, desde la fuente única (services/vidriosBase.js).
-export const ALLOWED_GLASS_IDS = Object.freeze([VIDRIO_BASE.STD, VIDRIO_BASE.BANO, VIDRIO_BASE.LARGE, ...VIDRIO_LEGACY]);
+export const ALLOWED_GLASS_IDS = Object.freeze([VIDRIO_BASE.STD, VIDRIO_BASE.BANO, VIDRIO_BASE.LARGE]);
 
 class EngineError extends Error {
   constructor(message, { status, body } = {}) {
@@ -102,7 +102,8 @@ function exigirGlassId(glass_id) {
   if (glass_id === undefined || glass_id === null || glass_id === '') {
     throw new EngineError('glass_id es obligatorio.');
   }
-  const n = Number(glass_id);
+  // [2026-10-06] 34/61/38 (copias manuales viejas) → su «Propio» de Winart, antes del guardia.
+  const n = Number(traducirVidrioLegacy(glass_id));
   if (!Number.isFinite(n) || n <= 0) {
     throw new EngineError(`glass_id invalido: '${glass_id}'.`);
   }

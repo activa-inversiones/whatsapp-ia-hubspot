@@ -11,6 +11,8 @@ export const VIDRIO_BASE = Object.freeze({
   BANO:  Number(process.env.GLASS_ID_BANO)  || 1609,   // 4+12+4 satén (baño)
 });
 
-// Copias manuales viejas: siguen ACEPTADAS (mismo precio) solo porque el LLM puede traer un
-// glass_id de una conversacion anterior. El bot ya no las elige. Tablero: sacarlas.
-export const VIDRIO_LEGACY = Object.freeze([34, 38, 61]);
+// Copias manuales viejas: el LLM puede traer un glass_id de una conversacion anterior. NO se
+// cotiza con ellas: se TRADUCEN al «Propio» de Winart equivalente (sugerencia de Codex en el
+// tridente, 06-oct). Asi ninguna cotizacion vuelve a salir con un precio que el sync no actualiza.
+export const VIDRIO_LEGACY = Object.freeze({ 34: VIDRIO_BASE.STD, 61: VIDRIO_BASE.LARGE, 38: VIDRIO_BASE.BANO });
+export const traducirVidrioLegacy = (id) => VIDRIO_LEGACY[Number(id)] ?? id;

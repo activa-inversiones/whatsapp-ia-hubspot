@@ -20,3 +20,12 @@ test('🛡️ Oliver cotiza con los vidrios «Propio» de Winart, no con las cop
   assert.equal(pickGlassId(600, 600, 'baño'), 1609, 'baño ⇒ satén de Winart');
   for (const id of [1607, 1608, 1609]) assert.ok(ALLOWED_GLASS_IDS.includes(id), `allowlist sin ${id}`);
 });
+
+test('🛡️ un glass_id viejo (34/61/38) se traduce al «Propio» de Winart, no se cotiza con la copia manual', async () => {
+  const { traducirVidrioLegacy } = await import('./vidriosBase.js');
+  assert.equal(traducirVidrioLegacy(34), 1607);
+  assert.equal(traducirVidrioLegacy(61), 1608);
+  assert.equal(traducirVidrioLegacy('38'), 1609);
+  assert.equal(traducirVidrioLegacy(1607), 1607);
+  for (const id of [34, 38, 61]) assert.ok(!ALLOWED_GLASS_IDS.includes(id), `${id} no debe quedar permitido directo`);
+});
