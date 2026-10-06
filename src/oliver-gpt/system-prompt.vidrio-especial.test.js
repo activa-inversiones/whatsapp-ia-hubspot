@@ -149,7 +149,9 @@ test('🚿 A9 la regla del baño está en el prompt: se pregunta cuál ventana S
   assert.match(regla, /UNA sola ventana[^\n]*sin preguntar/i, 'con una sola ventana NO pregunta');
   assert.match(regla, /VARIAS ventanas/i);
   assert.match(regla, /SOLO en esa/i, 'solo a esa ventana');
-  assert.match(regla, /NUNCA marque todas/i, 'una mención suelta («al lado del baño») no marca todas las ventanas');
+  // [06-oct, tras Codex] Antes decía «NUNCA marque todas»; ahora la regla es más estricta: una mención suelta
+  // («al lado del baño») no marca NADA y tampoco dispara la pregunta (Codex: preguntaba de más).
+  assert.match(regla, /menci[oó]n suelta[^\n]*no pregunte ni marque nada/i, 'una mención suelta («al lado del baño») ni pregunta ni marca');
   assert.match(regla, /generar_pdf_cotizacion/, 'el ambiente se repite en el ítem del PDF (el PDF re-cotiza con él)');
 });
 

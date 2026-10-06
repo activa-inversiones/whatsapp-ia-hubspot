@@ -41,11 +41,12 @@ function dec(x, n = 2) {
 }
 
 /**
- * [2026-10-05] La frase bajo el gráfico de radiación solar. Nombra SOLO lo que la empresa vende: el dueño no
- * confirmó el control solar (decisión del 05-oct), y este documento va firmado. Sin cifras de mejora.
+ * [2026-10-05] La frase bajo el gráfico de radiación solar. NO recomienda ningún vidrio: este documento llega a TODOS
+ * los clientes, y la regla del dueño es que los vidrios especiales (Low-E, control solar…) se hablan solo si el
+ * cliente los pide. Sin cifras de mejora: va firmado.
  */
 export function notaRadiacionSolar(anualKwhM2Dia) {
-  return `Promedio del año: ${dec(anualKwhM2Dia, 1)} kWh/m² al día. En verano el sol pega fuerte: un vidrio adecuado (con Low-E) también ayuda a controlar ese calor.`;
+  return `Promedio del año: ${dec(anualKwhM2Dia, 1)} kWh/m² al día. En verano el sol pega fuerte en las fachadas más expuestas.`;
 }
 
 /**
