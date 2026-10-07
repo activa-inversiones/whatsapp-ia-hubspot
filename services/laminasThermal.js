@@ -380,6 +380,8 @@ function perfilDeRotulo(txt, hojaMm) {
     if (todos && cumple) {
       if (perfil === 'S60_proyectante' && hm) return '∅';               // una proyectante no trae hoja
       if (perfil === 'Sliding_H98' && hm && hm !== 98) return '∅';
+      // 'fija' solo es válida como la hoja central de la variante TRIPLE HOJA (doble riel)
+      if (perfil === 'Sliding_H98' && toks.includes('fija') && !toks.includes('triple')) return '∅';
       return perfil;
     }
   }

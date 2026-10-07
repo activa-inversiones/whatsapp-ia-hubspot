@@ -466,3 +466,7 @@ test('🔴 Codex r12: rótulos crudos (_perfil) mandan, hoja estricta, triple ho
   assert.equal(perfilDeVentana({ producto_label: 'Corredera SLIDING H98 Triple Riel S75', hoja_mm: 98 }), '', 'triple riel es otra geometría');
   assert.equal(perfilDeVentana({ producto_label: h98, product: 'Ventana deslizante' }), 'Sliding_H98');
 });
+
+test('🔴 corredera H98 "fija" sin ser la triple hoja => sin perfil (prueba adversarial)', () => {
+  assert.equal(perfilDeVentana({ producto_label: 'Corredera SLIDING H98 S75 fija', hoja_mm: 98 }), '');
+});
