@@ -2221,8 +2221,11 @@ export async function handleWebhook(req, res, deps = {}) {
           // [2026-10-07] Las láminas del perfil COTIZADO, no del primero publicado (antes toda
           // cotización recibía las del S60 proyectante). Sin perfil propio → sin láminas.
           try {
-            const _pl = perfilesLaminasDe(elegido.ventanas?.length ? elegido.ventanas
-              : [{ producto: elegido.producto }]);
+            // `ventanas`/`producto` ya vienen de elegido.datos (línea de arriba): `elegido` es
+            // {datos, recordar}, NO los datos — leerlo directo daba siempre [] (cazado por el
+            // test conductual del 07-oct: todo cliente habría recibido "referencia").
+            const _pl = perfilesLaminasDe(Array.isArray(ventanas) && ventanas.length ? ventanas
+              : [{ producto }]);
             // Plazo para TODAS las láminas: 25 s, y nunca más allá del techo del informe.
             const _hasta = Math.min(Date.now() + 25_000,
               Number(noDespuesDe) > 0 ? Number(noDespuesDe) - 20_000 : Infinity);

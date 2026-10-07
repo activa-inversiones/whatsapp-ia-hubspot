@@ -954,3 +954,30 @@ test('📑 camino feliz CONTRA sales-os (fetch espía): corrección con el MISMO
     if (envPrev.t === undefined) delete process.env.SALES_OS_OPERATOR_TOKEN; else process.env.SALES_OS_OPERATOR_TOKEN = envPrev.t;
   }
 });
+
+// ── [2026-10-07, Codex r14] LAS LÁMINAS SE ELIGEN CON EL ÍTEM COMPLETO ─────────────────────
+// El webhook reduce cada ventana a un rótulo para el PDF; si para elegir las láminas usara solo
+// ese rótulo, un dato que contradice (descripcion, compuesta...) se perdería y el informe diría
+// "corresponde al sistema de su cotización" sin respaldo. Este test recorre el camino REAL.
+for (const [titulo, extra, esperado] of [
+  ['H98 canónico ⇒ se piden sus láminas como propias', {}, { perfiles: ['Sliding_H98'], desconocidas: false }],
+  ['H98 + descripcion contradictoria ⇒ ningún perfil propio', { descripcion: 'Proyectante S60' }, { perfiles: [], desconocidas: true }],
+]) {
+  test(`🔴 webhook → láminas: ${titulo}`, async () => {
+    const llamadas = [];
+    const { deps, spy } = makeDeps({ modoOn: true, overrides: {} });
+    deps.laminasParaInforme = async (a) => { llamadas.push(a); return null; };
+    deps.handleTurn = async ({ state, toolCtx }) => {
+      await toolCtx.generarPdf({
+        items: [{ product: 'Corredera SLIDING H98 Doble Riel S75', producto_label: 'Corredera SLIDING H98 Doble Riel S75',
+          measures: '3250x1460mm', measures_original: '3250x1460mm', glass_label: 'DVH 5/12/5', ambiente: 'Living',
+          qty: 1, unit_price: 500000, total_price: 500000, color: 'Blanco', termico: { uw: 2.4 }, ...extra }],
+        comuna: 'Temuco', name: 'Dady',
+      });
+      return { reply: 'Listo', history: [], toolCalls: [], state: { ...state, name: 'Dady' } };
+    };
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => llamadas.length > 0), `se tienen que pedir láminas — línea: ${JSON.stringify(spy.linea.map((e) => e.tipo))}`);
+    assert.deepEqual({ perfiles: llamadas[0].perfiles, desconocidas: llamadas[0].desconocidas }, esperado);
+  });
+}

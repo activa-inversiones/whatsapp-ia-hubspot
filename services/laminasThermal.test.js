@@ -491,3 +491,17 @@ test('🔴 Codex r13: SOLO rótulos canónicos exactos; variantes de riel/fija/c
   assert.deepEqual(perfilesLaminasDe([{ producto: h98, _perfil: { producto_label: h98, description: 'Proyectante S60' } }]),
     { perfiles: [], desconocidas: true });
 });
+
+test('🔴 Codex r14: corredera estructurada incompleta, hoja 0 explícita => sin perfil; "H 98"/"Serie 75" se reconocen', () => {
+  const h98 = 'Corredera SLIDING H98 Doble Riel S75';
+  for (const c of [{}, { hojas: 2 }, { riel: 'DOBLE' }, false, { hojas: [3], riel: 'DOBLE' }, { hojas: 3, riel: 'DOBLE', x: 1 }, { hojas: 4, riel: 'DOBLE' }]) {
+    assert.equal(perfilDeVentana({ producto_label: h98, corredera: c }), '', JSON.stringify(c));
+  }
+  assert.equal(perfilDeVentana({ producto_label: h98, corredera: { hojas: 3, riel: 'DOBLE' } }), 'Sliding_H98');
+  for (const hm of [0, '00', '000']) {
+    assert.equal(perfilDeVentana({ producto_label: h98, hoja_mm: hm }), '', `H98 hoja ${hm}`);
+    assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60', hoja_mm: hm }), '', `S60 hoja ${hm}`);
+  }
+  assert.equal(perfilDeVentana({ producto_label: 'Corredera SLIDING H 98 Doble Riel Serie 75' }), 'Sliding_H98');
+  assert.equal(perfilDeVentana({ producto_label: 'Corredera SLIDING H-98 Doble Riel S-75' }), 'Sliding_H98');
+});

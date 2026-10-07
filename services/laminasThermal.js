@@ -351,7 +351,8 @@ export function normalizarRotulo(txt) {
   let t = String(txt || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[\u00ad\u200b-\u200f\u2060\ufeff]/g, '').toLowerCase()
     .replace(/[\u2010-\u2015—–-]/g, ' ').replace(/[_./·,;:()]+/g, ' ');
-  t = t.replace(/\s+/g, ' ').trim();
+  t = t.replace(/\s+/g, ' ').trim()
+    .replace(/\b(?:serie|series|s) ?(\d{2})\b/g, 's$1').replace(/\bh ?(\d{2,3})\b/g, 'h$1');
   return /[^a-z0-9 ]/.test(t) ? null : t;
 }
 
@@ -364,20 +365,22 @@ export function perfilDeVentana(v) {
   // ('corredera'/'riel' estructurados: el motor los manda cuando hay nº de hojas/rieles; se aceptan
   //  SOLO si dicen doble riel y 2-3 hojas, que es lo modelado.)
   for (const k of CAMPOS_COMPUESTA) {
+    if (!(k in v) || v[k] === undefined || v[k] === null) continue;
     const x = v[k];
-    if (x === undefined || x === null || x === false || x === '') continue;
+    // 'corredera' estructurada: SOLO un objeto completo {hojas: 2|3 entero, riel: 'DOBLE'} (lo
+    // modelado). Vacío, parcial, false, arrays o tipos raros anulan (Codex r14).
     if (k === 'corredera' && typeof x === 'object' && !Array.isArray(x)
-        && Object.keys(x).every((kk) => ['hojas', 'riel', 'rieles'].includes(kk))
-        && (x.riel === undefined || String(x.riel).toUpperCase() === 'DOBLE')
-        && (x.rieles === undefined || Number(x.rieles) === 2)
-        && (x.hojas === undefined || [2, 3].includes(Number(x.hojas)))) continue;
+        && Object.keys(x).every((kk) => ['hojas', 'riel'].includes(kk))
+        && Number.isInteger(x.hojas) && [2, 3].includes(x.hojas)
+        && typeof x.riel === 'string' && x.riel.toUpperCase() === 'DOBLE') continue;
     return '';
   }
   // hoja: solo número finito o dígitos
-  let hoja = 0;
+  // hoja: ausente, o un entero (número o dígitos). Un valor PRESENTE se compara tal cual, también 0.
+  let hoja = null;
   if (v.hoja_mm !== undefined && v.hoja_mm !== null && v.hoja_mm !== '') {
     if (typeof v.hoja_mm === 'number' && Number.isInteger(v.hoja_mm)) hoja = v.hoja_mm;
-    else if (typeof v.hoja_mm === 'string' && /^\d{2,3}$/.test(v.hoja_mm)) hoja = Number(v.hoja_mm);
+    else if (typeof v.hoja_mm === 'string' && /^\d{1,3}$/.test(v.hoja_mm)) hoja = Number(v.hoja_mm);
     else return '';
   }
   const rotulos = [];
@@ -398,8 +401,8 @@ export function perfilDeVentana(v) {
   if (perfiles.size !== 1) return '';
   const perfil = [...perfiles][0];
   if (!rotulos.every((n) => CANONICOS[perfil].includes(n) || GENERICOS[perfil].includes(n))) return '';
-  if (perfil === 'S60_proyectante' && (hoja || v.corredera)) return '';
-  if (perfil === 'Sliding_H98' && hoja && hoja !== 98) return '';
+  if (perfil === 'S60_proyectante' && (hoja !== null || (v.corredera !== undefined && v.corredera !== null))) return '';
+  if (perfil === 'Sliding_H98' && hoja !== null && hoja !== 98) return '';
   return perfil;
 }
 
