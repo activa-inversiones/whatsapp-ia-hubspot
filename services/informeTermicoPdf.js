@@ -117,6 +117,30 @@ const PIES_LAMINA = Object.freeze({
       + 'se mantiene seco. La temperatura exacta a la que eso ocurre en su comuna está calculada en la '
       + 'sección de condensación de este informe.',
 });
+/** [2026-10-07] Párrafo de entrada de las láminas según qué perfiles son PROPIOS y cuáles de
+ *  REFERENCIA (Codex r6: en un proyecto mixto no se puede decir "su ventana no tiene modelo"). */
+export function introLaminas(grupos = []) {
+  const ref = grupos.filter((g) => g && g.propio !== true).length;
+  const propios = grupos.filter((g) => g && g.propio === true).length;
+  if (!ref) return '';
+  if (propios) return 'Algunas ventanas de su proyecto aún no tienen un modelo térmico propio en nuestro sistema; '
+    + 'para ellas se incluyen, como referencia, los sistemas que sí están modelados.';
+  return 'Su ventana aún no tiene un modelo térmico propio en nuestro sistema; por eso se muestran, como '
+    + 'referencia, los sistemas que sí están modelados.';
+}
+
+/** [2026-10-07] Aviso de cada grupo: PROPIO (es el sistema cotizado) o REFERENCIA (otro sistema). */
+export function avisoLamina(g = {}) {
+  const cab = `Figuras elaboradas con nuestro motor de cálculo por elementos finitos sobre el sistema ${g.nombre || ''}`
+    + `${g.aprobadoPor ? `, modelo aprobado por ${g.aprobadoPor}` : ''}${g.fecha ? ` (${g.fecha})` : ''}. `;
+  const cola = 'Los valores declarables de su proyecto (Uw) provienen del cálculo normativo conforme a NCh 3137.';
+  return g.propio === true
+    ? cab + 'Corresponden al sistema de su cotización y representan su comportamiento térmico; '
+      + 'no constituyen una simulación de las medidas particulares de su ventana. ' + cola
+    : cab + 'Se incluyen SOLO COMO REFERENCIA: corresponden a un sistema distinto del de su ventana '
+      + 'y no constituyen una simulación de ella. ' + cola;
+}
+
 const PIES_POR_PERFIL = Object.freeze({ S60_proyectante: PIES_LAMINA, Sliding_H98: PIES_SLIDING_H98 });
 
 
@@ -985,10 +1009,8 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
         parrafo('Estas figuras salen del cálculo por elementos finitos del perfil: cada línea une los '
           + 'puntos que están a la misma temperatura. Donde las líneas se juntan, el calor escapa más '
           + 'rápido; donde se separan, el perfil aísla.');
-        if (laminas?.referencial && _grupos.length > 1) {
-          parrafo('Su ventana aún no tiene un modelo térmico propio en nuestro sistema; por eso se '
-            + 'muestran, como referencia, los sistemas que sí están modelados.');
-        }
+        const _intro = introLaminas(_grupos);
+        if (_intro) parrafo(_intro);
         }
         {
           // [P1 · Gemini] SE DICE QUÉ TIPO DE VENTANA ES LA DE LA FIGURA.
@@ -1007,16 +1029,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
           // [2026-10-07] DOS AVISOS DISTINTOS (hallazgo Codex r5): al perfil PROPIO no se le puede
           // decir "si su ventana es corredera el perfil difiere" cuando la figura ES su corredera;
           // al de REFERENCIA hay que decirle claro que es OTRO sistema.
-          const _cab = `Figuras elaboradas con nuestro motor de cálculo por elementos finitos sobre el `
-            + `sistema ${corto(idPerfil, 80)}`
-            + `${corto(_g.aprobadoPor, 60) ? `, modelo aprobado por ${corto(_g.aprobadoPor, 60)}` : ''}`
-            + `${corto(_g.fecha, 20) ? ` (${corto(_g.fecha, 20)})` : ''}. `;
-          const _cola = 'Los valores declarables de su proyecto (Uw) provienen del cálculo normativo conforme a NCh 3137.';
-          const aviso = _g?.propio === true
-            ? _cab + 'Corresponden al sistema de su cotización y representan su comportamiento térmico; '
-              + 'no constituyen una simulación de las medidas particulares de su ventana. ' + _cola
-            : _cab + 'Se incluyen SOLO COMO REFERENCIA: corresponden a un sistema distinto del de su ventana '
-              + 'y no constituyen una simulación de ella. ' + _cola;
+          const aviso = avisoLamina({ ...(_g || {}), nombre: corto(idPerfil, 80), aprobadoPor: corto(_g?.aprobadoPor, 60), fecha: corto(_g?.fecha, 20) });
           doc.fillColor(GRAY).fontSize(8).font('Helvetica');
           // El alto REAL del rotulo, con la fuente ya fijada en 8 (heightOfString usa la
           // fuente actual del documento; pasarle `fontSize` como opcion no hace nada).

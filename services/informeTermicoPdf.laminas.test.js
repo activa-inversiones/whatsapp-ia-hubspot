@@ -16,7 +16,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
-import { generarInformeTermicoPdf } from './informeTermicoPdf.js';
+import { generarInformeTermicoPdf, introLaminas, avisoLamina } from './informeTermicoPdf.js';
 
 /** Un PNG 1x1 REAL (pdfkit lo tiene que poder decodificar, no alcanza la cabecera). */
 function pngReal() {
@@ -222,4 +222,31 @@ test('🔴 con dos perfiles, el que viene SIN rótulo no se dibuja (el otro sí)
   const sinNombre = { perfil: '', nombre: '', laminas: [{ id: '01', png: pngReal() }] };
   const pdf = await generarInformeTermicoPdf(DATOS, { laminas: { ...s60, referencial: true, grupos: [s60, sinNombre] } });
   assert.equal(contarImagenes(pdf), 2);
+});
+
+// ── [2026-10-07, Codex r6] EL TEXTO, no solo las imágenes ─────────────────────────────────
+test('🔴 aviso PROPIO: dice que es el sistema de su cotización y NO que difiere de su ventana', () => {
+  const t = avisoLamina({ nombre: 'Corredera S75 Hoja 98 (H98)', propio: true });
+  assert.match(t, /sistema de su cotización/);
+  assert.doesNotMatch(t, /distinto del de su ventana|por ejemplo, corredera|difiere/);
+  assert.match(t, /no constituyen una simulación de las medidas particulares/);
+});
+
+test('🔴 aviso REFERENCIA: dice claro que es OTRO sistema y solo referencia', () => {
+  const t = avisoLamina({ nombre: 'S60 proyectante WinHouse', propio: false });
+  assert.match(t, /SOLO COMO REFERENCIA/);
+  assert.match(t, /sistema distinto del de su ventana/);
+  assert.doesNotMatch(t, /sistema de su cotización/);
+});
+
+test('🔴 grupo sin marca "propio" se trata como REFERENCIA (lo seguro)', () => {
+  assert.match(avisoLamina({ nombre: 'X' }), /SOLO COMO REFERENCIA/);
+});
+
+test('🔴 intro: proyecto MIXTO no dice "su ventana no tiene modelo"', () => {
+  const mixto = introLaminas([{ propio: true }, { propio: false }]);
+  assert.match(mixto, /Algunas ventanas de su proyecto/);
+  assert.doesNotMatch(mixto, /^Su ventana aún no/);
+  assert.match(introLaminas([{ propio: false }, { propio: false }]), /^Su ventana aún no tiene un modelo/);
+  assert.equal(introLaminas([{ propio: true }]), '', 'todo propio: sin párrafo de referencia');
 });

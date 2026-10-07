@@ -369,3 +369,20 @@ test('perfilesLaminasDe: proyecto completo, ordenado por unidades, y marca las v
   assert.deepEqual(perfilesLaminasDe([]), { perfiles: [], desconocidas: true });
   assert.equal(perfilLaminasDe([{ producto: 'Proyectante S60' }]), 'S60_proyectante');
 });
+
+test('⏱️ el LISTADO también respeta el plazo: un THERMAL lento no estira el informe (Codex r6)', async () => {
+  const lento = async (url, o) => new Promise((res, rej) => {
+    const t = setTimeout(() => res({ ok: true, status: 200, json: async () => LISTA_DOS }), 2000);
+    o?.signal?.addEventListener('abort', () => { clearTimeout(t); rej(Object.assign(new Error('abort'), { name: 'AbortError' })); });
+  });
+  const t0 = Date.now();
+  const r = await laminasParaInforme({ perfiles: ['Sliding_H98'], hasta: Date.now() + 80, fetchFn: lento, log: callado });
+  assert.ok(Date.now() - t0 < 1000, `tardó ${Date.now() - t0} ms con plazo de 80 ms`);
+  assert.deepEqual(r.grupos, []);
+});
+
+test('perfilDeVentana: H98 exige la línea SLIDING/S75 y combina todos los rótulos (Codex r6)', () => {
+  assert.equal(perfilDeVentana({ producto: 'Corredera', hoja_mm: 98 }), '', 'corredera de hoja 98 sin serie: no se declara H98');
+  assert.equal(perfilDeVentana({ producto: 'Ventana corredera 2 hojas', producto_label: 'Corredera SLIDING H98 Doble Riel S75' }),
+    'Sliding_H98', 'el label detallado no lo tapa un producto genérico');
+});

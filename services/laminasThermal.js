@@ -87,9 +87,12 @@ function cabeceras() {
  * Qué perfiles tienen láminas hoy. Devuelve [] si THERMAL no contesta.
  * Al 24-ago hay UNO solo: `S60_proyectante` (9 láminas, 7 para cliente).
  */
-export async function perfilesConLaminas({ fetchFn = globalThis.fetch, timeoutMs = null, log = console.warn } = {}) {
+export async function perfilesConLaminas({ fetchFn = globalThis.fetch, timeoutMs = null, log = console.warn, hasta = 0 } = {}) {
+  // [2026-10-07, Codex r6] el listado también respeta el plazo absoluto del informe.
+  const queda = hasta > 0 ? hasta - Date.now() : Infinity;
+  if (queda <= 0) return [];
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs || TIMEOUT_MS());
+  const t = setTimeout(() => ctrl.abort(), Math.min(timeoutMs || TIMEOUT_MS(), queda));
   try {
     const r = await fetchFn(`${BASE_URL()}/api/v1/laminas`, { signal: ctrl.signal, headers: cabeceras() });
     if (!r || r.ok === false) {
@@ -325,10 +328,14 @@ const MAX_MPX = () => Number(process.env.THERMAL_LAMINA_MAX_MPX || 8);
  * No se infiere la serie: una "proyectante" sin S60 en el rótulo NO se declara S60 (Codex r5).
  */
 export function perfilDeVentana(v) {
-  const txt = String(v?.producto || v?.producto_label || v?.product || '');
+  // Se miran TODOS los rótulos juntos (Codex r6): un `producto` genérico no puede tapar el
+  // `producto_label` detallado que trae la serie.
+  const txt = [v?.producto_label, v?.producto, v?.product].filter(Boolean).join(' ');
   const hoja = Number(v?.hoja_mm) || Number((txt.match(/H(\d{2,3})/i) || [])[1]) || 0;
   if (/proyectante/i.test(txt) && /\bS\s?60\b/i.test(txt)) return 'S60_proyectante';
-  if (hoja === 98 && /(corredera|sliding)/i.test(txt) && !/(andes|monorriel|\bS\s?60\b)/i.test(txt)) return 'Sliding_H98';
+  // H98 = línea SLIDING de la serie S75: se exige positivamente (sliding o S75), no por descarte.
+  if (hoja === 98 && /(corredera|sliding)/i.test(txt) && /(sliding|\bS\s?75\b)/i.test(txt)
+    && !/(andes|monorriel|\bS\s?60\b)/i.test(txt)) return 'Sliding_H98';
   return '';
 }
 
@@ -378,7 +385,7 @@ export async function laminasParaInforme({ perfiles: cotizados = null, preferido
   const VACIO = { perfil: null, nombre: '', laminas: [], aprobadoPor: '', fecha: '', referencial: false, grupos: [] };
   const plazo = hasta > 0 ? hasta : Date.now() + PLAZO_LAMINAS_MS();
   const pedidos = Array.isArray(cotizados) ? cotizados.filter(Boolean) : (preferido ? [preferido] : []);
-  const publicados = await perfilesConLaminas(opts);
+  const publicados = await perfilesConLaminas({ ...opts, hasta: plazo });
   if (!publicados.length) return VACIO;
   const porClave = new Map(publicados.map((p) => [p.perfil, p]));
   const propios = pedidos.filter((k) => porClave.has(k));
