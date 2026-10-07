@@ -356,7 +356,10 @@ export function normalizarRotulo(txt) {
   return /[^a-z0-9 ]/.test(t) ? null : t;
 }
 
-const CAMPOS_ROTULO = ['producto_label', 'producto', 'product', 'label', 'descripcion', 'description', 'tipo', 'serie'];
+/** Campos que NO describen la ventana (medidas, vidrio, precio, numeración...). Todo lo demás se lee. */
+const CAMPOS_NEUTROS = new Set(['measures', 'measures_original', 'medidas', 'glass_label', 'vidrio', 'glass_id',
+  'ambiente', 'qty', 'cantidad', 'unit_price', 'total_price', 'precio', 'color', 'termico', 'uw', 'pos', 'id',
+  'ancho_mm', 'alto_mm', 'referencial', 'pano_vidrio', 'comuna', 'nota', 'notas', 'descuento']);
 const CAMPOS_COMPUESTA = ['partes', 'bow', 'forma', 'esquina', 'compuesta', 'panos', 'paños', 'riel', 'corredera'];
 
 export function perfilDeVentana(v) {
@@ -383,11 +386,14 @@ export function perfilDeVentana(v) {
     else if (typeof v.hoja_mm === 'string' && /^\d{1,3}$/.test(v.hoja_mm)) hoja = Number(v.hoja_mm);
     else return '';
   }
+  // LISTA BLANCA DE CAMPOS (Codex r15): un campo que no es neutro (medidas, precios, vidrio...)
+  // puede describir la ventana — `apertura`, `tipo`, `serie` o uno que aún no existe — y por eso
+  // se trata como rótulo: tiene que ser canónico o genérico compatible, o anula.
   const rotulos = [];
-  for (const k of CAMPOS_ROTULO) {
-    const x = v[k];
+  for (const [k, x] of Object.entries(v)) {
+    if (CAMPOS_NEUTROS.has(k) || CAMPOS_COMPUESTA.includes(k) || k === 'hoja_mm') continue;
     if (x === undefined || x === null || x === '') continue;
-    if (typeof x !== 'string') return '';                               // rótulo no-texto: no se adivina
+    if (typeof x !== 'string') return '';                               // dato no-texto desconocido
     const n = normalizarRotulo(x);
     if (n === null) return '';
     rotulos.push(n);
@@ -476,7 +482,9 @@ export async function laminasParaInforme({ perfiles: cotizados = null, preferido
       fecha: p.fecha_aprobacion || '', laminas, propio });
   }
   if (!grupos.length) return VACIO;
-  return { ...grupos[0], referencial: grupos.some((g) => !g.propio), grupos };
+  // [Codex r15] la COBERTURA se conserva aunque las figuras de referencia no hayan bajado: si parte
+  // del proyecto no tiene modelo propio, el informe lo tiene que decir igual.
+  return { ...grupos[0], referencial: grupos.some((g) => !g.propio), coberturaIncompleta: faltaAlguno, grupos };
 }
 
 export default { laminasParaInforme, perfilLaminasDe, perfilesLaminasDe, perfilDeVentana, normalizarRotulo, PERFILES_DE_VENTANA, laminaTermopanel, elegirPerfilTermopanel, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };

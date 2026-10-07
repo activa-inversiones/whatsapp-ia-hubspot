@@ -505,3 +505,25 @@ test('🔴 Codex r14: corredera estructurada incompleta, hoja 0 explícita => si
   assert.equal(perfilDeVentana({ producto_label: 'Corredera SLIDING H 98 Doble Riel Serie 75' }), 'Sliding_H98');
   assert.equal(perfilDeVentana({ producto_label: 'Corredera SLIDING H-98 Doble Riel S-75' }), 'Sliding_H98');
 });
+
+test('🔴 Codex r15: CUALQUIER campo que describa la ventana (apertura, uno nuevo) contradice', () => {
+  const base = { producto_label: 'Corredera SLIDING H98 Doble Riel S75', tipo: 'CORREDERA', serie: 'S75', hoja_mm: 98,
+    corredera: { hojas: 2, riel: 'DOBLE' }, measures: '3000x2000', glass_label: 'DVH 5/12/5', qty: 1, unit_price: 1 };
+  assert.equal(perfilDeVentana(base), 'Sliding_H98', 'el ítem real del motor sigue valiendo');
+  assert.equal(perfilDeVentana({ ...base, apertura: 'FIJA' }), '');
+  assert.equal(perfilDeVentana({ ...base, apertura: 'PROYECTANTE' }), '');
+  assert.equal(perfilDeVentana({ ...base, linea: 'ANDES' }), '', 'un campo nuevo también se lee');
+  assert.equal(perfilDeVentana({ ...base, apertura: 'CORREDERA' }), 'Sliding_H98');
+});
+
+test('🔴 Codex r15: la cobertura incompleta se conserva aunque falle la descarga de referencia', async () => {
+  const f = async (url) => {
+    if (url.includes('/api/v1/laminas')) return { ok: true, status: 200, json: async () => LISTA_DOS };
+    if (url.includes('/S60_proyectante/')) return { ok: false, status: 503 };
+    const png = pngFalso();
+    return { ok: true, status: 200, arrayBuffer: async () => png.buffer.slice(png.byteOffset, png.byteOffset + png.length) };
+  };
+  const r = await laminasParaInforme({ perfiles: ['Sliding_H98'], desconocidas: true, fetchFn: f, log: callado });
+  assert.deepEqual(r.grupos.map((g) => g.perfil), ['Sliding_H98']);
+  assert.equal(r.coberturaIncompleta, true);
+});

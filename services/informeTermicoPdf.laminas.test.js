@@ -250,3 +250,8 @@ test('🔴 intro: proyecto MIXTO no dice "su ventana no tiene modelo"', () => {
   assert.match(introLaminas([{ propio: false }, { propio: false }]), /^Su ventana aún no tiene un modelo/);
   assert.equal(introLaminas([{ propio: true }]), '', 'todo propio: sin párrafo de referencia');
 });
+
+test('🔴 Codex r15: todo propio pero cobertura incompleta ⇒ el intro lo dice igual', () => {
+  assert.match(introLaminas([{ propio: true }], true), /Algunas ventanas de su proyecto/);
+  assert.equal(introLaminas([{ propio: true }], false), '');
+});

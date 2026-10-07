@@ -119,10 +119,12 @@ const PIES_LAMINA = Object.freeze({
 });
 /** [2026-10-07] Párrafo de entrada de las láminas según qué perfiles son PROPIOS y cuáles de
  *  REFERENCIA (Codex r6: en un proyecto mixto no se puede decir "su ventana no tiene modelo"). */
-export function introLaminas(grupos = []) {
+export function introLaminas(grupos = [], coberturaIncompleta = false) {
   const ref = grupos.filter((g) => g && g.propio !== true).length;
   const propios = grupos.filter((g) => g && g.propio === true).length;
-  if (!ref) return '';
+  if (!ref && !coberturaIncompleta) return '';
+  if (!ref) return 'Algunas ventanas de su proyecto aún no tienen un modelo térmico propio en nuestro sistema; '
+    + 'las figuras corresponden solo a los sistemas que sí están modelados.';
   if (propios) return 'Algunas ventanas de su proyecto aún no tienen un modelo térmico propio en nuestro sistema; '
     + 'para ellas se incluyen, como referencia, los sistemas que sí están modelados.';
   return 'Su ventana aún no tiene un modelo térmico propio en nuestro sistema; por eso se muestran, como '
@@ -1009,7 +1011,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
         parrafo('Estas figuras salen del cálculo por elementos finitos del perfil: cada línea une los '
           + 'puntos que están a la misma temperatura. Donde las líneas se juntan, el calor escapa más '
           + 'rápido; donde se separan, el perfil aísla.');
-        const _intro = introLaminas(_grupos);
+        const _intro = introLaminas(_grupos, laminas?.coberturaIncompleta === true);
         if (_intro) parrafo(_intro);
         }
         {
