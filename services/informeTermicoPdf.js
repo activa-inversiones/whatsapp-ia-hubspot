@@ -139,8 +139,8 @@ export function avisoLamina(g = {}) {
   return g.propio === true
     ? cab + 'Corresponden al sistema de su cotización y representan su comportamiento térmico; '
       + 'no constituyen una simulación de las medidas particulares de su ventana. ' + cola
-    : cab + 'Se incluyen SOLO COMO REFERENCIA: corresponden a un sistema distinto del de su ventana '
-      + 'y no constituyen una simulación de ella. ' + cola;
+    : cab + 'Se incluyen SOLO COMO REFERENCIA: no hemos confirmado que correspondan al sistema de su '
+      + 'ventana y no constituyen una simulación de ella. ' + cola;
 }
 
 const PIES_POR_PERFIL = Object.freeze({ S60_proyectante: PIES_LAMINA, Sliding_H98: PIES_SLIDING_H98 });

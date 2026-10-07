@@ -360,8 +360,9 @@ export function normalizarRotulo(txt) {
 const CAMPOS_NEUTROS = new Set(['measures', 'measures_original', 'medidas', 'glass_label', 'vidrio', 'glass_id',
   'ambiente', 'qty', 'cantidad', 'unit_price', 'total_price', 'precio', 'color', 'termico', 'uw', 'pos', 'id',
   'ancho_mm', 'alto_mm', 'referencial', 'pano_vidrio', 'comuna', 'descuento',
-  // metadatos del motor (enginePricer): de dónde salió el precio, no qué ventana es
-  'source', 'confidence', 'price_warning', 'avisos']);
+  // metadatos del motor (enginePricer): de dónde salió el precio o cómo escribió el cliente las
+  // medidas — no qué ventana es. (price_warning/avisos NO son neutros: ver perfilDeVentana)
+  'source', 'confidence', 'measures_swapped', 'measures_texto_cliente']);
 /** Los ÚNICOS campos que pueden AUTORIZAR un perfil (Codex r16). El resto de los campos no neutros
  *  solo pueden VETARLO: un comentario con el rótulo canónico no convierte nada en H98. */
 const CAMPOS_AUTORIZAN = new Set(['producto_label', 'producto', 'product', 'label', 'descripcion', 'description',
@@ -385,6 +386,10 @@ export function perfilDeVentana(v) {
     return '';
   }
   // hoja: solo número finito o dígitos
+  // [Codex r17] Si el motor AVISÓ algo sobre esta ventana (cambió hoja, medida, línea...), no se
+  // puede afirmar que es el sistema modelado sin leer qué cambió: fail-closed => referencia.
+  const tiene = (x) => x !== undefined && x !== null && x !== '' && !(Array.isArray(x) && !x.length);
+  if (tiene(v.price_warning) || tiene(v.avisos)) return '';
   // hoja: ausente, o un entero (número o dígitos). Un valor PRESENTE se compara tal cual, también 0.
   let hoja = null;
   if (v.hoja_mm !== undefined && v.hoja_mm !== null && v.hoja_mm !== '') {
@@ -398,7 +403,8 @@ export function perfilDeVentana(v) {
   const rotulos = [];
   const perfiles = new Set();
   for (const [k, x] of Object.entries(v)) {
-    if (CAMPOS_NEUTROS.has(k) || CAMPOS_COMPUESTA.includes(k) || k === 'hoja_mm') continue;
+    if (CAMPOS_NEUTROS.has(k) || CAMPOS_COMPUESTA.includes(k) || k === 'hoja_mm'
+      || k === 'price_warning' || k === 'avisos') continue;           // los avisos ya se revisaron arriba
     if (x === undefined || x === null || x === '') continue;
     if (typeof x !== 'string') return '';                               // dato no-texto desconocido
     const n = normalizarRotulo(x);

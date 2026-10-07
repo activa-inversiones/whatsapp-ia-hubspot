@@ -548,3 +548,12 @@ test('🔴 Codex r16: si un perfil PROPIO no baja sus figuras, la cobertura qued
   assert.deepEqual(r.grupos.map((g) => g.perfil), ['Sliding_H98']);
   assert.equal(r.coberturaIncompleta, true);
 });
+
+test('🔴 Codex r17: un aviso del motor anula; medidas "alto por ancho" no', () => {
+  const h98 = 'Corredera SLIDING H98 Doble Riel S75';
+  assert.equal(perfilDeVentana({ producto_label: h98, hoja_mm: 98, price_warning: 'El motor cambió esta ventana a ANDES monorriel' }), '');
+  assert.equal(perfilDeVentana({ producto_label: h98, hoja_mm: 98, avisos: ['Configuración triple riel'] }), '');
+  assert.equal(perfilDeVentana({ producto_label: h98, hoja_mm: 98, avisos: [] }), 'Sliding_H98', 'sin avisos no anula');
+  assert.equal(perfilDeVentana({ producto_label: h98, hoja_mm: 98, measures_swapped: true, measures_texto_cliente: '1460 x 3250' }),
+    'Sliding_H98');
+});

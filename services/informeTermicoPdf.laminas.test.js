@@ -235,7 +235,8 @@ test('🔴 aviso PROPIO: dice que es el sistema de su cotización y NO que difie
 test('🔴 aviso REFERENCIA: dice claro que es OTRO sistema y solo referencia', () => {
   const t = avisoLamina({ nombre: 'S60 proyectante WinHouse', propio: false });
   assert.match(t, /SOLO COMO REFERENCIA/);
-  assert.match(t, /sistema distinto del de su ventana/);
+  assert.match(t, /no hemos confirmado que correspondan al sistema de su ventana/);
+  assert.doesNotMatch(t, /sistema distinto/, 'no afirma que sea distinto: no lo sabemos');
   assert.doesNotMatch(t, /sistema de su cotización/);
 });
 
