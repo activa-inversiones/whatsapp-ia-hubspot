@@ -119,6 +119,16 @@ const PIES_LAMINA = Object.freeze({
 });
 /** [2026-10-07] Párrafo de entrada de las láminas según qué perfiles son PROPIOS y cuáles de
  *  REFERENCIA (Codex r6: en un proyecto mixto no se puede decir "su ventana no tiene modelo"). */
+// Alto reservado para una lamina. Las horizontales (S60) van a 430 pt como siempre; las
+// VERTICALES (H98, pedido del dueno 07-oct: "en vertical con su respectivo modelo de calculo")
+// llevan el recuadro del modelo y a 430 pt su texto quedaria en ~3 pt: se les da casi la pagina.
+// 650 + pie 40 cabe en el alto util de A4 (842 - 60 arriba - 70 abajo = 712).
+export function altoFigura(dim, anchoUtil) {
+  if (!dim) return 300;
+  const tope = dim.alto > dim.ancho ? 650 : 430;
+  return Math.min(Math.round(anchoUtil * (dim.alto / dim.ancho)), tope);
+}
+
 export function introLaminas(grupos = [], coberturaIncompleta = false, propiosFallidos = false) {
   const gs = Array.isArray(grupos) ? grupos : [];
   const ref = gs.filter((g) => g && g.propio !== true).length;
@@ -1059,7 +1069,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
           // Medido: 3000x3000 RGBA = 34 KB en disco → +129 MB de RSS.
           if (dim && (dim.ancho * dim.alto) / 1e6 > MAX_MPX_FIGURA) continue;
           const anchoUtil = W - 100;
-          const alto = dim ? Math.min(Math.round(anchoUtil * (dim.alto / dim.ancho)), 430) : 300;
+          const alto = altoFigura(dim, anchoUtil);
           saltoSiNoCabe(alto + (pie ? 40 : 16));
           try {
             doc.image(f.png, 50, y, { fit: [anchoUtil, alto], align: 'center' });

@@ -16,7 +16,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
-import { generarInformeTermicoPdf, introLaminas, avisoLamina } from './informeTermicoPdf.js';
+import { generarInformeTermicoPdf, introLaminas, avisoLamina, altoFigura } from './informeTermicoPdf.js';
 
 /** Un PNG 1x1 REAL (pdfkit lo tiene que poder decodificar, no alcanza la cabecera). */
 function pngReal() {
@@ -262,4 +262,15 @@ test('intro: si un sistema modelado no bajó sus figuras, NO dice "no tiene mode
   assert.match(t, /no incluye las figuras de todos los sistemas/);
   assert.doesNotMatch(t, /no tiene/);
   assert.doesNotThrow(() => { introLaminas(null); avisoLamina(null); });
+});
+
+// Lamina VERTICAL (H98 con recuadro del modelo, pedido del dueno 07-oct): casi la pagina, para
+// que el recuadro se lea; la horizontal (S60) conserva su tope de 430 pt; ninguna se sale de A4.
+test('altoFigura: vertical usa casi la pagina, horizontal conserva 430, ninguna excede el alto util', () => {
+  const ancho = 495;
+  assert.equal(altoFigura({ ancho: 1462, alto: 2012 }, ancho), 650);
+  assert.equal(altoFigura({ ancho: 1500, alto: 480 }, ancho), Math.round(ancho * 480 / 1500));
+  assert.equal(altoFigura({ ancho: 1000, alto: 900 }, ancho), 430);
+  assert.equal(altoFigura(null, ancho), 300);
+  assert.ok(altoFigura({ ancho: 10, alto: 10000 }, ancho) + 40 <= 842 - 60 - 70);
 });
