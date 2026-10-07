@@ -340,11 +340,15 @@ export function perfilDeVentana(v) {
   // Cada rótulo se clasifica POR SEPARADO (Codex r7): concatenarlos fabricaba identidades que
   // ningún campo trae completa ("Proyectante" + "S60"). Si dos rótulos dan perfiles DISTINTOS es
   // una contradicción y NO se declara ninguno (fail-closed: el cliente recibe referencia).
-  const hallados = new Set([v?.producto_label, v?.producto, v?.product]
+  // Un rótulo ESPECÍFICO (nombra serie/línea) que no da perfil también cuenta como voto
+  // ("ninguno"): "SLIDING H98" + "ANDES monorriel" es contradicción, no H98 (Codex r8). Solo los
+  // rótulos genéricos ("Ventana corredera 2 hojas") se ignoran.
+  const especifico = (x) => /(\bS\s?\d{2}\b|andes|monorriel|sliding|americana|\bH\d{2,3}\b)/i.test(x);
+  const votos = new Set([v?.producto_label, v?.producto, v?.product]
     .filter((x) => typeof x === 'string' && x.trim())
-    .map((x) => perfilDeRotulo(x, v?.hoja_mm))
+    .map((x) => perfilDeRotulo(x, v?.hoja_mm) || (especifico(x) ? '∅' : ''))
     .filter(Boolean));
-  return hallados.size === 1 ? [...hallados][0] : '';
+  return votos.size === 1 && !votos.has('∅') ? [...votos][0] : '';
 }
 
 /**

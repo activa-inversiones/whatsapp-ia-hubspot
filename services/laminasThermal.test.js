@@ -381,7 +381,7 @@ test('⏱️ el LISTADO también respeta el plazo: un THERMAL lento no estira el
   assert.deepEqual(r.grupos, []);
 });
 
-test('perfilDeVentana: H98 exige la línea SLIDING/S75 y combina todos los rótulos (Codex r6)', () => {
+test('perfilDeVentana: H98 exige la línea SLIDING/S75; un rótulo genérico no tapa al detallado (Codex r6)', () => {
   assert.equal(perfilDeVentana({ producto: 'Corredera', hoja_mm: 98 }), '', 'corredera de hoja 98 sin serie: no se declara H98');
   assert.equal(perfilDeVentana({ producto: 'Ventana corredera 2 hojas', producto_label: 'Corredera SLIDING H98 Doble Riel S75' }),
     'Sliding_H98', 'el label detallado no lo tapa un producto genérico');
@@ -393,4 +393,13 @@ test('🔴 perfilDeVentana NO arma una identidad con pedazos de rótulos ni con 
   assert.equal(perfilDeVentana({ producto_label: 'Corredera SLIDING H98 Doble Riel S75', producto: 'Proyectante S60' }), '',
     'contradicción: no se declara ninguno');
   assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60', producto: 'Proyectante S60' }), 'S60_proyectante');
+});
+
+test('🔴 H98 contra un rótulo de OTRA línea no modelada (ANDES/monorriel/S60/H80) => sin perfil propio (Codex r8)', () => {
+  const h98 = 'Corredera SLIDING H98 Doble Riel S75';
+  for (const otro of ['Corredera ANDES monorriel', 'Corredera S60', 'Corredera SLIDING H80', 'Proyectante Americana']) {
+    assert.equal(perfilDeVentana({ producto_label: h98, producto: otro }), '', `${otro} contradice al H98`);
+  }
+  assert.equal(perfilDeVentana({ producto_label: h98, producto: 'Ventana corredera 2 hojas' }), 'Sliding_H98',
+    'un rótulo genérico no contradice');
 });
