@@ -1004,15 +1004,19 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
           // [2026-08-24] Registro PROFESIONAL, pedido del dueno: "el lenguaje debe ser mas
           // correcto, mas profesional". La honestidad se mantiene entera (caracter referencial,
           // no es la simulacion de SU ventana, el Uw sale del calculo) — cambia el tono.
-          const aviso = `Figuras elaboradas con nuestro motor de cálculo por elementos finitos sobre el `
+          // [2026-10-07] DOS AVISOS DISTINTOS (hallazgo Codex r5): al perfil PROPIO no se le puede
+          // decir "si su ventana es corredera el perfil difiere" cuando la figura ES su corredera;
+          // al de REFERENCIA hay que decirle claro que es OTRO sistema.
+          const _cab = `Figuras elaboradas con nuestro motor de cálculo por elementos finitos sobre el `
             + `sistema ${corto(idPerfil, 80)}`
             + `${corto(_g.aprobadoPor, 60) ? `, modelo aprobado por ${corto(_g.aprobadoPor, 60)}` : ''}`
-            + `${corto(_g.fecha, 20) ? ` (${corto(_g.fecha, 20)})` : ''}. `
-            + 'Tienen carácter referencial: representan el comportamiento térmico del sistema indicado y '
-            + 'no constituyen una simulación de su ventana en particular. Si su cotización considera otro '
-            + 'tipo de apertura (por ejemplo, corredera) el perfil de su ventana difiere del ilustrado. '
-            + 'Los valores declarables de su proyecto (Uw) provienen del cálculo normativo conforme a '
-            + 'NCh 3137.';
+            + `${corto(_g.fecha, 20) ? ` (${corto(_g.fecha, 20)})` : ''}. `;
+          const _cola = 'Los valores declarables de su proyecto (Uw) provienen del cálculo normativo conforme a NCh 3137.';
+          const aviso = _g?.propio === true
+            ? _cab + 'Corresponden al sistema de su cotización y representan su comportamiento térmico; '
+              + 'no constituyen una simulación de las medidas particulares de su ventana. ' + _cola
+            : _cab + 'Se incluyen SOLO COMO REFERENCIA: corresponden a un sistema distinto del de su ventana '
+              + 'y no constituyen una simulación de ella. ' + _cola;
           doc.fillColor(GRAY).fontSize(8).font('Helvetica');
           // El alto REAL del rotulo, con la fuente ya fijada en 8 (heightOfString usa la
           // fuente actual del documento; pasarle `fontSize` como opcion no hace nada).

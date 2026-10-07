@@ -117,7 +117,7 @@ export async function perfilesConLaminas({ fetchFn = globalThis.fetch, timeoutMs
  */
 export async function descargarLaminas(perfil, {
   ids = IDS_POR_DEFECTO, fetchFn = globalThis.fetch, timeoutMs = null,
-  maxBytes = null, log = console.warn,
+  maxBytes = null, log = console.warn, hasta = 0,
 } = {}) {
   if (!perfil) return [];
   const tope = maxBytes || MAX_BYTES();
@@ -125,8 +125,12 @@ export async function descargarLaminas(perfil, {
   let total = 0;
 
   for (const id of ids) {
+    // [2026-10-07] PLAZO ABSOLUTO (`hasta`, epoch ms): con varios perfiles el informe no puede
+    // estirarse; lo que no alcanza a bajar dentro del plazo no va (hallazgo Codex r5).
+    const queda = hasta > 0 ? hasta - Date.now() : Infinity;
+    if (queda <= 0) { log(`[laminasThermal] plazo agotado: la lámina ${id} y las siguientes no van`); break; }
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs || TIMEOUT_MS());
+    const t = setTimeout(() => ctrl.abort(), Math.min(timeoutMs || TIMEOUT_MS(), queda));
     try {
       const r = await fetchFn(`${BASE_URL()}/api/v1/lamina/${encodeURIComponent(perfil)}/${encodeURIComponent(id)}`,
         { signal: ctrl.signal, headers: cabeceras() });
@@ -313,63 +317,92 @@ export function medidasPng(buf) {
 const MAX_MPX = () => Number(process.env.THERMAL_LAMINA_MAX_MPX || 8);
 
 /**
- * Qué perfil de THERMAL corresponde a lo que se cotizó. [2026-10-07]
- *
- * 🔴 POR QUÉ EXISTE: hasta hoy el webhook pedía las láminas SIN decir qué se cotizó y se tomaba
- * el primer perfil publicado (el S60, primero por orden alfabético). Mientras THERMAL tenía un
- * solo perfil daba igual; con la corredera S75 H98 publicada, un cliente de corredera habría
- * recibido las isotermas de una PROYECTANTE.
- * Reglas (las mismas claves que publica THERMAL en data/laminas/manifiesto.json):
- *   · "proyectante"                       → S60_proyectante (la línea proyectante es S60)
- *   · "sliding" con hoja de 98 mm (H98)   → Sliding_H98
- *   · cualquier otra cosa                 → '' (sin láminas propias)
- * Con varias ventanas manda la que más unidades suma; empate → la primera en aparecer.
+ * Qué perfil de THERMAL corresponde a UNA ventana cotizada. [2026-10-07]
+ * La fuente es el rótulo que devuelve el MOTOR (`producto_label`, que trae la serie) y la hoja.
+ *   · proyectante de la serie S60                         → S60_proyectante
+ *   · corredera/sliding con hoja de 98 mm (no ANDES/S60) → Sliding_H98
+ *   · cualquier otra (incl. proyectante sin S60)          → '' (perfil propio NO modelado)
+ * No se infiere la serie: una "proyectante" sin S60 en el rótulo NO se declara S60 (Codex r5).
  */
-export function perfilLaminasDe(ventanas = []) {
-  const votos = new Map();
-  for (const v of Array.isArray(ventanas) ? ventanas : []) {
-    const txt = String(v?.producto || v?.producto_label || v?.product || '');
-    const hoja = Number(v?.hoja_mm) || Number((txt.match(/H(\d{2,3})/i) || [])[1]) || 0;
-    let perfil = '';
-    if (/proyectante/i.test(txt)) perfil = 'S60_proyectante';
-    else if (/sliding/i.test(txt) && hoja === 98) perfil = 'Sliding_H98';
-    if (!perfil) continue;
-    votos.set(perfil, (votos.get(perfil) || 0) + (Number(v?.cantidad ?? v?.qty) || 1));
-  }
-  let mejor = '', max = 0;
-  for (const [k, n] of votos) if (n > max) { mejor = k; max = n; }
-  return mejor;
+export function perfilDeVentana(v) {
+  const txt = String(v?.producto || v?.producto_label || v?.product || '');
+  const hoja = Number(v?.hoja_mm) || Number((txt.match(/H(\d{2,3})/i) || [])[1]) || 0;
+  if (/proyectante/i.test(txt) && /\bS\s?60\b/i.test(txt)) return 'S60_proyectante';
+  if (hoja === 98 && /(corredera|sliding)/i.test(txt) && !/(andes|monorriel|\bS\s?60\b)/i.test(txt)) return 'Sliding_H98';
+  return '';
 }
 
 /**
- * Atajo para el webhook: trae las láminas del perfil COTIZADO (`preferido`).
- * 🔴 [2026-10-07, decisión del dueño] Si el perfil del cliente NO está en el sistema (o no se
- * sabe cuál es), se entregan TODOS los perfiles publicados como REFERENCIA — textual: "si no
- * está el perfil del cliente en el sistema debemos entregar ambos perfiles". Nunca uno solo
- * elegido al azar: antes se caía al primero publicado (el S60) y el cliente de corredera veía
- * una proyectante como si fuera la suya. Va `referencial: true` y un grupo por perfil, cada
- * uno rotulado con su nombre, para que el PDF diga de qué sistema es cada figura.
+ * Los perfiles de TODO el proyecto (no uno por mayoría: un proyecto mixto recibe las láminas de
+ * cada sistema cotizado — hallazgo Codex r5). Ordenados por unidades. `desconocidas` = alguna
+ * ventana del proyecto no tiene perfil modelado.
  */
-export async function laminasParaInforme({ preferido = '', ...opts } = {}) {
-  const VACIO = { perfil: null, nombre: '', laminas: [], aprobadoPor: '', fecha: '', referencial: false, grupos: [] };
-  const perfiles = await perfilesConLaminas(opts);
-  if (!perfiles.length) return VACIO;
-  const grupo = async (p) => ({
-    perfil: p.perfil,
-    nombre: p.nombre_comercial || p.perfil,
-    aprobadoPor: p.aprobado_por || '',
-    fecha: p.fecha_aprobacion || '',
-    laminas: await descargarLaminas(p.perfil, { ...opts, ids: IDS_POR_PERFIL[p.perfil] || opts.ids || IDS_POR_DEFECTO }),
-  });
-  const elegido = preferido ? perfiles.find((p) => p.perfil === preferido) : null;
-  const grupos = elegido ? [await grupo(elegido)]
-    : (await Promise.all(perfiles.filter((p) => PERFILES_DE_VENTANA.includes(p.perfil)).map(grupo)));
-  const conFiguras = grupos.filter((g) => g.laminas.length);
-  if (!conFiguras.length) return VACIO;
-  return { ...conFiguras[0], referencial: !elegido, grupos: conFiguras };
+export function perfilesLaminasDe(ventanas = []) {
+  const votos = new Map();
+  let desconocidas = false;
+  const lista = Array.isArray(ventanas) ? ventanas : [];
+  for (const v of lista) {
+    const p = perfilDeVentana(v);
+    if (!p) { desconocidas = true; continue; }
+    votos.set(p, (votos.get(p) || 0) + (Number(v?.cantidad ?? v?.qty) || 1));
+  }
+  if (!lista.length) desconocidas = true;
+  const perfiles = [...votos.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
+  return { perfiles, desconocidas };
+}
+
+/** Compatibilidad: el perfil principal (el de más unidades) o ''. */
+export function perfilLaminasDe(ventanas = []) {
+  return perfilesLaminasDe(ventanas).perfiles[0] || '';
 }
 
 /** Perfiles de VENTANA que se pueden mostrar como referencia (los termopaneles van aparte). */
 export const PERFILES_DE_VENTANA = ['S60_proyectante', 'Sliding_H98'];
 
-export default { laminasParaInforme, perfilLaminasDe, PERFILES_DE_VENTANA, laminaTermopanel, elegirPerfilTermopanel, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };
+/** Tope de bytes para TODO el conjunto de figuras de un informe (todos los perfiles juntos). */
+const MAX_BYTES_TOTAL = () => Number(process.env.THERMAL_LAMINAS_MAX_BYTES_TOTAL) || 4 * 1024 * 1024;
+/** Plazo por defecto para bajar TODAS las láminas de un informe. */
+const PLAZO_LAMINAS_MS = () => Number(process.env.THERMAL_LAMINAS_PLAZO_MS) || 25_000;
+
+/**
+ * Láminas para el informe. [2026-10-07, decisiones del dueño]
+ *  · Los perfiles COTIZADOS que THERMAL tiene modelados van como PROPIOS (`propio: true`).
+ *  · "Si no está el perfil del cliente en el sistema debemos entregar ambos perfiles": si alguna
+ *    ventana no tiene perfil modelado (o el cotizado no está publicado), se agregan los demás
+ *    perfiles de ventana como REFERENCIA (`propio: false`), cada uno rotulado.
+ *  · Nunca se cae a "el primero publicado" haciéndolo pasar por el del cliente.
+ * Acepta `preferido` (un perfil) por compatibilidad.
+ */
+export async function laminasParaInforme({ perfiles: cotizados = null, preferido = '', desconocidas = null,
+  hasta = 0, ...opts } = {}) {
+  const VACIO = { perfil: null, nombre: '', laminas: [], aprobadoPor: '', fecha: '', referencial: false, grupos: [] };
+  const plazo = hasta > 0 ? hasta : Date.now() + PLAZO_LAMINAS_MS();
+  const pedidos = Array.isArray(cotizados) ? cotizados.filter(Boolean) : (preferido ? [preferido] : []);
+  const publicados = await perfilesConLaminas(opts);
+  if (!publicados.length) return VACIO;
+  const porClave = new Map(publicados.map((p) => [p.perfil, p]));
+  const propios = pedidos.filter((k) => porClave.has(k));
+  const faltaAlguno = desconocidas === true || pedidos.length === 0 || propios.length < pedidos.length;
+  const referencia = faltaAlguno
+    ? PERFILES_DE_VENTANA.filter((k) => porClave.has(k) && !propios.includes(k)) : [];
+
+  const grupos = [];
+  let total = 0;
+  const tope = MAX_BYTES_TOTAL();
+  for (const [k, propio] of [...propios.map((k) => [k, true]), ...referencia.map((k) => [k, false])]) {
+    if (Date.now() >= plazo) break;
+    const p = porClave.get(k);
+    const laminas = await descargarLaminas(k, {
+      ...opts, hasta: plazo, ids: IDS_POR_PERFIL[k] || opts.ids || IDS_POR_DEFECTO,
+      maxBytes: Math.max(0, tope - total) || 1,
+    });
+    total += laminas.reduce((a, l) => a + (l.bytes || 0), 0);
+    if (!laminas.length) continue;
+    grupos.push({ perfil: k, nombre: p.nombre_comercial || k, aprobadoPor: p.aprobado_por || '',
+      fecha: p.fecha_aprobacion || '', laminas, propio });
+  }
+  if (!grupos.length) return VACIO;
+  return { ...grupos[0], referencial: grupos.some((g) => !g.propio), grupos };
+}
+
+export default { laminasParaInforme, perfilLaminasDe, perfilesLaminasDe, perfilDeVentana, PERFILES_DE_VENTANA, laminaTermopanel, elegirPerfilTermopanel, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };

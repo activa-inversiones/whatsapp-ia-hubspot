@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { descargarLaminas, perfilesConLaminas, laminasParaInforme, perfilLaminasDe, laminaTermopanel, elegirPerfilTermopanel, esPng, IDS_POR_DEFECTO } from './laminasThermal.js';
+import { descargarLaminas, perfilesConLaminas, laminasParaInforme, perfilLaminasDe, perfilesLaminasDe, perfilDeVentana, laminaTermopanel, elegirPerfilTermopanel, esPng, IDS_POR_DEFECTO } from './laminasThermal.js';
 
 /** Un PNG mínimo VÁLIDO: firma + IHDR con ancho/alto. */
 function pngFalso(ancho = 100, alto = 50, relleno = 200) {
@@ -289,45 +289,83 @@ test('sin ningun perfil termopanel devuelve null', () => {
 // antes que láminas de otro perfil". Estos tests defienden esa decisión, no la implementación.
 // ─────────────────────────────────────────────────────────────────────────────────────────
 
-test('🔴 perfil del cliente NO publicado → se entregan los publicados como REFERENCIA, rotulados', async () => {
-  // Decisión del dueño (07-oct): "si no está el perfil del cliente en el sistema debemos entregar
-  // ambos perfiles". Nunca uno solo elegido al azar ni haciéndolo pasar por el del cliente.
-  const r = await laminasParaInforme({ preferido: 'Corredera_inexistente', fetchFn: espia(), log: callado });
-  assert.equal(r.referencial, true, 'tiene que ir marcado como referencia');
-  assert.ok(r.grupos.length >= 1);
-  for (const g of r.grupos) assert.ok(g.nombre && g.perfil, 'cada grupo va rotulado con su sistema');
+const LISTA_DOS = {
+  n: 2,
+  perfiles: [
+    { perfil: 'S60_proyectante', nombre_comercial: 'S60 proyectante WinHouse', aprobado_por: 'Marcelo Cifuentes', fecha_aprobacion: '2026-08-19' },
+    { perfil: 'Sliding_H98', nombre_comercial: 'Corredera S75 Hoja 98 (H98)', aprobado_por: 'Marcelo Cifuentes', fecha_aprobacion: '2026-10-07' },
+  ],
+};
+const claves = (r) => r.grupos.map((g) => `${g.perfil}:${g.propio ? 'propio' : 'ref'}`);
+
+test('🔴 corredera H98 cotizada → SOLO sus láminas, como PROPIAS (descarga real de los 3 nudos)', async () => {
+  const f = espia({ lista: LISTA_DOS });
+  const r = await laminasParaInforme({ perfiles: ['Sliding_H98'], desconocidas: false, fetchFn: f, log: callado });
+  assert.deepEqual(claves(r), ['Sliding_H98:propio']);
+  assert.equal(r.referencial, false);
+  assert.deepEqual(r.grupos[0].laminas.map((l) => l.id), ['01', '02', '03']);
+  assert.ok(f.llamadas.every((l) => !l.url.includes('/lamina/S60_proyectante/')), 'no baja figuras de otro perfil');
 });
 
-test('🔴 sin decir qué se cotizó también va como REFERENCIA, nunca como "su" perfil', async () => {
-  const r = await laminasParaInforme({ fetchFn: espia(), log: callado });
+test('🔴 proyecto MIXTO (S60 + H98) → los DOS como propios, ninguno de referencia', async () => {
+  const r = await laminasParaInforme({ perfiles: ['Sliding_H98', 'S60_proyectante'], desconocidas: false,
+    fetchFn: espia({ lista: LISTA_DOS }), log: callado });
+  assert.deepEqual(claves(r), ['Sliding_H98:propio', 'S60_proyectante:propio']);
+  assert.equal(r.referencial, false);
+});
+
+test('🔴 perfil del cliente NO modelado → AMBOS perfiles como REFERENCIA (decisión del dueño)', async () => {
+  const r = await laminasParaInforme({ perfiles: [], desconocidas: true, fetchFn: espia({ lista: LISTA_DOS }), log: callado });
+  assert.deepEqual(claves(r), ['S60_proyectante:ref', 'Sliding_H98:ref']);
   assert.equal(r.referencial, true);
 });
 
-test('perfil cotizado publicado → SOLO ese perfil y NO referencial', async () => {
-  const r = await laminasParaInforme({ preferido: 'S60_proyectante', fetchFn: espia(), log: callado });
-  assert.equal(r.referencial, false);
-  assert.equal(r.grupos.length, 1);
-  assert.equal(r.grupos[0].perfil, 'S60_proyectante');
+test('🔴 proyecto con H98 + una ventana sin modelo → H98 propia y S60 de referencia', async () => {
+  const r = await laminasParaInforme({ perfiles: ['Sliding_H98'], desconocidas: true, fetchFn: espia({ lista: LISTA_DOS }), log: callado });
+  assert.deepEqual(claves(r), ['Sliding_H98:propio', 'S60_proyectante:ref']);
 });
 
-test('perfilLaminasDe: proyectante → S60, corredera Sliding hoja 98 → Sliding_H98, el resto → nada', () => {
-  assert.equal(perfilLaminasDe([{ producto: 'Proyectante S60' }]), 'S60_proyectante');
-  assert.equal(perfilLaminasDe([{ producto: 'Ventana proyectante' }]), 'S60_proyectante');
-  assert.equal(perfilLaminasDe([{ producto: 'Corredera SLIDING H98 Doble Riel S75' }]), 'Sliding_H98');
-  assert.equal(perfilLaminasDe([{ producto: 'Corredera SLIDING', hoja_mm: 98 }]), 'Sliding_H98');
-  assert.equal(perfilLaminasDe([{ producto: 'Corredera SLIDING H80' }]), '', 'H80 aun no tiene laminas propias');
-  assert.equal(perfilLaminasDe([{ producto: 'Corredera S60' }]), '', 'corredera S60 no es la proyectante');
-  assert.equal(perfilLaminasDe([{ producto: 'Ventana fija' }]), '');
-  assert.equal(perfilLaminasDe([]), '');
-  assert.equal(perfilLaminasDe(undefined), '');
+test('🔴 perfil cotizado que THERMAL no publica → referencia, nunca "propio"', async () => {
+  const r = await laminasParaInforme({ preferido: 'Sliding_H98', fetchFn: espia(), log: callado });
+  assert.deepEqual(claves(r), ['S60_proyectante:ref']);
+  assert.equal(r.referencial, true);
 });
 
-test('perfilLaminasDe: con varias ventanas manda la que más unidades suma', () => {
-  const v = [
+test('⏱️ plazo vencido → no se baja nada y no se cuelga', async () => {
+  const r = await laminasParaInforme({ perfiles: ['Sliding_H98'], hasta: Date.now() - 1, fetchFn: espia({ lista: LISTA_DOS }), log: callado });
+  assert.deepEqual(r.grupos, []);
+});
+
+test('📦 tope de bytes del CONJUNTO: el segundo perfil no puede sumar por encima del tope global', async () => {
+  const previo = process.env.THERMAL_LAMINAS_MAX_BYTES_TOTAL;
+  process.env.THERMAL_LAMINAS_MAX_BYTES_TOTAL = String(3 * 224);   // 3 PNG falsos de 224 bytes
+  try {
+    const r = await laminasParaInforme({ perfiles: [], desconocidas: true, fetchFn: espia({ lista: LISTA_DOS }), log: callado });
+    const total = r.grupos.reduce((a, g) => a + g.laminas.reduce((b, l) => b + l.bytes, 0), 0);
+    assert.ok(total <= 3 * 224, `total ${total} supera el tope global`);
+  } finally {
+    if (previo === undefined) delete process.env.THERMAL_LAMINAS_MAX_BYTES_TOTAL; else process.env.THERMAL_LAMINAS_MAX_BYTES_TOTAL = previo;
+  }
+});
+
+test('perfilDeVentana: mapeo por SERIE y HOJA, no por una palabra suelta (Codex r5)', () => {
+  assert.equal(perfilDeVentana({ producto: 'Proyectante S60' }), 'S60_proyectante');
+  assert.equal(perfilDeVentana({ producto: 'Ventana proyectante' }), '', 'proyectante SIN serie no se declara S60');
+  assert.equal(perfilDeVentana({ producto: 'Proyectante Americana' }), '');
+  assert.equal(perfilDeVentana({ producto: 'Corredera SLIDING H98 Doble Riel S75' }), 'Sliding_H98');
+  assert.equal(perfilDeVentana({ producto: 'Corredera S75', hoja_mm: 98 }), 'Sliding_H98', 'H98 sin la palabra sliding');
+  assert.equal(perfilDeVentana({ producto: 'Corredera SLIDING H80' }), '');
+  assert.equal(perfilDeVentana({ producto: 'Corredera S60', hoja_mm: 98 }), '', 'corredera S60 no es la S75');
+  assert.equal(perfilDeVentana({ producto: 'Corredera Andes Doble Riel 66' }), '');
+  assert.equal(perfilDeVentana({ producto: 'Ventana fija' }), '');
+});
+
+test('perfilesLaminasDe: proyecto completo, ordenado por unidades, y marca las ventanas sin modelo', () => {
+  assert.deepEqual(perfilesLaminasDe([
     { producto: 'Proyectante S60', cantidad: 2 },
     { producto: 'Corredera SLIDING H98 Doble Riel S75', cantidad: 5 },
-  ];
-  assert.equal(perfilLaminasDe(v), 'Sliding_H98');
-  assert.equal(perfilLaminasDe([{ producto: 'Proyectante S60', cantidad: 3 }, ...v.slice(1, 2).map((x) => ({ ...x, cantidad: 1 }))]),
-    'S60_proyectante');
+  ]), { perfiles: ['Sliding_H98', 'S60_proyectante'], desconocidas: false });
+  assert.deepEqual(perfilesLaminasDe([{ producto: 'Ventana fija' }]), { perfiles: [], desconocidas: true });
+  assert.deepEqual(perfilesLaminasDe([]), { perfiles: [], desconocidas: true });
+  assert.equal(perfilLaminasDe([{ producto: 'Proyectante S60' }]), 'S60_proyectante');
 });

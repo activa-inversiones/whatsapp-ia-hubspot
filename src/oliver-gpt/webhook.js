@@ -50,7 +50,7 @@ import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribir
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS, datosDelInforme } from '../../services/informeTermico.js';
 import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
-import { laminasParaInforme, laminaTermopanel, perfilLaminasDe } from '../../services/laminasThermal.js';   // [2026-08-24] isotermas del FEM
+import { laminasParaInforme, laminaTermopanel, perfilesLaminasDe } from '../../services/laminasThermal.js';   // [2026-08-24] isotermas del FEM
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import { recordarColor, anticipoDeLoCotizado, textoDelCliente } from './normalizers.js';   // [2026-08-25/28] color recordado + anticipo de la propuesta · [2026-08-31] lo que dijo el cliente
@@ -2221,9 +2221,13 @@ export async function handleWebhook(req, res, deps = {}) {
           // [2026-10-07] Las láminas del perfil COTIZADO, no del primero publicado (antes toda
           // cotización recibía las del S60 proyectante). Sin perfil propio → sin láminas.
           try {
+            const _pl = perfilesLaminasDe(elegido.ventanas?.length ? elegido.ventanas
+              : [{ producto: elegido.producto }]);
+            // Plazo para TODAS las láminas: 25 s, y nunca más allá del techo del informe.
+            const _hasta = Math.min(Date.now() + 25_000,
+              Number(noDespuesDe) > 0 ? Number(noDespuesDe) - 20_000 : Infinity);
             laminas = await (deps.laminasParaInforme || laminasParaInforme)({
-              preferido: perfilLaminasDe(elegido.ventanas?.length ? elegido.ventanas
-                : [{ producto: elegido.producto }]),
+              perfiles: _pl.perfiles, desconocidas: _pl.desconocidas, hasta: _hasta,
             });
           } catch { /* opcional */ }
           // [2026-08-24] La figura del TERMOPANEL (aluminio vs warm-edge): reemplaza al
