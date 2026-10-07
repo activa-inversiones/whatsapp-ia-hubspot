@@ -979,8 +979,41 @@ for (const [titulo, extra, esperado] of [
       });
       return { reply: 'Listo', history: [], toolCalls: [], state: { ...state, name: 'Dady' } };
     };
-    await handleWebhook({ body: {} }, makeRes(), deps);
-    assert.ok(await esperar(() => llamadas.length > 0), `se tienen que pedir láminas — línea: ${JSON.stringify(spy.linea.map((e) => e.tipo))}`);
+    // El motor RESPONDE como en producción (rótulo + corredera reales de quoteEngine): sin esto la
+    // recotización falla, el ítem trae el aviso del motor y —correctamente— nada es "propio".
+    const fetchPrevio = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('/api/quotes/calculate')) {
+        const cuerpo = { ok: true, total_clp: 500000, producto_label: 'Corredera SLIDING H98 Doble Riel S75',
+          corredera: { hoja_mm: 98, riel: 'DOBLE', hojas: 2, marco_serie: 'S75' }, items: [] };
+        return { ok: true, status: 200, headers: { get: () => 'application/json' },
+          json: async () => cuerpo, text: async () => JSON.stringify(cuerpo) };
+      }
+      return fetchPrevio(url, opts);
+    };
+    try {
+      await handleWebhook({ body: {} }, makeRes(), deps);
+      assert.ok(await esperar(() => llamadas.length > 0), `se tienen que pedir láminas — línea: ${JSON.stringify(spy.linea.map((e) => e.tipo))}`);
+    } finally { global.fetch = fetchPrevio; }
     assert.deepEqual({ perfiles: llamadas[0].perfiles, desconocidas: llamadas[0].desconocidas }, esperado);
   });
 }
+
+test('🔴 webhook → láminas: si el MOTOR avisa algo sobre la ventana, ningún perfil propio (el aviso viaja)', async () => {
+  const llamadas = [];
+  const { deps } = makeDeps({ modoOn: true });
+  deps.laminasParaInforme = async (a) => { llamadas.push(a); return null; };
+  deps.handleTurn = async ({ state, toolCtx }) => {
+    await toolCtx.generarPdf({
+      items: [{ product: 'Corredera SLIDING H98 Doble Riel S75', producto_label: 'Corredera SLIDING H98 Doble Riel S75',
+        measures: '3250x1460mm', measures_original: '3250x1460mm', glass_label: 'DVH 5/12/5', ambiente: 'Living',
+        qty: 1, unit_price: 500000, total_price: 500000, color: 'Blanco', termico: { uw: 2.4 } }],
+      comuna: 'Temuco', name: 'Dady',
+    });
+    return { reply: 'Listo', history: [], toolCalls: [], state: { ...state, name: 'Dady' } };
+  };
+  // motor caído (fetch base del arnés): la recotización deja un aviso en el ítem
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => llamadas.length > 0));
+  assert.deepEqual({ perfiles: llamadas[0].perfiles, desconocidas: llamadas[0].desconocidas }, { perfiles: [], desconocidas: true });
+});

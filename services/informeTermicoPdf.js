@@ -119,20 +119,25 @@ const PIES_LAMINA = Object.freeze({
 });
 /** [2026-10-07] Párrafo de entrada de las láminas según qué perfiles son PROPIOS y cuáles de
  *  REFERENCIA (Codex r6: en un proyecto mixto no se puede decir "su ventana no tiene modelo"). */
-export function introLaminas(grupos = [], coberturaIncompleta = false) {
-  const ref = grupos.filter((g) => g && g.propio !== true).length;
-  const propios = grupos.filter((g) => g && g.propio === true).length;
+export function introLaminas(grupos = [], coberturaIncompleta = false, propiosFallidos = false) {
+  const gs = Array.isArray(grupos) ? grupos : [];
+  const ref = gs.filter((g) => g && g.propio !== true).length;
+  const propios = gs.filter((g) => g && g.propio === true).length;
+  // Si un sistema SÍ modelado no alcanzó a traer sus figuras, no se puede decir "no tiene modelo":
+  // se dice lo que es verdad — que no todas las figuras están en este informe.
+  if (propiosFallidos) return 'Este informe no incluye las figuras de todos los sistemas de su proyecto; '
+    + 'las que se muestran corresponden a los sistemas indicados en cada una.';
   if (!ref && !coberturaIncompleta) return '';
-  if (!ref) return 'Algunas ventanas de su proyecto aún no tienen un modelo térmico propio en nuestro sistema; '
-    + 'las figuras corresponden solo a los sistemas que sí están modelados.';
-  if (propios) return 'Algunas ventanas de su proyecto aún no tienen un modelo térmico propio en nuestro sistema; '
-    + 'para ellas se incluyen, como referencia, los sistemas que sí están modelados.';
+  if (!ref || propios) return 'Algunas ventanas de su proyecto aún no tienen un modelo térmico propio en nuestro sistema; '
+    + (ref ? 'para ellas se incluyen, como referencia, los sistemas que sí están modelados.'
+      : 'las figuras corresponden solo a los sistemas que sí están modelados.');
   return 'Su ventana aún no tiene un modelo térmico propio en nuestro sistema; por eso se muestran, como '
     + 'referencia, los sistemas que sí están modelados.';
 }
 
 /** [2026-10-07] Aviso de cada grupo: PROPIO (es el sistema cotizado) o REFERENCIA (otro sistema). */
-export function avisoLamina(g = {}) {
+export function avisoLamina(g0 = {}) {
+  const g = g0 && typeof g0 === 'object' ? g0 : {};
   const cab = `Figuras elaboradas con nuestro motor de cálculo por elementos finitos sobre el sistema ${g.nombre || ''}`
     + `${g.aprobadoPor ? `, modelo aprobado por ${g.aprobadoPor}` : ''}${g.fecha ? ` (${g.fecha})` : ''}. `;
   const cola = 'Los valores declarables de su proyecto (Uw) provienen del cálculo normativo conforme a NCh 3137.';
@@ -1011,7 +1016,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
         parrafo('Estas figuras salen del cálculo por elementos finitos del perfil: cada línea une los '
           + 'puntos que están a la misma temperatura. Donde las líneas se juntan, el calor escapa más '
           + 'rápido; donde se separan, el perfil aísla.');
-        const _intro = introLaminas(_grupos, laminas?.coberturaIncompleta === true);
+        const _intro = introLaminas(_grupos, laminas?.coberturaIncompleta === true, laminas?.propiosFallidos === true);
         if (_intro) parrafo(_intro);
         }
         {

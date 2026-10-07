@@ -256,3 +256,10 @@ test('🔴 Codex r15: todo propio pero cobertura incompleta ⇒ el intro lo dice
   assert.match(introLaminas([{ propio: true }], true), /Algunas ventanas de su proyecto/);
   assert.equal(introLaminas([{ propio: true }], false), '');
 });
+
+test('intro: si un sistema modelado no bajó sus figuras, NO dice "no tiene modelo"', () => {
+  const t = introLaminas([{ propio: false }], true, true);
+  assert.match(t, /no incluye las figuras de todos los sistemas/);
+  assert.doesNotMatch(t, /no tiene/);
+  assert.doesNotThrow(() => { introLaminas(null); avisoLamina(null); });
+});

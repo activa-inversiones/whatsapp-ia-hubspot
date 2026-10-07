@@ -3321,6 +3321,15 @@ Comuna: ${datos.comuna}`
               // (el vidrio resiste segun SU tamaño, no el de la ventana).
               if (_t && _t.corredera) it.corredera = _t.corredera;
               if (_t && _t.pano_vidrio) it.pano_vidrio = _t.pano_vidrio;
+              // [2026-10-07, prueba adversarial r2] Para elegir las láminas: el rótulo del MOTOR (que
+              // puede diferir del que reescribió el LLM) y lo que el motor AVISÓ sobre esta ventana.
+              // Solo los lee perfilDeVentana (laminasThermal); no se imprimen.
+              if (_t && _t.producto_label) it._label_motor = _t.producto_label;
+              {
+                const _av = [_t?.price_warning, ...(Array.isArray(_t?.avisos) ? _t.avisos : [])]
+                  .filter((x) => x !== undefined && x !== null && String(x).trim() !== '');
+                if (_av.length) it._avisos_motor = _av.map(String);
+              }
 
               // Y el ancho de hoja de una corredera (H80 / H98): el dibujo lo usa para el
               // grueso real del bastidor. Sale del label que devuelve el motor, que es quien

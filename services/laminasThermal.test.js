@@ -557,3 +557,28 @@ test('🔴 Codex r17: un aviso del motor anula; medidas "alto por ancho" no', ()
   assert.equal(perfilDeVentana({ producto_label: h98, hoja_mm: 98, measures_swapped: true, measures_texto_cliente: '1460 x 3250' }),
     'Sliding_H98');
 });
+
+test('🔴 ítems con la forma REAL del motor (quoteEngine): H98 de 2 y 3 hojas se reconocen; S70, 4 hojas, aviso o rótulo distinto no', () => {
+  const real = (label, corredera, extra = {}) => ({ producto_label: label, product: label, hoja_mm: 98, corredera,
+    source: 'activa_engine', confidence: 'high', measures: '3000x2000', glass_label: 'DVH 5/12/5', qty: 1, ...extra });
+  const c2 = { hoja_mm: 98, riel: 'DOBLE', hojas: 2, marco_serie: 'S75' };
+  const c3 = { hoja_mm: 98, riel: 'DOBLE', hojas: 3, marco_serie: 'S75' };
+  assert.equal(perfilDeVentana(real('Corredera SLIDING H98 Doble Riel S75', c2)), 'Sliding_H98');
+  assert.equal(perfilDeVentana(real('Corredera SLIDING H98 Doble Riel S75 3 hojas', c3)), 'Sliding_H98');
+  assert.equal(perfilDeVentana(real('Corredera SLIDING H98 Doble Riel S75 3 hojas, central fija', c3)), 'Sliding_H98');
+  assert.equal(perfilDeVentana(real('Corredera SLIDING H98 Doble Riel S70', { ...c2, marco_serie: 'S70' })), '', 'marco S70 no modelado');
+  assert.equal(perfilDeVentana(real('Corredera SLIDING H98 Doble Riel S75 4 hojas', { ...c2, hojas: 4 })), '', '4 hojas no modelado');
+  assert.equal(perfilDeVentana(real('Corredera SLIDING H98 Triple Riel S75', { ...c2, riel: 'TRIPLE' })), '');
+  assert.equal(perfilDeVentana(real('Corredera SLIDING H98 Doble Riel S75', c2, { _avisos_motor: ['Medida bajo el mínimo'] })), '',
+    'aviso SIN rótulo del motor: anula');
+  assert.equal(perfilDeVentana(real('Corredera SLIDING H98 Doble Riel S75', c2, { _label_motor: 'Corredera SLIDING H98 Doble Riel S75',
+    _avisos_motor: ['La corredera supera el máximo estándar; precio referencial'] })), 'Sliding_H98',
+    'con rótulo del motor, un aviso de TAMAÑO no cambia el sistema (las H98 son las ventanas grandes)');
+  assert.equal(perfilDeVentana(real('Corredera SLIDING H98 Doble Riel S75', c2, { _label_motor: 'Corredera ANDES 66 Monorriel' })), '',
+    'el rótulo del motor contradice al del LLM');
+  assert.equal(perfilDeVentana(real('Corredera SLIDING H98 Doble Riel S75', c2, { _label_motor: 'Corredera SLIDING H98 Doble Riel S75' })),
+    'Sliding_H98');
+  // getter / prototipo: se lee una copia plana
+  const raro = Object.create({ hojas: 2, riel: 'DOBLE' });
+  assert.equal(perfilDeVentana(real('Corredera SLIDING H98 Doble Riel S75', raro)), '');
+});

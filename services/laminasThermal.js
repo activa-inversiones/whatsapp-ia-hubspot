@@ -336,7 +336,11 @@ const MAX_MPX = () => Number(process.env.THERMAL_LAMINA_MAX_MPX || 8);
  */
 const CANONICOS = {
   S60_proyectante: ['proyectante s60', 'ventana proyectante s60', 'proyectante s60 winhouse'],
+  // Rótulos que genera HOY quoteEngine.js (temp-sales-os, ~2846 + sufijoHojasCorredera): doble riel,
+  // marco S75, 2 hojas (sin sufijo) o 3 hojas (con o sin central fija). NO: triple riel, marco S70,
+  // 4+ hojas (otra configuración de encuentros; no está modelada).
   Sliding_H98: ['corredera sliding h98', 'corredera sliding h98 doble riel s75',
+    'corredera sliding h98 doble riel s75 3 hojas', 'corredera sliding h98 doble riel s75 3 hojas central fija',
     'corredera sliding h98 doble riel s75 triple hoja central fija laterales correderas'],
 };
 const GENERICOS = {
@@ -366,10 +370,14 @@ const CAMPOS_NEUTROS = new Set(['measures', 'measures_original', 'medidas', 'gla
 /** Los ÚNICOS campos que pueden AUTORIZAR un perfil (Codex r16). El resto de los campos no neutros
  *  solo pueden VETARLO: un comentario con el rótulo canónico no convierte nada en H98. */
 const CAMPOS_AUTORIZAN = new Set(['producto_label', 'producto', 'product', 'label', 'descripcion', 'description',
-  'tipo', 'apertura', 'serie']);
+  'tipo', 'apertura', 'serie', '_label_motor']);
 const CAMPOS_COMPUESTA = ['partes', 'bow', 'forma', 'esquina', 'compuesta', 'panos', 'paños', 'riel', 'corredera'];
 
-export function perfilDeVentana(v) {
+export function perfilDeVentana(v0) {
+  // Se lee UNA sola vez una copia plana (sin getters ni prototipos raros: prueba adversarial r2).
+  if (!v0 || typeof v0 !== 'object' || Array.isArray(v0)) return '';
+  let v;
+  try { v = JSON.parse(JSON.stringify(v0)); } catch { return ''; }
   if (!v || typeof v !== 'object' || Array.isArray(v)) return '';
   // Cualquier rastro de compuesta/variante estructurada => no es un perfil simple modelado.
   // ('corredera'/'riel' estructurados: el motor los manda cuando hay nº de hojas/rieles; se aceptan
@@ -379,17 +387,25 @@ export function perfilDeVentana(v) {
     const x = v[k];
     // 'corredera' estructurada: SOLO un objeto completo {hojas: 2|3 entero, riel: 'DOBLE'} (lo
     // modelado). Vacío, parcial, false, arrays o tipos raros anulan (Codex r14).
+    // forma REAL del motor (quoteEngine.js:3039): {hoja_mm, riel, hojas, marco_serie}
     if (k === 'corredera' && typeof x === 'object' && !Array.isArray(x)
-        && Object.keys(x).every((kk) => ['hojas', 'riel'].includes(kk))
+        && Object.getPrototypeOf(x) === Object.prototype
+        && Object.keys(x).every((kk) => ['hojas', 'riel', 'hoja_mm', 'marco_serie'].includes(kk))
         && Number.isInteger(x.hojas) && [2, 3].includes(x.hojas)
-        && typeof x.riel === 'string' && x.riel.toUpperCase() === 'DOBLE') continue;
+        && typeof x.riel === 'string' && x.riel.toUpperCase() === 'DOBLE'
+        && (x.hoja_mm === undefined || x.hoja_mm === 98)
+        && (x.marco_serie === undefined || x.marco_serie === 'S75')) continue;
     return '';
   }
   // hoja: solo número finito o dígitos
   // [Codex r17] Si el motor AVISÓ algo sobre esta ventana (cambió hoja, medida, línea...), no se
   // puede afirmar que es el sistema modelado sin leer qué cambió: fail-closed => referencia.
   const tiene = (x) => x !== undefined && x !== null && x !== '' && !(Array.isArray(x) && !x.length);
-  if (tiene(v.price_warning) || tiene(v.avisos)) return '';
+  // Con el rótulo del MOTOR presente (_label_motor), ese rótulo es la fuente de verdad del producto
+  // que se cotizó: un aviso de tamaño o de precio ("supera el máximo estándar") no cambia el
+  // sistema, y si el motor cambió la línea su rótulo lo dice y no calza. Sin rótulo del motor
+  // (no cotizó, o el ítem no pasó por él), cualquier aviso anula: no hay con qué contrastarlo.
+  if (!v._label_motor && (tiene(v.price_warning) || tiene(v.avisos) || tiene(v._avisos_motor))) return '';
   // hoja: ausente, o un entero (número o dígitos). Un valor PRESENTE se compara tal cual, también 0.
   let hoja = null;
   if (v.hoja_mm !== undefined && v.hoja_mm !== null && v.hoja_mm !== '') {
@@ -404,7 +420,7 @@ export function perfilDeVentana(v) {
   const perfiles = new Set();
   for (const [k, x] of Object.entries(v)) {
     if (CAMPOS_NEUTROS.has(k) || CAMPOS_COMPUESTA.includes(k) || k === 'hoja_mm'
-      || k === 'price_warning' || k === 'avisos') continue;           // los avisos ya se revisaron arriba
+      || k === 'price_warning' || k === 'avisos' || k === '_avisos_motor') continue;           // los avisos ya se revisaron arriba
     if (x === undefined || x === null || x === '') continue;
     if (typeof x !== 'string') return '';                               // dato no-texto desconocido
     const n = normalizarRotulo(x);
@@ -471,12 +487,12 @@ export async function laminasParaInforme({ perfiles: cotizados = null, preferido
   hasta = 0, ...opts } = {}) {
   const VACIO = { perfil: null, nombre: '', laminas: [], aprobadoPor: '', fecha: '', referencial: false, grupos: [] };
   const plazo = hasta > 0 ? hasta : Date.now() + PLAZO_LAMINAS_MS();
-  const pedidos = Array.isArray(cotizados) ? cotizados.filter(Boolean) : (preferido ? [preferido] : []);
+  const pedidos = [...new Set(Array.isArray(cotizados) ? cotizados.filter(Boolean) : (preferido ? [preferido] : []))];
   const publicados = await perfilesConLaminas({ ...opts, hasta: plazo });
   if (!publicados.length) return VACIO;
   const porClave = new Map(publicados.map((p) => [p.perfil, p]));
   const propios = pedidos.filter((k) => porClave.has(k));
-  const faltaAlguno = desconocidas === true || pedidos.length === 0 || propios.length < pedidos.length;
+  const faltaAlguno = Boolean(desconocidas) || pedidos.length === 0 || propios.length < pedidos.length;
   const referencia = faltaAlguno
     ? PERFILES_DE_VENTANA.filter((k) => porClave.has(k) && !propios.includes(k)) : [];
 
@@ -499,8 +515,10 @@ export async function laminasParaInforme({ perfiles: cotizados = null, preferido
   // [Codex r15] la COBERTURA se conserva aunque las figuras de referencia no hayan bajado: si parte
   // del proyecto no tiene modelo propio, el informe lo tiene que decir igual.
   // [Codex r16] también es incompleta si un perfil PROPIO pedido no alcanzó a traer sus figuras
-  const incompleta = faltaAlguno || propios.some((k) => !grupos.some((g) => g.perfil === k));
-  return { ...grupos[0], referencial: grupos.some((g) => !g.propio), coberturaIncompleta: incompleta, grupos };
+  const propiosFallidos = propios.some((k) => !grupos.some((g) => g.perfil === k));
+  const incompleta = faltaAlguno || propiosFallidos;
+  return { ...grupos[0], referencial: grupos.some((g) => !g.propio), coberturaIncompleta: incompleta,
+    propiosFallidos, grupos };
 }
 
 export default { laminasParaInforme, perfilLaminasDe, perfilesLaminasDe, perfilDeVentana, normalizarRotulo, PERFILES_DE_VENTANA, laminaTermopanel, elegirPerfilTermopanel, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };
