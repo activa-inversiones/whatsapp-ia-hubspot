@@ -4284,12 +4284,7 @@ Comuna: ${datos.comuna}`
                 hoja_mm: Number(it.hoja_mm) || undefined,   // [2026-10-07] elige las láminas (H80/H98)
                 // [Codex r12] TODOS los rótulos CRUDOS para elegir las láminas: el mapeo de arriba
                 // se queda con uno solo y borra lo que podría contradecirlo (compuesta, tipo...).
-                _perfil: {
-                  producto_label: it.producto_label, product: it.product, producto: it.producto,
-                  label: it.label, descripcion: it.descripcion, tipo: it.tipo,
-                  hoja_mm: it.hoja_mm, compuesta: it.compuesta, partes: it.partes, esquina: it.esquina,
-                  bow: it.bow, forma: it.forma,
-                },
+                _perfil: { ...it },   // [Codex r13] el ítem COMPLETO: ningún dato que pueda contradecir se pierde
               }));
               const ultima = (input.items || []).at(-1) || {};
               // Inyectable en test (120 s reales harian imposible probar el camino del techo).
@@ -4494,12 +4489,7 @@ Comuna: ${datos.comuna}`
                 hoja_mm: Number(it.hoja_mm) || undefined,   // [2026-10-07] elige las láminas (H80/H98)
                 // [Codex r12] TODOS los rótulos CRUDOS para elegir las láminas: el mapeo de arriba
                 // se queda con uno solo y borra lo que podría contradecirlo (compuesta, tipo...).
-                _perfil: {
-                  producto_label: it.producto_label, product: it.product, producto: it.producto,
-                  label: it.label, descripcion: it.descripcion, tipo: it.tipo,
-                  hoja_mm: it.hoja_mm, compuesta: it.compuesta, partes: it.partes, esquina: it.esquina,
-                  bow: it.bow, forma: it.forma,
-                },
+                _perfil: { ...it },   // [Codex r13] el ítem COMPLETO: ningún dato que pueda contradecir se pierde
               }));
               const ultima = (input.items || []).at(-1) || {};
               despacharInforme(input.comuna || state.comuna || '', {

@@ -353,7 +353,8 @@ test('perfilDeVentana: mapeo por SERIE y HOJA, no por una palabra suelta (Codex 
   assert.equal(perfilDeVentana({ producto: 'Ventana proyectante' }), '', 'proyectante SIN serie no se declara S60');
   assert.equal(perfilDeVentana({ producto: 'Proyectante Americana' }), '');
   assert.equal(perfilDeVentana({ producto: 'Corredera SLIDING H98 Doble Riel S75' }), 'Sliding_H98');
-  assert.equal(perfilDeVentana({ producto: 'Corredera S75', hoja_mm: 98 }), 'Sliding_H98', 'H98 sin la palabra sliding');
+  // [Codex r13] Rótulos CANÓNICOS EXACTOS: 'Corredera S75' no es un rótulo del motor para la H98 => referencia (fail-closed).
+  assert.equal(perfilDeVentana({ producto: 'Corredera S75', hoja_mm: 98 }), '', 'rótulo no canónico');
   assert.equal(perfilDeVentana({ producto: 'Corredera SLIDING H80' }), '');
   assert.equal(perfilDeVentana({ producto: 'Corredera S60', hoja_mm: 98 }), '', 'corredera S60 no es la S75');
   assert.equal(perfilDeVentana({ producto: 'Corredera Andes Doble Riel 66' }), '');
@@ -469,4 +470,24 @@ test('🔴 Codex r12: rótulos crudos (_perfil) mandan, hoja estricta, triple ho
 
 test('🔴 corredera H98 "fija" sin ser la triple hoja => sin perfil (prueba adversarial)', () => {
   assert.equal(perfilDeVentana({ producto_label: 'Corredera SLIDING H98 S75 fija', hoja_mm: 98 }), '');
+});
+
+test('🔴 Codex r13: SOLO rótulos canónicos exactos; variantes de riel/fija/coerciones/no-texto anulan', () => {
+  for (const m of ['Corredera SLIDING H98 S75 triple fija', 'Corredera SLIDING H98 S75 riel triple', 'Corredera SLIDING H98 S75 3 riel']) {
+    assert.equal(perfilDeVentana({ producto_label: m, hoja_mm: 98 }), '', m);
+  }
+  const h98 = 'Corredera SLIDING H98 Doble Riel S75';
+  assert.equal(perfilDeVentana({ producto_label: h98, description: 'Proyectante S60' }), '');
+  assert.equal(perfilDeVentana({ producto_label: h98, panos: [{ tipo: 'FIJO' }] }), '');
+  assert.equal(perfilDeVentana({ producto_label: h98, hoja_mm: '98.0' }), '');
+  assert.equal(perfilDeVentana({ producto_label: h98, hoja_mm: [98] }), '');
+  assert.equal(perfilDeVentana({ producto_label: h98, tipo: { valor: 'ANDES' } }), '');
+  assert.equal(perfilDeVentana({ producto_label: h98, corredera: { hojas: 3, riel: 'TRIPLE' } }), '');
+  // el ítem real del motor (tipo/serie/corredera estructurada) sigue siendo H98
+  assert.equal(perfilDeVentana({ producto_label: h98, tipo: 'CORREDERA', serie: 'S75', hoja_mm: 98,
+    corredera: { hojas: 3, riel: 'DOBLE' } }), 'Sliding_H98');
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60', tipo: 'PROYECTANTE', serie: 'S60' }), 'S60_proyectante');
+  // y por el camino del webhook (_perfil = ítem completo)
+  assert.deepEqual(perfilesLaminasDe([{ producto: h98, _perfil: { producto_label: h98, description: 'Proyectante S60' } }]),
+    { perfiles: [], desconocidas: true });
 });

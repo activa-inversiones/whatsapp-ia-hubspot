@@ -328,93 +328,79 @@ const MAX_MPX = () => Number(process.env.THERMAL_LAMINA_MAX_MPX || 8);
  * No se infiere la serie: una "proyectante" sin S60 en el rótulo NO se declara S60 (Codex r5).
  */
 /**
- * LISTA BLANCA de tokens (Codex r10 + prueba adversarial con 337.000 casos, 07-oct): un rótulo
- * se normaliza (acentos, mayúsculas, guiones, ancho cero, Unicode) y se parte en palabras; si
- * aparece UNA SOLA palabra fuera del vocabulario cerrado, el rótulo anula. Una lista negra
- * ("andes", "americana"...) siempre deja pasar lo que no se previó: M70, aluminio, tilt, esquina,
- * una A cirílica. Esta no.
+ * RÓTULOS CANÓNICOS EXACTOS (Codex r13). Tras varias rondas, cualquier regla por palabras (lista
+ * negra o "bolsa de palabras") dejó pasar combinaciones ("triple fija", "riel triple", "3 riel").
+ * Ahora un rótulo vale como perfil SOLO si, normalizado, es EXACTAMENTE uno de los rótulos que
+ * genera el motor para ese sistema. Cualquier otro texto anula, salvo una lista cerrada de
+ * genéricos compatibles ("Ventana PVC"). Lo que no está aquí no se declara: sale como referencia.
  */
-const VOCAB_GENERICO = new Set(['ventana', 'de', 'pvc', 'winhouse', 'hoja', 'hojas', '1', '2', '3', '4',
-  'proyectante', 'corredera', 'corrediza', 'deslizante', 'sliding']);
-const PERFILES_TOKENS = {
-  S60_proyectante: { requiere: [['proyectante'], ['s60']],
-    permite: new Set(['ventana', 'de', 'pvc', 'winhouse', 'proyectante', 's60']), apertura: 'proyectante' },
-  // Rótulos reales del motor incluyen la variante de 3 hojas en DOBLE riel ("Triple hoja (central
-  // fija, laterales correderas)", dibujoVentana.test.js): mismos nudos modelados. El TRIPLE RIEL no
-  // ('riel' con 'triple' sin 'doble' no calza: es otra geometría).
-  Sliding_H98: { requiere: [['corredera', 'corrediza', 'deslizante', 'sliding'], ['h98'], ['sliding', 's75']],
-    permite: new Set(['ventana', 'de', 'pvc', 'winhouse', 'corredera', 'corrediza', 'deslizante', 'sliding', 'h98',
-      's75', 'doble', 'riel', 'hoja', 'hojas', '2', '3', '4', 'triple', 'central', 'fija', 'laterales',
-      'correderas', 'lateral']), apertura: 'corredera' },
+const CANONICOS = {
+  S60_proyectante: ['proyectante s60', 'ventana proyectante s60', 'proyectante s60 winhouse'],
+  Sliding_H98: ['corredera sliding h98', 'corredera sliding h98 doble riel s75',
+    'corredera sliding h98 doble riel s75 triple hoja central fija laterales correderas'],
 };
-const APERTURA_DE_TOKEN = { proyectante: 'proyectante', corredera: 'corredera', corrediza: 'corredera',
-  deslizante: 'corredera', sliding: 'corredera' };
+const GENERICOS = {
+  S60_proyectante: ['ventana', 'ventana pvc', 'proyectante', 'ventana proyectante', 's60'],
+  Sliding_H98: ['ventana', 'ventana pvc', 'sliding', 'corredera', 'ventana corredera', 's75', 'ventana corrediza',
+    'ventana deslizante', 'ventana corredera 2 hojas', 'ventana corrediza 2 hojas', 'corredera 2 hojas'],
+};
+const TODOS_GENERICOS = new Set(Object.values(GENERICOS).flat());
 
-/** Normaliza y tokeniza. Devuelve null si queda cualquier carácter fuera de [a-z0-9 ]. */
-export function tokensDeRotulo(txt) {
+/** Normaliza un rótulo. null si queda cualquier carácter fuera de [a-z0-9 ]. */
+export function normalizarRotulo(txt) {
   let t = String(txt || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[\u00ad\u200b-\u200f\u2060\ufeff]/g, '').toLowerCase()
-    .replace(/[\u2010-\u2015]/g, '-').replace(/[-_./·,;:()]+/g, ' ');
-  // "h 98" -> h98 · "s 75" / "serie 75" -> s75 (se ven las hojas y series escritas con espacio)
-  t = t.replace(/\b(?:serie|series|s)\s*(\d{2})\b/g, 's$1').replace(/\bh\s*(\d{2,3})\b/g, 'h$1');
-  if (/[^a-z0-9 ]/.test(t)) return null;                               // cirílico, fullwidth, etc.
-  return t.split(/\s+/).filter(Boolean);
+    .replace(/[\u2010-\u2015—–-]/g, ' ').replace(/[_./·,;:()]+/g, ' ');
+  t = t.replace(/\s+/g, ' ').trim();
+  return /[^a-z0-9 ]/.test(t) ? null : t;
 }
 
-/**
- * Clasificación de UN rótulo. Devuelve: un perfil · '∅' (no calza o trae algo desconocido) ·
- * 'ap:<tipo>' (genérico que solo nombra la apertura) · '' (vacío).
- */
-function perfilDeRotulo(txt, hojaMm) {
-  const toks = tokensDeRotulo(txt);
-  if (toks === null) return '∅';
-  if (!toks.length) return '';
-  const hm = Number(hojaMm) || 0;
-  // TRIPLE RIEL es otra geometría (los nudos modelados son de doble riel): anula siempre.
-  if (toks.some((x, k) => x === 'triple' && toks[k + 1] === 'riel')) return '∅';
-  for (const [perfil, d] of Object.entries(PERFILES_TOKENS)) {
-    const todos = toks.every((x) => d.permite.has(x));
-    // la hoja declarada por el motor (hoja_mm 98) cuenta como 'h98' aunque el rótulo no la escriba
-    const conHoja = hm === 98 && !toks.some((x) => /^h\d+$/.test(x)) ? [...toks, 'h98'] : toks;
-    const cumple = d.requiere.every((alts) => alts.some((a) => conHoja.includes(a)));
-    if (todos && cumple) {
-      if (perfil === 'S60_proyectante' && hm) return '∅';               // una proyectante no trae hoja
-      if (perfil === 'Sliding_H98' && hm && hm !== 98) return '∅';
-      // 'fija' solo es válida como la hoja central de la variante TRIPLE HOJA (doble riel)
-      if (perfil === 'Sliding_H98' && toks.includes('fija') && !toks.includes('triple')) return '∅';
-      return perfil;
-    }
-  }
-  if (toks.every((x) => VOCAB_GENERICO.has(x))) {
-    const aps = new Set(toks.map((x) => APERTURA_DE_TOKEN[x]).filter(Boolean));
-    if (aps.size > 1) return '∅';
-    return `gen:${toks.join(' ')}`;          // genérico: se valida contra el perfil en perfilDeVentana
-  }
-  return '∅';
-}
+const CAMPOS_ROTULO = ['producto_label', 'producto', 'product', 'label', 'descripcion', 'description', 'tipo', 'serie'];
+const CAMPOS_COMPUESTA = ['partes', 'bow', 'forma', 'esquina', 'compuesta', 'panos', 'paños', 'riel', 'corredera'];
 
 export function perfilDeVentana(v) {
-  // Cada rótulo vota por separado (incluidos label/descripcion/tipo, que también usa enginePricer).
-  // Perfil propio SOLO si: exactamente un perfil, ningún '∅', y todo rótulo genérico usa SOLO
-  // palabras que ese perfil admite. Una ventana compuesta/bow/esquina nunca es un perfil simple.
-  if (!v || typeof v !== 'object') return '';
-  if (v.partes || v.bow || v.forma || v.esquina || v.compuesta || v['paños'] || v.panos) return '';
-  // hoja_mm presente pero ilegible ('98 mm', 'abc', NaN): no se adivina (fail-closed)
-  if (v.hoja_mm !== undefined && v.hoja_mm !== null && v.hoja_mm !== ''
-      && !(typeof v.hoja_mm === 'number' ? Number.isFinite(v.hoja_mm)
-        : /^\s*\d+(?:\.\d+)?\s*$/.test(String(v.hoja_mm)) && String(v.hoja_mm).trim() !== '')) return '';
-  const votos = [v.producto_label, v.producto, v.product, v.label, v.descripcion, v.description, v.tipo]
-    .filter((x) => typeof x === 'string' && x.trim())
-    .map((x) => perfilDeRotulo(x, v.hoja_mm))
-    .filter(Boolean);
-  if (votos.includes('∅')) return '';
-  const perfiles = new Set(votos.filter((x) => !x.startsWith('gen:')));
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return '';
+  // Cualquier rastro de compuesta/variante estructurada => no es un perfil simple modelado.
+  // ('corredera'/'riel' estructurados: el motor los manda cuando hay nº de hojas/rieles; se aceptan
+  //  SOLO si dicen doble riel y 2-3 hojas, que es lo modelado.)
+  for (const k of CAMPOS_COMPUESTA) {
+    const x = v[k];
+    if (x === undefined || x === null || x === false || x === '') continue;
+    if (k === 'corredera' && typeof x === 'object' && !Array.isArray(x)
+        && Object.keys(x).every((kk) => ['hojas', 'riel', 'rieles'].includes(kk))
+        && (x.riel === undefined || String(x.riel).toUpperCase() === 'DOBLE')
+        && (x.rieles === undefined || Number(x.rieles) === 2)
+        && (x.hojas === undefined || [2, 3].includes(Number(x.hojas)))) continue;
+    return '';
+  }
+  // hoja: solo número finito o dígitos
+  let hoja = 0;
+  if (v.hoja_mm !== undefined && v.hoja_mm !== null && v.hoja_mm !== '') {
+    if (typeof v.hoja_mm === 'number' && Number.isInteger(v.hoja_mm)) hoja = v.hoja_mm;
+    else if (typeof v.hoja_mm === 'string' && /^\d{2,3}$/.test(v.hoja_mm)) hoja = Number(v.hoja_mm);
+    else return '';
+  }
+  const rotulos = [];
+  for (const k of CAMPOS_ROTULO) {
+    const x = v[k];
+    if (x === undefined || x === null || x === '') continue;
+    if (typeof x !== 'string') return '';                               // rótulo no-texto: no se adivina
+    const n = normalizarRotulo(x);
+    if (n === null) return '';
+    rotulos.push(n);
+  }
+  const perfiles = new Set();
+  for (const n of rotulos) {
+    const p = Object.keys(CANONICOS).find((k) => CANONICOS[k].includes(n));
+    if (p) perfiles.add(p);
+    else if (!TODOS_GENERICOS.has(n)) return '';                        // texto desconocido anula
+  }
   if (perfiles.size !== 1) return '';
   const perfil = [...perfiles][0];
-  const d = PERFILES_TOKENS[perfil];
-  const ok = votos.filter((x) => x.startsWith('gen:'))
-    .every((x) => x.slice(4).split(' ').every((tk) => d.permite.has(tk)));
-  return ok ? perfil : '';
+  if (!rotulos.every((n) => CANONICOS[perfil].includes(n) || GENERICOS[perfil].includes(n))) return '';
+  if (perfil === 'S60_proyectante' && (hoja || v.corredera)) return '';
+  if (perfil === 'Sliding_H98' && hoja && hoja !== 98) return '';
+  return perfil;
 }
 
 /**
@@ -490,4 +476,4 @@ export async function laminasParaInforme({ perfiles: cotizados = null, preferido
   return { ...grupos[0], referencial: grupos.some((g) => !g.propio), grupos };
 }
 
-export default { laminasParaInforme, perfilLaminasDe, perfilesLaminasDe, perfilDeVentana, PERFILES_DE_VENTANA, laminaTermopanel, elegirPerfilTermopanel, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };
+export default { laminasParaInforme, perfilLaminasDe, perfilesLaminasDe, perfilDeVentana, normalizarRotulo, PERFILES_DE_VENTANA, laminaTermopanel, elegirPerfilTermopanel, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };
