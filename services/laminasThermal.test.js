@@ -527,3 +527,24 @@ test('🔴 Codex r15: la cobertura incompleta se conserva aunque falle la descar
   assert.deepEqual(r.grupos.map((g) => g.perfil), ['Sliding_H98']);
   assert.equal(r.coberturaIncompleta, true);
 });
+
+test('🔴 Codex r16: solo campos de producto AUTORIZAN; comentarios solo vetan; metadatos del motor son neutros', () => {
+  const h98 = 'Corredera SLIDING H98 Doble Riel S75';
+  assert.equal(perfilDeVentana({ producto_label: 'Ventana', comentario: h98 }), '', 'un comentario no autoriza');
+  assert.equal(perfilDeVentana({ comentario: h98 }), '');
+  assert.equal(perfilDeVentana({ producto_label: h98, nota: 'VENTANA FIJA ANDES' }), '', 'una nota contradictoria veta');
+  assert.equal(perfilDeVentana({ producto_label: h98, hoja_mm: 98, source: 'activa_engine', confidence: 'high' }), 'Sliding_H98',
+    'la recotización exitosa agrega source/confidence y NO debe anular');
+});
+
+test('🔴 Codex r16: si un perfil PROPIO no baja sus figuras, la cobertura queda incompleta', async () => {
+  const f = async (url) => {
+    if (url.includes('/api/v1/laminas')) return { ok: true, status: 200, json: async () => LISTA_DOS };
+    if (url.includes('/S60_proyectante/')) return { ok: false, status: 503 };
+    const png = pngFalso();
+    return { ok: true, status: 200, arrayBuffer: async () => png.buffer.slice(png.byteOffset, png.byteOffset + png.length) };
+  };
+  const r = await laminasParaInforme({ perfiles: ['Sliding_H98', 'S60_proyectante'], desconocidas: false, fetchFn: f, log: callado });
+  assert.deepEqual(r.grupos.map((g) => g.perfil), ['Sliding_H98']);
+  assert.equal(r.coberturaIncompleta, true);
+});

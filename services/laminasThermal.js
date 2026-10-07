@@ -359,7 +359,13 @@ export function normalizarRotulo(txt) {
 /** Campos que NO describen la ventana (medidas, vidrio, precio, numeración...). Todo lo demás se lee. */
 const CAMPOS_NEUTROS = new Set(['measures', 'measures_original', 'medidas', 'glass_label', 'vidrio', 'glass_id',
   'ambiente', 'qty', 'cantidad', 'unit_price', 'total_price', 'precio', 'color', 'termico', 'uw', 'pos', 'id',
-  'ancho_mm', 'alto_mm', 'referencial', 'pano_vidrio', 'comuna', 'nota', 'notas', 'descuento']);
+  'ancho_mm', 'alto_mm', 'referencial', 'pano_vidrio', 'comuna', 'descuento',
+  // metadatos del motor (enginePricer): de dónde salió el precio, no qué ventana es
+  'source', 'confidence', 'price_warning', 'avisos']);
+/** Los ÚNICOS campos que pueden AUTORIZAR un perfil (Codex r16). El resto de los campos no neutros
+ *  solo pueden VETARLO: un comentario con el rótulo canónico no convierte nada en H98. */
+const CAMPOS_AUTORIZAN = new Set(['producto_label', 'producto', 'product', 'label', 'descripcion', 'description',
+  'tipo', 'apertura', 'serie']);
 const CAMPOS_COMPUESTA = ['partes', 'bow', 'forma', 'esquina', 'compuesta', 'panos', 'paños', 'riel', 'corredera'];
 
 export function perfilDeVentana(v) {
@@ -390,19 +396,21 @@ export function perfilDeVentana(v) {
   // puede describir la ventana — `apertura`, `tipo`, `serie` o uno que aún no existe — y por eso
   // se trata como rótulo: tiene que ser canónico o genérico compatible, o anula.
   const rotulos = [];
+  const perfiles = new Set();
   for (const [k, x] of Object.entries(v)) {
     if (CAMPOS_NEUTROS.has(k) || CAMPOS_COMPUESTA.includes(k) || k === 'hoja_mm') continue;
     if (x === undefined || x === null || x === '') continue;
     if (typeof x !== 'string') return '';                               // dato no-texto desconocido
     const n = normalizarRotulo(x);
     if (n === null) return '';
+    const canon = Object.keys(CANONICOS).find((pp) => CANONICOS[pp].includes(n));
+    if (CAMPOS_AUTORIZAN.has(k)) {
+      if (canon) perfiles.add(canon);
+      else if (!TODOS_GENERICOS.has(n)) return '';                      // texto desconocido anula
+    } else if (!canon && !TODOS_GENERICOS.has(n)) {
+      return '';                                                        // campo que solo VETA: contradice
+    }
     rotulos.push(n);
-  }
-  const perfiles = new Set();
-  for (const n of rotulos) {
-    const p = Object.keys(CANONICOS).find((k) => CANONICOS[k].includes(n));
-    if (p) perfiles.add(p);
-    else if (!TODOS_GENERICOS.has(n)) return '';                        // texto desconocido anula
   }
   if (perfiles.size !== 1) return '';
   const perfil = [...perfiles][0];
@@ -484,7 +492,9 @@ export async function laminasParaInforme({ perfiles: cotizados = null, preferido
   if (!grupos.length) return VACIO;
   // [Codex r15] la COBERTURA se conserva aunque las figuras de referencia no hayan bajado: si parte
   // del proyecto no tiene modelo propio, el informe lo tiene que decir igual.
-  return { ...grupos[0], referencial: grupos.some((g) => !g.propio), coberturaIncompleta: faltaAlguno, grupos };
+  // [Codex r16] también es incompleta si un perfil PROPIO pedido no alcanzó a traer sus figuras
+  const incompleta = faltaAlguno || propios.some((k) => !grupos.some((g) => g.perfil === k));
+  return { ...grupos[0], referencial: grupos.some((g) => !g.propio), coberturaIncompleta: incompleta, grupos };
 }
 
 export default { laminasParaInforme, perfilLaminasDe, perfilesLaminasDe, perfilDeVentana, normalizarRotulo, PERFILES_DE_VENTANA, laminaTermopanel, elegirPerfilTermopanel, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };

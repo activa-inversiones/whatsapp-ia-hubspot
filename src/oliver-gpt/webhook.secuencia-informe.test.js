@@ -962,6 +962,9 @@ test('📑 camino feliz CONTRA sales-os (fetch espía): corrección con el MISMO
 for (const [titulo, extra, esperado] of [
   ['H98 canónico ⇒ se piden sus láminas como propias', {}, { perfiles: ['Sliding_H98'], desconocidas: false }],
   ['H98 + descripcion contradictoria ⇒ ningún perfil propio', { descripcion: 'Proyectante S60' }, { perfiles: [], desconocidas: true }],
+  // [Codex r16] la recotización exitosa agrega metadatos del motor: NO pueden anular el perfil
+  ['H98 con metadatos de recotización (source/confidence) ⇒ sigue propio', { source: 'activa_engine', confidence: 'high' },
+    { perfiles: ['Sliding_H98'], desconocidas: false }],
 ]) {
   test(`🔴 webhook → láminas: ${titulo}`, async () => {
     const llamadas = [];
