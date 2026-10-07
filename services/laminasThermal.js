@@ -327,41 +327,53 @@ const MAX_MPX = () => Number(process.env.THERMAL_LAMINA_MAX_MPX || 8);
  *   · cualquier otra (incl. proyectante sin S60)          → '' (perfil propio NO modelado)
  * No se infiere la serie: una "proyectante" sin S60 en el rótulo NO se declara S60 (Codex r5).
  */
+/** Tipos de APERTURA que puede nombrar un rótulo (mismos sinónimos que enginePricer). */
+const APERTURAS = [
+  ['proyectante', /proyectante/i],
+  ['corredera', /corredera|corrediza|deslizante|sliding/i],
+  ['otra', /fij[ao]|abatible|oscilo|batiente|puerta|compuesta|bow|guillotina|pivot|plegable|celos/i],
+];
+const aperturasDe = (t) => new Set(APERTURAS.filter(([, re]) => re.test(t)).map(([k]) => k));
+const APERTURA_DE_PERFIL = { S60_proyectante: 'proyectante', Sliding_H98: 'corredera' };
+
 /**
- * Clasificación ESTRICTA de un rótulo (Codex r9): se leen TODOS los indicios (series, hojas,
- * líneas) y cualquier indicio que no calce con el perfil anula. Devuelve el perfil, '∅' si el
- * rótulo es específico pero no calza (o se contradice), o '' si es genérico (no dice nada).
+ * Clasificación ESTRICTA de un rótulo (Codex r9-r10). Lee series, hojas, líneas y APERTURA.
+ * Devuelve: un perfil · '∅' (específico que no calza o se contradice) · 'ap:<tipo>' (rótulo
+ * genérico que solo dice la apertura) · '' (no dice nada).
  */
 function perfilDeRotulo(txt, hojaMm) {
   const t = String(txt || '');
   const series = new Set([...t.matchAll(/\bS\s?(\d{2})\b/gi)].map((m) => m[1]));
   const hojas = new Set([...t.matchAll(/\bH(\d{2,3})\b/gi)].map((m) => m[1]));
-  const linea = (re) => re.test(t);
-  const otras = linea(/andes|monorriel|americana/i);
-  const especifico = series.size || hojas.size || otras || linea(/sliding/i);
+  const otras = /andes|monorriel|americana/i.test(t);
+  const ap = aperturasDe(t);
+  if (ap.size > 1) return '∅';                                       // "proyectante corrediza"
+  const apertura = [...ap][0] || '';
+  const especifico = series.size || hojas.size || otras || /sliding/i.test(t);
   const hm = Number(hojaMm) || 0;
-  if (hm && hojas.size && !hojas.has(String(hm))) return '∅';        // la hoja declarada contradice al rótulo
+  if (hm && hojas.size && !hojas.has(String(hm))) return '∅';
   const soloSerie = (x) => series.size === 1 && series.has(x);
-  if (linea(/proyectante/i)) {
-    return soloSerie('60') && !hojas.size && !otras && !linea(/sliding|corredera/i) ? 'S60_proyectante'
-      : (especifico ? '∅' : '');
-  }
+  if (apertura === 'proyectante' && soloSerie('60') && !hojas.size && !otras) return 'S60_proyectante';
   const hoja = hm || (hojas.size === 1 ? Number([...hojas][0]) : 0);
-  if (linea(/corredera|sliding/i) && hoja === 98 && hojas.size <= 1
-      && (linea(/sliding/i) || soloSerie('75')) && (!series.size || soloSerie('75')) && !otras) {
-    return 'Sliding_H98';
-  }
-  return especifico ? '∅' : '';
+  if (apertura === 'corredera' && hoja === 98 && hojas.size <= 1 && !otras
+      && (/sliding/i.test(t) || soloSerie('75')) && (!series.size || soloSerie('75'))) return 'Sliding_H98';
+  if (especifico) return '∅';
+  return apertura ? `ap:${apertura}` : '';
 }
 
 export function perfilDeVentana(v) {
-  // Cada rótulo vota por separado; un voto '∅' (rótulo específico que no calza) o dos perfiles
-  // distintos anulan: ante cualquier duda, sin perfil propio (fail-closed, Codex r7-r9).
-  const votos = new Set([v?.producto_label, v?.producto, v?.product]
+  // Cada rótulo vota por separado. Hay perfil propio SOLO si: exactamente un perfil, ningún '∅',
+  // y todo rótulo genérico nombra la MISMA apertura que ese perfil. Ante cualquier duda, nada.
+  const votos = [v?.producto_label, v?.producto, v?.product]
     .filter((x) => typeof x === 'string' && x.trim())
     .map((x) => perfilDeRotulo(x, v?.hoja_mm))
-    .filter(Boolean));
-  return votos.size === 1 && !votos.has('∅') ? [...votos][0] : '';
+    .filter(Boolean);
+  if (votos.includes('∅')) return '';
+  const perfiles = new Set(votos.filter((x) => !x.startsWith('ap:')));
+  if (perfiles.size !== 1) return '';
+  const perfil = [...perfiles][0];
+  const ok = votos.filter((x) => x.startsWith('ap:')).every((x) => x === `ap:${APERTURA_DE_PERFIL[perfil]}`);
+  return ok ? perfil : '';
 }
 
 /**

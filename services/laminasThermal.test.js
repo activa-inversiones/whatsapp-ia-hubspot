@@ -416,3 +416,15 @@ test('🔴 contradicciones de HOJA y dentro de un MISMO rótulo => sin perfil pr
   assert.equal(perfilDeVentana({ hoja_mm: 98, producto_label: 'Corredera SLIDING H98 Doble Riel S75' }), 'Sliding_H98');
   assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60' }), 'S60_proyectante');
 });
+
+test('🔴 contradicción de APERTURA (también con sinónimos) => sin perfil propio (Codex r10)', () => {
+  const h98 = 'Corredera SLIDING H98 Doble Riel S75';
+  assert.equal(perfilDeVentana({ producto_label: h98, producto: 'Proyectante' }), '');
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60', producto: 'Ventana deslizante' }), '');
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60 corrediza' }), '');
+  assert.equal(perfilDeVentana({ producto_label: h98, producto: 'Ventana fija' }), '');
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60', producto: 'Puerta' }), '');
+  // sinónimos COMPATIBLES no anulan
+  assert.equal(perfilDeVentana({ producto_label: h98, producto: 'Ventana corrediza 2 hojas' }), 'Sliding_H98');
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60', producto: 'Ventana proyectante' }), 'S60_proyectante');
+});
