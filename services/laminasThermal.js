@@ -327,52 +327,83 @@ const MAX_MPX = () => Number(process.env.THERMAL_LAMINA_MAX_MPX || 8);
  *   · cualquier otra (incl. proyectante sin S60)          → '' (perfil propio NO modelado)
  * No se infiere la serie: una "proyectante" sin S60 en el rótulo NO se declara S60 (Codex r5).
  */
-/** Tipos de APERTURA que puede nombrar un rótulo (mismos sinónimos que enginePricer). */
-const APERTURAS = [
-  ['proyectante', /proyectante/i],
-  ['corredera', /corredera|corrediza|deslizante|sliding/i],
-  ['otra', /fij[ao]|abatible|oscilo|batiente|puerta|compuesta|bow|guillotina|pivot|plegable|celos/i],
-];
-const aperturasDe = (t) => new Set(APERTURAS.filter(([, re]) => re.test(t)).map(([k]) => k));
-const APERTURA_DE_PERFIL = { S60_proyectante: 'proyectante', Sliding_H98: 'corredera' };
+/**
+ * LISTA BLANCA de tokens (Codex r10 + prueba adversarial con 337.000 casos, 07-oct): un rótulo
+ * se normaliza (acentos, mayúsculas, guiones, ancho cero, Unicode) y se parte en palabras; si
+ * aparece UNA SOLA palabra fuera del vocabulario cerrado, el rótulo anula. Una lista negra
+ * ("andes", "americana"...) siempre deja pasar lo que no se previó: M70, aluminio, tilt, esquina,
+ * una A cirílica. Esta no.
+ */
+const VOCAB_GENERICO = new Set(['ventana', 'de', 'pvc', 'winhouse', 'hoja', 'hojas', '1', '2', '3', '4',
+  'proyectante', 'corredera', 'corrediza', 'deslizante', 'sliding']);
+const PERFILES_TOKENS = {
+  S60_proyectante: { requiere: [['proyectante'], ['s60']],
+    permite: new Set(['ventana', 'de', 'pvc', 'winhouse', 'proyectante', 's60']), apertura: 'proyectante' },
+  Sliding_H98: { requiere: [['corredera', 'corrediza', 'sliding'], ['h98'], ['sliding', 's75']],
+    permite: new Set(['ventana', 'de', 'pvc', 'winhouse', 'corredera', 'corrediza', 'sliding', 'h98', 's75',
+      'doble', 'riel', 'hoja', 'hojas', '2', '3', '4']), apertura: 'corredera' },
+};
+const APERTURA_DE_TOKEN = { proyectante: 'proyectante', corredera: 'corredera', corrediza: 'corredera',
+  deslizante: 'corredera', sliding: 'corredera' };
+
+/** Normaliza y tokeniza. Devuelve null si queda cualquier carácter fuera de [a-z0-9 ]. */
+export function tokensDeRotulo(txt) {
+  let t = String(txt || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u00ad\u200b-\u200f\u2060\ufeff]/g, '').toLowerCase()
+    .replace(/[\u2010-\u2015]/g, '-').replace(/[-_./·,;:()]+/g, ' ');
+  // "h 98" -> h98 · "s 75" / "serie 75" -> s75 (se ven las hojas y series escritas con espacio)
+  t = t.replace(/\b(?:serie|series|s)\s*(\d{2})\b/g, 's$1').replace(/\bh\s*(\d{2,3})\b/g, 'h$1');
+  if (/[^a-z0-9 ]/.test(t)) return null;                               // cirílico, fullwidth, etc.
+  return t.split(/\s+/).filter(Boolean);
+}
 
 /**
- * Clasificación ESTRICTA de un rótulo (Codex r9-r10). Lee series, hojas, líneas y APERTURA.
- * Devuelve: un perfil · '∅' (específico que no calza o se contradice) · 'ap:<tipo>' (rótulo
- * genérico que solo dice la apertura) · '' (no dice nada).
+ * Clasificación de UN rótulo. Devuelve: un perfil · '∅' (no calza o trae algo desconocido) ·
+ * 'ap:<tipo>' (genérico que solo nombra la apertura) · '' (vacío).
  */
 function perfilDeRotulo(txt, hojaMm) {
-  const t = String(txt || '');
-  const series = new Set([...t.matchAll(/\bS\s?(\d{2})\b/gi)].map((m) => m[1]));
-  const hojas = new Set([...t.matchAll(/\bH(\d{2,3})\b/gi)].map((m) => m[1]));
-  const otras = /andes|monorriel|americana/i.test(t);
-  const ap = aperturasDe(t);
-  if (ap.size > 1) return '∅';                                       // "proyectante corrediza"
-  const apertura = [...ap][0] || '';
-  const especifico = series.size || hojas.size || otras || /sliding/i.test(t);
+  const toks = tokensDeRotulo(txt);
+  if (toks === null) return '∅';
+  if (!toks.length) return '';
   const hm = Number(hojaMm) || 0;
-  if (hm && hojas.size && !hojas.has(String(hm))) return '∅';
-  const soloSerie = (x) => series.size === 1 && series.has(x);
-  if (apertura === 'proyectante' && soloSerie('60') && !hojas.size && !otras) return 'S60_proyectante';
-  const hoja = hm || (hojas.size === 1 ? Number([...hojas][0]) : 0);
-  if (apertura === 'corredera' && hoja === 98 && hojas.size <= 1 && !otras
-      && (/sliding/i.test(t) || soloSerie('75')) && (!series.size || soloSerie('75'))) return 'Sliding_H98';
-  if (especifico) return '∅';
-  return apertura ? `ap:${apertura}` : '';
+  for (const [perfil, d] of Object.entries(PERFILES_TOKENS)) {
+    const todos = toks.every((x) => d.permite.has(x));
+    // la hoja declarada por el motor (hoja_mm 98) cuenta como 'h98' aunque el rótulo no la escriba
+    const conHoja = hm === 98 && !toks.some((x) => /^h\d+$/.test(x)) ? [...toks, 'h98'] : toks;
+    const cumple = d.requiere.every((alts) => alts.some((a) => conHoja.includes(a)));
+    if (todos && cumple) {
+      if (perfil === 'S60_proyectante' && hm) return '∅';               // una proyectante no trae hoja
+      if (perfil === 'Sliding_H98' && hm && hm !== 98) return '∅';
+      return perfil;
+    }
+  }
+  if (toks.every((x) => VOCAB_GENERICO.has(x))) {
+    const aps = new Set(toks.map((x) => APERTURA_DE_TOKEN[x]).filter(Boolean));
+    if (aps.size > 1) return '∅';
+    return `gen:${toks.join(' ')}`;          // genérico: se valida contra el perfil en perfilDeVentana
+  }
+  return '∅';
 }
 
 export function perfilDeVentana(v) {
-  // Cada rótulo vota por separado. Hay perfil propio SOLO si: exactamente un perfil, ningún '∅',
-  // y todo rótulo genérico nombra la MISMA apertura que ese perfil. Ante cualquier duda, nada.
-  const votos = [v?.producto_label, v?.producto, v?.product]
+  // Cada rótulo vota por separado (incluidos label/descripcion/tipo, que también usa enginePricer).
+  // Perfil propio SOLO si: exactamente un perfil, ningún '∅', y todo rótulo genérico usa SOLO
+  // palabras que ese perfil admite. Una ventana compuesta/bow/esquina nunca es un perfil simple.
+  if (!v || typeof v !== 'object') return '';
+  if (v.partes || v.bow || v.forma || v.esquina || v.compuesta || v['paños'] || v.panos) return '';
+  // hoja_mm presente pero ilegible ('98 mm', 'abc', NaN): no se adivina (fail-closed)
+  if (v.hoja_mm !== undefined && v.hoja_mm !== null && v.hoja_mm !== '' && !Number.isFinite(Number(v.hoja_mm))) return '';
+  const votos = [v.producto_label, v.producto, v.product, v.label, v.descripcion, v.description, v.tipo]
     .filter((x) => typeof x === 'string' && x.trim())
-    .map((x) => perfilDeRotulo(x, v?.hoja_mm))
+    .map((x) => perfilDeRotulo(x, v.hoja_mm))
     .filter(Boolean);
   if (votos.includes('∅')) return '';
-  const perfiles = new Set(votos.filter((x) => !x.startsWith('ap:')));
+  const perfiles = new Set(votos.filter((x) => !x.startsWith('gen:')));
   if (perfiles.size !== 1) return '';
   const perfil = [...perfiles][0];
-  const ok = votos.filter((x) => x.startsWith('ap:')).every((x) => x === `ap:${APERTURA_DE_PERFIL[perfil]}`);
+  const d = PERFILES_TOKENS[perfil];
+  const ok = votos.filter((x) => x.startsWith('gen:'))
+    .every((x) => x.slice(4).split(' ').every((tk) => d.permite.has(tk)));
   return ok ? perfil : '';
 }
 

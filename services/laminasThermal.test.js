@@ -428,3 +428,26 @@ test('🔴 contradicción de APERTURA (también con sinónimos) => sin perfil pr
   assert.equal(perfilDeVentana({ producto_label: h98, producto: 'Ventana corrediza 2 hojas' }), 'Sliding_H98');
   assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60', producto: 'Ventana proyectante' }), 'S60_proyectante');
 });
+
+test('🔴 LISTA BLANCA: una sola palabra desconocida, otra serie o un truco de escritura anula (prueba adversarial 07-oct)', () => {
+  const malos = ['Proyectante S60 aluminio', 'Proyectante S60 M70', 'Proyectante S60 H 98', 'Proyectante S60 Serie 75',
+    'Proyectante S60 tilt', 'Proyectante S60 Americano', 'Proyectante S60 Аndes', 'Proyectante S60 Ame­ricana',
+    'Proyectante S60 Puérta', 'Proyectante S60 ａｎｄｅｓ'];
+  for (const m of malos) assert.equal(perfilDeVentana({ producto_label: m }), '', m);
+  const h98 = 'Corredera SLIDING H98 Doble Riel S75';
+  for (const m of ['Corredera SLIDING S75 H 80', 'Corredera SLIDING S75 H-80', 'Corredera Sliding H98 Serie 60',
+    'Corredera SLIDING H98 S75 M70', 'Corredera Sliding H98 Mono-riel', 'Corredera Sliding H98 aluminio']) {
+    assert.equal(perfilDeVentana({ producto_label: m, hoja_mm: 98 }), '', m);
+  }
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60', product: 'M70' }), '');
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60', product: 'Ventana en esquina' }), '');
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60', hoja_mm: 98 }), '', 'una proyectante no trae hoja');
+  assert.equal(perfilDeVentana({ producto_label: h98, label: 'Corredera ANDES 54' }), '', 'label tambien se lee');
+  assert.equal(perfilDeVentana({ producto_label: h98, hoja_mm: '98 mm' }), '', 'hoja ilegible: no se adivina');
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60', partes: [{ tipo: 'FIJO' }] }), '', 'compuesta');
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60', product: 'Ventana 2 hojas' }), '', 'hojas no es de proyectante');
+  // positivos legítimos
+  assert.equal(perfilDeVentana({ producto_label: h98, hoja_mm: 98 }), 'Sliding_H98');
+  assert.equal(perfilDeVentana({ producto_label: 'PROYECTANTE S60' }), 'S60_proyectante');
+  assert.equal(perfilDeVentana({ producto_label: h98, producto: 'Ventana PVC' }), 'Sliding_H98');
+});
