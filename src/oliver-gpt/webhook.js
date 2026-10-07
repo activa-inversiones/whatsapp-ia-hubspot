@@ -50,7 +50,7 @@ import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribir
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS, datosDelInforme } from '../../services/informeTermico.js';
 import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
-import { laminasParaInforme, laminaTermopanel } from '../../services/laminasThermal.js';   // [2026-08-24] isotermas del FEM
+import { laminasParaInforme, laminaTermopanel, perfilLaminasDe } from '../../services/laminasThermal.js';   // [2026-08-24] isotermas del FEM
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
 import { recordarColor, anticipoDeLoCotizado, textoDelCliente } from './normalizers.js';   // [2026-08-25/28] color recordado + anticipo de la propuesta · [2026-08-31] lo que dijo el cliente
@@ -2218,7 +2218,14 @@ export async function handleWebhook(req, res, deps = {}) {
           // estaban usando. Tampoco es obligatorio: si THERMAL no contesta, van [] y el
           // informe sale sin figuras. Dos niveles de degradacion y ninguno rompe la venta.
           let laminas = null;
-          try { laminas = await (deps.laminasParaInforme || laminasParaInforme)(); } catch { /* opcional */ }
+          // [2026-10-07] Las láminas del perfil COTIZADO, no del primero publicado (antes toda
+          // cotización recibía las del S60 proyectante). Sin perfil propio → sin láminas.
+          try {
+            laminas = await (deps.laminasParaInforme || laminasParaInforme)({
+              preferido: perfilLaminasDe(elegido.ventanas?.length ? elegido.ventanas
+                : [{ producto: elegido.producto }]),
+            });
+          } catch { /* opcional */ }
           // [2026-08-24] La figura del TERMOPANEL (aluminio vs warm-edge): reemplaza al
           // catalogo de vidrios, que el dueno bajo ("genera desconfianza"). Hasta que
           // THERMAL deployee el perfil nuevo devuelve null y el informe sale sin ella.
@@ -4270,6 +4277,7 @@ Comuna: ${datos.comuna}`
                 ambiente: it.ambiente || '',
                 cantidad: it.qty,
                 uw: it.termico?.uw ?? null,
+                hoja_mm: Number(it.hoja_mm) || undefined,   // [2026-10-07] elige las láminas (H80/H98)
               }));
               const ultima = (input.items || []).at(-1) || {};
               // Inyectable en test (120 s reales harian imposible probar el camino del techo).
@@ -4471,6 +4479,7 @@ Comuna: ${datos.comuna}`
                 ambiente: it.ambiente || '',
                 cantidad: it.qty,                 // CRUDA: el supuesto se marca en resumenVentanas
                 uw: it.termico?.uw ?? null,
+                hoja_mm: Number(it.hoja_mm) || undefined,   // [2026-10-07] elige las láminas (H80/H98)
               }));
               const ultima = (input.items || []).at(-1) || {};
               despacharInforme(input.comuna || state.comuna || '', {

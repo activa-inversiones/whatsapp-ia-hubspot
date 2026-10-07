@@ -35,6 +35,16 @@ export const VERSION = '1.1.0';
  * un ingeniero y no le dice nada a quien está comprando ventanas. Acá se explica QUÉ MIRAR
  * y POR QUÉ IMPORTA — sin agregar ni un dato que la figura no respalde.
  */
+/** [2026-10-07] Pies de figura POR PERFIL: los ids son de cada perfil en el manifiesto de
+ *  THERMAL (el 01 del S60 es su corte vertical; el 01 de la H98 es su nudo lateral izquierdo). */
+const PIES_SLIDING_H98 = Object.freeze({
+  '01': 'Nudo LATERAL IZQUIERDO (hoja en el riel interior): marco, hoja y termopanel sustituido por el panel '
+    + 'normativo de 24 mm (NCh 3137/2, anexo C.1). Se indican los bordes adiabáticos y las condiciones interior/exterior.',
+  '02': 'Nudo CENTRAL (traslapo): el encuentro de las dos hojas con sus felpas, con ambos termopaneles '
+    + 'sustituidos por el panel normativo. Es el punto donde se cruzan los dos rieles.',
+  '03': 'Nudo LATERAL DERECHO (hoja en el riel exterior): marco, hoja y panel normativo. Difiere del izquierdo '
+    + 'porque la hoja corre por el otro riel.',
+});
 const PIES_LAMINA = Object.freeze({
   // ── LOS NUDOS CON PANEL: lo que el dueño pidió ver ───────────────────────────────────
   // [2026-08-24] Textual: *"sería mejor presentarlos por separador superior e inferior con
@@ -107,6 +117,8 @@ const PIES_LAMINA = Object.freeze({
       + 'se mantiene seco. La temperatura exacta a la que eso ocurre en su comuna está calculada en la '
       + 'sección de condensación de este informe.',
 });
+const PIES_POR_PERFIL = Object.freeze({ S60_proyectante: PIES_LAMINA, Sliding_H98: PIES_SLIDING_H98 });
+
 
 /** Tope de megapíxeles por figura. Ver el comentario largo en `laminasThermal.js`. */
 const MAX_MPX_FIGURA = Number(process.env.THERMAL_LAMINA_MAX_MPX || 8);
@@ -949,7 +961,12 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
       //   · se dice explícitamente que el número sale del cálculo, no de mirar la figura.
       // Sacar cualquiera de las dos cosas convierte un argumento técnico en una promesa
       // falsa, y es exactamente lo que la regla anti-alucinación del proyecto prohíbe.
-      const figuras = Array.isArray(laminas?.laminas) ? laminas.laminas.filter((l) => l && l.png) : [];
+      // [2026-10-07] Uno o VARIOS perfiles. Si el del cliente no está en el sistema llegan TODOS
+      // los publicados como referencia (decisión del dueño): cada grupo va con su propio rótulo.
+      const _grupos = Array.isArray(laminas?.grupos) && laminas.grupos.length ? laminas.grupos : (laminas ? [laminas] : []);
+      let _seccionAbierta = false;
+      for (const _g of _grupos) {
+      const figuras = Array.isArray(_g?.laminas) ? _g.laminas.filter((l) => l && l.png) : [];
       // 🔴 [P0 · hallazgo de Gemini, 24-ago] EL NOMBRE DEL PERFIL ES CONDICIÓN, NO ADORNO.
       // Antes el bloque se dibujaba con `if (figuras.length)` y la advertencia colgaba de un
       // `if (laminas?.nombre)` aparte: si THERMAL devolvía un perfil con los nombres vacíos,
@@ -960,12 +977,19 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
       // si no podemos decir QUÉ estamos mostrando, no se muestra.
       // [P1 · Codex] `.trim()` y cae al id del perfil: un nombre de solo espacios pasaba el
       // truthy y salia 'Corte del sistema   ' — rotulo vacio es lo mismo que sin rotulo.
-      const idPerfil = String(laminas?.nombre || '').trim() || String(laminas?.perfil || '').trim();
+      const idPerfil = String(_g?.nombre || '').trim() || String(_g?.perfil || '').trim();
       if (figuras.length && idPerfil) {
+        if (!_seccionAbierta) {
+        _seccionAbierta = true;
         seccion(`${++nSec} · CÓMO SE COMPORTA EL PERFIL POR DENTRO`);
         parrafo('Estas figuras salen del cálculo por elementos finitos del perfil: cada línea une los '
           + 'puntos que están a la misma temperatura. Donde las líneas se juntan, el calor escapa más '
           + 'rápido; donde se separan, el perfil aísla.');
+        if (laminas?.referencial && _grupos.length > 1) {
+          parrafo('Su ventana aún no tiene un modelo térmico propio en nuestro sistema; por eso se '
+            + 'muestran, como referencia, los sistemas que sí están modelados.');
+        }
+        }
         {
           // [P1 · Gemini] SE DICE QUÉ TIPO DE VENTANA ES LA DE LA FIGURA.
           // Hoy THERMAL publica láminas de UN solo sistema (S60 proyectante) y el producto
@@ -982,8 +1006,8 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
           // no es la simulacion de SU ventana, el Uw sale del calculo) — cambia el tono.
           const aviso = `Figuras elaboradas con nuestro motor de cálculo por elementos finitos sobre el `
             + `sistema ${corto(idPerfil, 80)}`
-            + `${corto(laminas.aprobadoPor, 60) ? `, modelo aprobado por ${corto(laminas.aprobadoPor, 60)}` : ''}`
-            + `${corto(laminas.fecha, 20) ? ` (${corto(laminas.fecha, 20)})` : ''}. `
+            + `${corto(_g.aprobadoPor, 60) ? `, modelo aprobado por ${corto(_g.aprobadoPor, 60)}` : ''}`
+            + `${corto(_g.fecha, 20) ? ` (${corto(_g.fecha, 20)})` : ''}. `
             + 'Tienen carácter referencial: representan el comportamiento térmico del sistema indicado y '
             + 'no constituyen una simulación de su ventana en particular. Si su cotización considera otro '
             + 'tipo de apertura (por ejemplo, corredera) el perfil de su ventana difiere del ilustrado. '
@@ -999,7 +1023,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
         }
 
         for (const f of figuras) {
-          const pie = PIES_LAMINA[f.id] || '';
+          const pie = (PIES_POR_PERFIL[_g?.perfil] || (_g?.perfil ? {} : PIES_LAMINA))[f.id] || '';
           // Se mide la imagen para reservar el alto EXACTO antes de decidir el salto de
           // página: la paginación automática está apagada a propósito en este documento.
           const dim = medirPng(f.png);
@@ -1025,6 +1049,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
             y += doc.heightOfString(pie, { width: anchoUtil }) + 14;
           }
         }
+      }
       }
 
       // ── VALIDACIÓN DEL MOTOR (pedido del dueño, 24-ago) ─────────────────

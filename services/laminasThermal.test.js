@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { descargarLaminas, perfilesConLaminas, laminasParaInforme, laminaTermopanel, elegirPerfilTermopanel, esPng, IDS_POR_DEFECTO } from './laminasThermal.js';
+import { descargarLaminas, perfilesConLaminas, laminasParaInforme, perfilLaminasDe, laminaTermopanel, elegirPerfilTermopanel, esPng, IDS_POR_DEFECTO } from './laminasThermal.js';
 
 /** Un PNG mínimo VÁLIDO: firma + IHDR con ancho/alto. */
 function pngFalso(ancho = 100, alto = 50, relleno = 200) {
@@ -142,7 +142,7 @@ test('🔑 manda X-API-Key en la lista y en cada descarga', async () => {
   process.env.THERMAL_API_KEY = 'clave-prueba';
   try {
     const f = espia();
-    await laminasParaInforme({ fetchFn: f, log: callado });
+    await laminasParaInforme({ preferido: 'S60_proyectante', fetchFn: f, log: callado });
     assert.ok(f.llamadas.length >= 2);
     for (const l of f.llamadas) assert.equal(l.headers['X-API-Key'], 'clave-prueba');
   } finally {
@@ -178,7 +178,7 @@ test('laminasParaInforme devuelve el perfil rotulado, no solo las imágenes', as
   // El PDF TIENE que poder decir de que perfil es la figura. Mostrar un corte sin decir
   // cual es deja que el cliente asuma que es su ventana, y eso seria afirmar algo que
   // THERMAL explicitamente no respalda (las manda con X-No-Declarable: true).
-  const r = await laminasParaInforme({ fetchFn: espia(), log: callado });
+  const r = await laminasParaInforme({ preferido: 'S60_proyectante', fetchFn: espia(), log: callado });
   assert.equal(r.perfil, 'S60_proyectante');
   assert.equal(r.nombre, 'S60 proyectante WinHouse');
   assert.equal(r.aprobadoPor, 'Marcelo Cifuentes');
@@ -187,7 +187,7 @@ test('laminasParaInforme devuelve el perfil rotulado, no solo las imágenes', as
 });
 
 test('sin perfiles publicados devuelve vacío, sin romper', async () => {
-  const r = await laminasParaInforme({ fetchFn: espia({ lista: { n: 0, perfiles: [] } }), log: callado });
+  const r = await laminasParaInforme({ preferido: 'S60_proyectante', fetchFn: espia({ lista: { n: 0, perfiles: [] } }), log: callado });
   assert.equal(r.perfil, null);
   assert.deepEqual(r.laminas, []);
 });
@@ -279,4 +279,55 @@ test('sin glassLabel tambien cae a la generica', () => {
 
 test('sin ningun perfil termopanel devuelve null', () => {
   assert.equal(elegirPerfilTermopanel([{ perfil: 'S60_proyectante' }], '4+12+4'), null);
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// 🔴 [2026-10-07] LAS LÁMINAS SON DEL PERFIL COTIZADO. Antes se pedían sin decir qué se cotizó
+// y se tomaba el primer perfil publicado (el S60, por orden alfabético): un cliente de corredera
+// habría recibido las isotermas de una proyectante. Decisión del dueño (07-oct): "sin láminas
+// antes que láminas de otro perfil". Estos tests defienden esa decisión, no la implementación.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+test('🔴 perfil del cliente NO publicado → se entregan los publicados como REFERENCIA, rotulados', async () => {
+  // Decisión del dueño (07-oct): "si no está el perfil del cliente en el sistema debemos entregar
+  // ambos perfiles". Nunca uno solo elegido al azar ni haciéndolo pasar por el del cliente.
+  const r = await laminasParaInforme({ preferido: 'Corredera_inexistente', fetchFn: espia(), log: callado });
+  assert.equal(r.referencial, true, 'tiene que ir marcado como referencia');
+  assert.ok(r.grupos.length >= 1);
+  for (const g of r.grupos) assert.ok(g.nombre && g.perfil, 'cada grupo va rotulado con su sistema');
+});
+
+test('🔴 sin decir qué se cotizó también va como REFERENCIA, nunca como "su" perfil', async () => {
+  const r = await laminasParaInforme({ fetchFn: espia(), log: callado });
+  assert.equal(r.referencial, true);
+});
+
+test('perfil cotizado publicado → SOLO ese perfil y NO referencial', async () => {
+  const r = await laminasParaInforme({ preferido: 'S60_proyectante', fetchFn: espia(), log: callado });
+  assert.equal(r.referencial, false);
+  assert.equal(r.grupos.length, 1);
+  assert.equal(r.grupos[0].perfil, 'S60_proyectante');
+});
+
+test('perfilLaminasDe: proyectante → S60, corredera Sliding hoja 98 → Sliding_H98, el resto → nada', () => {
+  assert.equal(perfilLaminasDe([{ producto: 'Proyectante S60' }]), 'S60_proyectante');
+  assert.equal(perfilLaminasDe([{ producto: 'Ventana proyectante' }]), 'S60_proyectante');
+  assert.equal(perfilLaminasDe([{ producto: 'Corredera SLIDING H98 Doble Riel S75' }]), 'Sliding_H98');
+  assert.equal(perfilLaminasDe([{ producto: 'Corredera SLIDING', hoja_mm: 98 }]), 'Sliding_H98');
+  assert.equal(perfilLaminasDe([{ producto: 'Corredera SLIDING H80' }]), '', 'H80 aun no tiene laminas propias');
+  assert.equal(perfilLaminasDe([{ producto: 'Corredera S60' }]), '', 'corredera S60 no es la proyectante');
+  assert.equal(perfilLaminasDe([{ producto: 'Ventana fija' }]), '');
+  assert.equal(perfilLaminasDe([]), '');
+  assert.equal(perfilLaminasDe(undefined), '');
+});
+
+test('perfilLaminasDe: con varias ventanas manda la que más unidades suma', () => {
+  const v = [
+    { producto: 'Proyectante S60', cantidad: 2 },
+    { producto: 'Corredera SLIDING H98 Doble Riel S75', cantidad: 5 },
+  ];
+  assert.equal(perfilLaminasDe(v), 'Sliding_H98');
+  assert.equal(perfilLaminasDe([{ producto: 'Proyectante S60', cantidad: 3 }, ...v.slice(1, 2).map((x) => ({ ...x, cantidad: 1 }))]),
+    'S60_proyectante');
 });

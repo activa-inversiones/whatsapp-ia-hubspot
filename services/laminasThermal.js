@@ -70,6 +70,11 @@ const MAX_BYTES = () => Number(process.env.THERMAL_LAMINAS_MAX_BYTES || 2_500_00
 export const IDS_POR_DEFECTO = (process.env.THERMAL_LAMINAS_IDS || '07,08')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
+/** [2026-10-07] Qué láminas van al informe según el perfil. Los ids son de CADA perfil en el
+ *  manifiesto de THERMAL: los 07/08 del S60 son sus nudos con separador; la corredera H98
+ *  publica sus tres nudos (lateral izq, central, lateral der) como 01/02/03. */
+export const IDS_POR_PERFIL = { Sliding_H98: ['01', '02', '03'] };
+
 function cabeceras() {
   const h = {};
   // Igual que en informeTermico.js: hoy THERMAL no valida la key, pero el dia que la
@@ -308,23 +313,63 @@ export function medidasPng(buf) {
 const MAX_MPX = () => Number(process.env.THERMAL_LAMINA_MAX_MPX || 8);
 
 /**
- * Atajo para el webhook: elige el perfil y trae sus láminas destacadas.
- * Hoy THERMAL publica un solo perfil, así que se toma ese; el día que haya varios,
- * `preferido` permite pedir el que corresponda al producto cotizado.
+ * Qué perfil de THERMAL corresponde a lo que se cotizó. [2026-10-07]
+ *
+ * 🔴 POR QUÉ EXISTE: hasta hoy el webhook pedía las láminas SIN decir qué se cotizó y se tomaba
+ * el primer perfil publicado (el S60, primero por orden alfabético). Mientras THERMAL tenía un
+ * solo perfil daba igual; con la corredera S75 H98 publicada, un cliente de corredera habría
+ * recibido las isotermas de una PROYECTANTE.
+ * Reglas (las mismas claves que publica THERMAL en data/laminas/manifiesto.json):
+ *   · "proyectante"                       → S60_proyectante (la línea proyectante es S60)
+ *   · "sliding" con hoja de 98 mm (H98)   → Sliding_H98
+ *   · cualquier otra cosa                 → '' (sin láminas propias)
+ * Con varias ventanas manda la que más unidades suma; empate → la primera en aparecer.
  */
-export async function laminasParaInforme({ preferido = '', ...opts } = {}) {
-  const perfiles = await perfilesConLaminas(opts);
-  if (!perfiles.length) return { perfil: null, nombre: '', laminas: [], aprobadoPor: '', fecha: '' };
-
-  const elegido = (preferido && perfiles.find((p) => p.perfil === preferido)) || perfiles[0];
-  const laminas = await descargarLaminas(elegido.perfil, opts);
-  return {
-    perfil: elegido.perfil,
-    nombre: elegido.nombre_comercial || elegido.perfil,
-    aprobadoPor: elegido.aprobado_por || '',
-    fecha: elegido.fecha_aprobacion || '',
-    laminas,
-  };
+export function perfilLaminasDe(ventanas = []) {
+  const votos = new Map();
+  for (const v of Array.isArray(ventanas) ? ventanas : []) {
+    const txt = String(v?.producto || v?.producto_label || v?.product || '');
+    const hoja = Number(v?.hoja_mm) || Number((txt.match(/H(\d{2,3})/i) || [])[1]) || 0;
+    let perfil = '';
+    if (/proyectante/i.test(txt)) perfil = 'S60_proyectante';
+    else if (/sliding/i.test(txt) && hoja === 98) perfil = 'Sliding_H98';
+    if (!perfil) continue;
+    votos.set(perfil, (votos.get(perfil) || 0) + (Number(v?.cantidad ?? v?.qty) || 1));
+  }
+  let mejor = '', max = 0;
+  for (const [k, n] of votos) if (n > max) { mejor = k; max = n; }
+  return mejor;
 }
 
-export default { laminasParaInforme, laminaTermopanel, elegirPerfilTermopanel, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };
+/**
+ * Atajo para el webhook: trae las láminas del perfil COTIZADO (`preferido`).
+ * 🔴 [2026-10-07, decisión del dueño] Si el perfil del cliente NO está en el sistema (o no se
+ * sabe cuál es), se entregan TODOS los perfiles publicados como REFERENCIA — textual: "si no
+ * está el perfil del cliente en el sistema debemos entregar ambos perfiles". Nunca uno solo
+ * elegido al azar: antes se caía al primero publicado (el S60) y el cliente de corredera veía
+ * una proyectante como si fuera la suya. Va `referencial: true` y un grupo por perfil, cada
+ * uno rotulado con su nombre, para que el PDF diga de qué sistema es cada figura.
+ */
+export async function laminasParaInforme({ preferido = '', ...opts } = {}) {
+  const VACIO = { perfil: null, nombre: '', laminas: [], aprobadoPor: '', fecha: '', referencial: false, grupos: [] };
+  const perfiles = await perfilesConLaminas(opts);
+  if (!perfiles.length) return VACIO;
+  const grupo = async (p) => ({
+    perfil: p.perfil,
+    nombre: p.nombre_comercial || p.perfil,
+    aprobadoPor: p.aprobado_por || '',
+    fecha: p.fecha_aprobacion || '',
+    laminas: await descargarLaminas(p.perfil, { ...opts, ids: IDS_POR_PERFIL[p.perfil] || opts.ids || IDS_POR_DEFECTO }),
+  });
+  const elegido = preferido ? perfiles.find((p) => p.perfil === preferido) : null;
+  const grupos = elegido ? [await grupo(elegido)]
+    : (await Promise.all(perfiles.filter((p) => PERFILES_DE_VENTANA.includes(p.perfil)).map(grupo)));
+  const conFiguras = grupos.filter((g) => g.laminas.length);
+  if (!conFiguras.length) return VACIO;
+  return { ...conFiguras[0], referencial: !elegido, grupos: conFiguras };
+}
+
+/** Perfiles de VENTANA que se pueden mostrar como referencia (los termopaneles van aparte). */
+export const PERFILES_DE_VENTANA = ['S60_proyectante', 'Sliding_H98'];
+
+export default { laminasParaInforme, perfilLaminasDe, PERFILES_DE_VENTANA, laminaTermopanel, elegirPerfilTermopanel, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };

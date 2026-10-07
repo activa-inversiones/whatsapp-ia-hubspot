@@ -205,3 +205,21 @@ test('🔴 el pie SIEMPRE trae las 2 imagenes de marca (si no, contarImagenes en
   assert.ok(contarTodasLasImagenes(pdf) >= IMAGENES_DE_MARCA_DEL_PIE,
     'el logo y el sello del pie deben estar: el descuento de contarImagenes depende de eso');
 });
+
+// ── [2026-10-07] DOS PERFILES COMO REFERENCIA (decisión del dueño) ─────────────────────────
+// "si no está el perfil del cliente en el sistema debemos entregar ambos perfiles": cada grupo
+// entra con SUS figuras y sólo si está rotulado; un grupo sin nombre no entra aunque el otro sí.
+test('🔴 perfil del cliente ausente: entran LOS DOS perfiles, cada uno con sus figuras', async () => {
+  const s60 = conLaminas('S60 proyectante WinHouse');
+  const h98 = { perfil: 'Sliding_H98', nombre: 'Corredera S75 Hoja 98 (H98)', aprobadoPor: 'Marcelo Cifuentes',
+    fecha: '2026-10-07', laminas: [{ id: '01', png: pngReal() }, { id: '02', png: pngReal() }, { id: '03', png: pngReal() }] };
+  const pdf = await generarInformeTermicoPdf(DATOS, { laminas: { ...s60, referencial: true, grupos: [s60, h98] } });
+  assert.equal(contarImagenes(pdf), 5, '2 del S60 + 3 de la H98');
+});
+
+test('🔴 con dos perfiles, el que viene SIN rótulo no se dibuja (el otro sí)', async () => {
+  const s60 = conLaminas('S60 proyectante WinHouse');
+  const sinNombre = { perfil: '', nombre: '', laminas: [{ id: '01', png: pngReal() }] };
+  const pdf = await generarInformeTermicoPdf(DATOS, { laminas: { ...s60, referencial: true, grupos: [s60, sinNombre] } });
+  assert.equal(contarImagenes(pdf), 2);
+});
