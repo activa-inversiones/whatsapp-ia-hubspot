@@ -451,3 +451,18 @@ test('🔴 LISTA BLANCA: una sola palabra desconocida, otra serie o un truco de 
   assert.equal(perfilDeVentana({ producto_label: 'PROYECTANTE S60' }), 'S60_proyectante');
   assert.equal(perfilDeVentana({ producto_label: h98, producto: 'Ventana PVC' }), 'Sliding_H98');
 });
+
+test('🔴 Codex r12: rótulos crudos (_perfil) mandan, hoja estricta, triple hoja sí / triple riel no, deslizante', () => {
+  // el webhook reduce el rótulo a uno solo; _perfil trae TODOS y una compuesta debe anular
+  assert.deepEqual(perfilesLaminasDe([{ producto: 'Proyectante S60',
+    _perfil: { producto_label: 'Proyectante S60', product: 'CORREDERA', compuesta: { partes: [{ tipo: 'FIJA' }] } } }]),
+  { perfiles: [], desconocidas: true });
+  const h98 = 'Corredera SLIDING H98 Doble Riel S75';
+  assert.equal(perfilDeVentana({ producto_label: 'Corredera S75', hoja_mm: '0x62' }), '', 'coerción hexadecimal');
+  assert.equal(perfilDeVentana({ producto_label: h98, hoja_mm: '   ' }), '', 'hoja en blanco');
+  assert.equal(perfilDeVentana({ producto_label: h98, hoja_mm: '98' }), 'Sliding_H98');
+  assert.equal(perfilDeVentana({ producto_label: `${h98} — Triple hoja (central fija, laterales correderas)`, hoja_mm: 98 }),
+    'Sliding_H98', 'la triple hoja en doble riel es el mismo sistema modelado');
+  assert.equal(perfilDeVentana({ producto_label: 'Corredera SLIDING H98 Triple Riel S75', hoja_mm: 98 }), '', 'triple riel es otra geometría');
+  assert.equal(perfilDeVentana({ producto_label: h98, product: 'Ventana deslizante' }), 'Sliding_H98');
+});

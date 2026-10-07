@@ -339,9 +339,13 @@ const VOCAB_GENERICO = new Set(['ventana', 'de', 'pvc', 'winhouse', 'hoja', 'hoj
 const PERFILES_TOKENS = {
   S60_proyectante: { requiere: [['proyectante'], ['s60']],
     permite: new Set(['ventana', 'de', 'pvc', 'winhouse', 'proyectante', 's60']), apertura: 'proyectante' },
-  Sliding_H98: { requiere: [['corredera', 'corrediza', 'sliding'], ['h98'], ['sliding', 's75']],
-    permite: new Set(['ventana', 'de', 'pvc', 'winhouse', 'corredera', 'corrediza', 'sliding', 'h98', 's75',
-      'doble', 'riel', 'hoja', 'hojas', '2', '3', '4']), apertura: 'corredera' },
+  // Rótulos reales del motor incluyen la variante de 3 hojas en DOBLE riel ("Triple hoja (central
+  // fija, laterales correderas)", dibujoVentana.test.js): mismos nudos modelados. El TRIPLE RIEL no
+  // ('riel' con 'triple' sin 'doble' no calza: es otra geometría).
+  Sliding_H98: { requiere: [['corredera', 'corrediza', 'deslizante', 'sliding'], ['h98'], ['sliding', 's75']],
+    permite: new Set(['ventana', 'de', 'pvc', 'winhouse', 'corredera', 'corrediza', 'deslizante', 'sliding', 'h98',
+      's75', 'doble', 'riel', 'hoja', 'hojas', '2', '3', '4', 'triple', 'central', 'fija', 'laterales',
+      'correderas', 'lateral']), apertura: 'corredera' },
 };
 const APERTURA_DE_TOKEN = { proyectante: 'proyectante', corredera: 'corredera', corrediza: 'corredera',
   deslizante: 'corredera', sliding: 'corredera' };
@@ -366,6 +370,8 @@ function perfilDeRotulo(txt, hojaMm) {
   if (toks === null) return '∅';
   if (!toks.length) return '';
   const hm = Number(hojaMm) || 0;
+  // TRIPLE RIEL es otra geometría (los nudos modelados son de doble riel): anula siempre.
+  if (toks.some((x, k) => x === 'triple' && toks[k + 1] === 'riel')) return '∅';
   for (const [perfil, d] of Object.entries(PERFILES_TOKENS)) {
     const todos = toks.every((x) => d.permite.has(x));
     // la hoja declarada por el motor (hoja_mm 98) cuenta como 'h98' aunque el rótulo no la escriba
@@ -392,7 +398,9 @@ export function perfilDeVentana(v) {
   if (!v || typeof v !== 'object') return '';
   if (v.partes || v.bow || v.forma || v.esquina || v.compuesta || v['paños'] || v.panos) return '';
   // hoja_mm presente pero ilegible ('98 mm', 'abc', NaN): no se adivina (fail-closed)
-  if (v.hoja_mm !== undefined && v.hoja_mm !== null && v.hoja_mm !== '' && !Number.isFinite(Number(v.hoja_mm))) return '';
+  if (v.hoja_mm !== undefined && v.hoja_mm !== null && v.hoja_mm !== ''
+      && !(typeof v.hoja_mm === 'number' ? Number.isFinite(v.hoja_mm)
+        : /^\s*\d+(?:\.\d+)?\s*$/.test(String(v.hoja_mm)) && String(v.hoja_mm).trim() !== '')) return '';
   const votos = [v.producto_label, v.producto, v.product, v.label, v.descripcion, v.description, v.tipo]
     .filter((x) => typeof x === 'string' && x.trim())
     .map((x) => perfilDeRotulo(x, v.hoja_mm))
@@ -417,7 +425,7 @@ export function perfilesLaminasDe(ventanas = []) {
   let desconocidas = false;
   const lista = Array.isArray(ventanas) ? ventanas : [];
   for (const v of lista) {
-    const p = perfilDeVentana(v);
+    const p = perfilDeVentana(v?._perfil || v);   // [Codex r12] el webhook manda TODOS los rótulos crudos en _perfil
     if (!p) { desconocidas = true; continue; }
     votos.set(p, (votos.get(p) || 0) + (Number(v?.cantidad ?? v?.qty) || 1));
   }
