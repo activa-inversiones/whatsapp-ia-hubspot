@@ -327,16 +327,24 @@ const MAX_MPX = () => Number(process.env.THERMAL_LAMINA_MAX_MPX || 8);
  *   · cualquier otra (incl. proyectante sin S60)          → '' (perfil propio NO modelado)
  * No se infiere la serie: una "proyectante" sin S60 en el rótulo NO se declara S60 (Codex r5).
  */
-export function perfilDeVentana(v) {
-  // Se miran TODOS los rótulos juntos (Codex r6): un `producto` genérico no puede tapar el
-  // `producto_label` detallado que trae la serie.
-  const txt = [v?.producto_label, v?.producto, v?.product].filter(Boolean).join(' ');
-  const hoja = Number(v?.hoja_mm) || Number((txt.match(/H(\d{2,3})/i) || [])[1]) || 0;
+function perfilDeRotulo(txt, hojaMm) {
+  const hoja = Number(hojaMm) || Number((txt.match(/H(\d{2,3})/i) || [])[1]) || 0;
   if (/proyectante/i.test(txt) && /\bS\s?60\b/i.test(txt)) return 'S60_proyectante';
   // H98 = línea SLIDING de la serie S75: se exige positivamente (sliding o S75), no por descarte.
   if (hoja === 98 && /(corredera|sliding)/i.test(txt) && /(sliding|\bS\s?75\b)/i.test(txt)
     && !/(andes|monorriel|\bS\s?60\b)/i.test(txt)) return 'Sliding_H98';
   return '';
+}
+
+export function perfilDeVentana(v) {
+  // Cada rótulo se clasifica POR SEPARADO (Codex r7): concatenarlos fabricaba identidades que
+  // ningún campo trae completa ("Proyectante" + "S60"). Si dos rótulos dan perfiles DISTINTOS es
+  // una contradicción y NO se declara ninguno (fail-closed: el cliente recibe referencia).
+  const hallados = new Set([v?.producto_label, v?.producto, v?.product]
+    .filter((x) => typeof x === 'string' && x.trim())
+    .map((x) => perfilDeRotulo(x, v?.hoja_mm))
+    .filter(Boolean));
+  return hallados.size === 1 ? [...hallados][0] : '';
 }
 
 /**

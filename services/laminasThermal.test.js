@@ -386,3 +386,11 @@ test('perfilDeVentana: H98 exige la línea SLIDING/S75 y combina todos los rótu
   assert.equal(perfilDeVentana({ producto: 'Ventana corredera 2 hojas', producto_label: 'Corredera SLIDING H98 Doble Riel S75' }),
     'Sliding_H98', 'el label detallado no lo tapa un producto genérico');
 });
+
+test('🔴 perfilDeVentana NO arma una identidad con pedazos de rótulos ni con rótulos contradictorios (Codex r7)', () => {
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante', producto: 'S60' }), '');
+  assert.equal(perfilDeVentana({ producto_label: 'Corredera', producto: 'S75', product: 'H98' }), '');
+  assert.equal(perfilDeVentana({ producto_label: 'Corredera SLIDING H98 Doble Riel S75', producto: 'Proyectante S60' }), '',
+    'contradicción: no se declara ninguno');
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60', producto: 'Proyectante S60' }), 'S60_proyectante');
+});
