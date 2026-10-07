@@ -327,26 +327,39 @@ const MAX_MPX = () => Number(process.env.THERMAL_LAMINA_MAX_MPX || 8);
  *   · cualquier otra (incl. proyectante sin S60)          → '' (perfil propio NO modelado)
  * No se infiere la serie: una "proyectante" sin S60 en el rótulo NO se declara S60 (Codex r5).
  */
+/**
+ * Clasificación ESTRICTA de un rótulo (Codex r9): se leen TODOS los indicios (series, hojas,
+ * líneas) y cualquier indicio que no calce con el perfil anula. Devuelve el perfil, '∅' si el
+ * rótulo es específico pero no calza (o se contradice), o '' si es genérico (no dice nada).
+ */
 function perfilDeRotulo(txt, hojaMm) {
-  const hoja = Number(hojaMm) || Number((txt.match(/H(\d{2,3})/i) || [])[1]) || 0;
-  if (/proyectante/i.test(txt) && /\bS\s?60\b/i.test(txt)) return 'S60_proyectante';
-  // H98 = línea SLIDING de la serie S75: se exige positivamente (sliding o S75), no por descarte.
-  if (hoja === 98 && /(corredera|sliding)/i.test(txt) && /(sliding|\bS\s?75\b)/i.test(txt)
-    && !/(andes|monorriel|\bS\s?60\b)/i.test(txt)) return 'Sliding_H98';
-  return '';
+  const t = String(txt || '');
+  const series = new Set([...t.matchAll(/\bS\s?(\d{2})\b/gi)].map((m) => m[1]));
+  const hojas = new Set([...t.matchAll(/\bH(\d{2,3})\b/gi)].map((m) => m[1]));
+  const linea = (re) => re.test(t);
+  const otras = linea(/andes|monorriel|americana/i);
+  const especifico = series.size || hojas.size || otras || linea(/sliding/i);
+  const hm = Number(hojaMm) || 0;
+  if (hm && hojas.size && !hojas.has(String(hm))) return '∅';        // la hoja declarada contradice al rótulo
+  const soloSerie = (x) => series.size === 1 && series.has(x);
+  if (linea(/proyectante/i)) {
+    return soloSerie('60') && !hojas.size && !otras && !linea(/sliding|corredera/i) ? 'S60_proyectante'
+      : (especifico ? '∅' : '');
+  }
+  const hoja = hm || (hojas.size === 1 ? Number([...hojas][0]) : 0);
+  if (linea(/corredera|sliding/i) && hoja === 98 && hojas.size <= 1
+      && (linea(/sliding/i) || soloSerie('75')) && (!series.size || soloSerie('75')) && !otras) {
+    return 'Sliding_H98';
+  }
+  return especifico ? '∅' : '';
 }
 
 export function perfilDeVentana(v) {
-  // Cada rótulo se clasifica POR SEPARADO (Codex r7): concatenarlos fabricaba identidades que
-  // ningún campo trae completa ("Proyectante" + "S60"). Si dos rótulos dan perfiles DISTINTOS es
-  // una contradicción y NO se declara ninguno (fail-closed: el cliente recibe referencia).
-  // Un rótulo ESPECÍFICO (nombra serie/línea) que no da perfil también cuenta como voto
-  // ("ninguno"): "SLIDING H98" + "ANDES monorriel" es contradicción, no H98 (Codex r8). Solo los
-  // rótulos genéricos ("Ventana corredera 2 hojas") se ignoran.
-  const especifico = (x) => /(\bS\s?\d{2}\b|andes|monorriel|sliding|americana|\bH\d{2,3}\b)/i.test(x);
+  // Cada rótulo vota por separado; un voto '∅' (rótulo específico que no calza) o dos perfiles
+  // distintos anulan: ante cualquier duda, sin perfil propio (fail-closed, Codex r7-r9).
   const votos = new Set([v?.producto_label, v?.producto, v?.product]
     .filter((x) => typeof x === 'string' && x.trim())
-    .map((x) => perfilDeRotulo(x, v?.hoja_mm) || (especifico(x) ? '∅' : ''))
+    .map((x) => perfilDeRotulo(x, v?.hoja_mm))
     .filter(Boolean));
   return votos.size === 1 && !votos.has('∅') ? [...votos][0] : '';
 }

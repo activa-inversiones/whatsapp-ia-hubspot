@@ -403,3 +403,16 @@ test('🔴 H98 contra un rótulo de OTRA línea no modelada (ANDES/monorriel/S60
   assert.equal(perfilDeVentana({ producto_label: h98, producto: 'Ventana corredera 2 hojas' }), 'Sliding_H98',
     'un rótulo genérico no contradice');
 });
+
+test('🔴 contradicciones de HOJA y dentro de un MISMO rótulo => sin perfil propio (Codex r9)', () => {
+  assert.equal(perfilDeVentana({ hoja_mm: 98, producto_label: 'Corredera SLIDING H98 Doble Riel S75', producto: 'Corredera SLIDING H80' }), '');
+  assert.equal(perfilDeVentana({ hoja_mm: 80, producto_label: 'Corredera SLIDING H98 Doble Riel S75' }), '');
+  assert.equal(perfilDeVentana({ producto_label: 'Corredera SLIDING H98 Doble Riel S75 Americana' }), '');
+  assert.equal(perfilDeVentana({ producto_label: 'Corredera SLIDING H98 H80' }), '');
+  assert.equal(perfilDeVentana({ producto_label: 'Corredera SLIDING H98 S60' }), '');
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60 Americana' }), '');
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60 S75' }), '');
+  // y los positivos legítimos siguen funcionando
+  assert.equal(perfilDeVentana({ hoja_mm: 98, producto_label: 'Corredera SLIDING H98 Doble Riel S75' }), 'Sliding_H98');
+  assert.equal(perfilDeVentana({ producto_label: 'Proyectante S60' }), 'S60_proyectante');
+});
