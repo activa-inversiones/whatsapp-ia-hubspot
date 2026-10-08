@@ -135,3 +135,12 @@ test('🔴 alternativa C (dueño 08-oct): corredera doble riel de 2100 + fijo ar
     assert.equal(await cotizarAlternativaC({ ancho_mm: 3200, alto_mm: 2000 }), null, 'ancho de mas no se arregla bajando la hoja');
   });
 });
+
+test('🔴 un monorriel MUY alto (1500x5000) nunca se cotiza con una medida y se rotula con otra (Codex)', async () => {
+  const { cotizarAlternativaC } = await import('../../services/enginePricer.js');
+  await conMotorStub(async (enviados) => {
+    const alt = await cotizarAlternativaC({ ancho_mm: 1500, alto_mm: 5000 });
+    for (const e of enviados) assert.equal(e.ancho_mm, 1500, `se le pregunto al motor ${e.ancho_mm}x${e.alto_mm}`);
+    if (alt) assert.deepEqual(alt.piezas.map((x) => x.measures), ['1500x2100', '1500x2900']);
+  });
+});

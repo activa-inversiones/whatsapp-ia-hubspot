@@ -128,3 +128,38 @@ test('🔒 un reenvio IDENTICO inmediato no repite la recomendada (lo frena el d
   const recs = pdfs.filter((p) => p.data.items.some((x) => /Doble Riel/.test(x.producto_label || x.product || '')));
   assert.equal(recs.length, 1, `PDFs: ${pdfs.map((p) => p.numero)}`);
 });
+
+test('🔒 la REEMISION por el nombre no repite la recomendada (guardia !_esReemisionNombre, Thermos r2)', async () => {
+  const textos = []; const pdfs = []; const quotes = [];
+  const d = deps(textos, pdfs, quotes);
+  d.loadSession = async () => ({ history: [{ role: 'user', content: 'me llamo Juan Perez' }],
+    state: { comuna: 'Villarrica', name: 'Juan Perez', default_color: 'nogal',
+      nombre_pendiente: { quote_number: 'CM-FR-004-2026-0700', at: Date.now(), items: [V1] } } });
+  d.parseInbound = () => ({ ok: true, from: CLIENTE, text: 'me llamo Juan Perez', msgId: 'wamid.REC.NOMBRE', type: 'text' });
+  d.handleTurn = async ({ userText, state, toolCtx }) => {
+    const r = await toolCtx.generarPdf({ name: 'Juan Perez', comuna: 'Villarrica', reemision_nombre: true,
+      items: [{ ...V1, measures: '2544x2370', ancho_mm: 2544 }] });
+    return { reply: 'listo', history: [{ role: 'user', content: userText }],
+      toolCalls: [{ name: 'generar_pdf_cotizacion', result: r }], state: { ...state } };
+  };
+  await correr(d);
+  assert.ok(pdfs.length >= 1, 'la original se reemite');
+  assert.equal(pdfs.filter((p) => p.data.items.some((x) => /Doble Riel/.test(x.producto_label || ''))).length, 0,
+    `PDFs: ${pdfs.map((p) => p.numero)}`);
+});
+
+test('🔴 el PDF recomendado lleva la nota de la union IMPRESA y no repite el numero de ventana (Codex)', async () => {
+  const textos = []; const pdfs = [];
+  const d = deps(textos, pdfs);
+  d.loadSession = async () => ({
+    history: [{ role: 'user', content: 'V14 3 2545 2370 una fija y una corredera' }, { role: 'assistant', content: '¿Le preparo la propuesta en PDF?' }],
+    state: { comuna: 'Villarrica', name: 'Cliente', default_color: 'nogal',
+      pending_quote: { items: [{ ...V1, measures: '2545x2370', ancho_mm: 2545, pos: 14 }, { ...FIJO, pos: 17 }], grand_total: 1 } },
+  });
+  await correr(d);
+  const rec = pdfs[1];
+  assert.ok(rec, `PDFs: ${pdfs.map((p) => p.numero)}`);
+  assert.match(rec.data.nota_variante || '', /visita t[eé]cnica/);
+  assert.deepEqual(rec.data.items.map((x) => x.pos), [14, undefined, 17], 'la corredera conserva V14; el fijo no repite');
+  assert.equal(pdfs[0].data.nota_variante, undefined, 'la original no lleva la nota');
+});

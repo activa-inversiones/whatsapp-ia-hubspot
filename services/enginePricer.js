@@ -874,6 +874,8 @@ export function orientacionDeclarada(texto) {
 
 /** [dueño, 2026-10-08] Altura de la corredera en la alternativa C (textual: "el corte para la C va a 2100 de alto"). */
 export const CORTE_MONORRIEL_ALTO_MM = 2100;
+/** Desde que alto un monorriel lleva propuesta recomendada (el tope de corredera H98). */
+export const ALTO_MAX_MONORRIEL_MM = FABRICATION_LIMITS.SLIDING.H98.maxAlto;
 const SIN_MONORRIEL = Symbol("sinMonorriel");
 /** [dueño, 2026-10-08] Opcion C del perfil de union: no se cobra, se avisa. */
 export const NOTA_UNION_ALTERNATIVA_C = "Unión entre la corredera y el paño fijo superior a confirmar en la visita técnica.";
@@ -893,12 +895,15 @@ function fueraS60(a, h) {
  */
 export async function cotizarAlternativaC({ ancho_mm, alto_mm, qty = 1, color = "", ambiente = "", comuna = "" } = {}) {
   ancho_mm = Number(ancho_mm); alto_mm = Number(alto_mm);
-  if (!(alto_mm > FABRICATION_LIMITS.SLIDING.H98.maxAlto) || !(ancho_mm > 0)) return null;  // solo los que se pasan de ALTO
+  if (!(alto_mm > ALTO_MAX_MONORRIEL_MM) || !(ancho_mm > 0)) return null;  // solo los que se pasan de ALTO
   const altoFijo = alto_mm - CORTE_MONORRIEL_ALTO_MM;
   if (!(altoFijo > 0)) return null;
   const base = { qty, color, ambiente };
   const sub = {
-    comuna, default_color: color, texto_cliente: "",
+    // "ancho x alto" DECLARADO: estas medidas las arma el sistema, no el cliente. Sin esto la regla de
+    // "algo pasa los 2400 → la lista viene alto x ancho" daba vuelta las piezas (Codex 08-oct: 1500x5000
+    // se cotizaba 2100x1500 + 2900x1500 y el PDF decia 1500x2100 con ese precio).
+    comuna, default_color: color, texto_cliente: "medidas ancho x alto",
     items: [
       { ...base, measures: `${ancho_mm}x${CORTE_MONORRIEL_ALTO_MM}mm`, product: "CORREDERA",
         descripcion: "corredera de 2 hojas doble riel", [SIN_MONORRIEL]: true },
@@ -908,6 +913,13 @@ export async function cotizarAlternativaC({ ancho_mm, alto_mm, qty = 1, color = 
   const r = await priceAllEngine(sub);
   if (!r.ok || !sub.items.every((x) => Number(x.unit_price) > 0)) return null;
   const dims = [[ancho_mm, CORTE_MONORRIEL_ALTO_MM], [ancho_mm, altoFijo]];
+  // Segunda red: si el pricer igual hubiera cotizado otra geometria, NO se ofrece (precio de una
+  // ventana, medida de otra es lo peor que puede salir). Se compara con la medida que quedo cotizada.
+  const cotizada = (x) => (String(x.measures || "").match(/\d+/g) || []).slice(0, 2).map(Number).join("x");
+  if (sub.items.some((x, k) => cotizada(x) !== `${dims[k][0]}x${dims[k][1]}`)) {
+    console.error("[enginePricer] cotizarAlternativaC: geometria cotizada distinta", sub.items.map(cotizada), dims);
+    return null;
+  }
   return {
     piezas: sub.items.map((x, k) => ({
       producto_label: x.producto_label, measures: `${dims[k][0]}x${dims[k][1]}`,

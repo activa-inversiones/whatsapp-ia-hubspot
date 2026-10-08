@@ -323,7 +323,10 @@ async function generatePremiumQuotePdf(data, quoteNumber) {
       ["• Perfiles PVC WinHouse certificados (IFT Rosenheim) · termopanel DVH.",
        "• Instalación profesional por equipo propio. Sellado incluido.",
        "• Cumple OGUC 4.1.10 (acondicionamiento térmico). Evaluador MINVU Res. 266/2025.",
-       "• Garantía 5 años estructura · 1 año herrajes. Sujeto a rectificación en terreno."]
+       "• Garantía 5 años estructura · 1 año herrajes. Sujeto a rectificación en terreno.",
+       // [dueño, 2026-10-08] La propuesta recomendada del monorriel alto: la union corredera + fijo
+       // superior NO se cobra y se confirma en la visita. Va en el PAPEL, no solo en el chat (Codex).
+       ...(data.nota_variante ? [`• ${data.nota_variante}`] : [])]
        .forEach(t => { doc.text(t, 50, y, { lineBreak: false }); y += 12; });
 
       // ── FIRMA ────────────────────────────────────────────────────────────

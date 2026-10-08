@@ -148,7 +148,7 @@ import {
   sendWaDocument as realSendWaDocument,
 } from '../sales-agent/whatsapp-adapter.js';
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
-import { priceAllEngine, detectHojas, cotizarAlternativaC } from '../../services/enginePricer.js'; // [2026-06-24] blindaje label↔precio en generarPdf
+import { priceAllEngine, detectHojas, cotizarAlternativaC, ALTO_MAX_MONORRIEL_MM as CORTE_RECOMENDADA_ALTO_MM } from '../../services/enginePricer.js'; // [2026-06-24] blindaje label↔precio en generarPdf
 import { saveMedia, notifyQuoteSent } from '../../mediaStore.js'; // [#5] media entrante + aviso de cotizacion enviada
 import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal, attachInboundToDeal } from '../../services/zohoCommercial.js';
 import {
@@ -4882,105 +4882,6 @@ Comuna: ${datos.comuna}`
               `${from}: ${_opcionesEntregadas.length}/${_folios.length} propuestas entregadas (${_opcionesEntregadas.map((o) => `${o.letra}=${o.color}`).join(', ') || 'ninguna'})`);
           }
 
-          // 🔴 [dueño, 2026-10-08] LA 2a PROPUESTA DEL MONORRIEL ALTO (opcion C). Textual: *"se entregan 2
-          // cotizaciones una con el original del cliente y una otra con las correderas doble riel"* +
-          // *"el corte para la C va a 2100 de alto"* + *"C, unión a confirmar en visita técnica"*.
-          // Se arma ACA, dentro de la emision de la original y con SUS MISMAS ventanas (`input.items`,
-          // ya con los precios que dejo la guardia), igual que las opciones B/C de la terna: misma via
-          // aislada, sin repetir nada de lo que cuelga de la original. Thermos 08-oct lo mostro: pasarla
-          // por `generarPdf` entero duplicaba la conversion a Meta/Google (otro 'sent' con otro monto),
-          // Zoho, video, informes, y le pisaba `last_quote` a la original.
-          //  · status 'alternativa' ⇒ NO dispara conversion (fireConversion solo mapea sent/...).
-          //  · solo con la original ENTREGADA y sin terna de colores (un color, una recomendada).
-          //  · una vez por emision de la original: otro turno sin PDF no la re-dispara.
-          // [Thermos r2] NO en un REENVIO de la original (revision con el mismo folio, o la reemision por
-          // el nombre): ya se la mandamos la primera vez, y repetirla quemaba otra letra (0353-B, -C...)
-          // y contradecia el "es la misma propuesta corregida" de la reemision.
-          if (docSent && !_coloresTerna && !esRevision && !_esReemisionNombre) {
-            try {
-              const _altos = await Promise.all((input.items || []).map(async (it) => {
-                if (!/monorriel/i.test(String(it.producto_label || it.product || ''))) return null;
-                const [a, h] = (_measuresForEngine(it).match(/\d+/g) || []).map(Number);
-                return cotizarAlternativaC({ ancho_mm: a, alto_mm: h, qty: Number(it.qty) || 1,
-                  color: it.color || '', ambiente: it.ambiente || '', comuna: input.comuna || state.comuna || '' });
-              }));
-              if (_altos.some(Boolean)) {
-                const _folRec = foliosDeOpciones(quoteNumber, 2, Number((state.last_quote || {}).alternativas) || 0)[1];
-                if (!_folRec) {
-                  log('warn', 'generarPdf.recomendada', `${from}: sin letra libre sobre ${quoteNumber}; no sale la recomendada`);
-                } else {
-                  const _itemsRec = [];
-                  (input.items || []).forEach((it, k) => {
-                    const _alt = _altos[k];
-                    if (!_alt) {
-                      _itemsRec.push({ product: it.producto_label || it.product || 'Ventana',
-                        producto_label: it.producto_label || it.product || 'Ventana',
-                        measures: it.measures || '', ancho_mm: it.ancho_mm, alto_mm: it.alto_mm,
-                        color: it.color || '', qty: Number(it.qty) || 1, unit_price: Number(it.unit_price) || 0,
-                        glass_label: it.glass_label || VIDRIO_RESPALDO, ambiente: it.ambiente || '', termico: it.termico || null,
-                        compuesta: it.compuesta || undefined, esquina: it.esquina || undefined, hoja_mm: Number(it.hoja_mm) || undefined,
-                        pos: it.pos ?? undefined, corredera: it.corredera || undefined, referencial: !!it.referencial });
-                      return;
-                    }
-                    for (const p of _alt.piezas) {
-                      _itemsRec.push({ product: p.producto_label, producto_label: p.producto_label, measures: p.measures,
-                        ancho_mm: p.ancho_mm, alto_mm: p.alto_mm, color: p.color || it.color || '', qty: Number(p.qty) || 1,
-                        unit_price: Number(p.unit_price) || 0, glass_label: p.glass_label || VIDRIO_RESPALDO,
-                        ambiente: it.ambiente || '', pos: it.pos ?? undefined, referencial: !!p.referencial });
-                    }
-                  });
-                  const _numRec = _folRec.numero;
-                  const _pdfRec = { ...pdfData, reemplaza_a: undefined, quote_num: _numRec, items: _itemsRec };
-                  const _totalRec = _itemsRec.reduce((acc, x) => acc + (Number(x.unit_price) || 0) * (Number(x.qty) || 1), 0);
-                  const _bufRec = await generatePdf(_pdfRec, _numRec);
-                  const _fileRec = `${_numRec}.pdf`;
-                  let _mediaRec = null;
-                  let _sentRec = false;
-                  try {
-                    _mediaRec = await uploadWaDocument(_bufRec, _fileRec);
-                    const _resRec = await sendWaDocument(from, _mediaRec, _fileRec,
-                      `Propuesta Técnica Económica N° ${_numRec} · Recomendada por ingeniería · Activa Inversiones`);
-                    _sentRec = !!(_resRec && _resRec.ok);
-                  } catch (e) { log('error', 'generarPdf.recomendada.envio', e?.message || e); }
-                  // La letra queda CONSUMIDA aunque el envio falle (misma regla que la terna).
-                  _letrasTerna = Math.max(_letrasTerna, letrasReservadas([{ numero: _numRec }]));
-                  safe('generarPdf.recomendada.mirror', () => bridge.pushConversationEvent({
-                    channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound',
-                    actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
-                    body: _sentRec ? `📄 Propuesta ${_fileRec} (recomendada por ingeniería) enviada al cliente`
-                      : `⚠️ Propuesta ${_fileRec} (recomendada por ingeniería) NO se pudo entregar`,
-                    metadata: { source: 'oliver_gpt_pdf_recomendada', quote_number: _numRec, filename: _fileRec,
-                                media_id: _mediaRec, pdf_sent: _sentRec, base: quoteNumber },
-                  }));
-                  await safe('generarPdf.recomendada.registro', () => bridge.pushQuoteEvent(payloadQuote(turno, {
-                    phone: clientPhone, channel: 'whatsapp', customer_name: clientName, amount_total: _totalRec,
-                    currency: 'CLP', status: 'alternativa', quote_number: _numRec, receptor: receptorDoc || null,
-                    variante: { motivo: 'monorriel_alto_recomendada', base: quoteNumber, pdf_sent: _sentRec },
-                    // [Thermos r2] Igual que la terna: sin `lead` la fila queda con lead_id NULL y el JOIN
-                    // quotes→leads se rompe. Sin click-ids: no dispara conversion.
-                    lead: payloadLeadCotizacion(turno, {
-                      lead_name: clientName || null, name: clientName || null, phone: clientPhone || null,
-                      comuna: clientComuna || null, city: clientComuna || null, status: 'quoted',
-                    }),
-                    items: _itemsRec.map((x) => ({ producto: x.producto_label || null, medidas: x.measures || null,
-                      cantidad: Number(x.qty) || 1, unitario: Number(x.unit_price) || null, color: x.color || null,
-                      vidrio: x.glass_label || null, referencial: !!x.referencial })),
-                  })));
-                  if (_sentRec) {
-                    _avisoRecomendada = `\n\nLe envié también la Propuesta N° ${_numRec}, la que recomienda nuestra `
-                      + 'área de ingeniería para las ventanas más altas: corredera de dos hojas con un paño fijo '
-                      + `arriba. ${_altos.find(Boolean).nota}`;
-                  } else {
-                    log('error', 'generarPdf.recomendada', `${from}: ${_numRec} NO se pudo entregar`);
-                  }
-                }
-              }
-            } catch (e) {
-              // No frena a la original (ya entregada), pero NO en silencio (Thermos calidad #4).
-              log('error', 'generarPdf.recomendada.err', `${from}: ${e?.message || e}`);
-            }
-          }
-
           // 🎨 [2026-08-31] Y AHORA SE LE DICE AL CLIENTE CUAL ES CUAL — pedido EXPLICITO del
           // dueño: *"le decimos a cliente cuel es cada una"*. Se nombran SOLO las que de verdad
           // salieron. Si al final quedo una sola (las otras dos fallaron), el cliente no puede
@@ -5362,6 +5263,141 @@ Comuna: ${datos.comuna}`
           // nombre de quien salio su propuesta, y como la marca ya estaba, tampoco se le
           // decia la proxima vez. Aca abajo el texto SI sale con el mensaje.
           if (_avisoNombre) state.nombre_avisado_at = Date.now();
+          // 🔴 [dueño, 2026-10-08] LA 2a PROPUESTA DEL MONORRIEL ALTO (opcion C). Textual: *"se entregan 2
+          // cotizaciones una con el original del cliente y una otra con las correderas doble riel"* +
+          // *"el corte para la C va a 2100 de alto"* + *"C, unión a confirmar en visita técnica"*.
+          // Se arma con las MISMAS ventanas de la original (`input.items`, ya revisadas) y por la misma
+          // via aislada que las opciones B/C de la terna (Thermos 08-oct: pasarla por generarPdf entero
+          // duplicaba conversion, Zoho, video e informes y le pisaba last_quote a la original).
+          //  · VA AL FINAL, despues de Zoho, del 'sent' y de last_quote de la original (Codex 08-oct: si
+          //    corria antes, una demora o caida dejaba la original entregada SIN esos registros).
+          //  · status 'alternativa' ⇒ NO dispara conversion (fireConversion solo mapea sent/...).
+          //  · solo con la original ENTREGADA, sin terna de colores, y NO en un reenvio (revision con
+          //    el mismo folio, o reemision por el nombre): ahi quemaba otra letra cada vez (Thermos r2).
+          //  · TODAS O NINGUNA: si un monorriel alto no se puede cotizar como C, no sale una recomendada
+          //    a medias con monorrieles adentro (Codex); queda en el log y en el cockpit.
+          if (docSent && !_coloresTerna && !esRevision && !_esReemisionNombre) {
+            try {
+              const _esAlto = (it) => {
+                if (!/monorriel/i.test(String(it.producto_label || it.product || ''))) return null;
+                const [a, h] = (_measuresForEngine(it).match(/\d+/g) || []).map(Number);
+                return h > CORTE_RECOMENDADA_ALTO_MM ? { a, h } : null;
+              };
+              const _dimsAltos = (input.items || []).map(_esAlto);
+              if (_dimsAltos.some(Boolean)) {
+                const _altos = await Promise.all((input.items || []).map((it, k) => (_dimsAltos[k]
+                  ? cotizarAlternativaC({ ancho_mm: _dimsAltos[k].a, alto_mm: _dimsAltos[k].h, qty: Number(it.qty) || 1,
+                    color: it.color || '', ambiente: it.ambiente || '', comuna: input.comuna || state.comuna || '' })
+                  : null)));
+                const _fallidas = _dimsAltos.filter((dd, k) => dd && !_altos[k]).length;
+                const _folRec = _fallidas ? null
+                  : foliosDeOpciones(quoteNumber, 2, Number((state.last_quote || {}).alternativas) || 0)[1];
+                if (_fallidas || !_folRec) {
+                  const _motivo = _fallidas ? `${_fallidas} monorriel(es) alto(s) sin alternativa cotizable` : `sin letra libre sobre ${quoteNumber}`;
+                  log('error', 'generarPdf.recomendada', `${from}: NO sale la recomendada (${_motivo})`);
+                  safe('generarPdf.recomendada.noSale', () => bridge.pushConversationEvent({
+                    channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound',
+                    actor_type: 'ai', actor_name: 'Oliver', message_type: 'text',
+                    body: `⚠️ No salió la propuesta recomendada (corredera + fijo arriba) de ${quoteNumber}: ${_motivo}. Revisar a mano.`,
+                    metadata: { source: 'oliver_gpt_pdf_recomendada', base: quoteNumber, pdf_sent: false },
+                  }));
+                } else {
+                  const _itemsRec = [];
+                  (input.items || []).forEach((it, k) => {
+                    const _alt = _altos[k];
+                    if (!_alt) {
+                      _itemsRec.push({ product: it.producto_label || it.product || 'Ventana',
+                        producto_label: it.producto_label || it.product || 'Ventana',
+                        measures: it.measures || '', ancho_mm: it.ancho_mm, alto_mm: it.alto_mm,
+                        color: it.color || '', qty: Number(it.qty) || 1, unit_price: Number(it.unit_price) || 0,
+                        glass_label: it.glass_label || VIDRIO_RESPALDO, ambiente: it.ambiente || '', termico: it.termico || null,
+                        compuesta: it.compuesta || undefined, esquina: it.esquina || undefined, hoja_mm: Number(it.hoja_mm) || undefined,
+                        pos: it.pos ?? undefined, corredera: it.corredera || undefined, referencial: !!it.referencial });
+                      return;
+                    }
+                    _alt.piezas.forEach((p, j) => {
+                      _itemsRec.push({ product: p.producto_label, producto_label: p.producto_label, measures: p.measures,
+                        ancho_mm: p.ancho_mm, alto_mm: p.alto_mm, color: p.color || it.color || '', qty: Number(p.qty) || 1,
+                        unit_price: Number(p.unit_price) || 0, glass_label: p.glass_label || VIDRIO_RESPALDO,
+                        ambiente: j === 1 ? 'Paño fijo superior' : (it.ambiente || ''),
+                        // El numero del cliente lo conserva la corredera; el fijo toma el siguiente libre.
+                        // Repetirlo hacia que el PDF renumerara TODO el documento (Codex 08-oct).
+                        pos: j === 0 ? (it.pos ?? undefined) : undefined, referencial: !!p.referencial });
+                    });
+                  });
+                  const _numRec = _folRec.numero;
+                  const _notaRec = _altos.find(Boolean).nota;
+                  const _pdfRec = { ...pdfData, reemplaza_a: undefined, quote_num: _numRec, items: _itemsRec, nota_variante: _notaRec };
+                  const _totalRec = _itemsRec.reduce((acc, x) => acc + (Number(x.unit_price) || 0) * (Number(x.qty) || 1), 0);
+                  const _bufRec = await generatePdf(_pdfRec, _numRec);
+                  const _fileRec = `${_numRec}.pdf`;
+                  let _mediaRec = null;
+                  let _sentRec = false;
+                  let _msgIdRec = null;
+                  try {
+                    _mediaRec = await uploadWaDocument(_bufRec, _fileRec);
+                    const _resRec = await sendWaDocument(from, _mediaRec, _fileRec,
+                      `Propuesta Técnica Económica N° ${_numRec} · Recomendada por ingeniería · Activa Inversiones`);
+                    _sentRec = !!(_resRec && _resRec.ok);
+                    _msgIdRec = (_resRec && _resRec.msgId) || null;
+                  } catch (e) { log('error', 'generarPdf.recomendada.envio', e?.message || e); }
+                  // La letra queda CONSUMIDA aunque el envio falle (misma regla que la terna). last_quote
+                  // ya se escribio (es el de la ORIGINAL): solo se le suma la letra reservada.
+                  if (state.last_quote) {
+                    state.last_quote.alternativas = Math.max(Number(state.last_quote.alternativas) || 0,
+                      letrasReservadas([{ numero: _numRec }]));
+                  }
+                  // Mismo rastro de entrega que la original: un `failed` posterior de Meta (p. ej. 131047)
+                  // tiene que poder casarse con este documento (Codex 08-oct).
+                  if (_sentRec && _msgIdRec) {
+                    try {
+                      await (deps.escribirEstado || escribirEstado)(`wamsg:${_msgIdRec}`, {
+                        msgId: _msgIdRec, tipo: 'propuesta', folio: _numRec, telefono: String(from), cliente: String(turno.cliente),
+                      }, 3 * 24 * 3600);
+                    } catch { /* solo se pierde el diagnostico */ }
+                    const _bridgeRec = deps.bridge || realBridge;
+                    if (typeof _bridgeRec.logOliverEvent === 'function') {
+                      Promise.resolve(_bridgeRec.logOliverEvent('documento_enviado', {
+                        phone: String(from), wamid: _msgIdRec, tipo: 'propuesta', folio: _numRec,
+                      })).catch((e) => log('error', 'generarPdf.recomendada.evento', e?.message || e));
+                    }
+                  }
+                  safe('generarPdf.recomendada.mirror', () => bridge.pushConversationEvent({
+                    channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound',
+                    actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
+                    body: _sentRec ? `📄 Propuesta ${_fileRec} (recomendada por ingeniería) enviada al cliente`
+                      : `⚠️ Propuesta ${_fileRec} (recomendada por ingeniería) NO se pudo entregar`,
+                    metadata: { source: 'oliver_gpt_pdf_recomendada', quote_number: _numRec, filename: _fileRec,
+                                media_id: _mediaRec, pdf_sent: _sentRec, base: quoteNumber, wamid: _msgIdRec },
+                  }));
+                  await safe('generarPdf.recomendada.registro', () => bridge.pushQuoteEvent(payloadQuote(turno, {
+                    phone: clientPhone, channel: 'whatsapp', customer_name: clientName, amount_total: _totalRec,
+                    currency: 'CLP', status: 'alternativa', quote_number: _numRec, receptor: receptorDoc || null,
+                    variante: { motivo: 'monorriel_alto_recomendada', base: quoteNumber, pdf_sent: _sentRec },
+                    // Igual que la terna: sin `lead` la fila queda con lead_id NULL. Sin click-ids.
+                    lead: payloadLeadCotizacion(turno, {
+                      lead_name: clientName || null, name: clientName || null, phone: clientPhone || null,
+                      comuna: clientComuna || null, city: clientComuna || null, status: 'quoted',
+                    }),
+                    items: _itemsRec.map((x) => ({ producto: x.producto_label || null, medidas: x.measures || null,
+                      cantidad: Number(x.qty) || 1, unitario: Number(x.unit_price) || null, color: x.color || null,
+                      vidrio: x.glass_label || null, referencial: !!x.referencial })),
+                  })));
+                  if (_sentRec) {
+                    _avisoRecomendada = `\n\nLe envié también la Propuesta N° ${_numRec}, la que recomienda nuestra `
+                      + 'área de ingeniería para las ventanas más altas: corredera de dos hojas con un paño fijo '
+                      + `arriba. ${_notaRec}`;
+                  } else {
+                    log('error', 'generarPdf.recomendada', `${from}: ${_numRec} NO se pudo entregar`);
+                  }
+                }
+              }
+            } catch (e) {
+              // No frena a la original (ya entregada y registrada), pero NO en silencio.
+              log('error', 'generarPdf.recomendada.err', `${from}: ${e?.message || e}`);
+            }
+          }
+
           return {
             ok: true,
             quote_number: quoteNumber,
