@@ -4893,7 +4893,10 @@ Comuna: ${datos.comuna}`
           //  · status 'alternativa' ⇒ NO dispara conversion (fireConversion solo mapea sent/...).
           //  · solo con la original ENTREGADA y sin terna de colores (un color, una recomendada).
           //  · una vez por emision de la original: otro turno sin PDF no la re-dispara.
-          if (docSent && !_coloresTerna) {
+          // [Thermos r2] NO en un REENVIO de la original (revision con el mismo folio, o la reemision por
+          // el nombre): ya se la mandamos la primera vez, y repetirla quemaba otra letra (0353-B, -C...)
+          // y contradecia el "es la misma propuesta corregida" de la reemision.
+          if (docSent && !_coloresTerna && !esRevision && !_esReemisionNombre) {
             try {
               const _altos = await Promise.all((input.items || []).map(async (it) => {
                 if (!/monorriel/i.test(String(it.producto_label || it.product || ''))) return null;
@@ -4953,6 +4956,12 @@ Comuna: ${datos.comuna}`
                     phone: clientPhone, channel: 'whatsapp', customer_name: clientName, amount_total: _totalRec,
                     currency: 'CLP', status: 'alternativa', quote_number: _numRec, receptor: receptorDoc || null,
                     variante: { motivo: 'monorriel_alto_recomendada', base: quoteNumber, pdf_sent: _sentRec },
+                    // [Thermos r2] Igual que la terna: sin `lead` la fila queda con lead_id NULL y el JOIN
+                    // quotes→leads se rompe. Sin click-ids: no dispara conversion.
+                    lead: payloadLeadCotizacion(turno, {
+                      lead_name: clientName || null, name: clientName || null, phone: clientPhone || null,
+                      comuna: clientComuna || null, city: clientComuna || null, status: 'quoted',
+                    }),
                     items: _itemsRec.map((x) => ({ producto: x.producto_label || null, medidas: x.measures || null,
                       cantidad: Number(x.qty) || 1, unitario: Number(x.unit_price) || null, color: x.color || null,
                       vidrio: x.glass_label || null, referencial: !!x.referencial })),
@@ -5395,7 +5404,7 @@ Comuna: ${datos.comuna}`
             // [Dueño, 28-ago] El resumen ("Le coticé:") ya NO va acá: se convirtió en el
             // ANTICIPO y viaja ANTES del documento (Paso 2-bis), que es donde el cliente
             // puede corregir una medida al revés A TIEMPO. Los avisos de ajuste se quedan.
-            ) + _avisoNombre + _avisoColor + _avisoTipo + _avisoHojas + _avisoRecomendada,
+            ) + _avisoNombre + _avisoColor + _avisoTipo + _avisoRecomendada + _avisoHojas,
           };
         }),
     };

@@ -913,8 +913,9 @@ export async function cotizarAlternativaC({ ancho_mm, alto_mm, qty = 1, color = 
       producto_label: x.producto_label, measures: `${dims[k][0]}x${dims[k][1]}`,
       ancho_mm: dims[k][0], alto_mm: dims[k][1],
       unit_price: x.unit_price, qty: x.qty, glass_label: x.glass_label, color: x.color,
-      // El fijo superior sale casi siempre fuera del S60 (ancho > 1930 o alto < 400): se marca para que
-      // el aviso "REVISION DE INGENIERIA" le llegue a Marcelo igual que con el monorriel.
+      // El fijo superior sale casi siempre fuera del S60 (ancho > 1930 o alto < 400): se marca referencial
+      // para que el PDF y la fila lo digan. (El aviso a Marcelo ya sale por el monorriel de la ORIGINAL,
+      // que es referencial por definicion; la recomendada no dispara un aviso propio.)
       referencial: !!x.referencial || (k === 1 && fueraS60(dims[k][0], dims[k][1])),
     })),
     nota: NOTA_UNION_ALTERNATIVA_C,

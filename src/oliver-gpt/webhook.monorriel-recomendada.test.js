@@ -109,3 +109,22 @@ test('🔴 camino del LLM (mismo turno): tambien salen DOS, una sola conversion'
   assert.equal(quotes.filter((q) => q.status === 'sent').length, 1);
   assert.match(textos.filter((x) => x.to === CLIENTE).map((x) => x.t).join('\n'), /recomienda nuestra área de ingeniería/);
 });
+
+test('🔒 un reenvio IDENTICO inmediato no repite la recomendada (lo frena el dedup de 2 min; la revision posterior y la reemision por nombre las frena la guardia !esRevision && !_esReemisionNombre, sin test propio)', async () => {
+  const textos = []; const pdfs = []; const quotes = [];
+  const d = deps(textos, pdfs, quotes);
+  d.loadSession = async () => null;
+  d.parseInbound = () => ({ ok: true, from: CLIENTE, text: 'V1 3 2540x2370 una fija y una corredera, nogal', msgId: 'wamid.REC.REENVIO', type: 'text' });
+  d.handleTurn = async ({ userText, state, toolCtx }) => {
+    const it = { ...V1, measures: '2543x2370', ancho_mm: 2543 };
+    const r1 = await toolCtx.generarPdf({ name: 'Cliente', comuna: 'Villarrica', items: [it] });
+    // MISMO contenido = reenvio (revision, mismo folio). Uno con contenido DISTINTO es otra propuesta
+    // (letra nueva) y ahi SI corresponde su propia recomendada.
+    const r2 = await toolCtx.generarPdf({ name: 'Cliente', comuna: 'Villarrica', items: [{ ...it }] });
+    return { reply: 'listo', history: [{ role: 'user', content: userText }],
+      toolCalls: [{ name: 'generar_pdf_cotizacion', result: r2 || r1 }], state: { ...state } };
+  };
+  await correr(d);
+  const recs = pdfs.filter((p) => p.data.items.some((x) => /Doble Riel/.test(x.producto_label || x.product || '')));
+  assert.equal(recs.length, 1, `PDFs: ${pdfs.map((p) => p.numero)}`);
+});
