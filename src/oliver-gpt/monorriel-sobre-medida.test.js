@@ -109,3 +109,15 @@ test('🔒 Zenia por el campo ESTRUCTURADO serie tampoco se cuela como ANDES mon
     assert.equal(enviados.length, 0);
   });
 });
+
+test('🔴 por AREA tambien: "linea ANDES monorriel" se cotiza y Zenia no (Codex r3)', async () => {
+  await conMotorStub(async (enviados) => {
+    const r = await runTool('calcular_por_area', { tipo: 'CORREDERA', area_m2: 6, cantidad: 1, comuna: 'Temuco',
+      descripcion_producto: 'línea ANDES monorriel, una corredera y un paño fijo' }, {});
+    assert.notEqual(r.reason, 'producto_fuera_de_alcance:linea_no_soportada', JSON.stringify(r).slice(0, 300));
+    const z = await runTool('calcular_por_area', { tipo: 'CORREDERA', area_m2: 2, cantidad: 1, comuna: 'Temuco',
+      descripcion_producto: 'línea Zenia, una corredera y un paño fijo' }, {});
+    assert.notEqual(z.ok, true, 'Zenia sigue fuera');
+    assert.ok(enviados.every((e) => e.serie !== 'ZENIA'));
+  });
+});

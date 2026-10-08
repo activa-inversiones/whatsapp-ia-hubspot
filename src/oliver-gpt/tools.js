@@ -15,7 +15,7 @@ import {
 import { normMeasures } from './normalizers.js';
 import '../sales-agent/whatsapp-adapter.js';
 import '../../services/quotePdf.js';
-import { priceAllEngine } from '../../services/enginePricer.js'; // [2026-06-14] pricer completo de V1 (serie SLIDING+hojas+vidrio auto)
+import { priceAllEngine, esMonorrielPorForma } from '../../services/enginePricer.js'; // [2026-06-14] pricer completo de V1 (serie SLIDING+hojas+vidrio auto)
 import { esquinaDesdePanos, esBowPorForma, paresDelTexto } from '../../services/formaEsquina.js'; // [2026-09-26 · #947] la bow window paño por paño
 import { detectarProductoFueraDeAlcance } from '../../services/productoFueraDeAlcance.js'; // [Ronda 2] guarda temprana en calcular_por_area
 import { VIDRIO_BASE } from '../../services/vidriosBase.js'; // [2026-10-06] relleno = 4+12+4 base de Winart
@@ -1085,6 +1085,13 @@ export async function runTool(name, input = {}, ctx = {}) {
       const _guardArea = detectarProductoFueraDeAlcance(input.descripcion_producto || '', {
         tipo: input.tipo, serie: input.serie,
       });
+      // [Codex r3, 08-oct] Misma excepcion que enginePricer paso 0: "linea Andes" + forma de monorriel
+      // se cotiza (decision del dueño: el monorriel siempre). Zenia/Venau siguen fuera.
+      const _txtArea = `${input.descripcion_producto || ''} ${input.serie || ''}`;
+      if (_guardArea.fueraDeAlcance && _guardArea.categoria === 'linea_no_soportada'
+          && esMonorrielPorForma(_txtArea) && !/\b(?:zenia|venau)\b/i.test(_txtArea)) {
+        _guardArea.fueraDeAlcance = false;
+      }
       if (_guardArea.fueraDeAlcance) {
         return falloDeCotizacion(
           { ok: false, escalate: true, reason: _guardArea.razon, category: _guardArea.categoria, error: _guardArea.mensajeCliente },
