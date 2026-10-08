@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runTool } from './tools.js';
 import { buildSystemBlocks } from './system-prompt.js';
+import { fraseRevisionIngenieria, itemsFromQuoteCalls } from './pdf-intent.js';
 
 function conMotorStub(fn) {
   const orig = globalThis.fetch;
@@ -39,6 +40,10 @@ test('🔴 el monorriel MAS GRANDE que lo estandar se cotiza (V1 real: 2540x2370
     assert.match(r.nota_linea || '', /ingenier[ií]a/i, 'la frase de ingenieria viaja al LLM');
     assert.doesNotMatch(r.nota_linea || '', /andes|monorriel|economic/i);
     assert.match(r._decir_al_cliente || '', /ingenier/i, 'y se le pide decirla');
+    // referencial=true es lo que dispara el aviso interno "REVISION DE INGENIERIA" a Marcelo
+    // (webhook, al emitir el PDF). Sin esto la ventana se cotiza pero nadie de adentro se entera.
+    assert.equal(r.referencial, true, 'Marcelo tiene que quedar avisado por dentro');
+    assert.equal(r.revision_ingenieria, true, 'la marca viaja al pending_quote y al mensaje del PDF');
     assert.doesNotMatch(r._nota_referencial || '', /NO se lo menciones/i,
       'la instruccion de referencial no puede ordenar ocultarselo al cliente');
   });
@@ -57,4 +62,38 @@ test('🔴 el prompt no vuelve a decir que el monorriel lo cotiza Marcelo', () =
   assert.doesNotMatch(txt, /ANDES, que cotiza Marcelo/i);
   assert.doesNotMatch(txt, /monorriel \(Marcelo\)/i);
   assert.match(txt, /MONORRIEL SE COTIZA SIEMPRE/);
+});
+
+test('🔴 aunque el cliente diga "linea ANDES", el monorriel se cotiza (Codex, tridente 08-oct)', async () => {
+  await conMotorStub(async (enviados) => {
+    const r = await runTool('calcular_cotizacion', {
+      tipo: 'CORREDERA', medidas_texto: '4000x2400', cantidad: 1, comuna: 'Temuco',
+      descripcion_producto: 'línea ANDES monorriel, una corredera y un paño fijo',
+    }, { textoCliente: 'línea ANDES monorriel, una corredera y un paño fijo 4000x2400' });
+    assert.equal(r.ok, true, 'antes: producto_fuera_de_alcance:linea_no_soportada, cero llamadas al motor');
+    assert.equal(enviados.at(-1)?.serie, 'ANDES');
+    assert.equal(enviados.at(-1)?.riel, 'MONORRIEL');
+  });
+});
+
+test('🔒 pero Zenia sigue fuera de alcance (la excepcion es SOLO del monorriel ANDES)', async () => {
+  await conMotorStub(async (enviados) => {
+    const r = await runTool('calcular_cotizacion', {
+      tipo: 'CORREDERA', medidas_texto: '1500x1200', cantidad: 1, comuna: 'Temuco',
+      descripcion_producto: 'línea Zenia, una corredera y un paño fijo',
+    }, {});
+    assert.notEqual(r.ok, true);
+    assert.equal(enviados.length, 0);
+  });
+});
+
+test('🔴 la frase al cliente la pone el SISTEMA al entregar el PDF, no depende del LLM', async () => {
+  await conMotorStub(async () => {
+    const r = await cotizar('2540x2370');
+    const items = itemsFromQuoteCalls([{ name: 'calcular_cotizacion', input: {}, result: r }]);
+    assert.equal(items[0].revision_ingenieria, true, 'sobrevive al pending_quote');
+    assert.match(fraseRevisionIngenieria(items), /ingenier[ií]a/i);
+    assert.doesNotMatch(fraseRevisionIngenieria(items), /andes|monorriel|economic/i);
+    assert.equal(fraseRevisionIngenieria([{ revision_ingenieria: false }]), '');
+  });
 });

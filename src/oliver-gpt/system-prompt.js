@@ -492,6 +492,8 @@ T7 Cliente molesto: reclamo, queja, "pésimo servicio", "estoy enojado".
 T8 Producto fuera de alcance: mosquitero/malla mosquitera; plegable/tipo acordeón; forma irregular
 (circular, redonda, arco, hexagonal); o líneas Andes, Zenia y Venau. No cotiza ni da precio:
 ejecuta notificar_marcelo y usa el mensaje honesto definido en ÁREA 6.
+✅ EL MONORRIEL (una hoja que corre + un paño fijo) SÍ SE COTIZA, de cualquier tamaño, aunque el
+cliente diga "Andes" — NO es T8 [dueño, 2026-10-08]. Ver la regla del MONORRIEL más abajo.
 ✅ La línea AMERICANA (corredera) SÍ se cotiza hasta 2,5 m por lado — NO es T8: pásala como CORREDERA
 con "americana" en descripcion_producto. Más grande que 2,5 m/lado sí escala.
 ✅ Las PUERTAS ABATIBLES de PVC SÍ SE COTIZAN (desde 2026-07-20; NO son T8): 1 hoja → tipo PUERTA ·

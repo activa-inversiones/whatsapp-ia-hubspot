@@ -68,6 +68,7 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
         ambiente: t.input?.ambiente || '',
         termico: t.result?.termico || null,   // [thermal] Uw → PDF (camino determinista)
         referencial: !!t.result?.referencial, // [2026-07-07] fuera de estándar → escalación a Marcelo (revisión ingeniería)
+        revision_ingenieria: !!t.result?.revision_ingenieria, // [dueño, 2026-10-08] monorriel sobre medida → frase al cliente al entregar el PDF
       };
     })
     .filter(it => Number(it.unit_price) > 0);
@@ -506,4 +507,19 @@ export function stripAccionesFalsas(text) {
   const RX = /\[\s*(?:enlace|link|url|calculando|generando|preparando|procesando|adjunto|pdf|documento|descarga)[^\]\n]*\]/gi;
   const out = text.replace(RX, '');
   return out === text ? text : out.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * [dueño, 2026-10-08] La frase que el cliente TIENE que leer cuando su proyecto trae un monorriel
+ * sobre medida. Textual: *"que diga sutilmente que debe ser revisada con área de ingeniería de la
+ * empresa pero las cotice todas"*. Va en el mensaje que acompaña al PDF, que lo arma el sistema
+ * (no el LLM): asi no depende de que Oliver se acuerde (Codex, tridente 08-oct, P0).
+ * @param {Array<object>} items - los items del proyecto (pending_quote + los del turno).
+ * @returns {string} '' si ninguna ventana lo necesita.
+ */
+export function fraseRevisionIngenieria(items) {
+  return (items || []).some((it) => it && it.revision_ingenieria)
+    ? 'Por el tamaño de algunas ventanas, nuestra área de ingeniería las revisa antes de fabricar '
+      + 'para confirmar la medida final.'
+    : '';
 }

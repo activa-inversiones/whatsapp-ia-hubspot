@@ -1041,6 +1041,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         // se cotiza en la linea MAS ECONOMICA que lo tenga, y el cliente tiene que saberlo.
         ...notaDeLineaParaElLLM(it),
         referencial: it.referencial || false,
+        revision_ingenieria: it.revision_ingenieria || undefined,  // [dueño, 2026-10-08] viaja al pending_quote y al mensaje del PDF
         // 🔴 [2026-09-19] LA INSTRUCCION VA DONDE SE TOMA LA DECISION, NO 500 LINEAS ARRIBA.
         // Oliver recibia `referencial: true` a secas y lo leia como "esto hay que escalar":
         // en la propuesta 0485 saco la ventana N°13 (proyectante baño 575x375) del PDF con

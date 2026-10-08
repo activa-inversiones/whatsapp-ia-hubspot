@@ -160,7 +160,7 @@ import { notifyHighValue as realNotifyHighValue } from '../../services/highValue
 import { captionTermico, captionVientos } from './captionInforme.js'; // [2026-09-04] el cliente tiene que saber que le mandamos
 import { nombreConLetra, conCorrelativoUnaVez } from './informeLetra.js'; // [2026-09-04 · #651] dos informes distintos no se llaman igual · [2026-09-15] y el correlativo va UNA vez
 import { extractName, isLikelyName } from '../../services/oliverName.js'; // [2026-09-03] el nombre que llega TARDE, para reemitir la propuesta
-import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
+import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, fraseRevisionIngenieria, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
 // [2026-08-31] LAS TRES PROPUESTAS A/B/C POR COLOR — compartidas con channel-agent.js (IG/FB)
 // para que los dos canales roten igual, usen las MISMAS letras del folio y le digan al
 // cliente lo mismo. `LETRAS_ALTERNATIVA` es ademas la fuente unica del sufijo ISO: antes el
@@ -5556,6 +5556,14 @@ Comuna: ${datos.comuna}`
     const _pdfCall = toolCalls.find((t) => t.name === 'generar_pdf_cotizacion' && t.result && t.result.message);
     if (_pdfCall) {
       reply = _pdfCall.result.message;                       // entrega exitosa O "dame un momentito" si el folio no salió
+      // [dueño, 2026-10-08] Monorriel sobre medida: la frase de ingenieria la pone el SISTEMA, no el LLM
+      // (este reemplazo de `reply` borraba la que hubiera escrito Oliver — Codex, tridente 08-oct).
+      if (_pdfCall.result.ok && _pdfCall.result.pdf_sent !== false) {
+        const _fraseIng = fraseRevisionIngenieria([...(newState.pending_quote?.items || []), ..._qItems]);
+        if (_fraseIng && !reply.includes(_fraseIng)) reply = `${reply}
+
+${_fraseIng}`;
+      }
       // [Ronda 2 2026-07-20] Primer turno CTWA que ya genera PDF: anteponer el saludo aprobado
       // del anuncio en vez de tragárselo. No viola el anti-re-saludo del [FIX 2026-06-19]:
       // _ctwaSaludoTurn solo existe con history VACÍO (primera interacción de un lead pagado).

@@ -963,6 +963,15 @@ export async function priceAllEngine(d, customer_id = "") {
       [item.product, item.descripcion].filter(Boolean).join(' '),
       { tipo: item.tipo, serie: item.serie }
     );
+    // 🔴 [dueño, 2026-10-08] "línea Andes" + forma de monorriel NO es fuera de alcance: el monorriel
+    // se cotiza siempre (ANDES MONORRIEL es lo calibrado). Codex lo reprodujo en el tridente: "línea
+    // ANDES monorriel, una corredera y un paño fijo" escalaba con cero llamadas al motor.
+    // Solo se perdona la LINEA (Zenia/Venau no son monorriel ANDES) y solo si la forma es monorriel.
+    const _txtAlcance = [item.product, item.descripcion, item.label, item.producto].filter(Boolean).join(' ');
+    if (fueraDeAlcance.fueraDeAlcance && fueraDeAlcance.categoria === 'linea_no_soportada'
+        && esMonorrielPorForma(_txtAlcance) && !/\b(?:zenia|venau)\b/i.test(_txtAlcance)) {
+      fueraDeAlcance.fueraDeAlcance = false;
+    }
     if (fueraDeAlcance.fueraDeAlcance) {
       item.price_warning = fueraDeAlcance.mensajeCliente;
       item.source = "activa_engine";
@@ -1190,8 +1199,10 @@ export async function priceAllEngine(d, customer_id = "") {
     // `descripcion_producto:"Andes"` a secas se colaba al motor como SLIDING — otra línea, producto
     // equivocado. Cuando se reabra con el campo estructurado, volver al criterio con contexto.
     const _txtAndes = `${item.descripcion || ""} | ${item.product || ""} | ${item.label || ""} | ${item.producto || ""} | ${d.texto_cliente || ""}`;
-    if (esLineaAndes(item) || esLineaAndesTexto(d.texto_cliente || "")
-        || (!ANDES_AUTO_COTIZA && mencionaAndes(_txtAndes))) {
+    // [dueño, 2026-10-08] el monorriel ya quedo ruteado arriba (ANDES MONORRIEL): esta rama es la del
+    // ANDES de 2 hojas, y si entrara lo escalaria con "el monorriel todavia no esta en el cotizador".
+    if (!_monorriel && (esLineaAndes(item) || esLineaAndesTexto(d.texto_cliente || "")
+        || (!ANDES_AUTO_COTIZA && mencionaAndes(_txtAndes)))) {
       // [Codex 3a vuelta] Se leen los MISMOS campos que esLineaAndes (incluido item.producto en
       // español): si la ruta se activó por "línea Andes 3 hojas" en item.producto, ese "3 hojas"
       // tiene que contarse aquí también, o cotiza 3 como 2 (subcobro real que cazó Codex).
