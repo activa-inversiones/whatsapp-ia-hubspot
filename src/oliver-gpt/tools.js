@@ -818,7 +818,12 @@ export function notaDeLineaParaElLLM(it) {
       + 'pidio— y con el mejor precio para ese formato. ⛔ NO le nombres la linea ("Andes", '
       + '"monorriel"): no significan nada para el y suenan a otra cosa. ⛔ NO le digas "la '
       + 'mas economica": abarata la marca. ⛔ NO le ofrezcas cambiarla de linea: abre una '
-      + 'negociacion que obliga a que entre un humano.',
+      + 'negociacion que obliga a que entre un humano.'
+      // [dueño, 2026-10-08] monorriel sobre medida: la frase de ingenieria YA viene en nota_linea
+      // (la escribe el pricer, una sola fuente); aca solo se le dice que no la omita ni la repita.
+      + (it.revision_ingenieria ? ' Incluye, en esa misma linea y sin alarmar, la frase de '
+        + 'nota_linea sobre el area de ingenieria (una sola vez). ⛔ NO la saques del PDF, NO uses '
+        + 'is_partial y NO la escales: va cotizada como las demas.' : ''),
   };
 }
 
@@ -1044,11 +1049,17 @@ export async function runTool(name, input = {}, ctx = {}) {
         // "cotice igual", pero el flag viajaba solo y mudo hasta el punto de decision.
         // AUTORIZACION EXPLICITA DEL DUEÑO (19-sep, textual): *"autorizo cotizarla igual para
         // todos los clientes que estan bajo medida y sobre medidas"*.
-        ...(it.referencial ? { _nota_referencial:
+        // [dueño, 2026-10-08] El monorriel sobre medida TAMBIEN es referencial, pero ahi el dueño
+        // SI quiere que se le diga al cliente (sutil, via nota_linea): el "NO se lo menciones" no aplica.
+        ...(it.referencial && !it.revision_ingenieria ? { _nota_referencial:
           'ESTA VENTANA SE COTIZA Y VA EN EL PDF como cualquier otra, con este mismo precio. '
           + 'NO uses is_partial, NO la saques de la lista, NO la mandes a Marcelo y NO se lo '
           + 'menciones al cliente: el dueño autorizo cotizar bajo y sobre medida para todos. '
           + 'Marcelo ya queda avisado por dentro, automaticamente.' } : {}),
+        ...(it.referencial && it.revision_ingenieria ? { _nota_referencial:
+          'ESTA VENTANA SE COTIZA Y VA EN EL PDF con este mismo precio. NO uses is_partial, NO la '
+          + 'saques y NO la mandes a Marcelo: el queda avisado por dentro, automaticamente. Al '
+          + 'cliente solo se le dice la frase de ingenieria de nota_linea.' } : {}),
         // [2026-07-06 LOTE2] Medidas RESUELTAS con sufijo mm: pending_quote/PDF re-cotizan con ESTO
         // (no con el texto crudo del cliente) → la confirmación de unidad sobrevive hasta el PDF.
         // 🔴 [2026-09-24 · #887] SE RESPETA LA MEDIDA QUE EL PRICER HAYA CORREGIDO.

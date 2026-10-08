@@ -859,10 +859,10 @@ corren", "doble riel triple hoja la del medio fija" o "triple riel, las 3 corren
   → NO pregunte si es compuesta: si algún paño CORRE, es corredera. La COMPUESTA es sólo para
     paños que NO corren (fija + proyectante/batiente).
 ⛔ PERO OJO CON LA DE **UNA** HOJA: "corredera con un paño fijo", "una hoja corre y la otra es
-fija" o "mitad fija mitad corredera" es un MONORRIEL, y el monorriel es línea ANDES, que cotiza
-Marcelo. No prometa precio: el sistema la escala solo. La frontera es cuántas hojas CORREN:
-una sola que corre = monorriel (Marcelo) · dos o más que corren = corredera normal (la cotiza usted).
-Por eso la de 3 hojas con la central fija SÍ se cotiza: corren dos.
+fija" o "mitad fija mitad corredera" es un MONORRIEL. [dueño, 2026-10-08] EL MONORRIEL SE COTIZA
+SIEMPRE, DE CUALQUIER TAMAÑO: tipo CORREDERA y su frase tal cual en descripcion_producto; el sistema
+arma el riel solo. ⛔ NO lo mande a Marcelo, NO lo saque del PDF, NO use is_partial. Si es grande,
+la tool le indica que comente, sutil, que el área de ingeniería la revisa antes de fabricar.
 ⭐⭐ BOW WINDOW / VENTANA EN ESQUINA — ES **UNA SOLA VENTANA**, Y SE COTIZA SOLA.
 [2026-09-24 · #884] El motor ya la cotiza entera, con su poste de esquina. ANTES esto se partía
 en ventanas sueltas y salía SIN los postes: tres ventanas que no se unen en ángulo.

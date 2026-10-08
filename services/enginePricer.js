@@ -1156,13 +1156,14 @@ export async function priceAllEngine(d, customer_id = "") {
       // Se usa el limite de fabricacion de corredera que el sistema YA tiene documentado
       // (FABRICATION_LIMITS.SLIDING.H98). NO se inventa un tope propio del ANDES monorriel:
       // ese dato es del dueño y todavia no lo tenemos (tablero #799).
+      // 🔴 [dueño, 2026-10-08] SE COTIZA IGUAL, SIN IMPORTAR EL TAMAÑO. Textual: *"cuando cliente
+      // cotice monorriel entregue la cotización independiente del tamaño... que diga sutilmente
+      // que debe ser revisada con área de ingeniería de la empresa pero las cotice todas"*.
+      // Caso real: propuesta CM-FR-004-2026-0611, 4 monorrieles fuera del PDF (V1 2540x2370 y
+      // V4 2350x2300 por este tope). El tope de Gemini sigue sirviendo, pero solo para MARCAR.
       const _limMono = FABRICATION_LIMITS.SLIDING.H98;
-      if (m.ancho_mm > _limMono.maxAncho || m.alto_mm > _limMono.maxAlto) {
-        item.price_warning = "Ese ventanal de una hoja corredera con paño fijo es mas grande que "
-          + "lo estandar; Marcelo lo revisa y te confirma el precio exacto.";
-        item.source = "activa_engine"; item.confidence = "manual"; item.fuera_de_alcance = true;
-        return { escalada: true };
-      }
+      const _sobreMedida = m.ancho_mm > _limMono.maxAncho || m.alto_mm > _limMono.maxAlto;
+      if (_sobreMedida) item.revision_ingenieria = true;
       serie = "ANDES";
       // ⚠️ [Gemini, compuerta] COMO SE LE DICE AL CLIENTE. La primera version decia "linea Andes
       // monorriel... la mas economica disponible... si la prefiere en otra linea se la ajusto", y
@@ -1177,7 +1178,9 @@ export async function priceAllEngine(d, customer_id = "") {
       // el conveniente. Eso se dice en su idioma —una hoja que corre y un paño fijo— sin nombrar
       // la linea, sin la palabra "economica" y sin abrir una negociacion.
       item.nota_linea = "Esta cotizada como corredera de una hoja con paño fijo, que es "
-        + "exactamente lo que pidio, con el mejor precio para ese formato.";
+        + "exactamente lo que pidio, con el mejor precio para ese formato."
+        + (_sobreMedida ? " Por su tamaño, nuestra área de ingeniería la revisa antes de "
+          + "fabricar para confirmar la medida final." : "");
     }
     // [2026-08-27] LINEA ANDES: sólo el envelope CALIBRADO contra Winart (doble riel · 2 hojas ·
     // hoja 66, ≥3,5 m², ≤2,5 m/lado). Fuera de eso (hoja 54 chica, monorriel, 3-4 hojas, grande)

@@ -333,16 +333,21 @@ test('🔒 pero "N hojas CON una fija" SI es monorriel: son 2 paños, no 3', () 
   ]) assert.equal(esMonorrielPorForma(t), true, t);
 });
 
-test('🔴 un monorriel MAS GRANDE que lo estandar escala, por peso de la hoja', async () => {
-  // [Gemini] *"una hoja movil de 2,0 x 2,4 m de termopanel pesa mas de 100 kg: los rodamientos y
-  // perfiles se deformaran"*. MEDIDO: una de 4000x2400 salia cotizada (referencial) como ANDES
-  // monorriel. Se usa el limite de fabricacion de corredera que el sistema YA tiene; el tope
-  // propio del ANDES monorriel es un dato del dueño que todavia falta (tablero #799).
+test('🔴 un monorriel MAS GRANDE que lo estandar SE COTIZA IGUAL, con aviso de ingenieria', async () => {
+  // ⚠️ ASERCION INVERTIDA A PROPOSITO — decision del dueño, 2026-10-08, textual: *"cuando cliente
+  // cotice monorriel entregue la cotización independiente del tamaño... que diga sutilmente que
+  // debe ser revisada con área de ingeniería de la empresa pero las cotice todas"*.
+  // Antes (Gemini, por peso de la hoja) escalaba; en CM-FR-004-2026-0611 eso dejo 4 ventanas
+  // fuera del PDF. El tope ahora solo MARCA (revision_ingenieria), no saca la ventana.
   await conMotorStub(async (enviados) => {
     const items = [{ measures: '4000x2400mm', product: 'CORREDERA', descripcion: 'una corredera y un paño fijo', qty: 1 }];
     await priceAllEngine({ comuna: 'Temuco', items });
-    assert.equal(items[0].fuera_de_alcance, true, 'un ventanal de 4x2,4 no se auto-cotiza como monorriel');
-    assert.equal(enviados.length, 0, 'ni siquiera se le pregunta al motor');
+    assert.ok(!items[0].fuera_de_alcance, 'no se escala: se cotiza');
+    assert.equal(enviados[0]?.serie, 'ANDES');
+    assert.equal(enviados[0]?.riel, 'MONORRIEL');
+    assert.equal(items[0].revision_ingenieria, true);
+    assert.match(items[0].nota_linea || '', /ingenier[ií]a/i, 'y al cliente se le dice, sutil');
+    assert.doesNotMatch(items[0].nota_linea || '', /andes|monorriel|economic/i);
   });
 });
 
@@ -353,5 +358,6 @@ test('🔒 y uno de medida normal se sigue cotizando solo', async () => {
     assert.ok(!items[0].fuera_de_alcance);
     assert.equal(enviados[0]?.serie, 'ANDES');
     assert.equal(enviados[0]?.riel, 'MONORRIEL');
+    assert.ok(!items[0].revision_ingenieria, 'la de medida normal no lleva aviso de ingenieria');
   });
 });
