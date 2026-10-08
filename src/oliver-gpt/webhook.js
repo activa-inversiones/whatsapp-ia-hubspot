@@ -160,7 +160,7 @@ import { notifyHighValue as realNotifyHighValue } from '../../services/highValue
 import { captionTermico, captionVientos } from './captionInforme.js'; // [2026-09-04] el cliente tiene que saber que le mandamos
 import { nombreConLetra, conCorrelativoUnaVez } from './informeLetra.js'; // [2026-09-04 · #651] dos informes distintos no se llaman igual · [2026-09-15] y el correlativo va UNA vez
 import { extractName, isLikelyName } from '../../services/oliverName.js'; // [2026-09-03] el nombre que llega TARDE, para reemitir la propuesta
-import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, fraseRevisionIngenieria, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
+import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, fraseRevisionIngenieria, itemsPropuestaRecomendada, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
 // [2026-08-31] LAS TRES PROPUESTAS A/B/C POR COLOR — compartidas con channel-agent.js (IG/FB)
 // para que los dos canales roten igual, usen las MISMAS letras del folio y le digan al
 // cliente lo mismo. `LETRAS_ALTERNATIVA` es ademas la fuente unica del sufijo ISO: antes el
@@ -879,6 +879,28 @@ export function turnoVigente(telefono, miTurno) {
   const ultimo = TURNO_VIGENTE.get(k);
   if (!ultimo) return true;
   return ultimo === miTurno;
+}
+
+/**
+ * [dueño, 2026-10-08] La 2a propuesta del monorriel alto: la misma lista, con cada monorriel que se
+ * paso de alto cambiado por su alternativa C (corredera doble riel de 2100 + paño fijo arriba).
+ * La arma el SERVIDOR con los precios que ya devolvio el motor: el LLM no copia nada (Thermos/Codex
+ * 08-oct: si la copiaba el LLM, el precio de una se podia cruzar con el de la otra).
+ * @returns {Promise<string>} la linea para el cliente, o '' si no correspondia o no salio.
+ */
+async function emitirPropuestaRecomendada(toolCtx, items, st, from) {
+  const rec = itemsPropuestaRecomendada(items);
+  if (!rec) return '';
+  try {
+    const r = await toolCtx.generarPdf({
+      name: st.name || '', phone: st.telefono || from, comuna: st.comuna || '',
+      items: rec.items, grand_total: rec.grand_total,
+    }, { recomendada: true });
+    if (!r || !r.ok || r.pdf_sent === false) return '';
+    return `Le envié también la Propuesta${r.quote_number ? ` N° ${r.quote_number}` : ''}, la que recomienda `
+      + 'nuestra área de ingeniería para las ventanas más altas: corredera de dos hojas con un paño fijo '
+      + `arriba. ${rec.nota}`;
+  } catch { return ''; }
 }
 
 /** Solo para los tests: deja la numeracion como recien arrancado el proceso. */
@@ -2819,7 +2841,9 @@ Comuna: ${datos.comuna}`
       //
       // ANTI-CROSS-INJECT: solo se envía al canal del click_id capturado en F3b.
       // Los unit_price de input.items DEBEN venir de calcular_cotizacion (nunca del LLM).
-      generarPdf: (input = {}) =>
+      // [dueño, 2026-10-08] `opciones` NO viene del LLM (la tool no lo declara y runTool pasa solo `input`):
+      // lo usa el servidor para la 2a propuesta del monorriel alto (opciones.recomendada).
+      generarPdf: (input = {}, opciones = {}) =>
         safe('generarPdf', async () => {
           // ── GUARDIA ANTI-ALUCINACIÓN DE PRECIOS (regla del dueño: marcar/pedir, NUNCA rellenar) ──
           // Si algún ítem no trae unit_price>0 (que DEBE venir de calcular_cotizacion), NO se genera
@@ -3012,7 +3036,8 @@ Comuna: ${datos.comuna}`
           // sobreviviria el turno de todos modos — y no tiene por que: solo tiene que llegar
           // hasta el `state.last_quote` del final de esta misma llamada.
           let _letrasTerna = 0;
-          if (_gate.coloresPropuestos && _gate.coloresPropuestos.length > 1) {
+          // La recomendada sale en el MISMO color que la original: no abre otra terna.
+          if (_gate.coloresPropuestos && _gate.coloresPropuestos.length > 1 && !opciones.recomendada) {
             _coloresTerna = _gate.coloresPropuestos.slice();
             const _colorA = _coloresTerna[0];
             (input.items || []).forEach((it) => { it.color = _colorA; });
@@ -3608,7 +3633,8 @@ Comuna: ${datos.comuna}`
             // [2026-10-06] Leyenda SOLO si cambio el PROYECTO (ventanas), no solo el color: una alternativa de color
             // (caso Paula, negra y blanca) es VALIDA junto a la otra y no la "reemplaza" (Thermos x2). Sin firma previa
             // (propuestas de antes del deploy) no se pone: no se adivina.
-            reemplazaA = reemplazoDe({ motivo: _dec.motivo, lastQuote: _lq, sigProyecto: _sigProyecto });
+            // La recomendada NO reemplaza a la original: son dos opciones validas a la vez (dueño 08-oct).
+            reemplazaA = opciones.recomendada ? null : reemplazoDe({ motivo: _dec.motivo, lastQuote: _lq, sigProyecto: _sigProyecto });
             log(_dec.motivo === 'sin_letras' ? 'warn' : 'info', 'generarPdf.folio',
               `${from}: ${quoteNumber} (${_dec.motivo})`);
           }
@@ -5413,6 +5439,12 @@ Comuna: ${datos.comuna}`
 
 ${_fraseIngDet}`;
       }
+      if (pdfRes && pdfRes.ok && pdfRes.pdf_sent !== false) {
+        const _txtRecDet = await emitirPropuestaRecomendada(toolCtx, pq.items, state, from);
+        if (_txtRecDet) replyMsg = `${replyMsg}
+
+${_txtRecDet}`;
+      }
       await safe('pdf.det.send', () => sendWhatsAppText(from, replyMsg));
       await safe('pdf.det.persistIn', () => bridge.pushConversationEvent({
         channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'inbound', actor_type: 'customer',
@@ -5572,6 +5604,14 @@ ${_fraseIngDet}`;
         if (_fraseIng && !reply.includes(_fraseIng)) reply = `${reply}
 
 ${_fraseIng}`;
+      }
+      // [dueño, 2026-10-08] 2a propuesta (opcion C) para los monorrieles que se pasan de alto.
+      if (_pdfCall.result.ok && _pdfCall.result.pdf_sent !== false) {
+        const _txtRec = await emitirPropuestaRecomendada(toolCtx,
+          [...(newState.pending_quote?.items || []), ..._qItems], { ...state, ...newState }, from);
+        if (_txtRec) reply = `${reply}
+
+${_txtRec}`;
       }
       // [Ronda 2 2026-07-20] Primer turno CTWA que ya genera PDF: anteponer el saludo aprobado
       // del anuncio en vez de tragárselo. No viola el anti-re-saludo del [FIX 2026-06-19]:

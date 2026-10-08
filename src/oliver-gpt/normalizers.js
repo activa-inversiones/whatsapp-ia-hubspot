@@ -675,8 +675,12 @@ export function anticipoDeLoCotizado(items) {
     // regla vieja del bot ya decia 'NUNCA "S60"' y la doctrina del dueno pide siglas
     // explicadas o ninguna. Al cliente le importa "Proyectante" o "Corredera", que es
     // justo lo que el dueno pidio informar; la serie completa vive en el PDF.
-    const tipo = String(it?.producto_label || it?.product || '').trim()
+    const _tipo = String(it?.producto_label || it?.product || '').trim()
       .replace(/\b[SMH]\d{2,3}\b/g, '').replace(/\s{2,}/g, ' ').trim();
+    // [2026-10-08] Tampoco la LINEA: "Corredera ANDES 66 Monorriel" no le dice nada al cliente (Gemini
+    // 19-sep: "Andes" es una comuna y "monorriel" un tren). Se dice lo que es, en su idioma.
+    const tipo = /monorriel/i.test(_tipo) ? 'Corredera de una hoja con paño fijo'
+      : _tipo.replace(/\bANDES(?:\s+\d{2})?\b/gi, '').replace(/\s{2,}/g, ' ').trim();
     const med = String(it?.measures_original || it?.measures || '').trim();
     // "1000x1200" -> "1000 de ancho × 1200 de alto": la convencion de la casa es
     // ancho×alto, y NOMBRARLA es lo que permite que el cliente cace una medida al reves.

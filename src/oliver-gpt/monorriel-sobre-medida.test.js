@@ -36,7 +36,10 @@ test('🔴 el monorriel MAS GRANDE que lo estandar se cotiza (V1 real: 2540x2370
     const r = await cotizar('2540x2370');
     assert.equal(r.ok, true, 'se cotiza, no se escala: ' + JSON.stringify(r).slice(0, 300));
     assert.ok(r.unit_price > 0);
-    assert.equal(enviados.at(-1)?.riel, 'MONORRIEL', 'se cotiza lo que pidio el cliente');
+    assert.ok(enviados.some((e) => e.riel === 'MONORRIEL' && e.alto_mm === 2370), 'se cotiza lo que pidio el cliente');
+    // [dueño, 2026-10-08] opcion C: se paso de ALTO -> trae la alternativa corredera 2100 + fijo arriba.
+    assert.deepEqual(r.alternativa_c?.piezas?.map((x) => x.measures), ['2540x2100', '2540x270']);
+    assert.match(r.alternativa_c?.nota || '', /visita t[eé]cnica/);
     assert.match(r.nota_linea || '', /ingenier[ií]a/i, 'la frase de ingenieria viaja al LLM');
     assert.doesNotMatch(r.nota_linea || '', /andes|monorriel|economic/i);
     assert.match(r._decir_al_cliente || '', /ingenier/i, 'y se le pide decirla');
@@ -71,8 +74,8 @@ test('🔴 aunque el cliente diga "linea ANDES", el monorriel se cotiza (Codex, 
       descripcion_producto: 'línea ANDES monorriel, una corredera y un paño fijo',
     }, { textoCliente: 'línea ANDES monorriel, una corredera y un paño fijo 4000x2400' });
     assert.equal(r.ok, true, 'antes: producto_fuera_de_alcance:linea_no_soportada, cero llamadas al motor');
-    assert.equal(enviados.at(-1)?.serie, 'ANDES');
-    assert.equal(enviados.at(-1)?.riel, 'MONORRIEL');
+    const mono = enviados.find((e) => e.riel === 'MONORRIEL');
+    assert.equal(mono?.serie, 'ANDES');
   });
 });
 
@@ -119,5 +122,13 @@ test('🔴 por AREA tambien: "linea ANDES monorriel" se cotiza y Zenia no (Codex
       descripcion_producto: 'línea Zenia, una corredera y un paño fijo' }, {});
     assert.notEqual(z.ok, true, 'Zenia sigue fuera');
     assert.ok(enviados.every((e) => e.serie !== 'ZENIA'));
+  });
+});
+
+test('🔒 la alternativa C es SOLO para los que se pasan de ALTO (ancho de mas no se arregla bajando la hoja)', async () => {
+  await conMotorStub(async () => {
+    const r = await cotizar('3200x2000');
+    assert.equal(r.ok, true);
+    assert.equal(r.alternativa_c, undefined);
   });
 });

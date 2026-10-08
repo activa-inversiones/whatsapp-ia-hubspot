@@ -872,6 +872,51 @@ export function orientacionDeclarada(texto) {
   return null;
 }
 
+/** [dueño, 2026-10-08] Altura de la corredera en la alternativa C (textual: "el corte para la C va a 2100 de alto"). */
+export const CORTE_MONORRIEL_ALTO_MM = 2100;
+/** [dueño, 2026-10-08] Opcion C del perfil de union: no se cobra, se avisa. */
+export const NOTA_UNION_ALTERNATIVA_C = "Unión entre la corredera y el paño fijo superior a confirmar en la visita técnica.";
+
+/**
+ * [dueño, 2026-10-08] Alternativa C de un monorriel que se pasa de alto: corredera doble riel de
+ * su ancho x CORTE_MONORRIEL_ALTO_MM + paño fijo arriba con el resto del alto. El motor no tiene
+ * una compuesta con corredera (los paños de COMPUESTA son FIJA/PROYECTANTE/BATIENTE/OSCILO), asi
+ * que van como DOS piezas; la union no se cobra (opcion C del dueño) y se avisa con la nota.
+ * @returns {Promise<{piezas:object[], nota:string}|null>} null si alguna pieza no se pudo cotizar.
+ */
+function fueraS60(x) {
+  if (x.product !== "FIJA") return false;
+  const [a, h] = String(x.measures || "").match(/\d+/g)?.map(Number) || [];
+  const lim = FABRICATION_LIMITS.S60.ventana;
+  return a > lim.maxAncho || h > lim.maxAlto || a < lim.minAncho || h < lim.minAlto;
+}
+
+async function alternativaC({ ancho_mm, alto_mm }, original, d) {
+  const altoFijo = alto_mm - CORTE_MONORRIEL_ALTO_MM;
+  if (!(altoFijo > 0)) return null;
+  const base = { qty: original.qty, color: original.color, ambiente: original.ambiente };
+  const sub = {
+    comuna: d.comuna, default_color: d.default_color, texto_cliente: "",
+    items: [
+      { ...base, measures: `${ancho_mm}x${CORTE_MONORRIEL_ALTO_MM}mm`, product: "CORREDERA",
+        descripcion: "corredera de 2 hojas doble riel", _sinMonorriel: true },
+      { ...base, measures: `${ancho_mm}x${altoFijo}mm`, product: "FIJA", descripcion: "paño fijo superior" },
+    ],
+  };
+  const r = await priceAllEngine(sub);
+  if (!r.ok || !sub.items.every((x) => Number(x.unit_price) > 0)) return null;
+  return {
+    piezas: sub.items.map((x) => ({
+      producto_label: x.producto_label, measures: x.measures_original || `${x.measures}`.replace(/mm$/i, ""),
+      unit_price: x.unit_price, qty: x.qty, glass_label: x.glass_label, color: x.color,
+      // El fijo superior sale casi siempre fuera del S60 (ancho > 1930 o alto < 400): se marca para que
+      // el aviso "REVISION DE INGENIERIA" le llegue a Marcelo igual que con el monorriel.
+      referencial: !!x.referencial || fueraS60(x),
+    })),
+    nota: NOTA_UNION_ALTERNATIVA_C,
+  };
+}
+
 /**
  * Los pares ancho|alto que el cliente ESCRIBIO en su texto, normalizados, para resolver el
  * swap alto/ancho POR PAR (y no con un volteo global que revierte lo ya corregido).
@@ -1144,7 +1189,9 @@ export async function priceAllEngine(d, customer_id = "") {
     // monorriel y $397.385 que salia antes como SLIDING de 2 hojas). AMERICANA llega hasta
     // 2,5 m por lado; pasado eso la unica que cotiza el monorriel es ANDES (verificado en vivo:
     // 3000x2200 -> $805.640, "Corredera ANDES 66 Monorriel").
-    if (tipo === "CORREDERA" && serie !== "AMERICANA" && esMonorrielPorForma(
+    // `_sinMonorriel`: lo pone SOLO el propio pricer en la pieza corredera de la alternativa C (abajo):
+    // es una doble riel por definicion y no puede volver a rutearse a monorriel.
+    if (tipo === "CORREDERA" && serie !== "AMERICANA" && !item._sinMonorriel && esMonorrielPorForma(
       `${item.descripcion || ""} ${item.product || ""} ${item.label || ""} ${item.producto || ""}`)) {
       _monorriel = true;
       // ⚠️ SE ENRUTA A ANDES Y NO A LA AMERICANA, AUNQUE LA AMERICANA SEA MAS BARATA.
@@ -1174,6 +1221,9 @@ export async function priceAllEngine(d, customer_id = "") {
       const _limMono = FABRICATION_LIMITS.SLIDING.H98;
       const _sobreMedida = m.ancho_mm > _limMono.maxAncho || m.alto_mm > _limMono.maxAlto;
       if (_sobreMedida) item.revision_ingenieria = true;
+      // [dueño, 2026-10-08] Opcion C: si se pasa de ALTO, se ofrece ademas corredera doble riel de
+      // CORTE_MONORRIEL_ALTO_MM + paño fijo arriba (se cotiza al final, ver alternativaC).
+      if (m.alto_mm > _limMono.maxAlto) item._pideAlternativaC = { ancho_mm: m.ancho_mm, alto_mm: m.alto_mm };
       serie = "ANDES";
       // ⚠️ [Gemini, compuerta] COMO SE LE DICE AL CLIENTE. La primera version decia "linea Andes
       // monorriel... la mas economica disponible... si la prefiere en otra linea se la ajusto", y
@@ -1625,6 +1675,18 @@ export async function priceAllEngine(d, customer_id = "") {
   }
 
   d.grand_total = grandTotal || null;
+
+  // [dueño, 2026-10-08] La alternativa C de cada monorriel que se paso de alto. NO suma al total:
+  // es OTRA propuesta, que arma el webhook aparte. Va despues de cotizar todo, en serie y acotada.
+  for (const it of d.items) {
+    if (!it || !it._pideAlternativaC) continue;
+    const pide = it._pideAlternativaC;
+    delete it._pideAlternativaC;
+    if (Number(it.unit_price) > 0) {
+      try { const alt = await alternativaC(pide, it, d); if (alt) it.alternativa_c = alt; }
+      catch (e) { console.error("[enginePricer] alternativaC:", e?.message || e); }
+    }
+  }
 
   if (escaladas > 0) {
     const fueraDeAlcance = results.find((res) => res?.fueraDeAlcance)?.fueraDeAlcance;

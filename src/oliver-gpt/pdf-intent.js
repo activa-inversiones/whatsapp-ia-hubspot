@@ -68,7 +68,8 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
         ambiente: t.input?.ambiente || '',
         termico: t.result?.termico || null,   // [thermal] Uw → PDF (camino determinista)
         referencial: !!t.result?.referencial, // [2026-07-07] fuera de estándar → escalación a Marcelo (revisión ingeniería)
-        revision_ingenieria: !!t.result?.revision_ingenieria, // [dueño, 2026-10-08] monorriel sobre medida → frase al cliente al entregar el PDF
+        revision_ingenieria: !!t.result?.revision_ingenieria,
+        alternativa_c: t.result?.alternativa_c || undefined, // [dueño, 2026-10-08] opcion C: corredera 2100 + fijo arriba // [dueño, 2026-10-08] monorriel sobre medida → frase al cliente al entregar el PDF
       };
     })
     .filter(it => Number(it.unit_price) > 0);
@@ -522,4 +523,38 @@ export function fraseRevisionIngenieria(items) {
     ? 'Por el tamaño de algunas ventanas, nuestra área de ingeniería las revisa antes de fabricar '
       + 'para confirmar la medida final.'
     : '';
+}
+
+/**
+ * [dueño, 2026-10-08] Los items de la 2a propuesta: cada ventana con `alternativa_c` se reemplaza por
+ * sus piezas (corredera doble riel + paño fijo arriba); el resto va igual. Dedup por producto+medidas+color
+ * (mismo criterio que el pending_quote). null si ninguna ventana trae alternativa.
+ * @param {Array<object>} items
+ * @returns {{items:object[], grand_total:number, nota:string}|null}
+ */
+export function itemsPropuestaRecomendada(items) {
+  const vistos = new Set();
+  const unicos = (items || []).filter((it) => {
+    if (!it) return false;
+    const k = `${it.product || it.producto_label}|${it.measures}|${it.color}`;
+    if (vistos.has(k)) return false;
+    vistos.add(k); return true;
+  });
+  const conAlt = unicos.filter((it) => it.alternativa_c?.piezas?.length);
+  if (!conAlt.length) return null;
+  const out = [];
+  for (const it of unicos) {
+    if (!it.alternativa_c?.piezas?.length) { out.push(it); continue; }
+    for (const p of it.alternativa_c.piezas) {
+      // ancho_mm/alto_mm NUMERICOS, como el pending_quote: sin ellos el PDF re-interpreta "2540x270" con la
+      // heuristica de unidades/orientacion y lo imprime 2700x2540 (lo cazo el test del webhook, 08-oct).
+      const [pa, ph] = String(p.measures || '').match(/\d+/g)?.map(Number) || [];
+      out.push({ product: p.producto_label, producto_label: p.producto_label, measures: p.measures, ancho_mm: pa, alto_mm: ph,
+        color: p.color || it.color || '', qty: Number(p.qty) || Number(it.qty) || 1, unit_price: Number(p.unit_price) || 0,
+        glass_label: p.glass_label || it.glass_label, ambiente: it.ambiente || '', pos: it.pos, referencial: !!p.referencial });
+    }
+  }
+  if (out.some((x) => !(Number(x.unit_price) > 0))) return null;
+  return { items: out, grand_total: out.reduce((a, x) => a + x.unit_price * (Number(x.qty) || 1), 0),
+    nota: conAlt[0].alternativa_c.nota || '' };
 }
