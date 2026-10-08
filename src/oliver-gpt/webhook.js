@@ -148,7 +148,7 @@ import {
   sendWaDocument as realSendWaDocument,
 } from '../sales-agent/whatsapp-adapter.js';
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
-import { priceAllEngine, detectHojas } from '../../services/enginePricer.js'; // [2026-06-24] blindaje label↔precio en generarPdf
+import { priceAllEngine, detectHojas, cotizarAlternativaC } from '../../services/enginePricer.js'; // [2026-06-24] blindaje label↔precio en generarPdf
 import { saveMedia, notifyQuoteSent } from '../../mediaStore.js'; // [#5] media entrante + aviso de cotizacion enviada
 import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal, attachInboundToDeal } from '../../services/zohoCommercial.js';
 import {
@@ -160,7 +160,7 @@ import { notifyHighValue as realNotifyHighValue } from '../../services/highValue
 import { captionTermico, captionVientos } from './captionInforme.js'; // [2026-09-04] el cliente tiene que saber que le mandamos
 import { nombreConLetra, conCorrelativoUnaVez } from './informeLetra.js'; // [2026-09-04 · #651] dos informes distintos no se llaman igual · [2026-09-15] y el correlativo va UNA vez
 import { extractName, isLikelyName } from '../../services/oliverName.js'; // [2026-09-03] el nombre que llega TARDE, para reemitir la propuesta
-import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, fraseRevisionIngenieria, itemsPropuestaRecomendada, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
+import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, fraseRevisionIngenieria, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
 // [2026-08-31] LAS TRES PROPUESTAS A/B/C POR COLOR — compartidas con channel-agent.js (IG/FB)
 // para que los dos canales roten igual, usen las MISMAS letras del folio y le digan al
 // cliente lo mismo. `LETRAS_ALTERNATIVA` es ademas la fuente unica del sufijo ISO: antes el
@@ -879,28 +879,6 @@ export function turnoVigente(telefono, miTurno) {
   const ultimo = TURNO_VIGENTE.get(k);
   if (!ultimo) return true;
   return ultimo === miTurno;
-}
-
-/**
- * [dueño, 2026-10-08] La 2a propuesta del monorriel alto: la misma lista, con cada monorriel que se
- * paso de alto cambiado por su alternativa C (corredera doble riel de 2100 + paño fijo arriba).
- * La arma el SERVIDOR con los precios que ya devolvio el motor: el LLM no copia nada (Thermos/Codex
- * 08-oct: si la copiaba el LLM, el precio de una se podia cruzar con el de la otra).
- * @returns {Promise<string>} la linea para el cliente, o '' si no correspondia o no salio.
- */
-async function emitirPropuestaRecomendada(toolCtx, items, st, from) {
-  const rec = itemsPropuestaRecomendada(items);
-  if (!rec) return '';
-  try {
-    const r = await toolCtx.generarPdf({
-      name: st.name || '', phone: st.telefono || from, comuna: st.comuna || '',
-      items: rec.items, grand_total: rec.grand_total,
-    }, { recomendada: true });
-    if (!r || !r.ok || r.pdf_sent === false) return '';
-    return `Le envié también la Propuesta${r.quote_number ? ` N° ${r.quote_number}` : ''}, la que recomienda `
-      + 'nuestra área de ingeniería para las ventanas más altas: corredera de dos hojas con un paño fijo '
-      + `arriba. ${rec.nota}`;
-  } catch { return ''; }
 }
 
 /** Solo para los tests: deja la numeracion como recien arrancado el proceso. */
@@ -2841,9 +2819,7 @@ Comuna: ${datos.comuna}`
       //
       // ANTI-CROSS-INJECT: solo se envía al canal del click_id capturado en F3b.
       // Los unit_price de input.items DEBEN venir de calcular_cotizacion (nunca del LLM).
-      // [dueño, 2026-10-08] `opciones` NO viene del LLM (la tool no lo declara y runTool pasa solo `input`):
-      // lo usa el servidor para la 2a propuesta del monorriel alto (opciones.recomendada).
-      generarPdf: (input = {}, opciones = {}) =>
+      generarPdf: (input = {}) =>
         safe('generarPdf', async () => {
           // ── GUARDIA ANTI-ALUCINACIÓN DE PRECIOS (regla del dueño: marcar/pedir, NUNCA rellenar) ──
           // Si algún ítem no trae unit_price>0 (que DEBE venir de calcular_cotizacion), NO se genera
@@ -3021,6 +2997,7 @@ Comuna: ${datos.comuna}`
           // Sale la propuesta en Blanco, pero SE LO DECIMOS. Lo que no vuelve a pasar es
           // entregar blanco sin avisar: eso es lo que costaba recotizaciones y disgustos.
           let _avisoColor = '';
+          let _avisoRecomendada = '';   // [dueño, 2026-10-08] 2a propuesta del monorriel alto
           // 🎨 [2026-08-31 · DECISION DEL DUEÑO] TRES PROPUESTAS, UNA POR COLOR.
           // Textual: *"cuando cliente no entrega color entreguemosle blanco, nogal y negro"*.
           // La OPCION A viaja por el camino de siempre (este mismo `generarPdf`, con todo lo
@@ -3036,8 +3013,7 @@ Comuna: ${datos.comuna}`
           // sobreviviria el turno de todos modos — y no tiene por que: solo tiene que llegar
           // hasta el `state.last_quote` del final de esta misma llamada.
           let _letrasTerna = 0;
-          // La recomendada sale en el MISMO color que la original: no abre otra terna.
-          if (_gate.coloresPropuestos && _gate.coloresPropuestos.length > 1 && !opciones.recomendada) {
+          if (_gate.coloresPropuestos && _gate.coloresPropuestos.length > 1) {
             _coloresTerna = _gate.coloresPropuestos.slice();
             const _colorA = _coloresTerna[0];
             (input.items || []).forEach((it) => { it.color = _colorA; });
@@ -3633,8 +3609,7 @@ Comuna: ${datos.comuna}`
             // [2026-10-06] Leyenda SOLO si cambio el PROYECTO (ventanas), no solo el color: una alternativa de color
             // (caso Paula, negra y blanca) es VALIDA junto a la otra y no la "reemplaza" (Thermos x2). Sin firma previa
             // (propuestas de antes del deploy) no se pone: no se adivina.
-            // La recomendada NO reemplaza a la original: son dos opciones validas a la vez (dueño 08-oct).
-            reemplazaA = opciones.recomendada ? null : reemplazoDe({ motivo: _dec.motivo, lastQuote: _lq, sigProyecto: _sigProyecto });
+            reemplazaA = reemplazoDe({ motivo: _dec.motivo, lastQuote: _lq, sigProyecto: _sigProyecto });
             log(_dec.motivo === 'sin_letras' ? 'warn' : 'info', 'generarPdf.folio',
               `${from}: ${quoteNumber} (${_dec.motivo})`);
           }
@@ -4907,6 +4882,96 @@ Comuna: ${datos.comuna}`
               `${from}: ${_opcionesEntregadas.length}/${_folios.length} propuestas entregadas (${_opcionesEntregadas.map((o) => `${o.letra}=${o.color}`).join(', ') || 'ninguna'})`);
           }
 
+          // 🔴 [dueño, 2026-10-08] LA 2a PROPUESTA DEL MONORRIEL ALTO (opcion C). Textual: *"se entregan 2
+          // cotizaciones una con el original del cliente y una otra con las correderas doble riel"* +
+          // *"el corte para la C va a 2100 de alto"* + *"C, unión a confirmar en visita técnica"*.
+          // Se arma ACA, dentro de la emision de la original y con SUS MISMAS ventanas (`input.items`,
+          // ya con los precios que dejo la guardia), igual que las opciones B/C de la terna: misma via
+          // aislada, sin repetir nada de lo que cuelga de la original. Thermos 08-oct lo mostro: pasarla
+          // por `generarPdf` entero duplicaba la conversion a Meta/Google (otro 'sent' con otro monto),
+          // Zoho, video, informes, y le pisaba `last_quote` a la original.
+          //  · status 'alternativa' ⇒ NO dispara conversion (fireConversion solo mapea sent/...).
+          //  · solo con la original ENTREGADA y sin terna de colores (un color, una recomendada).
+          //  · una vez por emision de la original: otro turno sin PDF no la re-dispara.
+          if (docSent && !_coloresTerna) {
+            try {
+              const _altos = await Promise.all((input.items || []).map(async (it) => {
+                if (!/monorriel/i.test(String(it.producto_label || it.product || ''))) return null;
+                const [a, h] = (_measuresForEngine(it).match(/\d+/g) || []).map(Number);
+                return cotizarAlternativaC({ ancho_mm: a, alto_mm: h, qty: Number(it.qty) || 1,
+                  color: it.color || '', ambiente: it.ambiente || '', comuna: input.comuna || state.comuna || '' });
+              }));
+              if (_altos.some(Boolean)) {
+                const _folRec = foliosDeOpciones(quoteNumber, 2, Number((state.last_quote || {}).alternativas) || 0)[1];
+                if (!_folRec) {
+                  log('warn', 'generarPdf.recomendada', `${from}: sin letra libre sobre ${quoteNumber}; no sale la recomendada`);
+                } else {
+                  const _itemsRec = [];
+                  (input.items || []).forEach((it, k) => {
+                    const _alt = _altos[k];
+                    if (!_alt) {
+                      _itemsRec.push({ product: it.producto_label || it.product || 'Ventana',
+                        producto_label: it.producto_label || it.product || 'Ventana',
+                        measures: it.measures || '', ancho_mm: it.ancho_mm, alto_mm: it.alto_mm,
+                        color: it.color || '', qty: Number(it.qty) || 1, unit_price: Number(it.unit_price) || 0,
+                        glass_label: it.glass_label || VIDRIO_RESPALDO, ambiente: it.ambiente || '', termico: it.termico || null,
+                        compuesta: it.compuesta || undefined, esquina: it.esquina || undefined, hoja_mm: Number(it.hoja_mm) || undefined,
+                        pos: it.pos ?? undefined, corredera: it.corredera || undefined, referencial: !!it.referencial });
+                      return;
+                    }
+                    for (const p of _alt.piezas) {
+                      _itemsRec.push({ product: p.producto_label, producto_label: p.producto_label, measures: p.measures,
+                        ancho_mm: p.ancho_mm, alto_mm: p.alto_mm, color: p.color || it.color || '', qty: Number(p.qty) || 1,
+                        unit_price: Number(p.unit_price) || 0, glass_label: p.glass_label || VIDRIO_RESPALDO,
+                        ambiente: it.ambiente || '', pos: it.pos ?? undefined, referencial: !!p.referencial });
+                    }
+                  });
+                  const _numRec = _folRec.numero;
+                  const _pdfRec = { ...pdfData, reemplaza_a: undefined, quote_num: _numRec, items: _itemsRec };
+                  const _totalRec = _itemsRec.reduce((acc, x) => acc + (Number(x.unit_price) || 0) * (Number(x.qty) || 1), 0);
+                  const _bufRec = await generatePdf(_pdfRec, _numRec);
+                  const _fileRec = `${_numRec}.pdf`;
+                  let _mediaRec = null;
+                  let _sentRec = false;
+                  try {
+                    _mediaRec = await uploadWaDocument(_bufRec, _fileRec);
+                    const _resRec = await sendWaDocument(from, _mediaRec, _fileRec,
+                      `Propuesta Técnica Económica N° ${_numRec} · Recomendada por ingeniería · Activa Inversiones`);
+                    _sentRec = !!(_resRec && _resRec.ok);
+                  } catch (e) { log('error', 'generarPdf.recomendada.envio', e?.message || e); }
+                  // La letra queda CONSUMIDA aunque el envio falle (misma regla que la terna).
+                  _letrasTerna = Math.max(_letrasTerna, letrasReservadas([{ numero: _numRec }]));
+                  safe('generarPdf.recomendada.mirror', () => bridge.pushConversationEvent({
+                    channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound',
+                    actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
+                    body: _sentRec ? `📄 Propuesta ${_fileRec} (recomendada por ingeniería) enviada al cliente`
+                      : `⚠️ Propuesta ${_fileRec} (recomendada por ingeniería) NO se pudo entregar`,
+                    metadata: { source: 'oliver_gpt_pdf_recomendada', quote_number: _numRec, filename: _fileRec,
+                                media_id: _mediaRec, pdf_sent: _sentRec, base: quoteNumber },
+                  }));
+                  await safe('generarPdf.recomendada.registro', () => bridge.pushQuoteEvent(payloadQuote(turno, {
+                    phone: clientPhone, channel: 'whatsapp', customer_name: clientName, amount_total: _totalRec,
+                    currency: 'CLP', status: 'alternativa', quote_number: _numRec, receptor: receptorDoc || null,
+                    variante: { motivo: 'monorriel_alto_recomendada', base: quoteNumber, pdf_sent: _sentRec },
+                    items: _itemsRec.map((x) => ({ producto: x.producto_label || null, medidas: x.measures || null,
+                      cantidad: Number(x.qty) || 1, unitario: Number(x.unit_price) || null, color: x.color || null,
+                      vidrio: x.glass_label || null, referencial: !!x.referencial })),
+                  })));
+                  if (_sentRec) {
+                    _avisoRecomendada = `\n\nLe envié también la Propuesta N° ${_numRec}, la que recomienda nuestra `
+                      + 'área de ingeniería para las ventanas más altas: corredera de dos hojas con un paño fijo '
+                      + `arriba. ${_altos.find(Boolean).nota}`;
+                  } else {
+                    log('error', 'generarPdf.recomendada', `${from}: ${_numRec} NO se pudo entregar`);
+                  }
+                }
+              }
+            } catch (e) {
+              // No frena a la original (ya entregada), pero NO en silencio (Thermos calidad #4).
+              log('error', 'generarPdf.recomendada.err', `${from}: ${e?.message || e}`);
+            }
+          }
+
           // 🎨 [2026-08-31] Y AHORA SE LE DICE AL CLIENTE CUAL ES CUAL — pedido EXPLICITO del
           // dueño: *"le decimos a cliente cuel es cada una"*. Se nombran SOLO las que de verdad
           // salieron. Si al final quedo una sola (las otras dos fallaron), el cliente no puede
@@ -5330,7 +5395,7 @@ Comuna: ${datos.comuna}`
             // [Dueño, 28-ago] El resumen ("Le coticé:") ya NO va acá: se convirtió en el
             // ANTICIPO y viaja ANTES del documento (Paso 2-bis), que es donde el cliente
             // puede corregir una medida al revés A TIEMPO. Los avisos de ajuste se quedan.
-            ) + _avisoNombre + _avisoColor + _avisoTipo + _avisoHojas,
+            ) + _avisoNombre + _avisoColor + _avisoTipo + _avisoHojas + _avisoRecomendada,
           };
         }),
     };
@@ -5438,12 +5503,6 @@ Comuna: ${datos.comuna}`
         if (_fraseIngDet && !replyMsg.includes(_fraseIngDet)) replyMsg = `${replyMsg}
 
 ${_fraseIngDet}`;
-      }
-      if (pdfRes && pdfRes.ok && pdfRes.pdf_sent !== false) {
-        const _txtRecDet = await emitirPropuestaRecomendada(toolCtx, pq.items, state, from);
-        if (_txtRecDet) replyMsg = `${replyMsg}
-
-${_txtRecDet}`;
       }
       await safe('pdf.det.send', () => sendWhatsAppText(from, replyMsg));
       await safe('pdf.det.persistIn', () => bridge.pushConversationEvent({
@@ -5604,14 +5663,6 @@ ${_txtRecDet}`;
         if (_fraseIng && !reply.includes(_fraseIng)) reply = `${reply}
 
 ${_fraseIng}`;
-      }
-      // [dueño, 2026-10-08] 2a propuesta (opcion C) para los monorrieles que se pasan de alto.
-      if (_pdfCall.result.ok && _pdfCall.result.pdf_sent !== false) {
-        const _txtRec = await emitirPropuestaRecomendada(toolCtx,
-          [...(newState.pending_quote?.items || []), ..._qItems], { ...state, ...newState }, from);
-        if (_txtRec) reply = `${reply}
-
-${_txtRec}`;
       }
       // [Ronda 2 2026-07-20] Primer turno CTWA que ya genera PDF: anteponer el saludo aprobado
       // del anuncio en vez de tragárselo. No viola el anti-re-saludo del [FIX 2026-06-19]:

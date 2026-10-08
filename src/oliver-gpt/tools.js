@@ -823,10 +823,7 @@ export function notaDeLineaParaElLLM(it) {
       // (la escribe el pricer, una sola fuente); aca solo se le dice que no la omita ni la repita.
       + (it.revision_ingenieria ? ' Incluye, en esa misma linea y sin alarmar, la frase de '
         + 'nota_linea sobre el area de ingenieria (una sola vez). ⛔ NO la saques del PDF, NO uses '
-        + 'is_partial y NO la escales: va cotizada como las demas.' : '')
-      // [dueño, 2026-10-08] La 2a propuesta (corredera + fijo arriba) la emite SOLA el sistema.
-      + (it.alternativa_c ? ' ⛔ NO armes una segunda propuesta ni la ofrezcas: el sistema la envia '
-        + 'sola despues del PDF, con su propio numero.' : ''),
+        + 'is_partial y NO la escales: va cotizada como las demas.' : ''),
   };
 }
 
@@ -1044,8 +1041,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         // se cotiza en la linea MAS ECONOMICA que lo tenga, y el cliente tiene que saberlo.
         ...notaDeLineaParaElLLM(it),
         referencial: it.referencial || false,
-        revision_ingenieria: it.revision_ingenieria || undefined,
-        alternativa_c: it.alternativa_c || undefined,  // [dueño, 2026-10-08] la 2a propuesta la arma el webhook, no el LLM  // [dueño, 2026-10-08] viaja al pending_quote y al mensaje del PDF
+        revision_ingenieria: it.revision_ingenieria || undefined,  // [dueño, 2026-10-08] viaja al pending_quote y al mensaje del PDF
         // 🔴 [2026-09-19] LA INSTRUCCION VA DONDE SE TOMA LA DECISION, NO 500 LINEAS ARRIBA.
         // Oliver recibia `referencial: true` a secas y lo leia como "esto hay que escalar":
         // en la propuesta 0485 saco la ventana N°13 (proyectante baño 575x375) del PDF con
@@ -1161,8 +1157,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         // se cotiza en la linea MAS ECONOMICA que lo tenga, y el cliente tiene que saberlo.
         ...notaDeLineaParaElLLM(it),
         referencial: it.referencial || false,
-        revision_ingenieria: it.revision_ingenieria || undefined,
-        alternativa_c: it.alternativa_c || undefined,  // [dueño, 2026-10-08] la 2a propuesta la arma el webhook, no el LLM  // [Codex r2] por area tambien llega al PDF
+        revision_ingenieria: it.revision_ingenieria || undefined,  // [Codex r2] por area tambien llega al PDF
         _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses precio_por_m2 ni otro campo.',
       };
     }

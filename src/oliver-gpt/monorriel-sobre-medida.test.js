@@ -37,9 +37,7 @@ test('🔴 el monorriel MAS GRANDE que lo estandar se cotiza (V1 real: 2540x2370
     assert.equal(r.ok, true, 'se cotiza, no se escala: ' + JSON.stringify(r).slice(0, 300));
     assert.ok(r.unit_price > 0);
     assert.ok(enviados.some((e) => e.riel === 'MONORRIEL' && e.alto_mm === 2370), 'se cotiza lo que pidio el cliente');
-    // [dueño, 2026-10-08] opcion C: se paso de ALTO -> trae la alternativa corredera 2100 + fijo arriba.
-    assert.deepEqual(r.alternativa_c?.piezas?.map((x) => x.measures), ['2540x2100', '2540x270']);
-    assert.match(r.alternativa_c?.nota || '', /visita t[eé]cnica/);
+
     assert.match(r.nota_linea || '', /ingenier[ií]a/i, 'la frase de ingenieria viaja al LLM');
     assert.doesNotMatch(r.nota_linea || '', /andes|monorriel|economic/i);
     assert.match(r._decir_al_cliente || '', /ingenier/i, 'y se le pide decirla');
@@ -125,10 +123,15 @@ test('🔴 por AREA tambien: "linea ANDES monorriel" se cotiza y Zenia no (Codex
   });
 });
 
-test('🔒 la alternativa C es SOLO para los que se pasan de ALTO (ancho de mas no se arregla bajando la hoja)', async () => {
-  await conMotorStub(async () => {
-    const r = await cotizar('3200x2000');
-    assert.equal(r.ok, true);
-    assert.equal(r.alternativa_c, undefined);
+test('🔴 alternativa C (dueño 08-oct): corredera doble riel de 2100 + fijo arriba, solo si se pasa de ALTO', async () => {
+  const { cotizarAlternativaC } = await import('../../services/enginePricer.js');
+  await conMotorStub(async (enviados) => {
+    const alt = await cotizarAlternativaC({ ancho_mm: 2540, alto_mm: 2370, qty: 3, color: 'nogal', comuna: 'Villarrica' });
+    assert.deepEqual(alt.piezas.map((x) => x.measures), ['2540x2100', '2540x270']);
+    assert.match(alt.nota, /visita t[eé]cnica/);
+    // la pieza corredera NUNCA vuelve a monorriel (SIN_MONORRIEL privado del pricer)
+    assert.deepEqual(enviados.map((e) => `${e.tipo}/${e.riel || '-'}/${e.hojas || '-'}`), ['CORREDERA/DOBLE/2', 'FIJA/-/-']);
+    assert.equal(alt.piezas[1].referencial, true, 'el fijo de 2540x270 esta fuera del S60: aviso a Marcelo');
+    assert.equal(await cotizarAlternativaC({ ancho_mm: 3200, alto_mm: 2000 }), null, 'ancho de mas no se arregla bajando la hoja');
   });
 });

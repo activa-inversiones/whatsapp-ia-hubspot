@@ -6,18 +6,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { handleWebhook } from './webhook.js';
-import { itemsPropuestaRecomendada } from './pdf-intent.js';
 
 const CLIENTE = '56987650022';
 // El motor de mentira cobra DISTINTO cada configuracion: si la revision de precio del PDF re-rutea la
 // pieza a monorriel (riesgo H1 de Thermos), el precio cambia y el test lo ve.
 const precioMotor = (b) => (b.riel === 'MONORRIEL' ? 700000 : b.tipo === 'CORREDERA' ? 877759 : 108224);
-const ALT = { nota: 'Unión entre la corredera y el paño fijo superior a confirmar en la visita técnica.', piezas: [
-  { producto_label: 'Corredera SLIDING H98 Doble Riel S75', measures: '2540x2100', unit_price: 877759, qty: 3, color: 'nogal', glass_label: '5+12+5' },
-  { producto_label: 'Fijo S60', measures: '2540x270', unit_price: 108224, qty: 3, color: 'nogal', glass_label: '4+12+4', referencial: true },
-] };
 const V1 = { product: 'Corredera ANDES 66 Monorriel', producto_label: 'Corredera ANDES 66 Monorriel', measures: '2540x2370',
-  ancho_mm: 2540, alto_mm: 2370, color: 'nogal', qty: 3, unit_price: 700000, referencial: true, revision_ingenieria: true, alternativa_c: ALT };
+  ancho_mm: 2540, alto_mm: 2370, color: 'nogal', qty: 3, unit_price: 700000, referencial: true, revision_ingenieria: true };
 const FIJO = { product: 'Fijo S60', producto_label: 'Fijo S60', measures: '2100x1200', ancho_mm: 2100, alto_mm: 1200, color: 'nogal', qty: 1, unit_price: 108224 };
 
 async function correr(deps) {
@@ -29,7 +24,7 @@ async function correr(deps) {
     if (u.includes('/internal/quotes/next-number')) return { ok: true, json: async () => ({ quote_number: `CM-FR-004-2026-0${n++}` }) };
     if (u.includes('/quotes/calculate')) {
       const b = JSON.parse(init.body || '{}');
-      const q = Number(b.cantidad) || 1; const data = { ok: true, unit_price: precioMotor(b), grand_total: precioMotor(b) * q, total_clp: precioMotor(b) * q, producto_label: 'x', materiales: { subtotal: 1 } };
+      const q = Number(b.cantidad) || 1; const data = { ok: true, unit_price: precioMotor(b), grand_total: precioMotor(b) * q, total_clp: precioMotor(b) * q, producto_label: b.riel === 'MONORRIEL' ? 'Corredera ANDES 66 Monorriel' : b.tipo === 'CORREDERA' ? 'Corredera SLIDING H98 Doble Riel S75' : 'Fijo S60', materiales: { subtotal: 1 } };
       return { ok: true, status: 200, json: async () => data, text: async () => JSON.stringify(data) };
     }
     return { ok: true, json: async () => ({ ok: true }), text: async () => '{}' };
@@ -42,7 +37,7 @@ async function correr(deps) {
   }
 }
 
-function deps(textos, pdfs) {
+function deps(textos, pdfs, quotes = []) {
   return {
     conv: new Map(), seen: new Set(), locks: new Map(),
     leerEstado: async () => null, escribirEstado: () => {},
@@ -61,22 +56,14 @@ function deps(textos, pdfs) {
     }),
     persistSession: () => {},
     bridge: { getConversationControl: async () => ({ ai_paused: false, operator_status: 'ai' }),
-      pushConversationEvent: async () => ({ ok: true }), pushLeadEvent: async () => ({ ok: true }), pushQuoteEvent: async () => ({ ok: true }) },
+      pushConversationEvent: async () => ({ ok: true }), pushLeadEvent: async () => ({ ok: true }), pushQuoteEvent: async (q) => { quotes.push(q); return { ok: true }; } },
     handleTurn: async () => { throw new Error('lo entrega el codigo, no el LLM'); },
   };
 }
 
-test('itemsPropuestaRecomendada: cambia el monorriel por sus 2 piezas y deja el resto igual', () => {
-  const r = itemsPropuestaRecomendada([V1, FIJO]);
-  assert.deepEqual(r.items.map((x) => `${x.producto_label} ${x.measures} ${x.unit_price}x${x.qty}`), [
-    'Corredera SLIDING H98 Doble Riel S75 2540x2100 877759x3', 'Fijo S60 2540x270 108224x3', 'Fijo S60 2100x1200 108224x1']);
-  assert.equal(r.grand_total, 877759 * 3 + 108224 * 3 + 108224);
-  assert.equal(itemsPropuestaRecomendada([FIJO]), null, 'sin monorriel alto no hay 2a propuesta');
-});
-
 test('🔴 el cliente recibe DOS propuestas: la original (monorriel) y la recomendada (doble riel + fijo), con precios del motor', async () => {
-  const textos = []; const pdfs = [];
-  await correr(deps(textos, pdfs));
+  const textos = []; const pdfs = []; const quotes = [];
+  await correr(deps(textos, pdfs, quotes));
   assert.equal(pdfs.length, 2, `PDFs emitidos: ${pdfs.map((p) => p.numero).join(', ')}`);
   const [orig, rec] = pdfs;
   const lineas = (p) => (p.data.items || p.data.lineas || []).map((x) => `${x.producto || x.producto_label} ${x.medidas || x.measures} ${x.unitario ?? x.unit_price}`);
@@ -90,4 +77,35 @@ test('🔴 el cliente recibe DOS propuestas: la original (monorriel) y la recome
   assert.match(aCliente, /recomienda nuestra área de ingeniería/);
   assert.match(aCliente, /a confirmar en la visita técnica/);
   assert.doesNotMatch(aCliente, /andes|monorriel/i);
+  // 💰 UNA sola conversion por cliente: la recomendada se registra 'alternativa' (no dispara fireConversion).
+  const estados = quotes.map((q) => `${q.quote_number}:${q.status}`);
+  assert.equal(quotes.filter((q) => q.status === 'sent').length, 1, `eventos: ${estados}`);
+  assert.ok(quotes.some((q) => q.status === 'alternativa' && q.quote_number === rec.numero), `eventos: ${estados}`);
+});
+
+test('🔒 sin monorriel alto NO hay 2a propuesta', async () => {
+  const textos = []; const pdfs = []; const quotes = [];
+  const d = deps(textos, pdfs, quotes);
+  d.loadSession = async () => ({
+    history: [{ role: 'user', content: 'fijo 2100x1200' }, { role: 'assistant', content: '¿Le preparo la propuesta en PDF?' }],
+    state: { comuna: 'Villarrica', name: 'Cliente', default_color: 'nogal', pending_quote: { items: [FIJO], grand_total: 108224 } },
+  });
+  await correr(d);
+  assert.equal(pdfs.length, 1);
+});
+
+test('🔴 camino del LLM (mismo turno): tambien salen DOS, una sola conversion', async () => {
+  const textos = []; const pdfs = []; const quotes = [];
+  const d = deps(textos, pdfs, quotes);
+  d.loadSession = async () => null;
+  d.parseInbound = () => ({ ok: true, from: CLIENTE, text: 'V1 3 2540x2370 una fija y una corredera, nogal', msgId: 'wamid.REC.LLM', type: 'text' });
+  d.handleTurn = async ({ userText, state, toolCtx }) => {
+    const r = await toolCtx.generarPdf({ name: 'Cliente', comuna: 'Villarrica', items: [{ ...V1, measures: '2540x2370' }] });
+    return { reply: 'listo', history: [{ role: 'user', content: userText }],
+      toolCalls: [{ name: 'generar_pdf_cotizacion', result: r }], state: { ...state } };
+  };
+  await correr(d);
+  assert.equal(pdfs.length, 2, `PDFs: ${pdfs.map((p) => p.numero)}`);
+  assert.equal(quotes.filter((q) => q.status === 'sent').length, 1);
+  assert.match(textos.filter((x) => x.to === CLIENTE).map((x) => x.t).join('\n'), /recomienda nuestra área de ingeniería/);
 });
