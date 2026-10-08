@@ -52,5 +52,7 @@ test('[r16 #6] ningún aviso a Marcelo (notifyHighValue) usa `from` como teléfo
 test('la lista blanca existe y está acotada (si crece, que sea a propósito)', () => {
   const blancas = lineas.filter((l) => /\[chat\]/.test(l) && PROHIBIDOS.some((re) => re.test(l)));
   // 17 al 30-sep: mensajes inbound/outbound del chat (13), acuses de envío (3), telemetría (1).
-  assert.ok(blancas.length <= 17, `crecieron las excepciones [chat]: ${blancas.length}`);
+  // 18 al 08-oct, A PROPOSITO: el acuse de envio de la propuesta RECOMENDADA del monorriel alto
+  // (wamsg:<id>, igual que el de la original; lo pidio Codex para casar un failed de Meta).
+  assert.ok(blancas.length <= 18, `crecieron las excepciones [chat]: ${blancas.length}`);
 });

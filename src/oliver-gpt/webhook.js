@@ -5352,7 +5352,7 @@ Comuna: ${datos.comuna}`
                   if (_sentRec && _msgIdRec) {
                     try {
                       await (deps.escribirEstado || escribirEstado)(`wamsg:${_msgIdRec}`, {
-                        msgId: _msgIdRec, tipo: 'propuesta', folio: _numRec, telefono: String(from), cliente: String(turno.cliente),
+                        msgId: _msgIdRec, tipo: 'propuesta', folio: _numRec, telefono: String(from) /* [chat] destinatario del envío */, cliente: String(turno.cliente),
                       }, 3 * 24 * 3600);
                     } catch { /* solo se pierde el diagnostico */ }
                     const _bridgeRec = deps.bridge || realBridge;
