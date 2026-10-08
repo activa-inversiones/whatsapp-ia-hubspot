@@ -967,7 +967,8 @@ export async function priceAllEngine(d, customer_id = "") {
     // se cotiza siempre (ANDES MONORRIEL es lo calibrado). Codex lo reprodujo en el tridente: "línea
     // ANDES monorriel, una corredera y un paño fijo" escalaba con cero llamadas al motor.
     // Solo se perdona la LINEA (Zenia/Venau no son monorriel ANDES) y solo si la forma es monorriel.
-    const _txtAlcance = [item.product, item.descripcion, item.label, item.producto].filter(Boolean).join(' ');
+    // [Codex r2] item.serie TAMBIEN: serie:"ZENIA" + forma de monorriel se colaba como ANDES MONORRIEL.
+    const _txtAlcance = [item.product, item.descripcion, item.label, item.producto, item.serie].filter(Boolean).join(' ');
     if (fueraDeAlcance.fueraDeAlcance && fueraDeAlcance.categoria === 'linea_no_soportada'
         && esMonorrielPorForma(_txtAlcance) && !/\b(?:zenia|venau)\b/i.test(_txtAlcance)) {
       fueraDeAlcance.fueraDeAlcance = false;

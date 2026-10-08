@@ -1150,6 +1150,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         // se cotiza en la linea MAS ECONOMICA que lo tenga, y el cliente tiene que saberlo.
         ...notaDeLineaParaElLLM(it),
         referencial: it.referencial || false,
+        revision_ingenieria: it.revision_ingenieria || undefined,  // [Codex r2] por area tambien llega al PDF
         _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses precio_por_m2 ni otro campo.',
       };
     }

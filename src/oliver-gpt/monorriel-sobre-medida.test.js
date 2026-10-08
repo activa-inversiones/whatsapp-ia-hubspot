@@ -97,3 +97,15 @@ test('🔴 la frase al cliente la pone el SISTEMA al entregar el PDF, no depende
     assert.equal(fraseRevisionIngenieria([{ revision_ingenieria: false }]), '');
   });
 });
+
+test('🔒 Zenia por el campo ESTRUCTURADO serie tampoco se cuela como ANDES monorriel (Codex r2)', async () => {
+  const { priceAllEngine } = await import('../../services/enginePricer.js');
+  await conMotorStub(async (enviados) => {
+    for (const serie of ['ZENIA', 'VENAU']) {
+      const items = [{ measures: '1500x1200mm', product: 'CORREDERA', serie, descripcion: 'una corredera y un paño fijo', qty: 1 }];
+      await priceAllEngine({ comuna: 'Temuco', items });
+      assert.ok(!(Number(items[0].unit_price) > 0), `${serie} no se cotiza`);
+    }
+    assert.equal(enviados.length, 0);
+  });
+});

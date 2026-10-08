@@ -5403,9 +5403,16 @@ Comuna: ${datos.comuna}`
       }));
       // [2026-08-08] El fallback también cierra con paso siguiente. Si sale por acá es
       // porque generarPdf no devolvió mensaje: no puede quedar más flojo que el camino normal.
-      const replyMsg = (pdfRes && pdfRes.message) ||
+      let replyMsg = (pdfRes && pdfRes.message) ||
         `Listo ✅ Te preparé tu Propuesta Técnica Económica${pdfRes?.quote_number ? ` N° ${pdfRes.quote_number}` : ''} acá mismo (PDF).\n\n` +
         `Para que los números queden 100% finos lo ideal es ir a medir. ¿Le mando el link para que elija el día que le acomode, o prefiere que lo llame Marcelo y lo coordinan?`;
+      // [Codex r2] Este camino entrega el PDF SIN pasar por _pdfCall: la frase de ingenieria va aca tambien.
+      if (pdfRes && pdfRes.ok && pdfRes.pdf_sent !== false) {
+        const _fraseIngDet = fraseRevisionIngenieria(pq.items);
+        if (_fraseIngDet && !replyMsg.includes(_fraseIngDet)) replyMsg = `${replyMsg}
+
+${_fraseIngDet}`;
+      }
       await safe('pdf.det.send', () => sendWhatsAppText(from, replyMsg));
       await safe('pdf.det.persistIn', () => bridge.pushConversationEvent({
         channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'inbound', actor_type: 'customer',
@@ -5540,7 +5547,9 @@ Comuna: ${datos.comuna}`
       const _merged = [..._prev];
       for (const it of _qItems) {
         const k = `${it.product}|${it.measures}|${it.color}`;
-        if (!_merged.some((m) => `${m.product}|${m.measures}|${m.color}` === k)) _merged.push(it);
+        const _ya = _merged.find((m) => `${m.product}|${m.measures}|${m.color}` === k);
+        if (!_ya) _merged.push(it);
+        else if (it.revision_ingenieria) _ya.revision_ingenieria = true;  // [Codex r2] el dedup no puede borrar la marca
       }
       newState.pending_quote = {
         items: _merged,
