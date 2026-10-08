@@ -71,6 +71,10 @@ export function parseStatuses(body) {
       fallo: String(st.status || '') === 'failed',
       codigo: err && Number.isFinite(Number(err.code)) ? Number(err.code) : null,
       motivo: [err?.title, err?.message, err?.error_data?.details].filter(Boolean).join(' — '),
+      // Hora REAL del acuse según Meta (segundos epoch), no la de llegada del webhook:
+      // un reintento puede llegar minutos después. null si no viene o es basura.
+      ts: Number.isFinite(Number(st.timestamp)) && Number(st.timestamp) > 0
+        ? new Date(Number(st.timestamp) * 1000).toISOString() : null,
     });
     return salida;
   }, []);

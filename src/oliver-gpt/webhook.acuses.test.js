@@ -291,3 +291,32 @@ test('🔴 un `sent` NO concilia: Meta lo acepta y puede fallar después', async
   await new Promise((r) => setTimeout(r, 150));
   assert.equal(spy.textos.filter((t) => /Actualización de la entrega/.test(String(t.body))).length, 0);
 });
+
+// 👁 [Lote 1b, dueño 08-oct: "estamos ciegos"] El ✓✓ azul se registra para la agenda.
+// Guardia de la DECISIÓN: el `read` de CUALQUIER mensaje (no solo documentos rastreados)
+// queda en oliver_events con la hora de Meta; `sent`/`delivered` no generan este evento,
+// y el cliente no recibe nada ni se despierta el bot.
+test('👁 un acuse READ registra mensaje_leido con la hora de Meta, aunque el mensaje no esté rastreado', async () => {
+  const { deps, spy } = makeDeps();
+  await handleWebhook({ body: acuse('sent', 'wamid.TXT9', { timestamp: '1791500000' }) }, makeRes(), deps);
+  await handleWebhook({ body: acuse('delivered', 'wamid.TXT9', { timestamp: '1791500001' }) }, makeRes(), deps);
+  await handleWebhook({ body: acuse('read', 'wamid.TXT9', { timestamp: '1791500100' }) }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 120));
+  const leidos = spy.eventos.filter((e) => e.tipo === 'mensaje_leido');
+  assert.equal(leidos.length, 1);
+  assert.deepEqual(leidos[0].payload, {
+    phone: '56940415964', wamid: 'wamid.TXT9', leido_at: new Date(1791500100 * 1000).toISOString(),
+  });
+  assert.equal(spy.turnos, 0);
+  assert.equal(spy.textos.length, 0);
+});
+
+test('👁 un READ sin timestamp igual se registra (leido_at null) y un fallo del registro no rompe el 200', async () => {
+  const { deps, spy } = makeDeps();
+  deps.bridge.logOliverEvent = async (tipo, payload) => { spy.eventos.push({ tipo, payload }); throw new Error('sales-os caído'); };
+  const res = makeRes();
+  await handleWebhook({ body: acuse('read', 'wamid.TXT10') }, res, deps);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(res.sentStatus, 200);
+  assert.equal(spy.eventos.filter((e) => e.tipo === 'mensaje_leido')[0].payload.leido_at, null);
+});

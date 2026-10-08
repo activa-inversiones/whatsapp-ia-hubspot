@@ -1129,6 +1129,22 @@ export async function handleWebhook(req, res, deps = {}) {
                 `${rastro.tipo || 'documento'} ${rastro.folio || ac.msgId} ENTREGADO a ${d(rastro.telefono || ac.telefono).slice(-4)}`);
             });
           }
+          // 👁 [Lote 1b, dueño 08-oct: "estamos ciegos"] El ✓✓ azul: el cliente ABRIÓ el chat.
+          // De TODO mensaje (no solo documentos) y sin mirar el rastro: el dato que sirve es
+          // "cuándo leyó", no qué leyó. Si el cliente apagó las confirmaciones de lectura Meta
+          // nunca manda esto ⇒ la ausencia NO significa "no leyó".
+          // Se repite a propósito (Meta reintenta): sales-os deduplica por `wamid` / usa MAX.
+          // Sin await y con .catch mudo: registrar una lectura jamás demora el 200 a Meta.
+          if (ac.estado === 'read' && ac.telefono) {
+            const _b = deps.bridge || realBridge;
+            if (typeof _b.logOliverEvent === 'function') {
+              Promise.resolve(_b.logOliverEvent('mensaje_leido', {
+                phone: ac.telefono,
+                wamid: ac.msgId,
+                leido_at: ac.ts || null,
+              })).catch(() => {});
+            }
+          }
           continue;
         }
         await safe('acuse.fallo', async () => {
