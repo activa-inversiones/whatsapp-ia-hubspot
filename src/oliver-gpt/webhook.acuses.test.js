@@ -320,3 +320,22 @@ test('👁 un READ sin timestamp igual se registra (leido_at null) y un fallo de
   assert.equal(res.sentStatus, 200);
   assert.equal(spy.eventos.filter((e) => e.tipo === 'mensaje_leido')[0].payload.leido_at, null);
 });
+
+// [Codex post-deploy 08-oct, MEDIO #8] Un timestamp absurdo no puede tumbar el lote de acuses:
+// el `failed` que viene en el MISMO webhook tiene que procesarse igual (libera el candado).
+test('👁 un timestamp fuera de rango (1e100) da leido_at null y NO pierde el failed del mismo lote', async () => {
+  const { deps, spy } = makeDeps({
+    enviado: { msgId: 'wamid.DOC1', tipo: 'informe_termico', folio: 'F1', telefono: '56940415964' },
+  });
+  const body = { entry: [{ changes: [{ value: { statuses: [
+    { id: 'wamid.TXT11', status: 'read', recipient_id: '56940415964', timestamp: '1e100' },
+    { id: 'wamid.DOC1', status: 'failed', recipient_id: '56940415964', errors: [{ code: 131026, title: 'x' }] },
+  ] } }] }] };
+  const res = makeRes();
+  await handleWebhook({ body }, res, deps);
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(res.sentStatus, 200);
+  const leido = spy.eventos.find((e) => e.tipo === 'mensaje_leido');
+  assert.equal(leido.payload.leido_at, null);
+  assert.ok(spy.borrados.length > 0 || spy.avisos.length > 0, 'el failed del mismo lote se procesó');
+});
