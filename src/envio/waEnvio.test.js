@@ -35,6 +35,11 @@ test('2xx SIN id de Meta → NO es éxito: ambiguo (Codex r2)', async () => {
   }
 });
 
+test('operator-send: 2xx sin id → 502 meta_sin_id, ambiguo (Codex r3)', () => {
+  const r = respuestaOperatorSend({ ok: false, error: 'meta_sin_id', ambiguo: true }, '569');
+  assert.equal(r.http, 502); assert.equal(r.body.error, 'meta_sin_id'); assert.equal(r.body.ambiguo, true);
+});
+
 test('nunca lanza, ni aunque el log reviente', async () => {
   const r = await enviarTextoWA(http(() => { throw new Error('x'); }), 'PID', '569', 'x', { logErr: () => { throw new Error('log'); } });
   assert.equal(r.ok, false);

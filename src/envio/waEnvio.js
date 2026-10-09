@@ -39,7 +39,8 @@ export function respuestaOperatorSend(envio, phone) {
   if (envio && envio.ok === false) {
     return { http: 502, body: {
       ok: false,
-      error: envio.ambiguo ? 'meta_sin_respuesta' : 'meta_rechazo',
+      // [Codex r3, BAJO] 'meta_sin_id' se distingue: Meta SÍ contestó, lo desconocido es si lo aceptó.
+      error: envio.error === 'meta_sin_id' ? 'meta_sin_id' : (envio.ambiguo ? 'meta_sin_respuesta' : 'meta_rechazo'),
       ambiguo: !!envio.ambiguo,
       detalle: envio.error || null,
       codigo: envio.codigo ?? null,
