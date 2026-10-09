@@ -38,4 +38,5 @@ test('index.js desvía los acuses ANTES del routing por número, con firma y det
   const bloque = src.slice(desvio - 200, desvio + 400);
   assert.match(bloque, /process\.env\.OLIVER_GPT_ENABLED === "true" && esSoloAcuses\(req\.body\)/);
   assert.match(bloque, /if \(!verifySig\(req\)\) \{ res\.sendStatus\(200\); return; \}/);
+  assert.match(bloque, /return await handleWebhook\(req, res\);/, 'sin await el catch no ve el rechazo (Copilot M1)');
 });

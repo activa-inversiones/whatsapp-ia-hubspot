@@ -34,6 +34,16 @@ const axiosWA = axios.create({
  *   Para tipos no-texto (audio/imagen/etc.) devuelve text = "[<tipo>]" para
  *   que el agente pueda pedir que escriban en texto.
  */
+// [Codex post-deploy 08-oct, MEDIO #8] Un timestamp finito pero fuera del rango de Date (p.ej. 1e100)
+// hacía lanzar toISOString() DENTRO del parser: se perdía el lote entero de acuses, incluidos los
+// `failed` que liberan candados. Ahora lo que no es una fecha válida da null y el resto sigue.
+function tsDeMeta(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const d = new Date(n * 1000);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
 /**
  * LOS ACUSES DE META (`statuses[]`).
  *
@@ -50,16 +60,6 @@ const axiosWA = axios.create({
  * @returns {Array<{msgId:string, estado:string, telefono:string, fallo:boolean,
  *                  codigo:number|null, motivo:string}>}  vacio si el webhook no trae acuses.
  */
-// [Codex post-deploy 08-oct, MEDIO #8] Un timestamp finito pero fuera del rango de Date (p.ej. 1e100)
-// hacía lanzar toISOString() DENTRO del parser: se perdía el lote entero de acuses, incluidos los
-// `failed` que liberan candados. Ahora lo que no es una fecha válida da null y el resto sigue.
-function tsDeMeta(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  const d = new Date(n * 1000);
-  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
-}
-
 export function parseStatuses(body) {
   // 🔴 [Codex, revision final] TODAS las entradas y TODOS los changes. Meta puede mandar
   // varios en un mismo webhook; leyendo solo `entry[0].changes[0]` se perdia un `failed`

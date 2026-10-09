@@ -5491,7 +5491,9 @@ app.post("/webhook", async (req, res) => {
     if (process.env.OLIVER_GPT_ENABLED === "true" && esSoloAcuses(req.body)) {
       if (!verifySig(req)) { res.sendStatus(200); return; }
       const { handleWebhook } = await import("./src/oliver-gpt/webhook.js");
-      return handleWebhook(req, res);
+      // `return await`, no `return`: sin await, un rechazo de la promesa NO entra al catch de abajo y queda
+      // como unhandledRejection (Copilot GPT-5.4, revisión 08-oct, M1).
+      return await handleWebhook(req, res);
     }
   } catch (e) {
     try { logErr("acuses_route", e); } catch {}
