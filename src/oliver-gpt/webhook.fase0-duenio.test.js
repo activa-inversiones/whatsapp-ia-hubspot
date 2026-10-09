@@ -203,3 +203,28 @@ test('Fase 0 [Copilot r1 #8]: PRUEBA tolera variantes ("prueba.", "modo prueba",
     assert.ok(textos.some((x) => x.t === TEXTO_MODO_PRUEBA), `«${variante}» debía activar PRUEBA`);
   }
 });
+
+// 🔴 [Codex r1 ALTO #1] Tras un redeploy el KV hidrata desde Postgres SIN vencimiento: la marca leída puede ser vieja.
+// El bot calcula el vencimiento con la hora guardada; una marca de hace 3 h ya no vale.
+test('Fase 0 [Codex r1]: una marca PRUEBA de hace 3 h (hidratada sin vencimiento) NO deja cotizar', async () => {
+  preparar();
+  const ev = []; const pdf = []; const textos = [];
+  const deps = makeDeps(DUENIO, 'wamid.F0.VIEJA', ev, pdf, { textos });
+  await deps.escribirEstado(`modo_prueba:${DUENIO}`, { at: Date.now() - 3 * 3600 * 1000 });
+  const t = sinTurno(deps);
+  try { await correr(deps); } finally { preparar(); }
+  assert.equal(t.llego, false, 'la marca vencida no habilita');
+  assert.ok(textos.some((x) => x.t === TEXTO_PEDIR_CLIENTE_DUENIO));
+});
+
+test('Fase 0 [Codex r1 MEDIO #4]: si la escritura DURABLE dice que no guardó, se avisa (no "activado")', async () => {
+  preparar();
+  const ev = []; const pdf = []; const textos = [];
+  const deps = makeDeps(DUENIO, 'wamid.F0.DUR', ev, pdf, { textos });
+  deps.parseInbound = () => ({ ok: true, from: DUENIO, text: 'PRUEBA', msgId: 'wamid.F0.DUR', type: 'text' });
+  deps.escribirEstadoDurable = async () => ({ ok: false, motivo: 'timeout' });
+  sinTurno(deps);
+  try { await correr(deps); } finally { preparar(); }
+  assert.ok(!textos.some((x) => x.t === TEXTO_MODO_PRUEBA));
+  assert.ok(textos.some((x) => /No pude activar el modo prueba/.test(x.t)));
+});

@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { identidadCotizacion, payloadLeadCotizacion, clickIdsDe, clavesCotizacion, resolverTurno } from './identidadCotizacion.js';
+import { identidadCotizacion, payloadLeadCotizacion, clickIdsDe, clavesCotizacion, resolverTurno, TEXTO_V1_DUENIO_SIN_CLIENTE } from './identidadCotizacion.js';
 import { procesarComandoCliente, mensajeTrasPdf, parseComandoCliente, autorizaComandoCliente } from './comandoCliente.js';
 import { fijar, obtener, limpiar, limpiarSiMisma, vigenciaMs, _resetAtribuciones } from './atribucionStore.js';
 import { yaNosEscribio, _resetConsentimiento } from './consentimiento.js';
@@ -378,7 +378,10 @@ test('r11 #1: V1 (respaldo) no cotiza para quien tiene cliente fijado ni para un
   assert.match(TEXTO_V1_CON_ATRIBUCION, /Tuve un problema procesando tu mensaje, reenvíalo en un minuto/);
   const con = { perfil: () => ({ rol: 'duenio' }), leerAtribucion: () => ({ phone: JUAN, name: 'Juan', gen: 1 }) };
   assert.equal(v1Rechazo(ADMIN, null, { deps: con }), TEXTO_V1_CON_ATRIBUCION, 'dueño con cliente fijado');
-  assert.equal(v1Rechazo(ADMIN, null, { deps: { perfil: () => ({ rol: 'duenio' }), leerAtribucion: () => null } }), null, 'dueño para sí: V1 normal');
+  // 🔄 DECISIÓN DADA VUELTA (dueño 09-oct, Fase 0; Codex r1 ALTO #3): la V1 ya NO cotiza para el dueño sin cliente.
+  // Era la puerta lateral por la que seguían saliendo cotizaciones a su nombre si Oliver GPT fallaba.
+  assert.equal(v1Rechazo(ADMIN, null, { deps: { perfil: () => ({ rol: 'duenio' }), leerAtribucion: () => null } }),
+    TEXTO_V1_DUENIO_SIN_CLIENTE, 'dueño sin cliente: la V1 le pide CLIENTE');
   assert.ok(v1Rechazo(VENDEDOR, null, { deps: { perfil: () => ({ rol: 'vendedor' }), leerAtribucion: () => null } }), 'vendedor sin cliente');
   assert.equal(v1Rechazo(OTRO, null, { deps: { perfil: () => ({ rol: null }), leerAtribucion: () => null } }), null, 'cliente normal');
 });
@@ -524,4 +527,17 @@ test('F1 30-sep: "ya nos escribió" solo si ese número escribió al bot (ser le
     escribio: async () => true, marcar: (p) => marcados.push(p), esDelEquipo: () => false });
   assert.deepEqual(marcados, [JUAN]);
   _reset();
+});
+
+// 🔴 [2026-10-09 · Fase 0, Codex r1 ALTO #2] CLIENTE OFF del dueño borra la marca PRUEBA en el momento y ya no le dice
+// "vuelve a quedar a tu nombre" (sin cliente, el dueño no cotiza).
+test('Fase 0: CLIENTE OFF del dueño borra la marca PRUEBA y dice la verdad', async () => {
+  const borrados = [];
+  const msg = await procesarComandoCliente({
+    waId: telefonoDuenio(), texto: 'CLIENTE OFF', autorizar: () => true, listaVigente: () => true,
+    borrarMarca: (k) => borrados.push(k),
+  });
+  assert.deepEqual(borrados, [`modo_prueba:${telefonoDuenio()}`]);
+  assert.doesNotMatch(msg, /vuelve a quedar a tu nombre/);
+  assert.match(msg, /CLIENTE Nombre \+569…, o PRUEBA/);
 });

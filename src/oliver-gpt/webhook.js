@@ -1506,14 +1506,24 @@ export async function handleWebhook(req, res, deps = {}) {
       const escribirKv = deps.escribirEstado || escribirEstado;
       if (PRUEBA_RE.test(inbound?.text || '')) {
         // [Copilot r1 #2] Si no se pudo guardar la marca, se dice: no se promete un modo que no quedó activo.
-        let guardo = true;
-        try { await escribirKv(kPrueba, { at: Date.now() }, MODO_PRUEBA_SEG); } catch { guardo = false; }
+        // [Codex r1 MEDIO #4] `escribirEstado` es fire-and-forget (traga 500/timeout): se usa la escritura DURABLE,
+        // que espera a la BD, para no anunciar un modo que no quedó guardado.
+        const escribirDur = deps.escribirEstadoDurable
+          || (deps.escribirEstado ? async (k, v, t) => { await escribirKv(k, v, t); return { ok: true }; } : escribirEstadoDurable);
+        let guardo = false;
+        try { guardo = (await escribirDur(kPrueba, { at: Date.now() }, MODO_PRUEBA_SEG))?.ok === true; } catch { guardo = false; }
         await safe('fase0.prueba.aviso', () => sendWhatsAppText(from, guardo ? TEXTO_MODO_PRUEBA
           : '⚠️ No pude activar el modo prueba (falla interna). Inténtalo en un momento, o usa CLIENTE Nombre +569….'));
         return; // el finally suelta el lock
       }
       let enPrueba = null;
-      try { enPrueba = await leerKv(kPrueba); } catch { /* ante la duda, se pide el cliente */ }
+      try {
+        const v = await leerKv(kPrueba);
+        // [Codex r1 ALTO #1] El vencimiento se calcula ACÁ, con la hora guardada: al hidratar desde Postgres el KV
+        // cachea sin vencimiento, y tras un redeploy la marca quedaba viva para siempre.
+        const at = Number(v?.at);
+        enPrueba = Number.isFinite(at) && Date.now() - at < MODO_PRUEBA_SEG * 1000 ? v : null;
+      } catch { /* ante la duda, se pide el cliente */ }
       if (!enPrueba) {
         log('info', 'atribucion', `${String(from).slice(-4)}: dueño sin CLIENTE ni PRUEBA; se le pide (Fase 0)`);
         // [Thermos conjunto #4, conservado] Si tenía la carpeta de un cliente ABIERTA (un redeploy borró la
