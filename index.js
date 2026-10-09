@@ -326,6 +326,7 @@ import { puedeEnviar as puedeEnviarSeguimiento, marcarEnviado as marcarSeguimien
 // [2026-06-14] Cerebro de Oliver para IG/FB (mismo handleTurn que WhatsApp, toolCtx adaptado).
 import { handleChannelTurn } from "./src/oliver-gpt/channel-agent.js";
 // [2026-06-13] import de cotizadorWinhouseBridge.js ELIMINADO (pricer cotizador_winhouse muerto). Archivo borrado.
+import { enviarTextoWA, respuestaOperatorSend } from "./src/envio/waEnvio.js";
 
 dotenv.config();
 const require = createRequire(import.meta.url);
@@ -1848,17 +1849,10 @@ function humanMs(text) {
   return Math.round((1200 + Math.min(6500, w * 170)) * (0.85 + Math.random() * 0.35));
 }
 
+// [2026-10-09] Devuelve el resultado REAL (antes se tragaba el error de Meta y operator-send contestaba ok:true
+// aunque el mensaje no hubiera salido). Nunca lanza: ver src/envio/waEnvio.js.
 async function waSend(to, body) {
-  try {
-    await axiosWA.post(`/${META.PHONE_ID}/messages`, {
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body },
-    });
-  } catch (e) {
-    logErr("waSend", e);
-  }
+  return enviarTextoWA(axiosWA, META.PHONE_ID, to, body, { logErr });
 }
 
 // @patch:sales-os:send:start
@@ -1868,7 +1862,7 @@ async function waSendH(to, text, skipTyping = false, meta = {}) {
   const stop = skipTyping ? null : startTypingLoop(to);
   try {
     await sleep(humanMs(safeText));
-    await waSend(to, safeText);
+    const envio = await waSend(to, safeText);
     if (meta.track !== false) {
       fireAndForget(
         "trackConversationEvent.outbound",
@@ -1889,6 +1883,7 @@ async function waSendH(to, text, skipTyping = false, meta = {}) {
       // [v5.2] Marcar lead como respondido (idempotente, falla silenciosa)
       fireAndForget("markLeadResponded", markLeadResponded(to));
     }
+    return envio; // [2026-10-09] los llamadores que lo necesitan (operator-send) ven si Meta lo aceptó
   } finally {
     stop?.();
   }
@@ -4690,7 +4685,7 @@ app.post("/internal/operator-send", async (req, res) => {
         logErr("/internal/operator-send", new Error(`channel_send_failed: ${r && r.error}`));
         return res.status(502).json({ ok: false, error: (r && r.error) || "channel_send_failed" });
       }
-      return res.json({ ok: true, sent: true, channel, recipient: recipientId });
+      return res.json({ ok: true, sent: true, channel, recipient: recipientId, message_id: r.messageId || null });
     }
 
     // WhatsApp (comportamiento original, intacto)
@@ -4723,7 +4718,7 @@ app.post("/internal/operator-send", async (req, res) => {
 
     ses.history.push({ role: "assistant", content: text });
     saveSession(phone, ses);
-    await waSendH(phone, text, true, {
+    const envio = await waSendH(phone, text, true, {
       actor_type: "operator",
       actor_name: operatorName,
       customer_name: ses.data?.name || "",
@@ -4731,7 +4726,10 @@ app.post("/internal/operator-send", async (req, res) => {
       quote_status: ses.pdfSent ? "formal_sent" : (ses.data?.stageKey || undefined), // [2026-06-11 G8] el PDF enviado → 'formal_sent' (antes quedaba 'propuesta')
       track: false,
     });
-    res.json({ ok: true, sent: true, phone });
+    // [2026-10-09] Si Meta rechazó o no contestó, se DICE (502, con ambiguo). Antes: ok:true siempre.
+    // sales-os decide con `ambiguo` si puede reintentar sin duplicar el mensaje (agendaCotizar.envioFallidoSeguro).
+    const salida = respuestaOperatorSend(envio, phone);
+    res.status(salida.http).json(salida.body);
   } catch (e) {
     logErr("/internal/operator-send", e);
     res.status(500).json({ ok: false, error: "internal_operator_send_failed" });
