@@ -46,7 +46,7 @@ import {
 } from '../../services/atribucionTurno.js';
 import { acquireLock, LOCKS } from '../../services/lockTelefono.js';
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
-import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado } from '../../services/estadoPersistente.js';
+import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado, borrarDurable as borrarEstadoDurable } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS, datosDelInforme } from '../../services/informeTermico.js';
 import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
@@ -1499,7 +1499,8 @@ export async function handleWebhook(req, res, deps = {}) {
     // Los comandos (CLIENTE, agenda, asistente) se atienden ANTES, en el enrutador de index.js.
     const kPrueba = `modo_prueba:${String(from).replace(/\D/g, '')}`;
     if (turno.esDuenio && (atribucion || RESET_RE.test(inbound?.text || ''))) {
-      safe('fase0.prueba.borrar', () => (deps.borrarEstado || borrarEstado)(kPrueba));
+      // [Codex r2] Borrado que ESPERA a la BD (el fire-and-forget podía revivir la marca tras un redeploy).
+      await safe('fase0.prueba.borrar', () => (deps.borrarEstado || borrarEstadoDurable)(kPrueba));
     }
     if (turno.esDuenio && !atribucion && !RESET_RE.test(inbound?.text || '')) {
       const leerKv = deps.leerEstado || leerEstado;
@@ -1512,6 +1513,9 @@ export async function handleWebhook(req, res, deps = {}) {
           || (deps.escribirEstado ? async (k, v, t) => { await escribirKv(k, v, t); return { ok: true }; } : escribirEstadoDurable);
         let guardo = false;
         try { guardo = (await escribirDur(kPrueba, { at: Date.now() }, MODO_PRUEBA_SEG))?.ok === true; } catch { guardo = false; }
+        // [Codex r2] escribirDurable deja la marca en MEMORIA aunque la BD no confirme: si no quedó, se borra también
+        // la copia local, para no tener un modo prueba «fantasma» después de decir «no pude activar».
+        if (!guardo) { try { (deps.borrarEstado || borrarEstado)(kPrueba); } catch { /* nada más que hacer */ } }
         await safe('fase0.prueba.aviso', () => sendWhatsAppText(from, guardo ? TEXTO_MODO_PRUEBA
           : '⚠️ No pude activar el modo prueba (falla interna). Inténtalo en un momento, o usa CLIENTE Nombre +569….'));
         return; // el finally suelta el lock

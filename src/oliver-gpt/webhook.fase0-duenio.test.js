@@ -223,8 +223,12 @@ test('Fase 0 [Codex r1 MEDIO #4]: si la escritura DURABLE dice que no guardó, s
   const deps = makeDeps(DUENIO, 'wamid.F0.DUR', ev, pdf, { textos });
   deps.parseInbound = () => ({ ok: true, from: DUENIO, text: 'PRUEBA', msgId: 'wamid.F0.DUR', type: 'text' });
   deps.escribirEstadoDurable = async () => ({ ok: false, motivo: 'timeout' });
+  const borrados = [];
+  deps.borrarEstado = (k) => { borrados.push(k); };
   sinTurno(deps);
   try { await correr(deps); } finally { preparar(); }
+  // [Codex r2] escribirDurable deja la marca en memoria aunque la BD no confirme: se borra la copia local.
+  assert.ok(borrados.includes(`modo_prueba:${DUENIO}`), 'no queda un modo prueba fantasma en memoria');
   assert.ok(!textos.some((x) => x.t === TEXTO_MODO_PRUEBA));
   assert.ok(textos.some((x) => /No pude activar el modo prueba/.test(x.t)));
 });

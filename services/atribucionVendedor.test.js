@@ -541,3 +541,21 @@ test('Fase 0: CLIENTE OFF del dueño borra la marca PRUEBA y dice la verdad', as
   assert.doesNotMatch(msg, /vuelve a quedar a tu nombre/);
   assert.match(msg, /CLIENTE Nombre \+569…, o PRUEBA/);
 });
+
+// [Fase 0, Codex r2 BAJO] Un CLIENTE RECHAZADO (lista del equipo no disponible) NO apaga PRUEBA: se apaga solo con un
+// comando aceptado. Y el borrado se ESPERA (borrarDurable), no se dispara y se olvida.
+test('Fase 0: un CLIENTE rechazado no apaga PRUEBA; uno aceptado sí, esperando el borrado', async () => {
+  const borrados = [];
+  const rech = await procesarComandoCliente({
+    waId: telefonoDuenio(), texto: 'CLIENTE Juan Pérez +56987654321', autorizar: () => true, listaVigente: () => false,
+    borrarMarca: async (k) => { borrados.push(k); },
+  });
+  assert.match(rech, /lista del equipo no está disponible/);
+  assert.deepEqual(borrados, [], 'rechazado: la marca PRUEBA sigue');
+  let termino = false;
+  await procesarComandoCliente({
+    waId: telefonoDuenio(), texto: 'CLIENTE OFF', autorizar: () => true, listaVigente: () => true,
+    borrarMarca: async (k) => { await new Promise((r) => setTimeout(r, 20)); termino = true; borrados.push(k); },
+  });
+  assert.equal(termino, true, 'el comando ESPERA al borrado antes de responder');
+});

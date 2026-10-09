@@ -178,7 +178,7 @@ export function payloadSaveLead(turno, leadState = {}, state = {}) {
 /**
  * [r11 #1 · Codex] El turno V1 (index.js, respaldo ante una excepción de Oliver GPT) NO entiende la
  * atribución: cotizaría a nombre de quien escribe. Si quien escribe tiene un cliente fijado —o es un
- * vendedor, con o sin cliente— V1 no lo atiende. El dueño sin cliente fijado sí (cotiza para sí).
+ * vendedor, con o sin cliente— V1 no lo atiende. [Fase 0, 09-oct] El dueño sin cliente fijado TAMPOCO: se le pide CLIENTE.
  */
 export const TEXTO_V1_CON_ATRIBUCION = 'Tuve un problema procesando tu mensaje, reenvíalo en un minuto.';
 export const TEXTO_V1_DUENIO_SIN_CLIENTE = 'Antes de cotizar dime para qué cliente es: CLIENTE Nombre Apellido +569XXXXXXXX (o reenvía tu mensaje en un minuto si era una prueba).';
