@@ -1142,6 +1142,11 @@ export async function handleWebhook(req, res, deps = {}) {
                 phone: ac.telefono,
                 wamid: ac.msgId,
                 leido_at: ac.ts || null,
+                // [Codex r2 08-oct, MEDIO #8] La misma hora de Meta en SEGUNDOS: sales-os la convierte
+                // con to_timestamp (un entero de 10 dígitos nunca rompe la consulta). Con event_at, un
+                // webhook atrasado podía ordenar la lectura DESPUÉS de una respuesta y afirmar en falso
+                // "leyó y no respondió".
+                leido_epoch: ac.ts ? Math.floor(Date.parse(ac.ts) / 1000) : null,
               })).catch(() => {});
             }
           }

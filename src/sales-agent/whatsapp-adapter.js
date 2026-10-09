@@ -130,7 +130,9 @@ export function parseInbound(body) {
   // y el outbound de un mismo turno se persisten juntos con ~50 ms de diferencia. Medir con
   // eso daba "mediana 0 segundos", que no significaba nada.
   // Es un requisito de la 9001 §9.1.1: no se puede vigilar lo que no se registra.
-  const enviadoAt = Number(msg.timestamp) > 0 ? new Date(Number(msg.timestamp) * 1000).toISOString() : null;
+  // [Codex r2 08-oct] Misma guarda que los acuses: un timestamp fuera de rango (1e100) lanzaba RangeError
+  // y se perdía el MENSAJE del cliente. tsDeMeta devuelve null si no es una fecha válida.
+  const enviadoAt = tsDeMeta(msg.timestamp);
   return { ok: true, from: msg.from, text, msgId: msg.id, type, push_name: pushName, enviadoAt };
 }
 

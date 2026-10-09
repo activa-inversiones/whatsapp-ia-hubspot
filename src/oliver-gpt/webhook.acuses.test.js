@@ -306,6 +306,7 @@ test('👁 un acuse READ registra mensaje_leido con la hora de Meta, aunque el m
   assert.equal(leidos.length, 1);
   assert.deepEqual(leidos[0].payload, {
     phone: '56940415964', wamid: 'wamid.TXT9', leido_at: new Date(1791500100 * 1000).toISOString(),
+    leido_epoch: 1791500100, // [Codex r2] la hora de Meta en segundos, para ordenar bien contra la respuesta
   });
   assert.equal(spy.turnos, 0);
   assert.equal(spy.textos.length, 0);
@@ -338,4 +339,12 @@ test('👁 un timestamp fuera de rango (1e100) da leido_at null y NO pierde el f
   const leido = spy.eventos.find((e) => e.tipo === 'mensaje_leido');
   assert.equal(leido.payload.leido_at, null);
   assert.ok(spy.borrados.length > 0 || spy.avisos.length > 0, 'el failed del mismo lote se procesó');
+});
+
+test('[Codex r2] un MENSAJE con timestamp fuera de rango no lanza: enviadoAt null', async () => {
+  const { parseInbound } = await import('../sales-agent/whatsapp-adapter.js');
+  const body = { entry: [{ changes: [{ value: { messages: [{ id: 'm1', from: '56940415964', type: 'text', text: { body: 'hola' }, timestamp: '1e100' }] } }] }] };
+  const r = parseInbound(body);
+  assert.equal(r.ok, true);
+  assert.equal(r.enviadoAt, null);
 });
