@@ -266,6 +266,7 @@
 //   [P7-P13] (todos los fixes anteriores siguen vigentes)
 // ═══════════════════════════════════════════════════════════════════
 
+import { esSoloAcuses } from "./src/oliver-gpt/soloAcuses.js"; // [2026-10-08 #1403] acuses → oliver-gpt
 import express from "express";
 import axios from "axios";
 import http from "http";
@@ -5480,6 +5481,23 @@ app.post("/webhook", async (req, res) => {
       }
     }
   } catch (e) { try { logErr("ceo_assistant_outer", e); } catch {} }
+
+  // 🔴 [2026-10-08 · OK del dueño «dale con la a» · #1403] ACUSES DE META → oliver-gpt.
+  // Un webhook con SOLO acuses (sent/delivered/read/failed) no trae número de quien escribe, así que el
+  // routing de abajo (por extractMsg) nunca lo mandaba a src/oliver-gpt/webhook.js, que es quien los
+  // procesa: caían a V1 y se descartaban. Se desvían ANTES del routing por número. Mensajes normales y
+  // webhooks mixtos NO entran acá (esSoloAcuses = false): su camino queda idéntico. Misma firma de Meta.
+  try {
+    if (process.env.OLIVER_GPT_ENABLED === "true" && esSoloAcuses(req.body)) {
+      if (!verifySig(req)) { res.sendStatus(200); return; }
+      const { handleWebhook } = await import("./src/oliver-gpt/webhook.js");
+      return handleWebhook(req, res);
+    }
+  } catch (e) {
+    try { logErr("acuses_route", e); } catch {}
+    // Si el 200 ya salió, no se sigue a V1 (mandaría otro 200 y no tiene nada que hacer con un acuse).
+    if (res.headersSent) return;
+  }
 
   // [Oliver GPT pilot] routing por feature-flag — handler AISLADO (src/oliver-gpt).
   // Gated: si OLIVER_GPT_ENABLED!="true" o el número no está en OLIVER_GPT_NUMBERS,
