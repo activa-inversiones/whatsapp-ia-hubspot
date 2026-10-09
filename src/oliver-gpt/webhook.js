@@ -492,6 +492,16 @@ function rateOk(waId, rateMap = RATE_MAP) {
 
 /** El comando RESET del chat (lo usan el corte del vendedor sin cliente y el manejo del reset). */
 const RESET_RE = /^\s*reset(ear)?\s*$/i;
+// [2026-10-09 · Fase 0] El dueño sin cliente fijado tiene que elegir: CLIENTE (cotiza a nombre del cliente) o PRUEBA.
+const PRUEBA_RE = /^\s*prueba\s*$/i;
+const MODO_PRUEBA_SEG = 2 * 3600;
+export const TEXTO_PEDIR_CLIENTE_DUENIO =
+  '¿Para qué cliente es esta cotización? Así queda en SU ficha y no en la tuya.\n' +
+  'Escríbeme en un mensaje aparte: CLIENTE Nombre Apellido +569XXXXXXXX\n' +
+  'Si es una prueba del sistema, escribe solo: PRUEBA (queda a tu nombre, fuera de los KPI, por 2 horas).';
+export const TEXTO_MODO_PRUEBA =
+  '🧪 Modo prueba activado por 2 horas: lo que cotices queda a tu nombre y no cuenta en los KPI. ' +
+  'Para cotizarle a un cliente real usa CLIENTE Nombre +569… (o RESET para salir).';
 
 /* MUTEX por teléfono: services/lockTelefono.js (el MISMO que usa el comando CLIENTE en index.js). */
 
@@ -1476,6 +1486,48 @@ export async function handleWebhook(req, res, deps = {}) {
     // adivina de quién es un mensaje. Se le pide el comando y se corta ANTES del LLM (no toma
     // medidas ni guarda nada a su nombre). El dueño queda afuera: puede cotizar para sí.
     // [L3 r10] RESET queda exento: un vendedor sin cliente tiene que poder limpiar su sesión.
+    // 🔴 [2026-10-09 · FASE 0 · decisión del dueño tras el tridente: «sí, empieza con la fase 0»]
+    // DA VUELTA lo de arriba («el dueño queda afuera: puede cotizar para sí», 30-sep). Medido el 09-oct:
+    // 136 de las 190 cotizaciones huérfanas de 2 meses salieron del teléfono del DUEÑO (la última el
+    // 08-oct): quedaban a su nombre y el cliente real aparecía "sin precio". Ahora el dueño sin cliente
+    // fijado tampoco cotiza: se le pide CLIENTE… o PRUEBA (las pruebas del sistema siguen posibles:
+    // quedan a su nombre, que ya está fuera de los KPI). PRUEBA dura 2 h y se renueva con cada mensaje.
+    // Los comandos (CLIENTE, agenda, asistente) se atienden ANTES, en el enrutador de index.js.
+    if (turno.esDuenio && !atribucion && !RESET_RE.test(inbound?.text || '')) {
+      const kPrueba = `modo_prueba:${String(from).replace(/\D/g, '')}`;
+      const leerKv = deps.leerEstado || leerEstado;
+      const escribirKv = deps.escribirEstado || escribirEstado;
+      if (PRUEBA_RE.test(inbound?.text || '')) {
+        await safe('fase0.prueba', () => escribirKv(kPrueba, { at: Date.now() }, MODO_PRUEBA_SEG));
+        await safe('fase0.prueba.aviso', () => sendWhatsAppText(from, TEXTO_MODO_PRUEBA));
+        return; // el finally suelta el lock
+      }
+      let enPrueba = null;
+      try { enPrueba = await leerKv(kPrueba); } catch { /* ante la duda, se pide el cliente */ }
+      if (!enPrueba) {
+        log('info', 'atribucion', `${String(from).slice(-4)}: dueño sin CLIENTE ni PRUEBA; se le pide (Fase 0)`);
+        // [Thermos conjunto #4, conservado] Si tenía la carpeta de un cliente ABIERTA (un redeploy borró la
+        // atribución de memoria), se le recuerda CUÁL y el comando exacto para retomarla, no la pregunta genérica.
+        let pedido = TEXTO_PEDIR_CLIENTE_DUENIO;
+        try {
+          const ses = conv.get(from) || await loadSession(from, deps);
+          const st = ses?.state || {};
+          const abierta = st.carpeta_activa && st.carpeta_activa !== 'propia' && String(st.carpeta_activa) !== String(from).replace(/\D/g, '')
+            && st.carpeta_cerrada !== st.carpeta_activa;
+          if (abierta) {
+            const nombre = st.carpeta_nombre || 'Nombre';
+            pedido = `ℹ️ Tu cotización de *${st.carpeta_nombre || 'tu cliente'}* quedó guardada. Para seguirla manda ` +
+              `CLIENTE ${nombre} +${st.carpeta_activa}
+(o PRUEBA si ahora es una prueba del sistema)`;
+          }
+        } catch { /* sin sesión: la pregunta genérica sirve igual */ }
+        await safe('fase0.pedirCliente', () => sendWhatsAppText(from, pedido));
+        return; // el finally suelta el lock
+      }
+      // En modo prueba: se renueva (2 h desde el último mensaje) y sigue como hoy, a su nombre.
+      safe('fase0.prueba.renovar', () => escribirKv(kPrueba, { at: Date.now() }, MODO_PRUEBA_SEG));
+    }
+
     if (esVendedorInterno && !atribucion && !RESET_RE.test(inbound?.text || '')) {
       log('info', 'atribucion', `${String(from).slice(-4)}: vendedor sin CLIENTE fijado; se le pide el comando`);
       // [r3 #3] Si su CLIENTE iba a ser rechazado, se le dice la causa real (no se le pide en bucle).

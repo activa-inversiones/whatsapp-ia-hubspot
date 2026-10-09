@@ -673,6 +673,10 @@ test('🔴 el DUEÑO no entra al enfriamiento: trabaja por lotes para varios cli
   // hoy le bloqueaba el segundo informe del lote y NADIE se habría enterado.
   process.env.OWNER_PHONE = '56957296035';
   const { deps, spy, estado } = makeDeps();
+  // [2026-10-09 · FASE 0, decisión del dueño] El dueño ya no cotiza ni pide informes sin cliente fijado: tiene que
+  // usar CLIENTE… o PRUEBA (webhook.fase0-duenio.test.js). Lo que este test protege —que el enfriamiento NO le frene
+  // el lote— sigue valiendo; se lo corre en modo PRUEBA, que es como el dueño hace hoy un lote sin cliente fijado.
+  estado.set('modo_prueba:56957296035', { valor: { at: Date.now() }, expira: Date.now() + 7200 * 1000 });
   deps.parseInbound = () => ({ ok: true, from: '56957296035', text: 'informe para cliente',
     msgId: `wamid.${Math.random()}`, type: 'text' });
   const enviados = () => spy.docsEnviados.filter((d) => /^Informe-Termico/.test(d.filename || '')).length;
