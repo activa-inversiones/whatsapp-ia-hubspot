@@ -1500,7 +1500,9 @@ export async function handleWebhook(req, res, deps = {}) {
     const kPrueba = `modo_prueba:${String(from).replace(/\D/g, '')}`;
     if (turno.esDuenio && (atribucion || RESET_RE.test(inbound?.text || ''))) {
       // [Codex r2] Borrado que ESPERA a la BD (el fire-and-forget podía revivir la marca tras un redeploy).
-      await safe('fase0.prueba.borrar', () => (deps.borrarEstado || borrarEstadoDurable)(kPrueba));
+      const rb = await safe('fase0.prueba.borrar', () => (deps.borrarEstado || borrarEstadoDurable)(kPrueba));
+      // [Copilot r3] Si la BD no confirmó el borrado (2 intentos), queda registrado: el vencimiento de 2 h lo acota.
+      if (rb && rb.ok === false) log('warn', 'fase0', `${String(from).slice(-4)}: no se pudo confirmar el borrado de PRUEBA (${rb.motivo || 'sin motivo'}); vence sola en ≤2 h`);
     }
     if (turno.esDuenio && !atribucion && !RESET_RE.test(inbound?.text || '')) {
       const leerKv = deps.leerEstado || leerEstado;
@@ -1515,7 +1517,8 @@ export async function handleWebhook(req, res, deps = {}) {
         try { guardo = (await escribirDur(kPrueba, { at: Date.now() }, MODO_PRUEBA_SEG))?.ok === true; } catch { guardo = false; }
         // [Codex r2] escribirDurable deja la marca en MEMORIA aunque la BD no confirme: si no quedó, se borra también
         // la copia local, para no tener un modo prueba «fantasma» después de decir «no pude activar».
-        if (!guardo) { try { (deps.borrarEstado || borrarEstado)(kPrueba); } catch { /* nada más que hacer */ } }
+        // [Copilot r3] Con el borrado DURABLE: si la escritura llegó a la BD sin confirmarse, no puede quedar allá.
+        if (!guardo) await safe('fase0.prueba.revertir', () => (deps.borrarEstado || borrarEstadoDurable)(kPrueba));
         await safe('fase0.prueba.aviso', () => sendWhatsAppText(from, guardo ? TEXTO_MODO_PRUEBA
           : '⚠️ No pude activar el modo prueba (falla interna). Inténtalo en un momento, o usa CLIENTE Nombre +569….'));
         return; // el finally suelta el lock

@@ -559,3 +559,11 @@ test('Fase 0: un CLIENTE rechazado no apaga PRUEBA; uno aceptado sí, esperando 
   });
   assert.equal(termino, true, 'el comando ESPERA al borrado antes de responder');
 });
+
+test('Fase 0 [Copilot r3]: si la BD no confirma el borrado de PRUEBA, CLIENTE OFF lo avisa', async () => {
+  const msg = await procesarComandoCliente({
+    waId: telefonoDuenio(), texto: 'CLIENTE OFF', autorizar: () => true, listaVigente: () => true,
+    borrarMarca: async () => ({ ok: false, motivo: 'sales_os_no_confirmo' }),
+  });
+  assert.match(msg, /No pude confirmar que el modo prueba quedó apagado/);
+});

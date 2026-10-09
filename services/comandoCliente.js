@@ -124,16 +124,19 @@ export async function procesarComandoCliente({
     : `⚠️ ${r.error}`;
   const esDuenio = perfilEquipo(waId).rol === 'duenio';
   // [Codex r2] Se borra recién con el comando ACEPTADO (OFF acá; fijar más abajo, tras validar), y ESPERANDO a la BD.
+  let pruebaSinConfirmar = false;
   const apagarPrueba = async () => {
     if (!esDuenio) return;
-    try { await borrarMarca(`modo_prueba:${digitos(waId)}`); } catch { /* el vencimiento propio de 2 h la apaga igual */ }
+    // [Copilot r3] Si la BD no confirmó el borrado, se le AVISA (no se dice «liberado» como si nada): vence sola en ≤2 h.
+    try { pruebaSinConfirmar = (await borrarMarca(`modo_prueba:${digitos(waId)}`))?.ok === false; } catch { pruebaSinConfirmar = true; }
   };
   if (r.limpiar) {
     limpiar(waId, { desde });
     await apagarPrueba();
     // [Fase 0] Para el dueño ya NO es verdad que «vuelve a quedar a tu nombre»: sin cliente no cotiza.
     return esDuenio
-      ? '✅ Listo, cliente liberado. Para cotizar de nuevo: CLIENTE Nombre +569…, o PRUEBA si es una prueba del sistema.'
+      ? '✅ Listo, cliente liberado. Para cotizar de nuevo: CLIENTE Nombre +569…, o PRUEBA si es una prueba del sistema.' +
+        (pruebaSinConfirmar ? '\n⚠️ No pude confirmar que el modo prueba quedó apagado: se apaga solo en menos de 2 h.' : '')
       : '✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.';
   }
   // [r15 · Codex] Sin lista del equipo (nunca cargó, o >30 min sin refrescar) no se puede saber si el
