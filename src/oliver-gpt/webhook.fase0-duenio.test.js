@@ -120,7 +120,7 @@ test('Fase 0: PRUEBA activa el modo prueba por 2 h (sin llamar al LLM)', async (
   assert.ok(textos.some((x) => x.t === TEXTO_MODO_PRUEBA));
 });
 
-test('Fase 0: en modo prueba el dueño cotiza como antes (a su nombre) y la prueba se renueva', async () => {
+test('Fase 0: en modo prueba el dueño cotiza como antes (a su nombre) y la prueba NO se renueva (2 h fijas)', async () => {
   preparar();
   const ev = []; const pdf = [];
   const deps = makeDeps(DUENIO, 'wamid.F0.ENPRUEBA', ev, pdf, { medida: '1300x1000' });
@@ -131,7 +131,8 @@ test('Fase 0: en modo prueba el dueño cotiza como antes (a su nombre) y la prue
   const sent = ev.find((e) => e.status === 'sent');
   assert.ok(sent, `debe emitirse en modo prueba (resultado: ${JSON.stringify(pdf[0])})`);
   assert.equal(String(sent.phone).replace(/\D/g, ''), DUENIO, 'en prueba queda a nombre del dueño, como antes');
-  assert.ok(renov.includes(7200), 'cada mensaje en prueba renueva las 2 h');
+  // [Copilot GPT-5.4 r1 #1] Renovarla con cada mensaje la volvía permanente: 2 h FIJAS desde PRUEBA.
+  assert.equal(renov.length, 0, 'un mensaje en prueba NO renueva la marca');
 });
 
 test('Fase 0: el dueño CON cliente fijado cotiza a nombre del CLIENTE (no necesita PRUEBA)', async () => {
@@ -150,4 +151,55 @@ test('Fase 0: un CLIENTE normal no se toca (no se le pide nada, cotiza como siem
   try { await correr(makeDeps(OTRO, 'wamid.F0.OTRO', ev, pdf, { textos, medida: '1600x1000' })); } finally { preparar(); }
   assert.ok(ev.find((e) => e.status === 'sent'), 'el cliente cotiza normal');
   assert.ok(!textos.some((x) => x.t === TEXTO_PEDIR_CLIENTE_DUENIO), 'al cliente nunca se le pide CLIENTE/PRUEBA');
+});
+
+// 🔴 [Copilot GPT-5.4 r1 #1, ALTO] La marca PRUEBA NO puede quedar pegada: si sobrevivía a CLIENTE, tras cotizarle al
+// cliente el siguiente mensaje del dueño volvía a caer a SU nombre — el mismo bug que la Fase 0 cierra.
+test('Fase 0: fijar CLIENTE borra la marca de PRUEBA', async () => {
+  preparar();
+  fijar(DUENIO, CLIENTE, 'Juan Pérez');
+  const ev = []; const pdf = [];
+  const deps = makeDeps(DUENIO, 'wamid.F0.BORRA', ev, pdf, { medida: '1450x1000' });
+  await deps.escribirEstado(`modo_prueba:${DUENIO}`, { at: Date.now() });
+  const borrados = [];
+  deps.borrarEstado = async (k) => { borrados.push(k); };
+  try { await correr(deps); } finally { preparar(); }
+  assert.ok(borrados.includes(`modo_prueba:${DUENIO}`), `borrados: ${JSON.stringify(borrados)}`);
+});
+
+test('Fase 0: RESET borra la marca de PRUEBA', async () => {
+  preparar();
+  const ev = []; const pdf = [];
+  const deps = makeDeps(DUENIO, 'wamid.F0.RESET', ev, pdf);
+  deps.parseInbound = () => ({ ok: true, from: DUENIO, text: 'reset', msgId: 'wamid.F0.RESET', type: 'text' });
+  const borrados = [];
+  deps.borrarEstado = async (k) => { borrados.push(k); };
+  sinTurno(deps);
+  try { await correr(deps); } finally { preparar(); }
+  assert.ok(borrados.includes(`modo_prueba:${DUENIO}`), `borrados: ${JSON.stringify(borrados)}`);
+});
+
+test('Fase 0 [Copilot r1 #2]: si no se pudo guardar PRUEBA, se dice (no se promete un modo que no quedó)', async () => {
+  preparar();
+  const ev = []; const pdf = []; const textos = [];
+  const deps = makeDeps(DUENIO, 'wamid.F0.FALLA', ev, pdf, { textos });
+  deps.parseInbound = () => ({ ok: true, from: DUENIO, text: 'PRUEBA', msgId: 'wamid.F0.FALLA', type: 'text' });
+  const esc0 = deps.escribirEstado;
+  deps.escribirEstado = (k, v, ttl) => { if (String(k).startsWith('modo_prueba:')) throw new Error('kv caído'); return esc0(k, v, ttl); };
+  sinTurno(deps);
+  try { await correr(deps); } finally { preparar(); }
+  assert.ok(!textos.some((x) => x.t === TEXTO_MODO_PRUEBA), 'no dice "activado"');
+  assert.ok(textos.some((x) => /No pude activar el modo prueba/.test(x.t)), `textos: ${JSON.stringify(textos.map((x) => x.t))}`);
+});
+
+test('Fase 0 [Copilot r1 #8]: PRUEBA tolera variantes ("prueba.", "modo prueba", "Prueba 🧪")', async () => {
+  for (const variante of ['prueba.', 'modo prueba', 'Prueba 🧪', '  PRUEBA  ']) {
+    preparar();
+    const ev = []; const pdf = []; const textos = [];
+    const deps = makeDeps(DUENIO, `wamid.F0.V.${variante}`, ev, pdf, { textos });
+    deps.parseInbound = () => ({ ok: true, from: DUENIO, text: variante, msgId: `wamid.F0.V.${variante}`, type: 'text' });
+    sinTurno(deps);
+    try { await correr(deps); } finally { preparar(); }
+    assert.ok(textos.some((x) => x.t === TEXTO_MODO_PRUEBA), `«${variante}» debía activar PRUEBA`);
+  }
 });

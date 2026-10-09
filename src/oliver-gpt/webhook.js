@@ -493,15 +493,17 @@ function rateOk(waId, rateMap = RATE_MAP) {
 /** El comando RESET del chat (lo usan el corte del vendedor sin cliente y el manejo del reset). */
 const RESET_RE = /^\s*reset(ear)?\s*$/i;
 // [2026-10-09 · Fase 0] El dueño sin cliente fijado tiene que elegir: CLIENTE (cotiza a nombre del cliente) o PRUEBA.
-const PRUEBA_RE = /^\s*prueba\s*$/i;
+// Tolerante: "PRUEBA", "prueba.", "modo prueba", "prueba 🧪" (Copilot r1 #8). Solo eso en el mensaje.
+const PRUEBA_RE = /^\s*(modo\s+)?prueba[\s.!¡🧪]*$/iu;
 const MODO_PRUEBA_SEG = 2 * 3600;
 export const TEXTO_PEDIR_CLIENTE_DUENIO =
   '¿Para qué cliente es esta cotización? Así queda en SU ficha y no en la tuya.\n' +
   'Escríbeme en un mensaje aparte: CLIENTE Nombre Apellido +569XXXXXXXX\n' +
-  'Si es una prueba del sistema, escribe solo: PRUEBA (queda a tu nombre, fuera de los KPI, por 2 horas).';
+  'Si es una prueba del sistema, escribe solo: PRUEBA (queda a tu nombre, fuera de los KPI, por 2 horas).\n' +
+  '(Audios y fotos también esperan a que digas para qué cliente son.)';
 export const TEXTO_MODO_PRUEBA =
   '🧪 Modo prueba activado por 2 horas: lo que cotices queda a tu nombre y no cuenta en los KPI. ' +
-  'Para cotizarle a un cliente real usa CLIENTE Nombre +569… (o RESET para salir).';
+  'Se apaga solo, o al fijar un cliente con CLIENTE Nombre +569…, o con RESET.';
 
 /* MUTEX por teléfono: services/lockTelefono.js (el MISMO que usa el comando CLIENTE en index.js). */
 
@@ -1491,15 +1493,23 @@ export async function handleWebhook(req, res, deps = {}) {
     // 136 de las 190 cotizaciones huérfanas de 2 meses salieron del teléfono del DUEÑO (la última el
     // 08-oct): quedaban a su nombre y el cliente real aparecía "sin precio". Ahora el dueño sin cliente
     // fijado tampoco cotiza: se le pide CLIENTE… o PRUEBA (las pruebas del sistema siguen posibles:
-    // quedan a su nombre, que ya está fuera de los KPI). PRUEBA dura 2 h y se renueva con cada mensaje.
+    // quedan a su nombre, que ya está fuera de los KPI). PRUEBA dura 2 h FIJAS (sin renovarse).
+    // 🔴 [Copilot GPT-5.4 r1 #1, ALTO] La marca se BORRA al fijar CLIENTE y con RESET: si quedaba pegada,
+    // tras cotizarle a un cliente el siguiente mensaje volvía a caer a su nombre (el bug que esto cierra).
     // Los comandos (CLIENTE, agenda, asistente) se atienden ANTES, en el enrutador de index.js.
+    const kPrueba = `modo_prueba:${String(from).replace(/\D/g, '')}`;
+    if (turno.esDuenio && (atribucion || RESET_RE.test(inbound?.text || ''))) {
+      safe('fase0.prueba.borrar', () => (deps.borrarEstado || borrarEstado)(kPrueba));
+    }
     if (turno.esDuenio && !atribucion && !RESET_RE.test(inbound?.text || '')) {
-      const kPrueba = `modo_prueba:${String(from).replace(/\D/g, '')}`;
       const leerKv = deps.leerEstado || leerEstado;
       const escribirKv = deps.escribirEstado || escribirEstado;
       if (PRUEBA_RE.test(inbound?.text || '')) {
-        await safe('fase0.prueba', () => escribirKv(kPrueba, { at: Date.now() }, MODO_PRUEBA_SEG));
-        await safe('fase0.prueba.aviso', () => sendWhatsAppText(from, TEXTO_MODO_PRUEBA));
+        // [Copilot r1 #2] Si no se pudo guardar la marca, se dice: no se promete un modo que no quedó activo.
+        let guardo = true;
+        try { await escribirKv(kPrueba, { at: Date.now() }, MODO_PRUEBA_SEG); } catch { guardo = false; }
+        await safe('fase0.prueba.aviso', () => sendWhatsAppText(from, guardo ? TEXTO_MODO_PRUEBA
+          : '⚠️ No pude activar el modo prueba (falla interna). Inténtalo en un momento, o usa CLIENTE Nombre +569….'));
         return; // el finally suelta el lock
       }
       let enPrueba = null;
@@ -1524,8 +1534,7 @@ export async function handleWebhook(req, res, deps = {}) {
         await safe('fase0.pedirCliente', () => sendWhatsAppText(from, pedido));
         return; // el finally suelta el lock
       }
-      // En modo prueba: se renueva (2 h desde el último mensaje) y sigue como hoy, a su nombre.
-      safe('fase0.prueba.renovar', () => escribirKv(kPrueba, { at: Date.now() }, MODO_PRUEBA_SEG));
+      // En modo prueba (2 h fijas desde que escribió PRUEBA): sigue como antes, a su nombre.
     }
 
     if (esVendedorInterno && !atribucion && !RESET_RE.test(inbound?.text || '')) {
