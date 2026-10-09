@@ -8,7 +8,7 @@
 // (notificarDueno creía el ok:true y no usaba su respaldo por Cloud API).
 //
 // Contrato: NUNCA lanza (index.js tiene ~30 llamadores que no esperan excepción).
-//   { ok: true,  wamid }                       Meta aceptó (aceptar ≠ entregar: eso llega por el acuse)
+//   { ok: true,  wamid }                       Meta aceptó Y devolvió el id (aceptar ≠ entregar: eso llega por el acuse)
 //   { ok: false, error, codigo, ambiguo:false } Meta CONTESTÓ que no → seguro que no salió
 //   { ok: false, error, codigo:null, ambiguo:true } Meta no contestó (timeout/red) → PUDO haber salido
 
@@ -17,7 +17,11 @@ export async function enviarTextoWA(http, phoneId, to, body, { logErr } = {}) {
     const r = await http.post(`/${phoneId}/messages`, {
       messaging_product: 'whatsapp', to, type: 'text', text: { body },
     });
-    return { ok: true, wamid: r?.data?.messages?.[0]?.id || null };
+    const wamid = r?.data?.messages?.[0]?.id;
+    // [Codex r2 09-oct] Un 2xx SIN id no prueba que Meta lo aceptó (cuerpo vacío, proxy, estructura rara):
+    // no es éxito. Es AMBIGUO (Meta contestó algo, pudo haberlo tomado) → nadie lo reintenta a ciegas.
+    if (!wamid) return { ok: false, error: 'meta_sin_id', codigo: null, ambiguo: true };
+    return { ok: true, wamid };
   } catch (e) {
     try { logErr?.('waSend', e); } catch { /* el log no puede romper el envío */ }
     const err = e?.response?.data?.error;

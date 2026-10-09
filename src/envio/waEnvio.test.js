@@ -28,6 +28,13 @@ test('Meta NO contesta (timeout) → ok:false AMBIGUO (pudo haber salido)', asyn
   assert.equal(r.ok, false); assert.equal(r.ambiguo, true);
 });
 
+test('2xx SIN id de Meta → NO es éxito: ambiguo (Codex r2)', async () => {
+  for (const data of [{}, { messages: [] }, '', null]) {
+    const r = await enviarTextoWA(http(() => ({ data })), 'PID', '569', 'x');
+    assert.equal(r.ok, false); assert.equal(r.ambiguo, true); assert.equal(r.error, 'meta_sin_id');
+  }
+});
+
 test('nunca lanza, ni aunque el log reviente', async () => {
   const r = await enviarTextoWA(http(() => { throw new Error('x'); }), 'PID', '569', 'x', { logErr: () => { throw new Error('log'); } });
   assert.equal(r.ok, false);
@@ -50,4 +57,9 @@ test('index.js está cableado: waSend delega y operator-send responde según el 
   const handler = src.slice(src.indexOf('app.post("/internal/operator-send",'), src.indexOf('// @patch:sales-os:operator-route:end'));
   assert.ok(handler.length > 500, 'se encontró el handler de operator-send');
   assert.doesNotMatch(handler, /res\.json\(\{ ok: true, sent: true, phone \}\)/, 'el ok:true incondicional no puede volver');
+  // el historial de Oliver se escribe DESPUÉS y solo si salió
+  const iEnvio = handler.indexOf('const envio = await waSendH(phone, text, true');
+  const iHist = handler.indexOf('ses.history.push({ role: "assistant", content: text })');
+  assert.ok(iEnvio > 0 && iHist > iEnvio, 'el historial va después del envío');
+  assert.match(handler, /if \(envio && envio\.ok === true\) \{ ses\.history\.push/);
 });

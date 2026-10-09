@@ -4716,8 +4716,6 @@ app.post("/internal/operator-send", async (req, res) => {
     // Reactivación: comando "BOT ON" (arriba). Mecanismo persistHandoff ya existente y testeado (GT-07).
     try { await persistHandoff(phone, ses, { reason: "operator_takeover" }); } catch {}
 
-    ses.history.push({ role: "assistant", content: text });
-    saveSession(phone, ses);
     const envio = await waSendH(phone, text, true, {
       actor_type: "operator",
       actor_name: operatorName,
@@ -4728,6 +4726,10 @@ app.post("/internal/operator-send", async (req, res) => {
     });
     // [2026-10-09] Si Meta rechazó o no contestó, se DICE (502, con ambiguo). Antes: ok:true siempre.
     // sales-os decide con `ambiguo` si puede reintentar sin duplicar el mensaje (agendaCotizar.envioFallidoSeguro).
+    // [Codex r2 09-oct] El historial de Oliver solo registra lo que SALIÓ: antes se anotaba antes de enviar, y un
+    // rechazo de Meta dejaba a Oliver creyendo que el cliente había recibido ese texto. (El handoff de arriba se
+    // mantiene: el operador tomó el chat a propósito, y ahora ve el error en el inbox.)
+    if (envio && envio.ok === true) { ses.history.push({ role: "assistant", content: text }); saveSession(phone, ses); }
     const salida = respuestaOperatorSend(envio, phone);
     res.status(salida.http).json(salida.body);
   } catch (e) {
