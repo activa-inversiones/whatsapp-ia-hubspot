@@ -46,7 +46,7 @@ import {
 } from '../../services/atribucionTurno.js';
 import { acquireLock, LOCKS } from '../../services/lockTelefono.js';
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
-import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado } from '../../services/estadoPersistente.js';
+import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado, borrarDurable as borrarEstadoDurable } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS, datosDelInforme } from '../../services/informeTermico.js';
 import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
@@ -492,6 +492,18 @@ function rateOk(waId, rateMap = RATE_MAP) {
 
 /** El comando RESET del chat (lo usan el corte del vendedor sin cliente y el manejo del reset). */
 const RESET_RE = /^\s*reset(ear)?\s*$/i;
+// [2026-10-09 · Fase 0] El dueño sin cliente fijado tiene que elegir: CLIENTE (cotiza a nombre del cliente) o PRUEBA.
+// Tolerante: "PRUEBA", "prueba.", "modo prueba", "prueba 🧪" (Copilot r1 #8). Solo eso en el mensaje.
+const PRUEBA_RE = /^\s*(modo\s+)?prueba[\s.!¡🧪]*$/iu;
+const MODO_PRUEBA_SEG = 2 * 3600;
+export const TEXTO_PEDIR_CLIENTE_DUENIO =
+  '¿Para qué cliente es esta cotización? Así queda en SU ficha y no en la tuya.\n' +
+  'Escríbeme en un mensaje aparte: CLIENTE Nombre Apellido +569XXXXXXXX\n' +
+  'Si es una prueba del sistema, escribe solo: PRUEBA (queda a tu nombre, fuera de los KPI, por 2 horas).\n' +
+  '(Audios y fotos también esperan a que digas para qué cliente son.)';
+export const TEXTO_MODO_PRUEBA =
+  '🧪 Modo prueba activado por 2 horas: lo que cotices queda a tu nombre y no cuenta en los KPI. ' +
+  'Se apaga solo, o al fijar un cliente con CLIENTE Nombre +569…, o con RESET.';
 
 /* MUTEX por teléfono: services/lockTelefono.js (el MISMO que usa el comando CLIENTE en index.js). */
 
@@ -1129,6 +1141,27 @@ export async function handleWebhook(req, res, deps = {}) {
                 `${rastro.tipo || 'documento'} ${rastro.folio || ac.msgId} ENTREGADO a ${d(rastro.telefono || ac.telefono).slice(-4)}`);
             });
           }
+          // 👁 [Lote 1b, dueño 08-oct: "estamos ciegos"] El ✓✓ azul: el cliente ABRIÓ el chat.
+          // De TODO mensaje (no solo documentos) y sin mirar el rastro: el dato que sirve es
+          // "cuándo leyó", no qué leyó. Si el cliente apagó las confirmaciones de lectura Meta
+          // nunca manda esto ⇒ la ausencia NO significa "no leyó".
+          // Se repite a propósito (Meta reintenta): sales-os deduplica por `wamid` / usa MAX.
+          // Sin await y con .catch mudo: registrar una lectura jamás demora el 200 a Meta.
+          if (ac.estado === 'read' && ac.telefono) {
+            const _b = deps.bridge || realBridge;
+            if (typeof _b.logOliverEvent === 'function') {
+              Promise.resolve(_b.logOliverEvent('mensaje_leido', {
+                phone: ac.telefono,
+                wamid: ac.msgId,
+                leido_at: ac.ts || null,
+                // [Codex r2 08-oct, MEDIO #8] La misma hora de Meta en SEGUNDOS: sales-os la convierte
+                // con to_timestamp (un entero de 10 dígitos nunca rompe la consulta). Con event_at, un
+                // webhook atrasado podía ordenar la lectura DESPUÉS de una respuesta y afirmar en falso
+                // "leyó y no respondió".
+                leido_epoch: ac.ts ? Math.floor(Date.parse(ac.ts) / 1000) : null,
+              })).catch(() => {});
+            }
+          }
           continue;
         }
         await safe('acuse.fallo', async () => {
@@ -1455,6 +1488,72 @@ export async function handleWebhook(req, res, deps = {}) {
     // adivina de quién es un mensaje. Se le pide el comando y se corta ANTES del LLM (no toma
     // medidas ni guarda nada a su nombre). El dueño queda afuera: puede cotizar para sí.
     // [L3 r10] RESET queda exento: un vendedor sin cliente tiene que poder limpiar su sesión.
+    // 🔴 [2026-10-09 · FASE 0 · decisión del dueño tras el tridente: «sí, empieza con la fase 0»]
+    // DA VUELTA lo de arriba («el dueño queda afuera: puede cotizar para sí», 30-sep). Medido el 09-oct:
+    // 136 de las 190 cotizaciones huérfanas de 2 meses salieron del teléfono del DUEÑO (la última el
+    // 08-oct): quedaban a su nombre y el cliente real aparecía "sin precio". Ahora el dueño sin cliente
+    // fijado tampoco cotiza: se le pide CLIENTE… o PRUEBA (las pruebas del sistema siguen posibles:
+    // quedan a su nombre, que ya está fuera de los KPI). PRUEBA dura 2 h FIJAS (sin renovarse).
+    // 🔴 [Copilot GPT-5.4 r1 #1, ALTO] La marca se BORRA al fijar CLIENTE y con RESET: si quedaba pegada,
+    // tras cotizarle a un cliente el siguiente mensaje volvía a caer a su nombre (el bug que esto cierra).
+    // Los comandos (CLIENTE, agenda, asistente) se atienden ANTES, en el enrutador de index.js.
+    const kPrueba = `modo_prueba:${String(from).replace(/\D/g, '')}`;
+    if (turno.esDuenio && (atribucion || RESET_RE.test(inbound?.text || ''))) {
+      // [Codex r2] Borrado que ESPERA a la BD (el fire-and-forget podía revivir la marca tras un redeploy).
+      const rb = await safe('fase0.prueba.borrar', () => (deps.borrarEstado || borrarEstadoDurable)(kPrueba));
+      // [Copilot r3] Si la BD no confirmó el borrado (2 intentos), queda registrado: el vencimiento de 2 h lo acota.
+      if (rb && rb.ok === false) log('warn', 'fase0', `${String(from).slice(-4)}: no se pudo confirmar el borrado de PRUEBA (${rb.motivo || 'sin motivo'}); vence sola en ≤2 h`);
+    }
+    if (turno.esDuenio && !atribucion && !RESET_RE.test(inbound?.text || '')) {
+      const leerKv = deps.leerEstado || leerEstado;
+      const escribirKv = deps.escribirEstado || escribirEstado;
+      if (PRUEBA_RE.test(inbound?.text || '')) {
+        // [Copilot r1 #2] Si no se pudo guardar la marca, se dice: no se promete un modo que no quedó activo.
+        // [Codex r1 MEDIO #4] `escribirEstado` es fire-and-forget (traga 500/timeout): se usa la escritura DURABLE,
+        // que espera a la BD, para no anunciar un modo que no quedó guardado.
+        const escribirDur = deps.escribirEstadoDurable
+          || (deps.escribirEstado ? async (k, v, t) => { await escribirKv(k, v, t); return { ok: true }; } : escribirEstadoDurable);
+        let guardo = false;
+        try { guardo = (await escribirDur(kPrueba, { at: Date.now() }, MODO_PRUEBA_SEG))?.ok === true; } catch { guardo = false; }
+        // [Codex r2] escribirDurable deja la marca en MEMORIA aunque la BD no confirme: si no quedó, se borra también
+        // la copia local, para no tener un modo prueba «fantasma» después de decir «no pude activar».
+        // [Copilot r3] Con el borrado DURABLE: si la escritura llegó a la BD sin confirmarse, no puede quedar allá.
+        if (!guardo) await safe('fase0.prueba.revertir', () => (deps.borrarEstado || borrarEstadoDurable)(kPrueba));
+        await safe('fase0.prueba.aviso', () => sendWhatsAppText(from, guardo ? TEXTO_MODO_PRUEBA
+          : '⚠️ No pude activar el modo prueba (falla interna). Inténtalo en un momento, o usa CLIENTE Nombre +569….'));
+        return; // el finally suelta el lock
+      }
+      let enPrueba = null;
+      try {
+        const v = await leerKv(kPrueba);
+        // [Codex r1 ALTO #1] El vencimiento se calcula ACÁ, con la hora guardada: al hidratar desde Postgres el KV
+        // cachea sin vencimiento, y tras un redeploy la marca quedaba viva para siempre.
+        const at = Number(v?.at);
+        enPrueba = Number.isFinite(at) && Date.now() - at < MODO_PRUEBA_SEG * 1000 ? v : null;
+      } catch { /* ante la duda, se pide el cliente */ }
+      if (!enPrueba) {
+        log('info', 'atribucion', `${String(from).slice(-4)}: dueño sin CLIENTE ni PRUEBA; se le pide (Fase 0)`);
+        // [Thermos conjunto #4, conservado] Si tenía la carpeta de un cliente ABIERTA (un redeploy borró la
+        // atribución de memoria), se le recuerda CUÁL y el comando exacto para retomarla, no la pregunta genérica.
+        let pedido = TEXTO_PEDIR_CLIENTE_DUENIO;
+        try {
+          const ses = conv.get(from) || await loadSession(from, deps);
+          const st = ses?.state || {};
+          const abierta = st.carpeta_activa && st.carpeta_activa !== 'propia' && String(st.carpeta_activa) !== String(from).replace(/\D/g, '')
+            && st.carpeta_cerrada !== st.carpeta_activa;
+          if (abierta) {
+            const nombre = st.carpeta_nombre || 'Nombre';
+            pedido = `ℹ️ Tu cotización de *${st.carpeta_nombre || 'tu cliente'}* quedó guardada. Para seguirla manda ` +
+              `CLIENTE ${nombre} +${st.carpeta_activa}
+(o PRUEBA si ahora es una prueba del sistema)`;
+          }
+        } catch { /* sin sesión: la pregunta genérica sirve igual */ }
+        await safe('fase0.pedirCliente', () => sendWhatsAppText(from, pedido));
+        return; // el finally suelta el lock
+      }
+      // En modo prueba (2 h fijas desde que escribió PRUEBA): sigue como antes, a su nombre.
+    }
+
     if (esVendedorInterno && !atribucion && !RESET_RE.test(inbound?.text || '')) {
       log('info', 'atribucion', `${String(from).slice(-4)}: vendedor sin CLIENTE fijado; se le pide el comando`);
       // [r3 #3] Si su CLIENTE iba a ser rechazado, se le dice la causa real (no se le pide en bucle).

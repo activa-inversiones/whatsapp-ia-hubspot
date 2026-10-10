@@ -209,7 +209,21 @@ export function borrar(clave) {
   pedir('DELETE', clave).catch(() => {});
 }
 
+/**
+ * Borrado que ESPERA a la base (par de escribirDurable). [2026-10-09 · Fase 0, Codex r2] `borrar` es fire-and-forget:
+ * si el DELETE fallaba y había un redeploy, la marca revivía al hidratar. Devuelve {ok} y reintenta una vez.
+ */
+export async function borrarDurable(clave) {
+  MEMORIA.delete(clave);
+  if (!PERSISTENCIA_ACTIVA) return { ok: false, enMemoria: true, motivo: 'persistencia_apagada' };
+  for (let intento = 0; intento < 2; intento++) {
+    const r = await pedir('DELETE', clave).catch(() => null);
+    if (r !== null && r?.ok !== false) return { ok: true };
+  }
+  return { ok: false, motivo: 'sales_os_no_confirmo' };
+}
+
 /** Para tests. */
 export function _reset() { MEMORIA.clear(); }
 
-export default { leer, leerConEstado, leerLocal, escribir, escribirDurable, reservar, liberarReserva, borrar, PERSISTENCIA_ACTIVA };
+export default { leer, leerConEstado, leerLocal, escribir, escribirDurable, reservar, liberarReserva, borrar, borrarDurable, PERSISTENCIA_ACTIVA };

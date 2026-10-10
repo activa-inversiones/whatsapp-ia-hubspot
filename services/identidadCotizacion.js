@@ -178,9 +178,10 @@ export function payloadSaveLead(turno, leadState = {}, state = {}) {
 /**
  * [r11 #1 · Codex] El turno V1 (index.js, respaldo ante una excepción de Oliver GPT) NO entiende la
  * atribución: cotizaría a nombre de quien escribe. Si quien escribe tiene un cliente fijado —o es un
- * vendedor, con o sin cliente— V1 no lo atiende. El dueño sin cliente fijado sí (cotiza para sí).
+ * vendedor, con o sin cliente— V1 no lo atiende. [Fase 0, 09-oct] El dueño sin cliente fijado TAMPOCO: se le pide CLIENTE.
  */
 export const TEXTO_V1_CON_ATRIBUCION = 'Tuve un problema procesando tu mensaje, reenvíalo en un minuto.';
+export const TEXTO_V1_DUENIO_SIN_CLIENTE = 'Antes de cotizar dime para qué cliente es: CLIENTE Nombre Apellido +569XXXXXXXX (o reenvía tu mensaje en un minuto si era una prueba).';
 /**
  * @returns {string|null} el texto a responder si V1 NO debe atender este mensaje; null si puede.
  *  · [r13 #3] el dueño con un comando admin (parseAdminCmd) pasa: esos comandos no cotizan.
@@ -190,6 +191,10 @@ export const TEXTO_V1_CON_ATRIBUCION = 'Tuve un problema procesando tu mensaje, 
 export function v1Rechazo(waId, tsMensaje = null, { esComandoAdmin = false, deps } = {}) {
   const t = resolverTurno(waId, Date.now(), { ...(deps || {}), tsMensaje });
   if (t.esDuenio && esComandoAdmin) return null;
+  // 🔴 [2026-10-09 · Fase 0, Codex r1 ALTO #3] DA VUELTA «dueño para sí: V1 normal». La V1 (respaldo cuando Oliver GPT
+  // falla o no enruta) era la puerta lateral: cotizaba a nombre del dueño sin cliente. Sin atribución, la V1 no le
+  // cotiza: se le pide CLIENTE (PRUEBA vive en el camino principal; la V1 no la conoce, y no hace falta).
+  if (t.esDuenio && !t.atribucion) return TEXTO_V1_DUENIO_SIN_CLIENTE;
   if (t.esVendedor && !t.atribucion) return textoCorteVendedor(t.perfil);
   if (t.atribucion || t.esVendedor) return TEXTO_V1_CON_ATRIBUCION;
   return null;

@@ -291,3 +291,60 @@ test('🔴 un `sent` NO concilia: Meta lo acepta y puede fallar después', async
   await new Promise((r) => setTimeout(r, 150));
   assert.equal(spy.textos.filter((t) => /Actualización de la entrega/.test(String(t.body))).length, 0);
 });
+
+// 👁 [Lote 1b, dueño 08-oct: "estamos ciegos"] El ✓✓ azul se registra para la agenda.
+// Guardia de la DECISIÓN: el `read` de CUALQUIER mensaje (no solo documentos rastreados)
+// queda en oliver_events con la hora de Meta; `sent`/`delivered` no generan este evento,
+// y el cliente no recibe nada ni se despierta el bot.
+test('👁 un acuse READ registra mensaje_leido con la hora de Meta, aunque el mensaje no esté rastreado', async () => {
+  const { deps, spy } = makeDeps();
+  await handleWebhook({ body: acuse('sent', 'wamid.TXT9', { timestamp: '1791500000' }) }, makeRes(), deps);
+  await handleWebhook({ body: acuse('delivered', 'wamid.TXT9', { timestamp: '1791500001' }) }, makeRes(), deps);
+  await handleWebhook({ body: acuse('read', 'wamid.TXT9', { timestamp: '1791500100' }) }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 120));
+  const leidos = spy.eventos.filter((e) => e.tipo === 'mensaje_leido');
+  assert.equal(leidos.length, 1);
+  assert.deepEqual(leidos[0].payload, {
+    phone: '56940415964', wamid: 'wamid.TXT9', leido_at: new Date(1791500100 * 1000).toISOString(),
+    leido_epoch: 1791500100, // [Codex r2] la hora de Meta en segundos, para ordenar bien contra la respuesta
+  });
+  assert.equal(spy.turnos, 0);
+  assert.equal(spy.textos.length, 0);
+});
+
+test('👁 un READ sin timestamp igual se registra (leido_at null) y un fallo del registro no rompe el 200', async () => {
+  const { deps, spy } = makeDeps();
+  deps.bridge.logOliverEvent = async (tipo, payload) => { spy.eventos.push({ tipo, payload }); throw new Error('sales-os caído'); };
+  const res = makeRes();
+  await handleWebhook({ body: acuse('read', 'wamid.TXT10') }, res, deps);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(res.sentStatus, 200);
+  assert.equal(spy.eventos.filter((e) => e.tipo === 'mensaje_leido')[0].payload.leido_at, null);
+});
+
+// [Codex post-deploy 08-oct, MEDIO #8] Un timestamp absurdo no puede tumbar el lote de acuses:
+// el `failed` que viene en el MISMO webhook tiene que procesarse igual (libera el candado).
+test('👁 un timestamp fuera de rango (1e100) da leido_at null y NO pierde el failed del mismo lote', async () => {
+  const { deps, spy } = makeDeps({
+    enviado: { msgId: 'wamid.DOC1', tipo: 'informe_termico', folio: 'F1', telefono: '56940415964' },
+  });
+  const body = { entry: [{ changes: [{ value: { statuses: [
+    { id: 'wamid.TXT11', status: 'read', recipient_id: '56940415964', timestamp: '1e100' },
+    { id: 'wamid.DOC1', status: 'failed', recipient_id: '56940415964', errors: [{ code: 131026, title: 'x' }] },
+  ] } }] }] };
+  const res = makeRes();
+  await handleWebhook({ body }, res, deps);
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(res.sentStatus, 200);
+  const leido = spy.eventos.find((e) => e.tipo === 'mensaje_leido');
+  assert.equal(leido.payload.leido_at, null);
+  assert.ok(spy.borrados.length > 0 || spy.avisos.length > 0, 'el failed del mismo lote se procesó');
+});
+
+test('[Codex r2] un MENSAJE con timestamp fuera de rango no lanza: enviadoAt null', async () => {
+  const { parseInbound } = await import('../sales-agent/whatsapp-adapter.js');
+  const body = { entry: [{ changes: [{ value: { messages: [{ id: 'm1', from: '56940415964', type: 'text', text: { body: 'hola' }, timestamp: '1e100' }] } }] }] };
+  const r = parseInbound(body);
+  assert.equal(r.ok, true);
+  assert.equal(r.enviadoAt, null);
+});

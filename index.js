@@ -266,6 +266,7 @@
 //   [P7-P13] (todos los fixes anteriores siguen vigentes)
 // ═══════════════════════════════════════════════════════════════════
 
+import { esSoloAcuses } from "./src/oliver-gpt/soloAcuses.js"; // [2026-10-08 #1403] acuses → oliver-gpt
 import express from "express";
 import axios from "axios";
 import http from "http";
@@ -325,6 +326,7 @@ import { puedeEnviar as puedeEnviarSeguimiento, marcarEnviado as marcarSeguimien
 // [2026-06-14] Cerebro de Oliver para IG/FB (mismo handleTurn que WhatsApp, toolCtx adaptado).
 import { handleChannelTurn } from "./src/oliver-gpt/channel-agent.js";
 // [2026-06-13] import de cotizadorWinhouseBridge.js ELIMINADO (pricer cotizador_winhouse muerto). Archivo borrado.
+import { enviarTextoWA, respuestaOperatorSend } from "./src/envio/waEnvio.js";
 
 dotenv.config();
 const require = createRequire(import.meta.url);
@@ -1847,17 +1849,10 @@ function humanMs(text) {
   return Math.round((1200 + Math.min(6500, w * 170)) * (0.85 + Math.random() * 0.35));
 }
 
+// [2026-10-09] Devuelve el resultado REAL (antes se tragaba el error de Meta y operator-send contestaba ok:true
+// aunque el mensaje no hubiera salido). Nunca lanza: ver src/envio/waEnvio.js.
 async function waSend(to, body) {
-  try {
-    await axiosWA.post(`/${META.PHONE_ID}/messages`, {
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body },
-    });
-  } catch (e) {
-    logErr("waSend", e);
-  }
+  return enviarTextoWA(axiosWA, META.PHONE_ID, to, body, { logErr });
 }
 
 // @patch:sales-os:send:start
@@ -1867,7 +1862,7 @@ async function waSendH(to, text, skipTyping = false, meta = {}) {
   const stop = skipTyping ? null : startTypingLoop(to);
   try {
     await sleep(humanMs(safeText));
-    await waSend(to, safeText);
+    const envio = await waSend(to, safeText);
     if (meta.track !== false) {
       fireAndForget(
         "trackConversationEvent.outbound",
@@ -1888,6 +1883,7 @@ async function waSendH(to, text, skipTyping = false, meta = {}) {
       // [v5.2] Marcar lead como respondido (idempotente, falla silenciosa)
       fireAndForget("markLeadResponded", markLeadResponded(to));
     }
+    return envio; // [2026-10-09] los llamadores que lo necesitan (operator-send) ven si Meta lo aceptó
   } finally {
     stop?.();
   }
@@ -4689,7 +4685,7 @@ app.post("/internal/operator-send", async (req, res) => {
         logErr("/internal/operator-send", new Error(`channel_send_failed: ${r && r.error}`));
         return res.status(502).json({ ok: false, error: (r && r.error) || "channel_send_failed" });
       }
-      return res.json({ ok: true, sent: true, channel, recipient: recipientId });
+      return res.json({ ok: true, sent: true, channel, recipient: recipientId, message_id: r.messageId || null });
     }
 
     // WhatsApp (comportamiento original, intacto)
@@ -4720,9 +4716,7 @@ app.post("/internal/operator-send", async (req, res) => {
     // Reactivación: comando "BOT ON" (arriba). Mecanismo persistHandoff ya existente y testeado (GT-07).
     try { await persistHandoff(phone, ses, { reason: "operator_takeover" }); } catch {}
 
-    ses.history.push({ role: "assistant", content: text });
-    saveSession(phone, ses);
-    await waSendH(phone, text, true, {
+    const envio = await waSendH(phone, text, true, {
       actor_type: "operator",
       actor_name: operatorName,
       customer_name: ses.data?.name || "",
@@ -4730,7 +4724,14 @@ app.post("/internal/operator-send", async (req, res) => {
       quote_status: ses.pdfSent ? "formal_sent" : (ses.data?.stageKey || undefined), // [2026-06-11 G8] el PDF enviado → 'formal_sent' (antes quedaba 'propuesta')
       track: false,
     });
-    res.json({ ok: true, sent: true, phone });
+    // [2026-10-09] Si Meta rechazó o no contestó, se DICE (502, con ambiguo). Antes: ok:true siempre.
+    // sales-os decide con `ambiguo` si puede reintentar sin duplicar el mensaje (agendaCotizar.envioFallidoSeguro).
+    // [Codex r2 09-oct] El historial de Oliver solo registra lo que SALIÓ: antes se anotaba antes de enviar, y un
+    // rechazo de Meta dejaba a Oliver creyendo que el cliente había recibido ese texto. (El handoff de arriba se
+    // mantiene: el operador tomó el chat a propósito, y ahora ve el error en el inbox.)
+    if (envio && envio.ok === true) { ses.history.push({ role: "assistant", content: text }); saveSession(phone, ses); }
+    const salida = respuestaOperatorSend(envio, phone);
+    res.status(salida.http).json(salida.body);
   } catch (e) {
     logErr("/internal/operator-send", e);
     res.status(500).json({ ok: false, error: "internal_operator_send_failed" });
@@ -5480,6 +5481,25 @@ app.post("/webhook", async (req, res) => {
       }
     }
   } catch (e) { try { logErr("ceo_assistant_outer", e); } catch {} }
+
+  // 🔴 [2026-10-08 · OK del dueño «dale con la a» · #1403] ACUSES DE META → oliver-gpt.
+  // Un webhook con SOLO acuses (sent/delivered/read/failed) no trae número de quien escribe, así que el
+  // routing de abajo (por extractMsg) nunca lo mandaba a src/oliver-gpt/webhook.js, que es quien los
+  // procesa: caían a V1 y se descartaban. Se desvían ANTES del routing por número. Mensajes normales y
+  // webhooks mixtos NO entran acá (esSoloAcuses = false): su camino queda idéntico. Misma firma de Meta.
+  try {
+    if (process.env.OLIVER_GPT_ENABLED === "true" && esSoloAcuses(req.body)) {
+      if (!verifySig(req)) { res.sendStatus(200); return; }
+      const { handleWebhook } = await import("./src/oliver-gpt/webhook.js");
+      // `return await`, no `return`: sin await, un rechazo de la promesa NO entra al catch de abajo y queda
+      // como unhandledRejection (Copilot GPT-5.4, revisión 08-oct, M1).
+      return await handleWebhook(req, res);
+    }
+  } catch (e) {
+    try { logErr("acuses_route", e); } catch {}
+    // Si el 200 ya salió, no se sigue a V1 (mandaría otro 200 y no tiene nada que hacer con un acuse).
+    if (res.headersSent) return;
+  }
 
   // [Oliver GPT pilot] routing por feature-flag — handler AISLADO (src/oliver-gpt).
   // Gated: si OLIVER_GPT_ENABLED!="true" o el número no está en OLIVER_GPT_NUMBERS,

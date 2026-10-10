@@ -34,6 +34,16 @@ const axiosWA = axios.create({
  *   Para tipos no-texto (audio/imagen/etc.) devuelve text = "[<tipo>]" para
  *   que el agente pueda pedir que escriban en texto.
  */
+// [Codex post-deploy 08-oct, MEDIO #8] Un timestamp finito pero fuera del rango de Date (p.ej. 1e100)
+// hacía lanzar toISOString() DENTRO del parser: se perdía el lote entero de acuses, incluidos los
+// `failed` que liberan candados. Ahora lo que no es una fecha válida da null y el resto sigue.
+function tsDeMeta(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const d = new Date(n * 1000);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
 /**
  * LOS ACUSES DE META (`statuses[]`).
  *
@@ -71,6 +81,9 @@ export function parseStatuses(body) {
       fallo: String(st.status || '') === 'failed',
       codigo: err && Number.isFinite(Number(err.code)) ? Number(err.code) : null,
       motivo: [err?.title, err?.message, err?.error_data?.details].filter(Boolean).join(' — '),
+      // Hora REAL del acuse según Meta (segundos epoch), no la de llegada del webhook:
+      // un reintento puede llegar minutos después. null si no viene o es basura.
+      ts: tsDeMeta(st.timestamp),
     });
     return salida;
   }, []);
@@ -117,7 +130,9 @@ export function parseInbound(body) {
   // y el outbound de un mismo turno se persisten juntos con ~50 ms de diferencia. Medir con
   // eso daba "mediana 0 segundos", que no significaba nada.
   // Es un requisito de la 9001 §9.1.1: no se puede vigilar lo que no se registra.
-  const enviadoAt = Number(msg.timestamp) > 0 ? new Date(Number(msg.timestamp) * 1000).toISOString() : null;
+  // [Codex r2 08-oct] Misma guarda que los acuses: un timestamp fuera de rango (1e100) lanzaba RangeError
+  // y se perdía el MENSAJE del cliente. tsDeMeta devuelve null si no es una fecha válida.
+  const enviadoAt = tsDeMeta(msg.timestamp);
   return { ok: true, from: msg.from, text, msgId: msg.id, type, push_name: pushName, enviadoAt };
 }
 

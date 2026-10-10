@@ -9,6 +9,7 @@ import { digitos, normalizarChileno, esCelularChileno } from './telefono.js';
 import { perfilEquipo, telefonoDuenio, listaEquipoVigente } from './internosEquipo.js';
 import { fijar, limpiar, vigenciaMs } from './atribucionStore.js';
 import { yaNosEscribio, marcarSinConsentimiento } from './consentimiento.js';
+import { borrarDurable } from './estadoPersistente.js';
 
 const FORMAS_OFF = /^(off|no|ninguno|salir|listo|fin)$/i;
 /** RUT chileno escrito con guion (con o sin puntos): 12.345.678-9, 56789012-3, 9.876.543-K. */
@@ -109,6 +110,10 @@ export async function procesarComandoCliente({
   // comando esperaba el lock no puede ejecutarse igual.
   autorizar = () => autorizaComandoCliente(waId, texto),
   listaVigente = () => listaEquipoVigente(),
+  // [2026-10-09 · Fase 0, Codex r1 ALTO #2] CLIENTE (fijar u OFF) borra la marca PRUEBA del dueño EN EL MOMENTO:
+  // antes se borraba recién en el turno siguiente con atribución, y PRUEBA → CLIENTE → CLIENTE OFF dejaba la
+  // marca viva ⇒ lo siguiente volvía a cotizarse a nombre del dueño.
+  borrarMarca = (k) => borrarDurable(k),
 }) {
   let autorizado = false;
   try { autorizado = autorizar() === true; } catch { autorizado = false; }
@@ -117,9 +122,22 @@ export async function procesarComandoCliente({
   if (!r.ok) return r.error === 'no_es_comando'
     ? `⚠️ No entendí el comando. Escríbelo en la primera línea, así: ${EJEMPLO}`   // nunca el codigo crudo
     : `⚠️ ${r.error}`;
+  const esDuenio = perfilEquipo(waId).rol === 'duenio';
+  // [Codex r2] Se borra recién con el comando ACEPTADO (OFF acá; fijar más abajo, tras validar), y ESPERANDO a la BD.
+  let pruebaSinConfirmar = false;
+  const apagarPrueba = async () => {
+    if (!esDuenio) return;
+    // [Copilot r3] Si la BD no confirmó el borrado, se le AVISA (no se dice «liberado» como si nada): vence sola en ≤2 h.
+    try { pruebaSinConfirmar = (await borrarMarca(`modo_prueba:${digitos(waId)}`))?.ok === false; } catch { pruebaSinConfirmar = true; }
+  };
   if (r.limpiar) {
     limpiar(waId, { desde });
-    return '✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.';
+    await apagarPrueba();
+    // [Fase 0] Para el dueño ya NO es verdad que «vuelve a quedar a tu nombre»: sin cliente no cotiza.
+    return esDuenio
+      ? '✅ Listo, cliente liberado. Para cotizar de nuevo: CLIENTE Nombre +569…, o PRUEBA si es una prueba del sistema.' +
+        (pruebaSinConfirmar ? '\n⚠️ No pude confirmar que el modo prueba quedó apagado: se apaga solo en menos de 2 h.' : '')
+      : '✅ Listo. Lo que cotices ahora vuelve a quedar a tu nombre.';
   }
   // [r15 · Codex] Sin lista del equipo (nunca cargó, o >30 min sin refrescar) no se puede saber si el
   // número es de un vendedor: perfilEquipo diría "no es equipo" sin lanzar. Se rechaza para TODOS,
@@ -138,6 +156,7 @@ export async function procesarComandoCliente({
     return `⚠️ Ese número es tuyo o de alguien del equipo, no de un cliente. Escribe el WhatsApp del cliente: ${EJEMPLO}`;
   }
   fijar(waId, r.phone, r.name, { desde });
+  await apagarPrueba();   // [Fase 0, Codex r2] PRUEBA se apaga recién con el CLIENTE ya fijado (no si fue rechazado)
   // [r11 #6 · Codex] El lead del cliente NO se crea ni se reabre acá: se crea/reabre al COTIZAR
   // (borrador o emisión bajo atribución llevan `lead` con no_pisar). Un comando no es una
   // cotización: «CLIENTE Juan» + «CLIENTE OFF» revivía a un perdido sin que nadie le cotizara.
