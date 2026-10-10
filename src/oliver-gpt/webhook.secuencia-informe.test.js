@@ -1017,3 +1017,23 @@ test('🔴 webhook → láminas: si el MOTOR avisa algo sobre la ventana, ningú
   assert.ok(await esperar(() => llamadas.length > 0));
   assert.deepEqual({ perfiles: llamadas[0].perfiles, desconocidas: llamadas[0].desconocidas }, { perfiles: [], desconocidas: true });
 });
+
+// [Codex r19] Un _label_motor que venga del LLM NO puede neutralizar el motor caído.
+test('🔴 r19: _label_motor inventado por el LLM + motor caído ⇒ ningún perfil propio', async () => {
+  const llamadas = [];
+  const { deps } = makeDeps({ modoOn: true });
+  deps.laminasParaInforme = async (a) => { llamadas.push(a); return null; };
+  deps.handleTurn = async ({ state, toolCtx }) => {
+    await toolCtx.generarPdf({
+      items: [{ product: 'Corredera SLIDING H98 Doble Riel S75', producto_label: 'Corredera SLIDING H98 Doble Riel S75',
+        _label_motor: 'Corredera SLIDING H98 Doble Riel S75',
+        measures: '3250x1460mm', measures_original: '3250x1460mm', glass_label: 'DVH 5/12/5', ambiente: 'Living',
+        qty: 1, unit_price: 500000, total_price: 500000, color: 'Blanco', termico: { uw: 2.4 } }],
+      comuna: 'Temuco', name: 'Dady',
+    });
+    return { reply: 'Listo', history: [], toolCalls: [], state: { ...state, name: 'Dady' } };
+  };
+  await handleWebhook({ body: {} }, makeRes(), deps);
+  assert.ok(await esperar(() => llamadas.length > 0));
+  assert.deepEqual({ perfiles: llamadas[0].perfiles, desconocidas: llamadas[0].desconocidas }, { perfiles: [], desconocidas: true });
+});

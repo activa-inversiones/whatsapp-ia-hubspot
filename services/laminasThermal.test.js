@@ -582,3 +582,20 @@ test('🔴 ítems con la forma REAL del motor (quoteEngine): H98 de 2 y 3 hojas 
   const raro = Object.create({ hojas: 2, riel: 'DOBLE' });
   assert.equal(perfilDeVentana(real('Corredera SLIDING H98 Doble Riel S75', raro)), '');
 });
+
+// [Codex r19] toJSON / getters / prototipos: JSON.stringify los ejecuta ANTES de copiar, así que un
+// objeto puede mostrar una cara distinta de la que tiene. Fail-closed: no hay perfil propio.
+test('🔴 r19: toJSON, getter o prototipo raro en cualquier nivel ⇒ sin perfil propio', () => {
+  const base = { producto: 'Corredera SLIDING H98 Doble Riel S75' };
+  assert.equal(perfilDeVentana(base), 'Sliding_H98', 'control: el objeto plano sí clasifica');
+  assert.equal(perfilDeVentana({ ...base, compuesta: { partes: 2 }, toJSON() { return base; } }), '');
+  const conGetter = { ...base };
+  Object.defineProperty(conGetter, 'serie', { get: () => 'S75', enumerable: true });
+  assert.equal(perfilDeVentana(conGetter), '');
+  assert.equal(perfilDeVentana({ ...base, corredera: Object.create({ hojas: 2 }) }), '');
+  const comp = { hojas: 2, riel: 'DOBLE' };
+  // Un objeto REPETIDO en dos ramas del item no es un ciclo. Si se tratara como tal, esta ventana
+  // —que SI es el sistema modelado— se quedaria sin perfil propio y el informe diria "referencia".
+  assert.equal(perfilDeVentana({ ...base, corredera: comp, termico: { uw: 2.4, ref: comp } }),
+    'Sliding_H98', 'una referencia compartida no es un ciclo');
+});

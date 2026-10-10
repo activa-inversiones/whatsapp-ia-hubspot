@@ -373,10 +373,31 @@ const CAMPOS_AUTORIZAN = new Set(['producto_label', 'producto', 'product', 'labe
   'tipo', 'apertura', 'serie', '_label_motor']);
 const CAMPOS_COMPUESTA = ['partes', 'bow', 'forma', 'esquina', 'compuesta', 'panos', 'paños', 'riel', 'corredera'];
 
+function tieneAccesores(o, camino = new Set(), cuenta = { n: 0 }) {
+  if (!o || typeof o !== 'object') return false;
+  if (camino.has(o)) return true;                       // ciclo: no se clasifica
+  if (++cuenta.n > 2000) return true;                   // estructura absurda: no se clasifica
+  camino.add(o);
+  const proto = Object.getPrototypeOf(o);
+  if (proto !== Object.prototype && proto !== Array.prototype && proto !== null) return true;
+  for (const k of Reflect.ownKeys(o)) {
+    const d = Object.getOwnPropertyDescriptor(o, k);
+    if (!d || 'get' in d || 'set' in d || k === 'toJSON' || typeof k === 'symbol') return true;
+    if (typeof d.value === 'function') return true;
+    if (d.value && typeof d.value === 'object' && tieneAccesores(d.value, camino, cuenta)) return true;
+  }
+  camino.delete(o);                                     // una referencia COMPARTIDA no es un ciclo
+  return false;
+}
+
 export function perfilDeVentana(v0) {
   // Se lee UNA sola vez una copia plana (sin getters ni prototipos raros: prueba adversarial r2).
   if (!v0 || typeof v0 !== 'object' || Array.isArray(v0)) return '';
   let v;
+  // [Codex r19] JSON.stringify ejecuta toJSON y getters ANTES de copiar: un objeto así puede
+  // mostrar una cara distinta de la que tiene. Fail-closed: si hay un toJSON, un getter o un
+  // prototipo raro en cualquier nivel, no hay perfil propio.
+  if (tieneAccesores(v0)) return '';
   try { v = JSON.parse(JSON.stringify(v0)); } catch { return ''; }
   if (!v || typeof v !== 'object' || Array.isArray(v)) return '';
   // Cualquier rastro de compuesta/variante estructurada => no es un perfil simple modelado.
@@ -518,7 +539,7 @@ export async function laminasParaInforme({ perfiles: cotizados = null, preferido
   const propiosFallidos = propios.some((k) => !grupos.some((g) => g.perfil === k));
   const incompleta = faltaAlguno || propiosFallidos;
   return { ...grupos[0], referencial: grupos.some((g) => !g.propio), coberturaIncompleta: incompleta,
-    propiosFallidos, grupos };
+    propiosFallidos, sinModeloPropio: faltaAlguno === true, grupos };
 }
 
 export default { laminasParaInforme, perfilLaminasDe, perfilesLaminasDe, perfilDeVentana, normalizarRotulo, PERFILES_DE_VENTANA, laminaTermopanel, elegirPerfilTermopanel, perfilesConLaminas, descargarLaminas, esPng, IDS_POR_DEFECTO };

@@ -129,14 +129,18 @@ export function altoFigura(dim, anchoUtil) {
   return Math.min(Math.round(anchoUtil * (dim.alto / dim.ancho)), tope);
 }
 
-export function introLaminas(grupos = [], coberturaIncompleta = false, propiosFallidos = false) {
+export function introLaminas(grupos = [], coberturaIncompleta = false, propiosFallidos = false, sinModeloPropio = false) {
   const gs = Array.isArray(grupos) ? grupos : [];
   const ref = gs.filter((g) => g && g.propio !== true).length;
   const propios = gs.filter((g) => g && g.propio === true).length;
   // Si un sistema SÍ modelado no alcanzó a traer sus figuras, no se puede decir "no tiene modelo":
   // se dice lo que es verdad — que no todas las figuras están en este informe.
+  // [Codex r19] Los dos motivos se COMPONEN: una descarga fallida no puede ocultar que además
+  // hay ventanas sin modelo propio. Se usa `sinModeloPropio` (solo ventanas SIN perfil), no
+  // `coberturaIncompleta`, que también se prende por la descarga fallida y haría mentir al texto.
   if (propiosFallidos) return 'Este informe no incluye las figuras de todos los sistemas de su proyecto; '
-    + 'las que se muestran corresponden a los sistemas indicados en cada una.';
+    + 'las que se muestran corresponden a los sistemas indicados en cada una.'
+    + (sinModeloPropio ? ' Además, parte de las ventanas de su proyecto no tiene un modelo propio en nuestro sistema.' : '');
   if (!ref && !coberturaIncompleta) return '';
   if (!ref || propios) return 'Algunas ventanas de su proyecto aún no tienen un modelo térmico propio en nuestro sistema; '
     + (ref ? 'para ellas se incluyen, como referencia, los sistemas que sí están modelados.'
@@ -1041,7 +1045,8 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
         parrafo('Estas figuras salen del cálculo por elementos finitos del perfil: cada línea une los '
           + 'puntos que están a la misma temperatura. Donde las líneas se juntan, el calor escapa más '
           + 'rápido; donde se separan, el perfil aísla.');
-        const _intro = introLaminas(_grupos, laminas?.coberturaIncompleta === true, laminas?.propiosFallidos === true);
+        const _intro = introLaminas(_grupos, laminas?.coberturaIncompleta === true, laminas?.propiosFallidos === true,
+          laminas?.sinModeloPropio === true);
         if (_intro) parrafo(_intro);
         }
         {

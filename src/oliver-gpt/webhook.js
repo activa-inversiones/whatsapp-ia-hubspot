@@ -3398,6 +3398,13 @@ Comuna: ${datos.comuna}`
             }
           }
 
+          // 🔴 [2026-10-07, Codex r19] Los campos internos del MOTOR (_label_motor, _avisos_motor) NO
+          // pueden venir del LLM: un _label_motor inventado neutralizaba el aviso de motor caido y el
+          // informe decia "corresponden al sistema de su cotizacion". Se borran SIEMPRE aca y solo los
+          // vuelve a escribir la recotizacion con lo que devolvio el motor.
+          for (const _it of (Array.isArray(input.items) ? input.items : [])) {
+            if (_it && typeof _it === 'object') { delete _it._label_motor; delete _it._avisos_motor; }
+          }
           // ── [thermal 2026-06-25] Uw SIEMPRE del MOTOR, nunca del LLM ───────
           // Re-cotiza CADA ventana en el motor (priceAllEngine → /api/quotes/calculate)
           // y toma su `termico` REAL (Uw certificado). Oliver NO pasa nada térmico:

@@ -274,3 +274,12 @@ test('altoFigura: vertical usa casi la pagina, horizontal conserva 430, ninguna 
   assert.equal(altoFigura(null, ancho), 300);
   assert.ok(altoFigura({ ancho: 10, alto: 10000 }, ancho) + 40 <= 842 - 60 - 70);
 });
+
+// [Codex r19] descarga propia fallida + ventanas sin modelo: los dos motivos se informan juntos.
+test('🔴 r19: propiosFallidos no oculta la cobertura incompleta', () => {
+  const t = introLaminas([{ propio: true }], true, true, true);
+  assert.match(t, /no incluye las figuras de todos los sistemas/);
+  assert.match(t, /no tiene un modelo propio/);
+  // solo falló la descarga (coberturaIncompleta se prende igual): NO se afirma que falte modelo
+  assert.doesNotMatch(introLaminas([{ propio: true }], true, true, false), /no tiene un modelo propio/);
+});
