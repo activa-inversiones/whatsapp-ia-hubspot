@@ -46,6 +46,14 @@ const CORPUS = [
   { amb: 'water', bano: true, por: null },
   { amb: 'antebaño', bano: true, por: 'la regla vieja del precio SÍ lo tomaba: sacarlo sería cobrar de menos' },
   // — las que NO lo son, y por qué —
+  // 🔴 HECHO DEL NEGOCIO (dueño, textual 2026-10-11, preguntado explícitamente porque dos revisores
+  // marcaron que `toilet` había salido sin orden): «NORMALMENTE PREGUNTAN POR UN ESPEJO CUANDO USAN
+  // ESO, NO BAÑO». O sea: «toilette» NO es una ventana de baño — es la señal de que el cliente viene
+  // por un ESPEJO, que Activa no fabrica y que ya tiene su propio camino (`oliverOutOfCatalog.js`,
+  // verificado: «toilette» y «espejo» caen ahí solas y el cliente recibe el mensaje de retención).
+  // Ponerle satén a un «toilette» sería cotizarle una ventana a alguien que pidió un espejo.
+  { amb: 'toilette', bano: false, por: 'dueño 11-10: cuando dicen eso piden un ESPEJO, no una ventana' },
+  { amb: 'toilet', bano: false, por: 'ídem' },
   { amb: 'ducha', bano: false, por: 'HECHO DEL NEGOCIO (dueño 11-10): es mampara de vidrio templado' },
   { amb: 'bañera', bano: false, por: 'ídem: mampara de vidrio templado, otro producto' },
   { amb: 'mampara de ducha', bano: false, por: 'otro producto; además está fuera de catálogo' },
