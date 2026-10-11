@@ -449,7 +449,13 @@ export function huellaDelInforme({ comuna = '', producto = '', glassLabel = '', 
   // dos candados distintos y el cliente recibiría el informe DOS VECES. Lo cazó la suite al cambiar
   // el rótulo que lee el cliente (orden del dueño del 11-10): 2 informes salieron de nuevo con el
   // candado vigente. Se normaliza sacando las palabras que nombran la FAMILIA, no el vidrio.
-  const normVidrio = (v) => norm(String(v || '').replace(/termopanel|dvh/gi, ' '));
+  // [Codex, compuerta 11-10] También sale el «(baño)»: es el RECINTO, no el vidrio. Medido contra la
+  // BD viva (180 días): producción usa 19 formas de escribir 4 vidrios, y «Termopanel 4+12+4 satén» y
+  // «Termopanel 4+12+4 satén (baño)» son el MISMO vidrio (id 1609) por dos caminos distintos. Sin esto,
+  // una propuesta corregida que cambie de un rótulo al otro reenvía el informe que el cliente ya tiene.
+  const normVidrio = (v) => norm(String(v || '')
+    .replace(/termopanel|dvh/gi, ' ')
+    .replace(/\(\s*ba[ñn]os?\s*\)/gi, ' '));
   const partes = [norm(comuna), norm(producto), normVidrio(glassLabel)];
   // 🔁 [2026-10-06] DECISION DEL DUEÑO (opcion 2): si la propuesta corregida CAMBIA LAS VENTANAS (medidas, producto
   // con sus hojas, vidrio, cantidad), es otro proyecto y le corresponden informes nuevos. Caso 0597→0598: la V3

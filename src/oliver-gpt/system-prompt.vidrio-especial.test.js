@@ -169,6 +169,12 @@ test('🚿 A9 el baño va con TERMOPANEL SATÉN automático: el prompt no lo pre
     'la pregunta que el dueño sacó el 11-oct NO puede volver');
   assert.match(regla, /NUNCA lo pregunte/i, 'el satén no se pregunta');
   assert.match(regla, /NUNCA frene la cotizaci[oó]n/i, 'y no puede frenar una cotización');
+  // [Codex, compuerta 11-10] La versión anterior de la regla decía «las de baño van con termopanel
+  // satén, confírmame cuáles son» SIN marcar ninguna: prometía en la propuesta un vidrio que no se
+  // había cotizado. Eso es exactamente lo que la regla anti-alucinación del proyecto prohíbe.
+  assert.match(regla, /NUNCA afirme que\s+una ventana lleva sat[eé]n si/i,
+    'no se promete un vidrio que no se cotizó');
+  assert.doesNotMatch(regla, /conf[ií]rmame cu[aá]les son/i, 'la redacción que prometía de más no vuelve');
   assert.match(regla, /ambiente:\s*["“]ba[ñn]o/i, 'el campo que llega al motor sigue siendo el mismo');
   assert.match(regla, /menci[oó]n suelta[^\n]*no[\s\S]{0,40}marca nada/i,
     'una mención suelta («el pasillo del baño») sigue sin marcar nada');
@@ -183,13 +189,16 @@ test('🚿 A9 el baño va con TERMOPANEL SATÉN automático: el prompt no lo pre
 // puro texto, y por eso se puede defender con un test de verdad.
 test('🚿 A9b el prompt nunca le ofrece al cliente "vidrio satén"', () => {
   const regla = bloque(buildSystemBlocks(), 'REGLA DEL BAÑO', { fin: '⛔ "CAMBIAR EL TERMOPANEL' });
-  // la ÚNICA aparición permitida de «vidrio satén» es la línea que lo PROHÍBE
-  const apariciones = (regla.match(/vidrio\s+sat[eé]n/gi) || []).length;
-  const prohibicion = (regla.match(/NUNCA diga "vidrio sat[eé]n"/gi) || []).length;
-  assert.equal(apariciones, prohibicion,
-    'si «vidrio satén» aparece fuera de la línea que lo prohíbe, el LLM va a repetírselo al cliente');
+  // 🔴 [Codex, compuerta 11-10] LA PRIMERA VERSIÓN DE ESTE TEST PASABA AUNQUE BORRARAN LO QUE DEFIENDE:
+  // comparaba «cuántas veces aparece "vidrio satén"» contra «cuántas veces aparece su prohibición», así
+  // que borrando la prohibición quedaba 0 === 0 y daba verde. Es el mismo error que ya cometí dos veces
+  // esta semana. Ahora se afirma primero que la prohibición EXISTE, y recién después que no hay otra.
+  assert.match(regla, /NUNCA diga "vidrio sat[eé]n"/i, 'la prohibición no puede desaparecer');
+  assert.match(regla, /NUNCA lo ofrezca como opci[oó]n/i, 'y el satén tampoco puede ser una opción del cliente');
+  const fuera = regla.replace(/NUNCA diga "vidrio sat[eé]n"/gi, '');
+  assert.doesNotMatch(fuera, /vidrio\s+sat[eé]n/i,
+    'fuera de la línea que lo prohíbe, el LLM se lo repetiría al cliente — que es como empezó todo esto');
 });
-
 /* =========================================================================
  * B) EL CAMINO TÉCNICO DEL BAÑO — caracterización: confirmar, no suponer
  *    calcular_cotizacion({ambiente:'baño'}) → priceAllEngine → pickGlassId → glass_id 1609 en el POST al motor.

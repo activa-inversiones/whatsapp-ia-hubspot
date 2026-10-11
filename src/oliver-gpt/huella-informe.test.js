@@ -80,3 +80,36 @@ test('candados legacy (`true`, sin fecha): sin RESET valen; con RESET quedan sue
   assert.equal(candadoVigente(null, 0), false, 'sin candado nunca hubo envio');
   assert.equal(candadoVigente(undefined, 999), false);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// 🔴 [2026-10-11 · lo cazó la suite primero y Codex lo completó en la compuerta] EL MISMO VIDRIO,
+// ESCRITO DE CUALQUIER FORMA, ES EL MISMO INFORME.
+//
+// La huella incluía el rótulo del vidrio EN CRUDO. MEDIDO contra la BD viva (180 días): producción
+// usa **19 formas distintas de escribir 4 vidrios** («4+12+4 satén», «DVH 4+12+4 satén»,
+// «Termopanel 4+12+4 satén», «Termopanel 4+12+4 satén (baño)», …) según el camino que lo cotizó.
+// Con el rótulo crudo, la MISMA ventana daba candados distintos ⇒ al cliente que ya tenía su
+// informe se le volvía a mandar. Se vio al cambiar el rótulo por orden del dueño: 2 informes
+// salieron de nuevo teniendo el candado vigente.
+//
+// Lo que este test defiende es la DECISIÓN: la huella compara el PRODUCTO, no cómo esté escrito.
+// Y la otra mitad, que es la cara peligrosa: dos vidrios que SÍ son distintos no pueden colapsar,
+// porque entonces a un cliente NO le llegaría un informe que le corresponde.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+test('🔴 el MISMO vidrio escrito de 6 formas da UNA sola huella; vidrios distintos nunca colapsan', () => {
+  const h = (glassLabel) => huellaDelInforme({ comuna: 'Temuco', producto: 'Ventana corredera', glassLabel });
+  // las 6 formas del satén que conviven HOY en producción (medidas en la BD viva)
+  const saten = ['4+12+4 satén (baño)', '4+12+4 satén', 'DVH 4+12+4 satén', 'Termopanel 4+12+4 satén',
+    'Termopanel DVH 4+12+4 satén', 'Termopanel DVH 4+12+4 Satén'].map(h);
+  assert.equal(new Set(saten).size, 1, `6 formas del mismo satén tienen que dar 1 huella: ${[...new Set(saten)]}`);
+  // y las 5 del claro, y las 5 del 5+12+5
+  const claro = ['4+12+4', '4+12+4 DVH', 'DVH 4+12+4', 'Termopanel 4+12+4', 'Termopanel DVH 4+12+4'].map(h);
+  assert.equal(new Set(claro).size, 1);
+  const grande = ['5+12+5', '5+12+5 DVH', 'DVH 5+12+5', 'Termopanel 5+12+5', 'Termopanel DVH 5+12+5'].map(h);
+  assert.equal(new Set(grande).size, 1);
+  // 🔴 LA CARA PELIGROSA: tres vidrios DISTINTOS, tres huellas distintas. Si colapsaran, el cliente
+  // se quedaría SIN un informe que le corresponde, que es peor que recibir uno de más.
+  assert.equal(new Set([saten[0], claro[0], grande[0]]).size, 3, 'satén, claro y 5+12+5 son tres vidrios');
+  // y un low-e tampoco se confunde con su hermano sin low-e
+  assert.notEqual(h('Termopanel 4+12+4 low-e'), claro[0]);
+});
