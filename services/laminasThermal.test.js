@@ -637,3 +637,62 @@ test('🔴 referencias COMPARTIDAS en profundidad no degradan una ventana legiti
   // los arrays no se rechazan por el `length` no-enumerable que les da la norma
   assert.equal(perfilDeVentana({ ...base, termico: { uw: 2.4, serie: [1, 2, 3] } }), 'Sliding_H98');
 });
+
+// ═════════════════════════════════════════════════════════════════════════════════════════
+// 🔴 EL CONTRATO DEL INSPECTOR, EN UN SOLO LUGAR (2026-10-10).
+//
+// `perfilDeVentana` clasifica leyendo el CLON (`JSON.parse(JSON.stringify(item))`), pero otros
+// consumidores leen el objeto ORIGINAL — el PDF dibuja la ventana a partir de `producto_label`. Si
+// el objeto le muestra una cara al clon y otra a quien dibuja, el informe y el dibujo hablan de
+// ventanas DISTINTAS, y el informe va firmado por un evaluador acreditado.
+//
+// Entonces el contrato es: **toda forma en que el clon pueda diferir del original cae del lado
+// seguro** (sin perfil propio ⇒ el informe dice «referencia»). Esta tabla las enumera. Nació de
+// medirlas una por una, porque hasta acá el archivo acumulaba 19 rondas de casos sueltos y nadie
+// podía decir si la lista estaba completa.
+//
+// 📏 LAS TRES QUE JSON PIERDE Y ESTA TABLA NO EXIGE, con su medición y su alcance:
+//  · `undefined` en un valor → el clon borra la clave. El clasificador ya saltea los `undefined`,
+//    así que el veredicto es el mismo. Inofensivo.
+//  · `NaN`/`Infinity` en un número → el clon los vuelve `null`, y un `hoja_mm` basura se trata como
+//    AUSENTE en vez de rechazarse. Medido: devuelve 'Sliding_H98'. **No alcanzable desde JSON** (no
+//    existe NaN en JSON) y `hoja_mm` lo escribe el propio código con `Number(...)`. Queda anotado
+//    acá, no se le agrega una condición más al inspector: la lección de esta ronda es justamente que
+//    enumerar condiciones no converge.
+//  · array disperso y `Object.create(null)` anidado → el clon los normaliza; los dos caen en campos
+//    NEUTROS y no cambian qué ventana es. Inofensivo.
+// ═════════════════════════════════════════════════════════════════════════════════════════
+test('🔴 CONTRATO: toda forma en que el clon pueda diferir del original ⇒ sin perfil propio', () => {
+  const H98 = 'Corredera SLIDING H98 Doble Riel S75';
+  const conGetter = () => { const o = { producto: H98 }; Object.defineProperty(o, 'x', { get: () => H98, enumerable: true }); return o; };
+  const conSetter = () => { const o = { producto: H98 }; Object.defineProperty(o, 'x', { set: () => {}, enumerable: true }); return o; };
+  const noEnumerable = () => { const o = { producto: H98 }; Object.defineProperty(o, 'compuesta', { value: { partes: 4 }, enumerable: false }); return o; };
+  const conCiclo = () => { const t = { uw: 2 }; t.yo = t; return { producto: H98, termico: t }; };
+  const demasiadosNodos = () => { const a = []; for (let i = 0; i < 2100; i++) a.push({ i }); return { producto: H98, termico: { a } }; };
+  class Compuesta { constructor() { this.partes = 4; } }
+
+  const formas = [
+    ['getter enumerable', conGetter],
+    ['setter enumerable', conSetter],
+    ['toJSON propio', () => ({ producto: H98, compuesta: { partes: 4 }, toJSON() { return { producto: H98 }; } })],
+    ['toJSON heredado', () => Object.assign(Object.create({ toJSON() { return { producto: H98 }; } }), { producto: H98, compuesta: { partes: 4 } })],
+    ['propiedad NO enumerable', noEnumerable],
+    ['clave símbolo', () => ({ producto: H98, [Symbol('compuesta')]: { partes: 4 } })],
+    ['valor función', () => ({ producto: H98, f() { return 1; } })],
+    ['prototipo exótico anidado (Date)', () => ({ producto: H98, termico: new Date() })],
+    ['instancia de clase anidada', () => ({ producto: H98, compuesta: new Compuesta() })],
+    ['ciclo', conCiclo],
+    ['Proxy que lanza al inspeccionarlo', () => new Proxy({}, { ownKeys() { throw new Error('x'); } })],
+    ['más de 2000 nodos', demasiadosNodos],
+    ['BigInt (JSON.stringify lanza)', () => ({ producto: H98, qty: 1n })],
+  ];
+  // control: el mismo rótulo, en un objeto plano de verdad, SÍ clasifica. Sin esto la tabla
+  // entera pasaría con una función que devolviera '' siempre.
+  assert.equal(perfilDeVentana({ producto: H98 }), 'Sliding_H98', 'control: el objeto plano clasifica');
+
+  for (const [nombre, armar] of formas) {
+    let r;
+    assert.doesNotThrow(() => { r = perfilDeVentana(armar()); }, `${nombre}: no puede LANZAR, el informe tiene que salir igual`);
+    assert.equal(r, '', `${nombre}: el clon puede diferir del original ⇒ tiene que caer del lado seguro`);
+  }
+});
