@@ -442,7 +442,15 @@ export function huellaDelInforme({ comuna = '', producto = '', glassLabel = '', 
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // "cunco" y "Cuncó" son la misma comuna
     .replace(/[^a-z0-9]+/g, '')
     .slice(0, 40);
-  const partes = [norm(comuna), norm(producto), norm(glassLabel)];
+  // 🔴 [2026-10-11] EL VIDRIO SE COMPARA POR EL PRODUCTO, NO POR CÓMO ESTÉ ESCRITO.
+  // Hoy conviven TRES rótulos para el MISMO vidrio según el camino que lo cotizó —medido contra la
+  // BD viva: «4+12+4 satén (baño)» (77 casos), «Termopanel 4+12+4 satén» (14) y «Termopanel DVH
+  // 4+12+4 satén» (13)—. Si la palabra «termopanel» entrara en la huella, el MISMO proyecto tendría
+  // dos candados distintos y el cliente recibiría el informe DOS VECES. Lo cazó la suite al cambiar
+  // el rótulo que lee el cliente (orden del dueño del 11-10): 2 informes salieron de nuevo con el
+  // candado vigente. Se normaliza sacando las palabras que nombran la FAMILIA, no el vidrio.
+  const normVidrio = (v) => norm(String(v || '').replace(/termopanel|dvh/gi, ' '));
+  const partes = [norm(comuna), norm(producto), normVidrio(glassLabel)];
   // 🔁 [2026-10-06] DECISION DEL DUEÑO (opcion 2): si la propuesta corregida CAMBIA LAS VENTANAS (medidas, producto
   // con sus hojas, vidrio, cantidad), es otro proyecto y le corresponden informes nuevos. Caso 0597→0598: la V3
   // paso a 4 hojas y el candado de 30 dias no mando nada. El COLOR no entra: cambiar solo el color no repite los
@@ -452,7 +460,7 @@ export function huellaDelInforme({ comuna = '', producto = '', glassLabel = '', 
     // entre turnos reenviaria los informes sin que cambie nada).
     const medidas = (v) => (String(v.measures || v.medidas || '').match(/\d+/g) || []).join('x');
     const firma = ventanas.map((v) => [medidas(v), norm(v.producto_label || v.producto || v.product || ''),
-      norm(v.glass_label || v.vidrio || ''), String(Number(v.qty ?? v.cantidad ?? 1) || 1)].join(':')).sort().join(';');
+      normVidrio(v.glass_label || v.vidrio || ''), String(Number(v.qty ?? v.cantidad ?? 1) || 1)].join(':')).sort().join(';');
     partes.push(createHash('sha1').update(firma).digest('hex').slice(0, 12));
   }
   // Sin ningun dato la huella queda vacia: se cae al candado por telefono de siempre, que es

@@ -201,7 +201,10 @@ test('🌬️ B [caso 0588] el vidrio con que el MOTOR cotizo llega a la propues
   assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta sale');
 
   const a = spy.propuestas[0];
-  assert.deepEqual(a?.items.map((i) => i.glass_label), ['5+12+5', '4+12+4'], 'la propuesta imprime el vidrio que se cobro');
+  // [2026-10-11 · orden del dueño: «BAÑO ES BAÑO DE TERMOPANEL SATEN»] El rótulo que lee el cliente
+  // lleva la palabra Termopanel: «4+12+4» a secas se lee como vidrio simple, que es otro producto.
+  assert.deepEqual(a?.items.map((i) => i.glass_label), ['Termopanel 5+12+5', 'Termopanel 4+12+4'],
+    'la propuesta imprime el vidrio que se cobro, y lo nombra como lo que es');
   assert.deepEqual(a?.items.map((i) => i.termico?.uw), [2.7, 2.68], 'control: el Uw impreso es el de ESE vidrio');
   assert.ok(pos(spy, 'vientos') >= 0, `el informe de vientos tiene que salir — linea: ${JSON.stringify(spy.linea)}`);
   const vs = spy.vientos.at(-1) || [];
@@ -291,7 +294,9 @@ test('🌬️ B3/B4 satén con el baño perdido NO se reemplaza; otro producto S
     await handleWebhook({ body: {} }, makeRes(), deps);
     assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta sale');
   });
-  assert.deepEqual(spy.propuestas[0]?.items.map((i) => i.glass_label), ['4+12+4 satén (baño)', '4+12+4']);
+  // [2026-10-11] el primero NO cambia: lo trae el LLM tal cual se lo dio el motor en el turno anterior;
+  // el segundo lo rotula el pricer ahora, y por eso dice Termopanel.
+  assert.deepEqual(spy.propuestas[0]?.items.map((i) => i.glass_label), ['4+12+4 satén (baño)', 'Termopanel 4+12+4']);
   const linea = (aviso) => logs.find((l) => l.includes(aviso)) || '';
   assert.match(linea('vidrio.bano_perdido'), /CM-FR-004-2026-9999.*satén/, `logs: ${logs.filter((l) => /vidrio\./.test(l))}`);
   assert.match(linea('vidrio.producto_distinto'), /CM-FR-004-2026-9999.*DVH 4\/12\/4 low-e/);

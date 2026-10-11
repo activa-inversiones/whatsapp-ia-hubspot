@@ -10,7 +10,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { mapAperturaToEngine, priceAllEngine } from "./enginePricer.js";
+import { mapAperturaToEngine, priceAllEngine, etiquetaVidrio, pickGlassId } from "./enginePricer.js";
+import { VIDRIO_BASE } from "./vidriosBase.js";
 import { MENSAJE_PRODUCTO_FUERA_DE_ALCANCE } from "./productoFueraDeAlcance.js";
 
 const APERTURAS_ENGINE = new Set([
@@ -316,4 +317,56 @@ test("Ronda 3.3: negación POSPUESTA chilena (torturas Codex 4ª ronda)", () => 
   // y las negaciones previas siguen bien
   assert.equal(mapAperturaToEngine("no quiero puerta doble, necesito puerta simple"), "PUERTA");
   assert.equal(mapAperturaToEngine("no quiero puerta abatible, necesito ventana corredera"), "CORREDERA");
+});
+
+
+// ═════════════════════════════════════════════════════════════════════════════════════════
+// 🔴 [2026-10-11 · orden del dueño, textual: «BAÑO ES BAÑO DE TERMOPANEL SATEN»] EL NOMBRE DEL
+// VIDRIO QUE LEE EL CLIENTE LLEVA LA PALABRA TERMOPANEL.
+//
+// Activa no vende vidrio suelto: «4+12+4 satén» a secas se lee como vidrio simple, que es otro
+// producto y otro precio. MEDIDO ese día contra la BD viva: de 129 ítems con ambiente de baño de
+// los últimos 120 días, **77 salieron rotulados «4+12+4 satén (baño)» sin la palabra Termopanel**
+// — 77 propuestas formales ya entregadas a clientes. Los otros 52 sí la traían, por el otro
+// camino: el MISMO producto se llamaba de dos formas en el mismo sistema.
+//
+// Este test defiende las dos mitades de la orden: que diga TERMOPANEL, y que siga diciendo SATÉN
+// (el dibujo busca esa palabra para pintar el baño opaco — sin ella el cliente ve una ventana
+// transparente en su propuesta de baño, que es el defecto que ya se arregló el 31-ago).
+// ═════════════════════════════════════════════════════════════════════════════════════════
+test("🔴 el vidrio que lee el cliente dice TERMOPANEL, y el del baño dice satén", () => {
+  const bano = etiquetaVidrio(VIDRIO_BASE.BANO);
+  assert.match(bano, /termopanel/i, "sin esta palabra el cliente entiende vidrio simple");
+  assert.match(bano, /sat[eé]n/i, "y sin esta el dibujo pinta el baño transparente");
+  // los tres rótulos nombran el mismo producto: ninguno puede quedar sin la palabra
+  for (const [ancho, alto, amb] of [[600, 400, "baño"], [600, 400, ""], [2000, 1500, ""]]) {
+    const etiqueta = etiquetaVidrio(pickGlassId(ancho, alto, amb));
+    assert.match(etiqueta, /^Termopanel /, `«${etiqueta}» tiene que empezar por Termopanel`);
+  }
+  // y el baño es el ÚNICO que lleva satén
+  assert.doesNotMatch(etiquetaVidrio(pickGlassId(600, 400, "")), /sat[eé]n/i);
+  assert.doesNotMatch(etiquetaVidrio(pickGlassId(2000, 1500, "")), /sat[eé]n/i);
+});
+
+// 🔴 [2026-10-11 · hecho del negocio dicho por el dueño, textual: «DUCHA ES MAMPARA DE VIDRIO
+// TEMPLADA Y BAÑERA ES MAMPARA DE VIDRIO TEMPLADA»] Una ducha o una bañera NO son ventanas de
+// baño: son otro producto. No pueden entrar por este camino y recibir satén como si fueran una
+// ventana. (El catálogo no tiene NI UN vidrio templado — medido: 0 de 108 —, así que una mampara
+// no se puede cotizar acá ni por error.)
+test("🔴 ducha y bañera NO son ventanas de baño: son mampara de vidrio templado", () => {
+  for (const amb of ["ducha", "Ducha", "bañera", "banera", "mampara de ducha"]) {
+    assert.notEqual(pickGlassId(600, 400, amb), VIDRIO_BASE.BANO,
+      `«${amb}» es una mampara templada, no una ventana de baño con satén`);
+  }
+  // 🔴 Y LA OTRA PUNTA, que es la que cobraba DE MÁS: hasta el 11-10 la regla no exigía que «bano»
+  // fuera una palabra entera, así que «urbano» contenía «bano» y la ventana se cobraba con satén
+  // ($50.000/m² en vez de $42.679). MEDIDO: 0 casos en 365 días, pero estaba vivo.
+  for (const amb of ["urbano", "sector urbano", "living urbano", "waterloo", "urbanizacion"]) {
+    assert.notEqual(pickGlassId(600, 400, amb), VIDRIO_BASE.BANO,
+      `«${amb}» no es un baño: cobrarle satén es cobrarle de más`);
+  }
+  // control: el baño de verdad sí lo es, por sus varias formas de escribirlo
+  for (const amb of ["baño", "bano", "BAÑO", "wc", "W/C", "water", "baños/despensa", "Baño 2"]) {
+    assert.equal(pickGlassId(600, 400, amb), VIDRIO_BASE.BANO, `«${amb}» sí es baño`);
+  }
 });

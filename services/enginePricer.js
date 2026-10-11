@@ -23,6 +23,7 @@ import { detectarProductoFueraDeAlcance } from "./productoFueraDeAlcance.js";
 // la misma pregunta y le mostro al cliente una ventana que no era la que se le cotizo.
 // NO volver a definirlas aca: la regla es una sola funcion que resuelve.
 import { detectHojas, esMonorrielPorForma } from "./formaMonorriel.js";
+import { esAmbienteBano } from './vidrioSatinado.js';   // UNA sola definición de «baño» (precio = dibujo)
 import { VIDRIO_BASE } from "./vidriosBase.js";
 import { leerMedidaTriple, esBowPorForma, esquinaDesdeLabel } from "./formaEsquina.js";
 export { detectHojas, esMonorrielPorForma };
@@ -33,7 +34,7 @@ const DEFAULT_GLASS_ID = Number(process.env.ACTIVA_ENGINE_DEFAULT_GLASS_ID) || 4
 // ── Selección de vidrio por ÁREA + AMBIENTE (regla del dueño 2026-06-06) ──────
 //   < 2 m²  → 4+12+4 claro (id 1607)
 //   ≥ 2 m²  → 5+12+5 claro (id 1608)
-//   Baño/WC → 4+12+4 satén (id 1609)  [detección por nombre del ambiente]
+//   Baño/WC → Termopanel 4+12+4 satén (id 1609)  [detección por nombre del ambiente]
 // [2026-10-06] Antes 34/61/38: copias MANUALES del motor que el sync de Winart no actualiza.
 // Regla del dueño, textual: *"los vidrios modificados en winart o agregados deben estar en el
 // motor ... esos son los termopaneles base que usaremos"*. 1607/1608/1609 son sus «Propio» de
@@ -41,9 +42,27 @@ const DEFAULT_GLASS_ID = Number(process.env.ACTIVA_ENGINE_DEFAULT_GLASS_ID) || 4
 // IDs configurables por env por si cambian en el catálogo del motor.
 const { STD: GLASS_STD, LARGE: GLASS_LARGE, BANO: GLASS_BANO } = VIDRIO_BASE;   // fuente única: vidriosBase.js
 const GLASS_AREA_M2 = Number(process.env.GLASS_AREA_THRESHOLD_M2) || 2;
+/** El nombre del vidrio TAL COMO LO LEE EL CLIENTE en su propuesta.
+ *  🔴 [2026-10-11 · orden del dueño, textual: «BAÑO ES BAÑO DE TERMOPANEL SATEN»] Lleva la palabra
+ *  TERMOPANEL. Activa no vende vidrio suelto, y «4+12+4 satén» a secas se lee como vidrio simple,
+ *  que es otro producto y otro precio. MEDIDO ese día contra la BD viva: de 129 ítems de baño de los
+ *  últimos 120 días, **77 salieron rotulados «4+12+4 satén (baño)» sin la palabra Termopanel** — o sea
+ *  77 propuestas formales ya entregadas. Los otros 52 sí la traían, por el otro camino: el MISMO
+ *  producto se llamaba de dos formas en el mismo sistema.
+ *  ⚠️ El dibujo depende de que la palabra «satén» siga estando (dibujoVentana.js → claveVidrio busca
+ *  «saten» sin tildes): si alguien cambia este rótulo, el baño se dibuja transparente. */
+export function etiquetaVidrio(glass_id) {
+  if (glass_id === GLASS_BANO) return "Termopanel 4+12+4 satén (baño)";
+  if (glass_id === GLASS_LARGE) return "Termopanel 5+12+5";
+  return "Termopanel 4+12+4";
+}
 export function pickGlassId(ancho_mm, alto_mm, ambiente) {
   const amb = String(ambiente || '').toLowerCase();
-  if (/ba[ñn]o|wc|w\/c|water/.test(amb)) return GLASS_BANO;   // baño → satén
+  // 🔴 [2026-10-11] UNA SOLA DEFINICIÓN DE «ESTO ES UN BAÑO». Antes esta regex vivía acá y OTRA
+  // distinta en vidrioSatinado.js (la que manda el DIBUJO y el aviso al dueño), y discrepaban en 6
+  // de 12 palabras: una ventana podía dibujarse opaca y cobrarse clara, o al revés, en una propuesta
+  // formal. Ahora el precio y el dibujo preguntan lo MISMO, y la definición vive en un solo archivo.
+  if (esAmbienteBano(amb)) return GLASS_BANO;   // baño → termopanel satén
   const area = (Number(ancho_mm) / 1000) * (Number(alto_mm) / 1000);
   return area >= GLASS_AREA_M2 ? GLASS_LARGE : GLASS_STD;
 }
@@ -1359,9 +1378,7 @@ export async function priceAllEngine(d, customer_id = "") {
     // 4) Color / glass_id / comuna / cantidad
     const color = normColorLocal(item.color || d.default_color || "");
     let glass_id = pickGlassId(m.ancho_mm, m.alto_mm, item.ambiente); // por área + baño (la ESQUINA lo re-elige abajo, por su paño mayor)
-    item.glass_label = glass_id === GLASS_BANO ? "4+12+4 satén (baño)"
-                     : glass_id === GLASS_LARGE ? "5+12+5"
-                     : "4+12+4";
+    item.glass_label = etiquetaVidrio(glass_id);
     const comuna = d.comuna || "";
     const cantidad = Math.max(1, Number(item.qty) || 1);
 
@@ -1507,9 +1524,7 @@ export async function priceAllEngine(d, customer_id = "") {
       // esquina (por paño, o por total), se cambia ACA, en un solo lugar.
       const _panoMayor = Math.max(..._bow.partes.map((x) => Number(x.ancho_mm) || 0));
       glass_id = pickGlassId(_panoMayor, _bow.alto_mm, item.ambiente);
-      item.glass_label = glass_id === GLASS_BANO ? "4+12+4 satén (baño)"
-                       : glass_id === GLASS_LARGE ? "5+12+5"
-                       : "4+12+4";
+      item.glass_label = etiquetaVidrio(glass_id);
       // 🔴 [2026-09-24 · #888] EL LIMITE DE FABRICACION NO SE APLICA AL ANCHO TOTAL DE UNA
       // ESQUINA. El chequeo de medidas corre mas arriba, sobre el par ya resuelto, y una bow
       // window de 2800 mm lo pasaba a llevar: "Medida 2800×1500 excede limite S60 (max 1930)".

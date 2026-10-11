@@ -142,17 +142,52 @@ test('🔴 A8 no hay contradicción con tools.js: el prompt no exige glass_id pa
   assert.ok(!def.function.parameters.required.includes('glass_id'), 'la herramienta no lo exige (vidrio automático)');
 });
 
-test('🚿 A9 la regla del baño está en el prompt: se pregunta cuál ventana SOLO si hay varias, y el ambiente va POR VENTANA', () => {
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 🔴 ESTE TEST SE DIO VUELTA EL 2026-10-11, Y ES UNA DECISIÓN DEL DUEÑO, NO UN TRÁMITE.
+//
+// ANTES exigía que el prompt mandara PREGUNTAR «¿Cuál de las ventanas va en el baño?» (regla que
+// entró el 05-oct con el commit 15ea601). AHORA exige lo contrario.
+//
+// ORDEN DEL DUEÑO, TEXTUAL (11-oct, viendo una conversación en vivo donde Oliver le preguntó a un
+// cliente si le ponía «vidrio satén»):
+//     «BAÑO ES BAÑO DE TERMOPANEL SATEN SI SIEMPRE ESTABA BIEN SOLO QUE HICISTE ALGO QUE AHORA
+//      PREGUNTA, DUCHA ES MAMPARA DE VIDRIO TEMPLADA Y BAÑERA ES MAMPARA DE VIDRIO TEMPLADA»
+//
+// Y TENÍA RAZÓN, medido contra la BD viva ese día: el mecanismo automático NUNCA se rompió —127 de
+// 129 ítems con ambiente de baño de los últimos 120 días salieron con satén—. Lo que se rompió fue
+// el PROMPT, que desde 15ea601 mandaba preguntar tres líneas debajo de la línea que dice «VIDRIO Y
+// SERIE — AUTOMÁTICOS. NO los elijas ni preguntes por ellos». El modelo obedeció a la instrucción
+// más vistosa, que era la equivocada.
+//
+// Lo que este test defiende ahora es la DECISIÓN, no la implementación: el satén del baño no es una
+// pregunta, no es una opción del cliente, y no puede frenar una cotización.
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+test('🚿 A9 el baño va con TERMOPANEL SATÉN automático: el prompt no lo pregunta ni lo ofrece', () => {
   const regla = bloque(buildSystemBlocks(), 'REGLA DEL BAÑO', { fin: '⛔ "CAMBIAR EL TERMOPANEL' });
-  assert.match(regla, /¿Cu[aá]l de las ventanas va en el ba[ñn]o\?/i, 'la pregunta exacta que pidió el dueño');
-  assert.match(regla, /ambiente:\s*["“]ba[ñn]o/i, 'el campo que llega al motor');
-  assert.match(regla, /UNA sola ventana[^\n]*sin preguntar/i, 'con una sola ventana NO pregunta');
-  assert.match(regla, /VARIAS ventanas/i);
-  assert.match(regla, /SOLO en esa/i, 'solo a esa ventana');
-  // [06-oct, tras Codex] Antes decía «NUNCA marque todas»; ahora la regla es más estricta: una mención suelta
-  // («al lado del baño») no marca NADA y tampoco dispara la pregunta (Codex: preguntaba de más).
-  assert.match(regla, /menci[oó]n suelta[^\n]*no pregunte ni marque nada/i, 'una mención suelta («al lado del baño») ni pregunta ni marca');
+  assert.match(regla, /TERMOPANEL SAT[EÉ]N/i, 'se nombra el producto que es: termopanel, nunca "vidrio" a secas');
+  assert.doesNotMatch(regla, /¿Cu[aá]l de las ventanas va en el ba[ñn]o\?/i,
+    'la pregunta que el dueño sacó el 11-oct NO puede volver');
+  assert.match(regla, /NUNCA lo pregunte/i, 'el satén no se pregunta');
+  assert.match(regla, /NUNCA frene la cotizaci[oó]n/i, 'y no puede frenar una cotización');
+  assert.match(regla, /ambiente:\s*["“]ba[ñn]o/i, 'el campo que llega al motor sigue siendo el mismo');
+  assert.match(regla, /menci[oó]n suelta[^\n]*no[\s\S]{0,40}marca nada/i,
+    'una mención suelta («el pasillo del baño») sigue sin marcar nada');
   assert.match(regla, /generar_pdf_cotizacion/, 'el ambiente se repite en el ítem del PDF (el PDF re-cotiza con él)');
+  // El hecho del negocio que el dueño corrigió el mismo día, en el prompt para que el LLM no lo pierda.
+  assert.match(regla, /DUCHA y BA[ÑN]ERA NO SON VENTANAS DE BA[ÑN]O/i,
+    'ducha y bañera son mampara de vidrio templado: otro producto, no una ventana con satén');
+});
+
+// 🔴 [2026-10-11] LA PALABRA QUE LEE EL CLIENTE. «Vidrio satén» le sugiere vidrio simple, que es otro
+// producto y otro precio; Activa solo vende termopanel. Esta es la mitad del reclamo del dueño que es
+// puro texto, y por eso se puede defender con un test de verdad.
+test('🚿 A9b el prompt nunca le ofrece al cliente "vidrio satén"', () => {
+  const regla = bloque(buildSystemBlocks(), 'REGLA DEL BAÑO', { fin: '⛔ "CAMBIAR EL TERMOPANEL' });
+  // la ÚNICA aparición permitida de «vidrio satén» es la línea que lo PROHÍBE
+  const apariciones = (regla.match(/vidrio\s+sat[eé]n/gi) || []).length;
+  const prohibicion = (regla.match(/NUNCA diga "vidrio sat[eé]n"/gi) || []).length;
+  assert.equal(apariciones, prohibicion,
+    'si «vidrio satén» aparece fuera de la línea que lo prohíbe, el LLM va a repetírselo al cliente');
 });
 
 /* =========================================================================

@@ -219,15 +219,27 @@ GUIONES (modelo):
   apertura (corredera→SLIDING con sus hojas/riel). Activa SOLO trabaja termopanel DVH (nunca monolítico).
   Tú solo junta: tipo (apertura) + medidas (texto literal del cliente) + cantidad + color + comuna + (si es baño) ambiente.
   NO uses listar_vidrios. NO pases glass_id ni serie a calcular_cotizacion.
-  REGLA DEL BAÑO (decisión del dueño, 2026-10-05): el vidrio satén (privacidad) sale SOLO si usted pasa ambiente:"baño" en la
-  calcular_cotizacion de ESA ventana; sin ese campo el motor cotiza vidrio claro. El ambiente es POR VENTANA.
-    · El cliente tiene UNA sola ventana y dice que es del baño → ambiente:"baño", sin preguntar nada.
-    · El cliente tiene VARIAS ventanas y dice que una (o más) VA EN el baño, sin decir cuál → pregunte UNA vez
-      "¿Cuál de las ventanas va en el baño?" y con su respuesta ponga ambiente:"baño" SOLO en esa(s) ventana(s); las demás van sin ambiente.
-      Una mención suelta ("al lado del baño", "el pasillo del baño") NO es una ventana del baño: no pregunte ni marque nada.
-    · Si el cliente ya dijo cuál es la del baño (por su medida o por su número) → no pregunte: ambiente:"baño" en esa.
-    · Si el cliente no menciona el baño, no lo pregunte ni lo suponga.
-    · Al llamar generar_pdf_cotizacion, repita ese ambiente en el ítem de esa ventana (el PDF vuelve a cotizar con él).
+  REGLA DEL BAÑO — ORDEN DEL DUEÑO, TEXTUAL (2026-10-11): «BAÑO ES BAÑO DE TERMOPANEL SATÉN».
+  Toda ventana que el cliente ubique en un baño va con TERMOPANEL SATÉN (privacidad), AUTOMÁTICO.
+  ⛔ NUNCA lo pregunte, NUNCA lo ofrezca como opción, NUNCA diga "vidrio satén" (Activa no vende vidrio
+  suelto: es TERMOPANEL satén). Usted solo pasa ambiente:"baño" en la calcular_cotizacion de ESA
+  ventana y el motor le pone el satén solo. El ambiente es POR VENTANA.
+    · El cliente dice que una ventana es del baño → ambiente:"baño". Sin preguntar nada.
+    · Si el cliente ya dijo cuál es la del baño (por su medida, su número o su recinto) → ambiente:"baño"
+      en esa, sin preguntar.
+    · Varias ventanas y el cliente dice que algunas van en baños SIN decir cuáles → COTICE IGUAL y
+      dígaselo en la propuesta ("las de baño van con termopanel satén, confírmame cuáles son").
+      ⛔ NUNCA frene la cotización para preguntar cuál es: el satén no es una decisión del cliente,
+      es cómo se hace un baño.
+    · Una mención suelta ("al lado del baño", "el pasillo del baño") NO es una ventana de baño: no
+      marca nada y no se pregunta.
+    · Si el cliente no menciona el baño, no lo suponga.
+    · Al llamar generar_pdf_cotizacion, repita ese ambiente en el ítem de esa ventana (el PDF vuelve a
+      cotizar con él).
+  ⛔ DUCHA y BAÑERA NO SON VENTANAS DE BAÑO — HECHO DEL NEGOCIO (dueño, textual 2026-10-11: «DUCHA ES
+  MAMPARA DE VIDRIO TEMPLADA Y BAÑERA ES MAMPARA DE VIDRIO TEMPLADA»). Una ducha o una bañera se
+  cierran con MAMPARA DE VIDRIO TEMPLADO, que es OTRO PRODUCTO, no una ventana. Nunca las cotice como
+  ventana con satén ni les ponga ambiente:"baño".
   ⛔ "CAMBIAR EL TERMOPANEL/VIDRIO/CRISTAL" DE UNA VENTANA EXISTENTE — CRÍTICO (evita precio inflado):
   el motor NO cotiza vidrio suelto — calcular_cotizacion y calcular_por_area SIEMPRE devuelven el precio de la
   VENTANA COMPLETA (marco+vidrio+herrajes), nunca el de un vidrio aislado. Si el cliente dice "se me quebró/empañó

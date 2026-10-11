@@ -64,11 +64,23 @@ test('🔴 el saten se reconoce CON tilde, que es como lo rotula el motor', () =
   }
 });
 
+// 🔴 ESTE TEST SE AJUSTÓ EL 2026-10-11, Y ES UN HECHO DEL NEGOCIO, NO UNA PREFERENCIA.
+// Antes exigía que «Ducha» y «bañera» se dibujaran con vidrio satén. El dueño lo corrigió, textual:
+//     «DUCHA ES MAMPARA DE VIDRIO TEMPLADA Y BAÑERA ES MAMPARA DE VIDRIO TEMPLADA»
+// O sea: NO son ventanas de baño, son otro producto. Y el PRECIO nunca las consideró baño, así que
+// el dibujo las pintaba opacas mientras se cobraban claras — el documento contradiciendo al cobro.
+// Ahora el dibujo pregunta exactamente lo mismo que el precio (vidrioSatinado.js es la única
+// definición). MEDIDO ese día: 0 casos reales en 120 días, así que esto cierra un hueco dormido.
 test('🔴 si el ambiente es baño va saten, escriba el cliente como escriba', () => {
   // Red de seguridad: no depende de como venga rotulado el vidrio.
-  for (const a of ['Baño', 'bano', 'BAÑO', 'baño principal', 'WC', 'Ducha', 'banera']) {
+  for (const a of ['Baño', 'bano', 'BAÑO', 'baño principal', 'WC', 'W/C', 'water', 'baños/despensa']) {
     assert.equal(claveVidrio('Termopanel DVH 4+12+4', a), 'satinado',
       `ambiente "${a}" tiene que salir con vidrio que no se ve`);
+  }
+  // Y lo que NO es una ventana de baño no se dibuja opaco, para no contradecir lo que se cobra.
+  for (const a of ['Ducha', 'banera', 'bañera', 'mampara de ducha', 'urbano', 'living urbano']) {
+    assert.notEqual(claveVidrio('Termopanel DVH 4+12+4', a), 'satinado',
+      `ambiente "${a}": el precio no le pone satén, el dibujo tampoco puede`);
   }
 });
 
