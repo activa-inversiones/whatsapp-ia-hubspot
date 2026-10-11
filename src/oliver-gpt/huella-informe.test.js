@@ -14,7 +14,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { huellaDelInforme } from './webhook.js';
+import { huellaDelInforme, huellasDelInforme } from './webhook.js';
 
 const CUNCO = { comuna: 'Cunco', producto: 'Ventana corredera', glassLabel: 'TP-M-5+12+5' };
 
@@ -112,4 +112,56 @@ test('🔴 el MISMO vidrio escrito de 6 formas da UNA sola huella; vidrios disti
   assert.equal(new Set([saten[0], claro[0], grande[0]]).size, 3, 'satén, claro y 5+12+5 son tres vidrios');
   // y un low-e tampoco se confunde con su hermano sin low-e
   assert.notEqual(h('Termopanel 4+12+4 low-e'), claro[0]);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// 🔴 [2026-10-11 · lo cazó Thermos en la compuerta, y era el bloqueante del lote]
+// CAMBIAR LA HUELLA NO ARREGLA LOS CANDADOS YA GUARDADOS: LOS VUELVE INALCANZABLES.
+//
+// La huella es parte de la CLAVE (`informe_termico:<cliente>:<huella>`) y el candado vive 30 DÍAS
+// en caché. Al cambiar cómo se calcula, el candado viejo deja de encontrarse, el sistema cree que
+// nunca mandó el informe, y se lo manda de nuevo al cliente — quemando un correlativo ISO NUEVO de
+// una serie que la empresa está certificando.
+//
+// 📏 MEDIDO contra la BD viva el 11-10, sobre los candados VIGENTES en ese momento:
+//   · informe_termico: 163 de 416 quedaban huérfanos ⇒ 41 clientes
+//   · informe_vientos:  71 de 163 ⇒ 36 clientes
+// Uno de esos candados reales era, literal:
+//   `bot:activa:informe_termico:56931862981:|proyectantes60|termopaneldvh4124`
+//
+// Lo que este test defiende es la DECISIÓN: se ESCRIBE con la huella de hoy, se LEE con todas las
+// que existieron. El día que alguien agregue una normalización nueva y NO la sume a la lista, este
+// test se pone rojo antes de que decenas de clientes reciban un documento repetido.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+test('🔴 MIGRACIÓN: la huella vieja se sigue leyendo, o se reenvía el informe a quien ya lo tiene', () => {
+  const proyecto = { comuna: 'Temuco', producto: 'Proyectante S60', glassLabel: 'Termopanel DVH 4+12+4' };
+  const todas = huellasDelInforme(proyecto);
+
+  // 1) lo que se ESCRIBE es la huella de hoy, y es la primera
+  assert.equal(huellaDelInforme(proyecto), todas[0], 'se escribe con la de hoy');
+
+  // 2) la huella que ESTÁ GUARDADA HOY en producción tiene que seguir encontrándose. Este valor es
+  //    el candado real medido el 11-10, copiado tal cual: si deja de estar en la lista, los 41
+  //    clientes que lo tienen reciben su informe otra vez.
+  assert.ok(todas.includes('temuco|proyectantes60|termopaneldvh4124'),
+    `la huella guardada en producción ya no se busca. Buscadas: ${JSON.stringify(todas)}`);
+
+  // 3) y las dos normalizaciones que existieron el 11-10 también
+  assert.ok(huellasDelInforme({ ...proyecto, glassLabel: 'Termopanel 4+12+4 satén (baño)' })
+    .includes(huellaDelInforme({ ...proyecto, glassLabel: '4+12+4 satén' })),
+    'las formas del mismo satén se encuentran entre sí');
+
+  // 4) 🔴 LA CARA PELIGROSA: buscar de más no puede volverse buscar CUALQUIER COSA. Dos proyectos
+  //    con vidrios DISTINTOS no pueden compartir ninguna huella, o a un cliente no le llega el
+  //    informe que le corresponde — que es peor que recibir uno de más.
+  const otro = huellasDelInforme({ ...proyecto, glassLabel: 'Termopanel 5+12+5' });
+  assert.equal(todas.filter((h) => otro.includes(h)).length, 0,
+    '4+12+4 y 5+12+5 no pueden compartir candado');
+  const conSaten = huellasDelInforme({ ...proyecto, glassLabel: 'Termopanel 4+12+4 satén' });
+  assert.equal(todas.filter((h) => conSaten.includes(h)).length, 0,
+    'el claro y el satén tampoco');
+
+  // 5) y cambiar la COMUNA sigue siendo otro proyecto, por todas las huellas
+  const otraComuna = huellasDelInforme({ ...proyecto, comuna: 'Cunco' });
+  assert.equal(todas.filter((h) => otraComuna.includes(h)).length, 0);
 });

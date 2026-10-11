@@ -436,26 +436,41 @@ export function candadoVigente(candado, resetAt = 0) {
  * es UN informe, y agregarle una novena no lo convierte en otro. Por eso las medidas no
  * entran en la huella — si entraran, cada ventana nueva dispararia un informe.
  */
-export function huellaDelInforme({ comuna = '', producto = '', glassLabel = '', ventanas = null } = {}) {
+/** 🔴 [2026-10-11 · lo cazó Thermos en la compuerta, y es lo más caro del lote] LAS FORMAS DE
+ *  NORMALIZAR EL RÓTULO DEL VIDRIO QUE ESTUVIERON VIGENTES, de la más nueva a la más vieja.
+ *
+ *  POR QUÉ SE GUARDAN LAS VIEJAS, y no es una cortesía: **la huella es parte de la CLAVE del candado**
+ *  (`identidadCotizacion.js` → `informe_termico:<cliente>:<huella>`), y ese candado vive **30 días**
+ *  en `simple_cache`. Cambiar la normalización NO "arregla" los candados ya escritos: los vuelve
+ *  INALCANZABLES. El cliente que ya tiene su informe lo recibe otra vez, y el reenvío **quema un
+ *  correlativo ISO nuevo** de una serie que la empresa está certificando (CM-FR-006 / INF-V).
+ *
+ *  📏 MEDIDO contra la BD viva el 11-10, sobre los candados VIGENTES en ese momento:
+ *    · informe_termico: **163 de 416** candados quedaban huérfanos ⇒ **41 clientes**
+ *    · informe_vientos: **71 de 163** ⇒ **36 clientes**
+ *  O sea: desplegar sin esto le reenvía el informe a decenas de clientes reales el mismo día.
+ *
+ *  CÓMO FUNCIONA: al ESCRIBIR se usa siempre la primera (la nueva). Al LEER se prueban todas y basta
+ *  con que UNA tenga candado vigente para considerar que el informe ya se mandó. Cuando no quede
+ *  ningún candado viejo vivo (30 días después del despliegue) se pueden borrar las de abajo —
+ *  pero NO antes, y el que las borre tiene que medirlo, no suponerlo. */
+const NORMALIZADORES_DE_VIDRIO = [
+  (v) => String(v || '').replace(/termopanel|dvh/gi, ' ').replace(/\(\s*ba[ñn]os?\s*\)/gi, ' '),
+  (v) => String(v || '').replace(/termopanel|dvh/gi, ' '),   // vigente unas horas el 11-10
+  (v) => String(v || ''),                                     // la de siempre, hasta el 11-10
+];
+
+function huellaCon(crudoAVidrio, { comuna = '', producto = '', glassLabel = '', ventanas = null } = {}) {
   const norm = (v) => String(v || '')
     .toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // "cunco" y "Cuncó" son la misma comuna
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')   // "cunco" y "Cuncó" son la misma comuna
     .replace(/[^a-z0-9]+/g, '')
     .slice(0, 40);
-  // 🔴 [2026-10-11] EL VIDRIO SE COMPARA POR EL PRODUCTO, NO POR CÓMO ESTÉ ESCRITO.
-  // Hoy conviven TRES rótulos para el MISMO vidrio según el camino que lo cotizó —medido contra la
-  // BD viva: «4+12+4 satén (baño)» (77 casos), «Termopanel 4+12+4 satén» (14) y «Termopanel DVH
-  // 4+12+4 satén» (13)—. Si la palabra «termopanel» entrara en la huella, el MISMO proyecto tendría
-  // dos candados distintos y el cliente recibiría el informe DOS VECES. Lo cazó la suite al cambiar
-  // el rótulo que lee el cliente (orden del dueño del 11-10): 2 informes salieron de nuevo con el
-  // candado vigente. Se normaliza sacando las palabras que nombran la FAMILIA, no el vidrio.
-  // [Codex, compuerta 11-10] También sale el «(baño)»: es el RECINTO, no el vidrio. Medido contra la
-  // BD viva (180 días): producción usa 19 formas de escribir 4 vidrios, y «Termopanel 4+12+4 satén» y
-  // «Termopanel 4+12+4 satén (baño)» son el MISMO vidrio (id 1609) por dos caminos distintos. Sin esto,
-  // una propuesta corregida que cambie de un rótulo al otro reenvía el informe que el cliente ya tiene.
-  const normVidrio = (v) => norm(String(v || '')
-    .replace(/termopanel|dvh/gi, ' ')
-    .replace(/\(\s*ba[ñn]os?\s*\)/gi, ' '));
+  // EL VIDRIO SE COMPARA POR EL PRODUCTO, NO POR CÓMO ESTÉ ESCRITO. Medido contra la BD viva (180
+  // días): producción usa **19 formas de escribir 4 vidrios** según el camino que lo cotizó
+  // («4+12+4 satén», «DVH 4+12+4 satén», «Termopanel 4+12+4 satén», «… satén (baño)», …). Con el
+  // rótulo crudo, la MISMA ventana daba candados distintos y el informe salía dos veces.
+  const normVidrio = (v) => norm(crudoAVidrio(v));
   const partes = [norm(comuna), norm(producto), normVidrio(glassLabel)];
   // 🔁 [2026-10-06] DECISION DEL DUEÑO (opcion 2): si la propuesta corregida CAMBIA LAS VENTANAS (medidas, producto
   // con sus hojas, vidrio, cantidad), es otro proyecto y le corresponden informes nuevos. Caso 0597→0598: la V3
@@ -472,6 +487,18 @@ export function huellaDelInforme({ comuna = '', producto = '', glassLabel = '', 
   // Sin ningun dato la huella queda vacia: se cae al candado por telefono de siempre, que es
   // el comportamiento viejo. Degradar al anterior es preferible a inventar una huella.
   return partes.every((x) => !x) ? '' : partes.join('|');
+}
+
+/** La huella de HOY. Es la que se ESCRIBE. */
+export function huellaDelInforme(args = {}) {
+  return huellaCon(NORMALIZADORES_DE_VIDRIO[0], args);
+}
+
+/** Todas las huellas que pudieron haber escrito un candado para este mismo proyecto, sin repetir y
+ *  con la de hoy primero. Es la que se usa para LEER: si cualquiera tiene candado vigente, el
+ *  informe ya se mandó. Ver el comentario de `NORMALIZADORES_DE_VIDRIO` para por qué existe. */
+export function huellasDelInforme(args = {}) {
+  return [...new Set(NORMALIZADORES_DE_VIDRIO.map((f) => huellaCon(f, args)))];
 }
 
 // Evita quemar un correlativo ISO nuevo por doble "confirmo", reintentos o
@@ -2109,8 +2136,16 @@ export async function handleWebhook(req, res, deps = {}) {
           // a alguien que lo esta pidiendo.
           let yaSeMando = false;
           try {
-            const _candado = await (deps.leerEstado || leerEstado)(clave);
+            // 🔴 [2026-10-11 · lo cazó Thermos] SE LEEN TAMBIÉN LAS HUELLAS VIEJAS. La huella es parte
+            // de la CLAVE, y el candado vive 30 días: cambiar cómo se calcula no arregla los candados
+            // ya escritos, los vuelve INALCANZABLES y el cliente recibe de nuevo un informe que ya
+            // tiene, quemando un correlativo ISO. MEDIDO el 11-10 sobre los candados VIGENTES: 163 de
+            // 416 del térmico (41 clientes) y 71 de 163 de vientos (36 clientes) quedaban huérfanos.
+            // Se ESCRIBE siempre con la huella de hoy (`clave`); se LEE con todas.
             const _resetAt = Number(await (deps.leerEstado || leerEstado)(claves.reset)) || 0; // reset del cliente
+            const _candados = await Promise.all(huellasDelInforme({ comuna, producto, glassLabel, ventanas })
+              .map((h) => (deps.leerEstado || leerEstado)(claves.informeTermico(h)).catch(() => null)));
+            const _candado = _candados.find((c) => candadoVigente(c, _resetAt)) ?? _candados[0];
             const _vigente = candadoVigente(_candado, _resetAt);
             if (!forzar) {
               yaSeMando = _vigente;
@@ -4055,10 +4090,18 @@ Comuna: ${datos.comuna}`
             });
             const claveV = claves.informeVientos(_huellaV); // [2026-09-30] candado de vientos del cliente
             try {
-              const _cand = await (deps.leerEstado || leerEstado)(claveV);
               const _resetAt = Number(await (deps.leerEstado || leerEstado)(claves.reset)) || 0; // reset del cliente
+              // 🔴 [2026-10-11 · Thermos] Igual que el térmico: se leen TAMBIÉN las huellas viejas, o
+              // los 71 candados de vientos vigentes (36 clientes) quedan huérfanos al desplegar y esos
+              // clientes reciben otra vez su informe, con un número nuevo de la serie INF-V.
+              const _huellasV = huellasDelInforme({
+                comuna: clientComuna, producto: ultimaV.producto_label || ultimaV.product || '',
+                glassLabel: ultimaV.glass_label || '', ventanas: input.items || [],
+              });
+              const _cands = await Promise.all(_huellasV.map((h) =>
+                (deps.leerEstado || leerEstado)(claves.informeVientos(h)).catch(() => null)));
               // [2026-09-30] Marcado a mano en el cockpit ⇒ se manda aunque ya lo tenga.
-              if (!forzar && candadoVigente(_cand, _resetAt)) return 'ya_enviado';
+              if (!forzar && _cands.some((c) => candadoVigente(c, _resetAt))) return 'ya_enviado';
             } catch { /* sin estado se sigue: mejor un posible repetido que ninguno */ }
             let tokenV = null;
             try {

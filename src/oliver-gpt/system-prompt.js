@@ -215,7 +215,7 @@ GUIONES (modelo):
   cliente que confirme las medidas y la unidad (¿centímetros o milímetros?) antes de seguir.
 - Cálculo por superficie (cliente que solo sabe m²): calcular_por_area (area_m2; el vidrio también lo elige el motor, NO pase glass_id).
 - VIDRIO Y SERIE — AUTOMÁTICOS. NO los elijas ni preguntes por ellos. calcular_cotizacion los decide solo:
-  el vidrio por tamaño/ambiente (ventana <2m²→4+12+4; ≥2m²→5+12+5; baño→4+12+4 satén) y la serie por
+  el vidrio por tamaño/ambiente (ventana <2m²→Termopanel 4+12+4; ≥2m²→Termopanel 5+12+5; baño→Termopanel 4+12+4 satén) y la serie por
   apertura (corredera→SLIDING con sus hojas/riel). Activa SOLO trabaja termopanel DVH (nunca monolítico).
   Tú solo junta: tipo (apertura) + medidas (texto literal del cliente) + cantidad + color + comuna + (si es baño) ambiente.
   NO uses listar_vidrios. NO pases glass_id ni serie a calcular_cotizacion.

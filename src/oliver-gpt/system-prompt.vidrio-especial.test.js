@@ -29,6 +29,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { etiquetaVidrio } from '../../services/enginePricer.js';
+import { VIDRIO_BASE } from '../../services/vidriosBase.js';
 
 import { buildSystemBlocks } from './system-prompt.js';
 import { TOOL_DEFS, runTool } from './tools.js';
@@ -269,4 +271,38 @@ test('🚿 B4 el ambiente de cada ventana viaja al PDF por ítem (itemsFromQuote
   assert.equal(items.length, 2);
   assert.equal(items[0].ambiente, 'baño', 'la ventana del baño conserva su ambiente hasta el PDF');
   assert.equal(items[1].ambiente, '', 'la otra no lo hereda');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// 🔴 [2026-10-11 · lo cazó Thermos en la compuerta] ALCANCE: EL PROMPT ENTERO, NO EL BLOQUE.
+//
+// A9 y A9b miran SOLO la ventana de la «REGLA DEL BAÑO» — 1.679 de 87.655 caracteres, el 1,9 % del
+// prompt. Y la contradicción que originó este lote vivía 337 caracteres ANTES de esa ventana: el
+// glosario que le enseña al LLM cómo se llaman los vidrios decía «baño→4+12+4 satén», sin la palabra
+// Termopanel, cuatro líneas arriba de la regla que prohíbe decir «vidrio satén». Es la MISMA
+// geometría del defecto del 05-oct: la instrucción equivocada arriba, la correcta abajo, y el
+// guardia apuntando solo a la de abajo.
+//
+// Este test mira TODO el prompt y genera lo que espera DESDE EL CÓDIGO (`etiquetaVidrio`), no de un
+// literal copiado a mano: el día que cambie el rótulo que lee el cliente, el prompt se pone rojo
+// solo, en vez de quedar desfasado en silencio durante días como pasó esta semana.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+test('🚿 A9c EL PROMPT ENTERO: ningún vidrio se nombra sin la palabra Termopanel', () => {
+  const sys = buildSystemBlocks();
+  for (const id of [VIDRIO_BASE.STD, VIDRIO_BASE.LARGE, VIDRIO_BASE.BANO]) {
+    // de «Termopanel 4+12+4 satén (baño)» queda la composición sola: «4+12+4»
+    const composicion = (etiquetaVidrio(id).match(/\d\+\d{1,2}\+\d/) || [])[0];
+    assert.ok(composicion, `etiquetaVidrio(${id}) tiene que nombrar una composición`);
+    // Ventana de 30 caracteres, no de 12: el prompt dice «el termopanel estándar (4+12+4; …)», donde
+    // la palabra está cerca pero no pegada, y con 12 eso daba falso positivo. Sigue cazando el defecto
+    // que originó el lote: antes del arreglo, los 30 caracteres previos al primer «4+12+4» del glosario
+    // eran «tamaño/ambiente (ventana <2m²→», sin la palabra por ningún lado.
+    const re = new RegExp(`(.{0,30})${composicion.replace(/\+/g, '\\+')}`, 'g');
+    for (const m of sys.matchAll(re)) {
+      assert.match(m[1], /termopanel/i,
+        `«${composicion}» aparece sin «Termopanel» delante, en «…${m[1]}${composicion}…». ` +
+        'El LLM aprende de ahí cómo se llama el producto y se lo repite al cliente.');
+    }
+  }
 });

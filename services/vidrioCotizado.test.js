@@ -252,7 +252,7 @@ test('🔴 [r5] UNA sola definición: esBano (vidrioCotizado) y claveVidrio (dib
   // aviso al dueño no reconoce (o al revés). Misma pregunta, misma respuesta; `claveVidrio(e, e)`
   // porque esBano también aplica la regla del ambiente a la etiqueta ("baño" suelto).
   for (const e of ['4+12+4 satén (baño)', '4+12+4 saten', 'satinado', 'esmerilado', 'Esmerilada', 'acidado', 'mate', 'opaco',
-    'translucido', 'translúcido', 'Termopanel DVH baño', 'DVH 4+12+4 BAÑO', 'wc', 'Termopanel ducha',
+    'translucido', 'translúcido', 'Termopanel DVH baño', 'DVH 4+12+4 BAÑO', 'wc',
     'Termopanel DVH', '4+12+4', 'DVH 5/12/5', 'laminado 6+6', 'Termopanel urbano', 'low-e',
     'Termopanel DVH material guardian', 'capacidad']) {
     assert.equal(elegirVidrio(e, '4+12+4').aviso === 'vidrio.bano_perdido', claveVidrio(e, e) === 'satinado', `"${e}"`);
@@ -286,4 +286,22 @@ test('🔴 [r6] control — lo que SÍ es satén sigue siéndolo, también pegad
     assert.equal(claveVidrio(e), 'satinado', `claveVidrio("${e}")`);
     assert.equal(elegirVidrio(e, '4+12+4').aviso, 'vidrio.bano_perdido', `"${e}" sigue avisando «satén perdido»`);
   }
+});
+
+// 🔴 [2026-10-11 · Thermos, compuerta del lote del satén] LA ÚNICA DIVERGENCIA, Y ES DELIBERADA.
+// «Termopanel ducha» salió de la lista de arriba porque las dos funciones dejaron de contestar la
+// MISMA pregunta, a propósito:
+//   · `esBano(rótulo)` pregunta «¿este RÓTULO describe un vidrio de baño?» — y ahí `ducha` SÍ cuenta,
+//     porque el LLM está diciendo «esto no es el claro que cotizó el motor» y el dueño tiene que
+//     enterarse. (Al unificarlo con la regla del AMBIENTE, este aviso se había apagado EN SILENCIO.)
+//   · `claveVidrio` pregunta «¿pinto este paño opaco?» — y ahí manda lo que de verdad se COTIZÓ.
+// Como AMBIENTE, una ducha es una mampara de vidrio templado: otro producto (hecho del negocio,
+// dueño 11-10). Dibujar satén algo que se cotizó claro sería dibujar lo que no se vendió.
+test('🔴 «ducha» en el RÓTULO avisa al dueño, pero no cambia lo que se dibuja', () => {
+  const r = elegirVidrio('Termopanel ducha', '4+12+4');
+  assert.equal(r.aviso, 'vidrio.bano_perdido',
+    'el dueño se entera de que el LLM nombró un producto de baño que el motor no cotizó');
+  assert.equal(r.vidrio, 'Termopanel ducha', 'y el rótulo NO se reemplaza en silencio');
+  assert.equal(claveVidrio('Termopanel ducha', 'Termopanel ducha'), 'incoloro',
+    'el dibujo muestra el vidrio que se cotizó, no el que el rótulo sugiere');
 });

@@ -283,7 +283,22 @@ export function resumenVentanas(ventanas, uwMaxNorma) {
   });
 
   const conUw = filas.filter((f) => f.uw !== null);
-  const vidrios = [...new Set(filas.map((f) => f.vidrio).filter(Boolean))];
+  // 🔴 [2026-10-11 · lo cazó Thermos en la compuerta] SE CUENTAN VIDRIOS, NO MANERAS DE ESCRIBIRLOS.
+  // Esto deduplicaba por el TEXTO crudo del rótulo, y producción usa 19 formas de escribir 4 vidrios
+  // (medido contra la BD viva, 180 días). Con dos ventanas del MISMO 4+12+4, una rotulada por el
+  // motor de hoy («Termopanel 4+12+4») y otra arrastrada por el LLM de un turno anterior («4+12+4»),
+  // el informe imprimía: «Su proyecto combina 2 termopaneles distintos: 4+12+4 y Termopanel 4+12+4».
+  // Es falso, y va impreso en un documento firmado con correlativo. Se agrupa por la COMPOSICIÓN y
+  // el acabado —lo que de verdad distingue un vidrio— y se muestra el rótulo más completo de cada uno.
+  const porVidrio = new Map();
+  for (const f of filas) {
+    if (!f.vidrio) continue;
+    const clave = String(f.vidrio).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/termopanel|dvh/g, ' ').replace(/[^a-z0-9]+/g, '');
+    const previo = porVidrio.get(clave);
+    if (!previo || String(f.vidrio).length > previo.length) porVidrio.set(clave, String(f.vidrio));
+  }
+  const vidrios = [...porVidrio.values()];
   // 🔴 [2026-08-24 · Codex] TODO LO QUE SE DECLARA SE CUENTA EN UNIDADES. El encabezado
   // sumaba cantidades y la sintesis contaba filas: dos partidas de 3 daban "6 ventanas"
   // arriba y "Las 2 ventanas calculadas cumplen" abajo, en la misma pagina firmada. El

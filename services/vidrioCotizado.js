@@ -8,7 +8,7 @@
 
 import { createHash } from 'node:crypto';
 import { vidrioDesdeEtiqueta } from './vientosThermal.js';
-import { dicePalabraSaten, esAmbienteBano, sinTildes } from './vidrioSatinado.js';
+import { dicePalabraSaten, diceRotuloDeBano, sinTildes } from './vidrioSatinado.js';
 import { claveAviso, tocaAvisar } from './avisoEntregaDudosa.js';  // [r8] el molde de deduplicación del repo (módulo puro)
 import { FOLIO_REUSO_MS } from './folioReuso.js';
 
@@ -23,7 +23,9 @@ const _plano = sinTildes;
  * antes esta era una lista aparte (solo saten|bano|esmeril) que decia ser «la misma» y no cubria
  * satinado, acidado, mate, opaco ni translucido.
  */
-const esBano = (t) => dicePalabraSaten(t) || esAmbienteBano(t);
+// [2026-10-11] Se le pregunta al vocabulario del RÓTULO, no al del AMBIENTE: acá `t` es la etiqueta
+// del vidrio que escribió el LLM, no un recinto. Ver `diceRotuloDeBano` en vidrioSatinado.js.
+const esBano = (t) => dicePalabraSaten(t) || diceRotuloDeBano(t);
 
 /**
  * Los dos termopaneles CLAROS que el motor elige por AREA (`enginePricer.pickGlassId`, umbral 2 m²:

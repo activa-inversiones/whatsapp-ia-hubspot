@@ -355,14 +355,14 @@ test("🔴 el vidrio que lee el cliente dice TERMOPANEL, y el del baño dice sat
 // no se puede cotizar acá ni por error.)
 test("🔴 ducha y bañera NO son ventanas de baño: son mampara de vidrio templado", () => {
   for (const amb of ["ducha", "Ducha", "bañera", "banera", "mampara de ducha"]) {
-    assert.notEqual(pickGlassId(600, 400, amb), VIDRIO_BASE.BANO,
+    assert.equal(pickGlassId(600, 400, amb), VIDRIO_BASE.STD,
       `«${amb}» es una mampara templada, no una ventana de baño con satén`);
   }
   // 🔴 Y LA OTRA PUNTA, que es la que cobraba DE MÁS: hasta el 11-10 la regla no exigía que «bano»
   // fuera una palabra entera, así que «urbano» contenía «bano» y la ventana se cobraba con satén
   // ($50.000/m² en vez de $42.679). MEDIDO: 0 casos en 365 días, pero estaba vivo.
   for (const amb of ["urbano", "sector urbano", "living urbano", "waterloo", "urbanizacion"]) {
-    assert.notEqual(pickGlassId(600, 400, amb), VIDRIO_BASE.BANO,
+    assert.equal(pickGlassId(600, 400, amb), VIDRIO_BASE.STD,
       `«${amb}» no es un baño: cobrarle satén es cobrarle de más`);
   }
   // control: el baño de verdad sí lo es, por sus varias formas de escribirlo

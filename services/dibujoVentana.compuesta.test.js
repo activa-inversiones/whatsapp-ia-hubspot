@@ -79,7 +79,7 @@ test('🔴 si el ambiente es baño va saten, escriba el cliente como escriba', (
   }
   // Y lo que NO es una ventana de baño no se dibuja opaco, para no contradecir lo que se cobra.
   for (const a of ['Ducha', 'banera', 'bañera', 'mampara de ducha', 'urbano', 'living urbano']) {
-    assert.notEqual(claveVidrio('Termopanel DVH 4+12+4', a), 'satinado',
+    assert.equal(claveVidrio('Termopanel DVH 4+12+4', a), 'incoloro',
       `ambiente "${a}": el precio no le pone satén, el dibujo tampoco puede`);
   }
 });
