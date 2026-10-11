@@ -17,6 +17,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
 import { generarInformeTermicoPdf, introLaminas, avisoLamina, altoFigura } from './informeTermicoPdf.js';
+import { laminasParaInforme } from './laminasThermal.js';
+import { textoDelPdf } from './textoDelPdf.testutil.js';
 
 /** Un PNG 1x1 REAL (pdfkit lo tiene que poder decodificar, no alcanza la cabecera). */
 function pngReal() {
@@ -50,6 +52,11 @@ const DATOS = {
   criterio_ref: 'PDA Temuco-Padre Las Casas art. 27',
 };
 
+/** El texto del PDF viene sin los espacios que pdfkit dibuja posicionando cada palabra al
+ *  justificar: se comparan las frases sin espacios para no afirmar sobre el espaciado. */
+const frase = (pdf) => textoDelPdf(pdf).replace(/\s+/g, '');
+const SIN_TODAS_LAS_FIGURAS = 'noincluyelasfigurasdetodoslossistemas';
+const SIN_MODELO_PROPIO = 'notieneunmodelopropio';
 const conLaminas = (nombre) => ({
   perfil: nombre ? 'S60_proyectante' : '',
   nombre,
@@ -282,4 +289,83 @@ test('🔴 r19: propiosFallidos no oculta la cobertura incompleta', () => {
   assert.match(t, /no tiene un modelo propio/);
   // solo falló la descarga (coberturaIncompleta se prende igual): NO se afirma que falte modelo
   assert.doesNotMatch(introLaminas([{ propio: true }], true, true, false), /no tiene un modelo propio/);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════
+// 🔴 [2026-10-10 · Thermos, compuerta del lote #1463 · MEDIDO] EL CABLEADO DEL PÁRRAFO NO
+// TENÍA GUARDIA EN NINGUNO DE LOS DOS EXTREMOS.
+//
+// Lo midió con análisis de mutantes y lo reproduje: poniendo `sinModeloPropio: false` en
+// `laminasThermal.js` la suite entera quedaba VERDE, e invertir los argumentos 3 y 4 en la
+// llamada a `introLaminas` cambiaba una frase de un documento FIRMADO sin un solo test rojo.
+// La causa: todas las aserciones sobre el párrafo llamaban a `introLaminas` DIRECTO con
+// booleanos a mano. Nada recorría productor → llamada → documento.
+//
+// Este test va de punta a punta: `laminasParaInforme` (el productor) → `generarInformeTermicoPdf`
+// (la llamada) → el TEXTO del PDF renderizado. Defiende la DECISIÓN del dueño: que una descarga
+// fallida NO tape el hecho de que además hay ventanas sin modelo propio. Las dos cosas son
+// verdad y las dos se dicen.
+// ═════════════════════════════════════════════════════════════════════════════════════════
+test('🔴 de punta a punta: descarga propia fallida + ventanas sin modelo ⇒ el PDF dice LAS DOS cosas', async () => {
+  // El escenario: se cotizó una corredera H98 (modelada) y además hay ventanas que no tienen
+  // perfil propio (`desconocidas: true`). THERMAL publica los dos perfiles, pero las figuras
+  // de la H98 —la PROPIA— no bajan (503); las del S60, que va de referencia, sí.
+  const LISTA = { n: 2, perfiles: [
+    { perfil: 'S60_proyectante', nombre_comercial: 'S60 proyectante WinHouse', aprobado_por: 'M. C.', fecha_aprobacion: '2026-08-19' },
+    { perfil: 'Sliding_H98', nombre_comercial: 'Corredera S75 Hoja 98 (H98)', aprobado_por: 'M. C.', fecha_aprobacion: '2026-10-07' },
+  ] };
+  const png = pngReal();
+  const fetchFn = async (url) => {
+    if (url.includes('/api/v1/laminas') && !url.includes('/S60') && !url.includes('/Sliding')) {
+      return { ok: true, status: 200, json: async () => LISTA };
+    }
+    if (url.includes('/Sliding_H98/')) return { ok: false, status: 503 };   // la PROPIA no baja
+    return { ok: true, status: 200,
+      arrayBuffer: async () => png.buffer.slice(png.byteOffset, png.byteOffset + png.length) };
+  };
+
+  const laminas = await laminasParaInforme({ perfiles: ['Sliding_H98'], desconocidas: true,
+    fetchFn, log: () => {} });
+
+  // control del productor: los dos bits son los que este caso tiene que producir. Si alguien
+  // los cambia, este test se pone rojo ANTES de llegar al PDF.
+  assert.equal(laminas.propiosFallidos, true, 'la figura del perfil PROPIO no bajó');
+  assert.equal(laminas.sinModeloPropio, true, 'y además hay ventanas sin modelo propio');
+  assert.ok(laminas.grupos.some((g) => g.propio === false), 'quedó el S60 como referencia');
+
+  const texto = frase(await generarInformeTermicoPdf(DATOS, { laminas }));
+
+  // LA DECISIÓN: el documento dice las DOS verdades, no solo la primera.
+  assert.ok(texto.includes(SIN_TODAS_LAS_FIGURAS), 'falta el motivo 1: no están todas las figuras');
+  assert.ok(texto.includes(SIN_MODELO_PROPIO),
+    'falta el motivo 2: hay ventanas sin modelo propio — es el que se tapaba');
+});
+
+test('🔴 de punta a punta: si SOLO falló la descarga, el PDF NO afirma que falte un modelo', async () => {
+  // La contracara, y es la que impide "arreglarlo" poniendo las dos frases siempre: cuando
+  // todas las ventanas SÍ tienen modelo propio y lo único que pasó es que las figuras no
+  // bajaron, decir "no tiene modelo propio" sería MENTIRLE al cliente en un documento firmado.
+  const LISTA = { n: 2, perfiles: [
+    { perfil: 'S60_proyectante', nombre_comercial: 'S60 proyectante WinHouse', aprobado_por: 'M. C.', fecha_aprobacion: '2026-08-19' },
+    { perfil: 'Sliding_H98', nombre_comercial: 'Corredera S75 Hoja 98 (H98)', aprobado_por: 'M. C.', fecha_aprobacion: '2026-10-07' },
+  ] };
+  const png = pngReal();
+  const fetchFn = async (url) => {
+    if (url.includes('/api/v1/laminas') && !url.includes('/S60') && !url.includes('/Sliding')) {
+      return { ok: true, status: 200, json: async () => LISTA };
+    }
+    if (url.includes('/Sliding_H98/')) return { ok: false, status: 503 };
+    return { ok: true, status: 200,
+      arrayBuffer: async () => png.buffer.slice(png.byteOffset, png.byteOffset + png.length) };
+  };
+  // los DOS perfiles cotizados y nada desconocido ⇒ `faltaAlguno` es false
+  const laminas = await laminasParaInforme({ perfiles: ['Sliding_H98', 'S60_proyectante'],
+    desconocidas: false, fetchFn, log: () => {} });
+  assert.equal(laminas.propiosFallidos, true);
+  assert.equal(laminas.sinModeloPropio, false, 'ninguna ventana quedó sin modelo propio');
+
+  const texto = frase(await generarInformeTermicoPdf(DATOS, { laminas }));
+  assert.ok(texto.includes(SIN_TODAS_LAS_FIGURAS));
+  assert.ok(!texto.includes(SIN_MODELO_PROPIO),
+    'no se puede afirmar que falte un modelo cuando lo único que falló fue la descarga');
 });

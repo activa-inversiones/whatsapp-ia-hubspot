@@ -17,6 +17,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { datosDelInforme } from './informeTermico.js';
+import { perfilesLaminasDe } from './laminasThermal.js';
 
 const V_FRESCAS = [{ id: 'V1', producto: 'Corredera SLIDING H80', vidrio: '4+12+4', uw: 2.61 }];
 const FRESCO = { glassLabel: '4+12+4', uw: 2.61, producto: 'Corredera SLIDING H80', ventanas: V_FRESCAS };
@@ -128,4 +129,71 @@ test('🔴 DOS ventanas iguales del mismo turno son DOS ventanas', () => {
   const v = { id: 'V1', producto: 'Corredera S60', medidas: '2000x1400mm', vidrio: 'DVH 5/12/5', uw: 2.71 };
   const r = datosDelInforme({ ventanas: [v, { ...v, id: 'V2' }] }, null);
   assert.equal(r.datos.ventanas.length, 2);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// 🔴 [2026-10-10 · Codex, compuerta del lote #1463 · NO APTO → corregido] LA REEMISIÓN NO
+// PUEDE AVALAR EL RÓTULO DEL MOTOR QUE QUEDÓ GUARDADO.
+//
+// El lote #1463 sanea `_label_motor`/`_avisos_motor` en la entrada FRESCA (webhook.js, antes
+// de recotizar), porque son campos internos del motor y `perfilDeVentana` los usa como fuente
+// de verdad: con `_label_motor` presente, un aviso del motor ya NO anula el perfil propio.
+// Codex cazó que ese arreglo era PARCIAL: `enviar_informe_termico` llama a `despacharInforme`
+// sin ventanas frescas, así que se reclasifican las ventanas RECORDADAS — un estado que vive
+// 30 días y que pudo guardarse antes del saneo. Ningún test lo veía porque el agujero estaba
+// ENTRE dos archivos.
+//
+// Lo que defiende este test es la DECISIÓN, no la implementación: *en una reemisión, un rótulo
+// de motor que nadie puede avalar no convierte la ventana en un sistema modelado; el informe
+// dice "referencia", que es la verdad.*
+// ─────────────────────────────────────────────────────────────────────────────────────────
+test('🔴 reemisión: un `_label_motor` guardado NO autoriza el perfil propio (y el original no se toca)', () => {
+  // Una ventana que el motor AVISÓ (fuera de estándar) con un rótulo canónico pegado al lado:
+  // es exactamente la combinación en la que el rótulo apaga el fail-closed.
+  const perfil = {
+    producto_label: 'Corredera SLIDING H98 Doble Riel S75',
+    _label_motor: 'Corredera SLIDING H98 Doble Riel S75',
+    _avisos_motor: ['La corredera de 3250x1460 mm supera el máximo estándar'],
+  };
+  const recordados = { glassLabel: 'DVH 5/12/5', uw: 2.4, producto: 'Corredera SLIDING H98 Doble Riel S75',
+    ventanas: [{ id: 'V1', producto: 'Corredera SLIDING H98 Doble Riel S75', cantidad: 1, _perfil: perfil }] };
+
+  const r = datosDelInforme(null, recordados);
+  assert.equal(r.recordar, false, 'control: esta es la rama de los RECORDADOS');
+
+  // 1) la decisión: el informe NO puede declarar perfil propio con un rótulo sin avalar
+  const { perfiles, desconocidas } = perfilesLaminasDe(r.datos.ventanas);
+  assert.deepEqual({ perfiles, desconocidas }, { perfiles: [], desconocidas: true });
+
+  // 2) se borra lo que AUTORIZA y se CONSERVA lo que VETA. Esta es la parte que hay que
+  //    defender: la primera versión de este arreglo borraba los avisos también, y eso dejaba
+  //    la clasificación MÁS permisiva (sin avisos, el `producto_label` canónico autoriza solo).
+  assert.ok(!('_label_motor' in r.datos.ventanas[0]._perfil), 'el rótulo que autoriza NO viaja');
+  assert.deepEqual(r.datos.ventanas[0]._perfil._avisos_motor, perfil._avisos_motor,
+    'los avisos SÍ viajan: solo pueden vetar, nunca autorizar');
+
+  // 3) el objeto RECORDADO es el que vive en la caché en memoria: no se puede mutar
+  assert.equal(perfil._label_motor, 'Corredera SLIDING H98 Doble Riel S75');
+  assert.equal(perfil._avisos_motor.length, 1);
+});
+
+test('🔴 reemisión: el saneo NO degrada la ventana que sí es el sistema modelado y no tiene avisos', () => {
+  // La contracara, que es el riesgo de RETROCESO: sin avisos, el `producto_label` autoriza solo,
+  // así que borrar el rótulo del motor no le quita nada a quien le correspondía lo bueno.
+  const recordados = { producto: 'Corredera SLIDING H98 Doble Riel S75', ventanas: [{
+    id: 'V1', producto: 'Corredera SLIDING H98 Doble Riel S75', cantidad: 1,
+    _perfil: { producto_label: 'Corredera SLIDING H98 Doble Riel S75',
+      _label_motor: 'Corredera SLIDING H98 Doble Riel S75' } }] };
+  const r = datosDelInforme(null, recordados);
+  assert.deepEqual(perfilesLaminasDe(r.datos.ventanas), { perfiles: ['Sliding_H98'], desconocidas: false });
+});
+
+test('🔴 el turno FRESCO conserva los campos del motor: ahí el motor acaba de hablar', () => {
+  // Si el saneo se aplicara también a la entrada fresca, se apagaría en silencio la capacidad
+  // entera: toda cotización del turno pasaría a "referencia".
+  const entrantes = { producto: 'Proyectante S60', ventanas: [{ id: 'V1', producto: 'Proyectante S60',
+    _perfil: { producto_label: 'Proyectante S60', _label_motor: 'Proyectante S60' } }] };
+  const r = datosDelInforme(entrantes, null);
+  assert.equal(r.recordar, true);
+  assert.equal(r.datos.ventanas[0]._perfil._label_motor, 'Proyectante S60');
 });

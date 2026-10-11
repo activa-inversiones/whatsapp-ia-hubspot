@@ -373,21 +373,52 @@ const CAMPOS_AUTORIZAN = new Set(['producto_label', 'producto', 'product', 'labe
   'tipo', 'apertura', 'serie', '_label_motor']);
 const CAMPOS_COMPUESTA = ['partes', 'bow', 'forma', 'esquina', 'compuesta', 'panos', 'paños', 'riel', 'corredera'];
 
-function tieneAccesores(o, camino = new Set(), cuenta = { n: 0 }) {
-  if (!o || typeof o !== 'object') return false;
-  if (camino.has(o)) return true;                       // ciclo: no se clasifica
-  if (++cuenta.n > 2000) return true;                   // estructura absurda: no se clasifica
-  camino.add(o);
+/** Tope de nodos distintos que se recorren antes de rendirse. Con `vistos` cuenta NODOS de verdad. */
+const LIMITE_NODOS = 2000;
+
+/** ¿`o` es un objeto PLANO DE DATOS en todos sus niveles? Plano = lo que puede salir de
+ *  `JSON.parse`: prototipo `Object`/`Array`/`null`, cero accesores, cero métodos, cero `toJSON`,
+ *  cero símbolos, y **todo enumerable**. Esas son las cinco formas en que el clon de
+ *  `JSON.stringify` puede decir algo DISTINTO del objeto real.
+ *
+ *  Por qué importa que el clon y el original coincidan, que es la razón de fondo y no estaba
+ *  escrita: esta función clasifica mirando el clon, pero otros consumidores leen el objeto
+ *  ORIGINAL — el PDF dibuja la ventana a partir de `producto_label`. Si el objeto muestra una cara
+ *  al clon y otra a quien dibuja, el informe y el dibujo hablan de ventanas distintas.
+ *
+ *  Ante lo que NO se puede clasificar —un ciclo, o una estructura de más de `LIMITE_NODOS` nodos—
+ *  devuelve `false`: fail-closed, no hay perfil propio.
+ *
+ *  🔴 [Thermos 10-10, MEDIDO y verificado] Los dos arreglos de esta versión, que no son cosméticos:
+ *  · `vistos`: sin él el recorrido es EXPONENCIAL con referencias compartidas, y **11 objetos
+ *    planos** metidos en `termico` —un campo que el clasificador ni siquiera lee— bajaban una
+ *    ventana legítima a «referencia». `camino` detecta CICLOS; `vistos` recuerda lo ya aprobado;
+ *    recién con los dos el tope cuenta nodos y no caminos.
+ *  · `d.enumerable === false`: era el hueco que dejaba sin establecer el invariante entero. Un
+ *    `compuesta: {partes:[1,2,3,4]}` declarado NO enumerable pasaba la inspección, lo descartaba
+ *    `JSON.stringify`, y el veto de `CAMPOS_COMPUESTA` nunca lo veía ⇒ **una bow window de 4 paños
+ *    recibía las láminas de una corredera H98.**
+ *  ⚠️ `length` de un array es no-enumerable POR NORMA: se saltea, o se rechazaría todo array. */
+function esObjetoPlano(o, camino = new Set(), vistos = new Set(), cuenta = { n: 0 }) {
+  if (!o || typeof o !== 'object') return true;             // un dato suelto siempre es plano
+  if (camino.has(o)) return false;                          // ciclo de verdad: no se clasifica
+  if (vistos.has(o)) return true;                           // ya se aprobó por otra rama
+  if (++cuenta.n > LIMITE_NODOS) return false;              // demasiado grande: no se clasifica
   const proto = Object.getPrototypeOf(o);
-  if (proto !== Object.prototype && proto !== Array.prototype && proto !== null) return true;
+  if (proto !== Object.prototype && proto !== Array.prototype && proto !== null) return false;
+  const esArray = Array.isArray(o);
+  camino.add(o);
+  let plano = true;
   for (const k of Reflect.ownKeys(o)) {
+    if (esArray && k === 'length') continue;
     const d = Object.getOwnPropertyDescriptor(o, k);
-    if (!d || 'get' in d || 'set' in d || k === 'toJSON' || typeof k === 'symbol') return true;
-    if (typeof d.value === 'function') return true;
-    if (d.value && typeof d.value === 'object' && tieneAccesores(d.value, camino, cuenta)) return true;
+    if (!d || 'get' in d || 'set' in d || d.enumerable === false || k === 'toJSON'
+      || typeof k === 'symbol' || typeof d.value === 'function'
+      || !esObjetoPlano(d.value, camino, vistos, cuenta)) { plano = false; break; }
   }
-  camino.delete(o);                                     // una referencia COMPARTIDA no es un ciclo
-  return false;
+  camino.delete(o);                                         // una referencia COMPARTIDA no es un ciclo
+  if (plano) vistos.add(o);
+  return plano;
 }
 
 export function perfilDeVentana(v0) {
@@ -397,8 +428,13 @@ export function perfilDeVentana(v0) {
   // [Codex r19] JSON.stringify ejecuta toJSON y getters ANTES de copiar: un objeto así puede
   // mostrar una cara distinta de la que tiene. Fail-closed: si hay un toJSON, un getter o un
   // prototipo raro en cualquier nivel, no hay perfil propio.
-  if (tieneAccesores(v0)) return '';
-  try { v = JSON.parse(JSON.stringify(v0)); } catch { return ''; }
+  // [Codex, compuerta 10-10] La INSPECCION va ADENTRO del try: `Reflect.ownKeys` y
+  // `getOwnPropertyDescriptor` LANZAN si el objeto es un Proxy hostil, y esta funcion declara que
+  // nunca lanza. Fuera del try, el fail-closed se rompia justo con el objeto mas adversarial.
+  try {
+    if (!esObjetoPlano(v0)) return '';
+    v = JSON.parse(JSON.stringify(v0));
+  } catch { return ''; }
   if (!v || typeof v !== 'object' || Array.isArray(v)) return '';
   // Cualquier rastro de compuesta/variante estructurada => no es un perfil simple modelado.
   // ('corredera'/'riel' estructurados: el motor los manda cuando hay nº de hojas/rieles; se aceptan

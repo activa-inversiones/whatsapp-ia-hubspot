@@ -592,10 +592,48 @@ test('🔴 r19: toJSON, getter o prototipo raro en cualquier nivel ⇒ sin perfi
   const conGetter = { ...base };
   Object.defineProperty(conGetter, 'serie', { get: () => 'S75', enumerable: true });
   assert.equal(perfilDeVentana(conGetter), '');
-  assert.equal(perfilDeVentana({ ...base, corredera: Object.create({ hojas: 2 }) }), '');
+  // (el caso `corredera: Object.create({hojas:2})` NO se repite aca: ya lo cubre r14 mas arriba
+  //  y no ejercita este codigo — Thermos lo midio con analisis de mutantes)
   const comp = { hojas: 2, riel: 'DOBLE' };
   // Un objeto REPETIDO en dos ramas del item no es un ciclo. Si se tratara como tal, esta ventana
   // —que SI es el sistema modelado— se quedaria sin perfil propio y el informe diria "referencia".
   assert.equal(perfilDeVentana({ ...base, corredera: comp, termico: { uw: 2.4, ref: comp } }),
     'Sliding_H98', 'una referencia compartida no es un ciclo');
+});
+
+// [Codex, compuerta 10-10] `perfilDeVentana` DECLARA que nunca lanza: el informe tiene que salir
+// igual. Un Proxy hostil hace lanzar a `Reflect.ownKeys` / `getOwnPropertyDescriptor`, que es justo
+// lo que usa la inspeccion nueva. Si alguien la saca del try, este test se pone rojo.
+test('🔴 un objeto que LANZA al ser inspeccionado no rompe el informe: devuelve sin perfil', () => {
+  const hostil = new Proxy({}, { ownKeys() { throw new Error('no me inspecciones'); } });
+  assert.equal(perfilDeVentana(hostil), '');
+  const conTrampaAdentro = { producto: 'Proyectante S60', termico: new Proxy({}, {
+    getOwnPropertyDescriptor() { throw new Error('tampoco'); }, ownKeys() { return ['uw']; } }) };
+  assert.equal(perfilDeVentana(conTrampaAdentro), '');
+});
+
+// 🔴 [Thermos 10-10, MEDIDO] LOS DOS AGUJEROS QUE DEJABA LA PRIMERA VERSION DE LA INSPECCION.
+// Se verificaron corriendo el codigo antes de arreglarlos, no leyendolo.
+test('🔴 un campo que VETARIA, declarado no enumerable, NO puede colarse', () => {
+  // Medido antes del arreglo: devolvia 'Sliding_H98'. `JSON.stringify` descarta lo no-enumerable,
+  // asi que el veto de CAMPOS_COMPUESTA nunca lo veia y una bow de 4 panos recibia las laminas
+  // de una corredera H98. Es el invariante entero de la funcion: si esto pasa, no hay fail-closed.
+  const bow = { producto: 'Corredera SLIDING H98 Doble Riel S75' };
+  Object.defineProperty(bow, 'compuesta', { value: { partes: [1, 2, 3, 4] }, enumerable: false });
+  assert.equal(perfilDeVentana(bow), '');
+});
+
+test('🔴 referencias COMPARTIDAS en profundidad no degradan una ventana legitima', () => {
+  // Medido antes del arreglo: a partir de 11 objetos distintos devolvia '' y el cliente recibia
+  // «referencia» sin motivo. El tope estaba contado en CAMINOS recorridos, no en nodos: sin memo,
+  // un diamante de profundidad N cuesta 2^N. El campo esta en `termico`, que el clasificador NI LEE.
+  const base = { producto: 'Corredera SLIDING H98 Doble Riel S75' };
+  let nodo = { fin: true };
+  for (let i = 0; i < 20; i++) nodo = { a: nodo, b: nodo };   // 21 objetos, 2^20 caminos
+  assert.equal(perfilDeVentana({ ...base, termico: { uw: 2.4, ref: nodo } }), 'Sliding_H98');
+  // y un CICLO de verdad sigue cayendo del lado seguro
+  const ciclo = { uw: 2.4 }; ciclo.yo = ciclo;
+  assert.equal(perfilDeVentana({ ...base, termico: ciclo }), '');
+  // los arrays no se rechazan por el `length` no-enumerable que les da la norma
+  assert.equal(perfilDeVentana({ ...base, termico: { uw: 2.4, serie: [1, 2, 3] } }), 'Sliding_H98');
 });

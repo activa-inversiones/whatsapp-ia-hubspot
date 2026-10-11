@@ -347,6 +347,51 @@ export async function esperarAntesDeEnviar({ dormir = null, ms = DEMORA_MS } = {
  * alternativa —olvidar al cotizar algo sin datos termicos— dejaria sin recuadro a un cliente
  * que si tiene una ventana cotizada, que es peor.
  */
+/** Los campos INTERNOS del motor de precios que `perfilDeVentana` (laminasThermal.js) usa como
+ *  FUENTE DE VERDAD del producto. Fuera del turno en que el motor los escribió, nadie los avala.
+ *
+ *  🔑 EL PRINCIPIO, y lo cazó el test de este mismo arreglo en su primera versión: del estado que
+ *  nadie avala se borra lo que AUTORIZA (`_label_motor`) y se CONSERVA lo que VETA
+ *  (`_avisos_motor`). Borrar los avisos también dejaba la clasificación MÁS PERMISIVA: sin avisos,
+ *  el `producto_label` canónico autorizaba solo y la ventana volvía a declararse perfil propio.
+ *  Fail-closed no es «borrar todo»: es quedarse con los vetos. */
+const CAMPOS_DEL_MOTOR = ['_label_motor'];   // SOLO el que autoriza: ver el principio arriba
+
+/** 🔴 [2026-10-10 · Codex, compuerta del lote #1463] EL ESTADO RECORDADO NO AVALA EL RÓTULO DEL MOTOR.
+ *
+ *  `_label_motor` es el campo que APAGA el fail-closed de `perfilDeVentana`: con él presente, un
+ *  aviso del motor ya no anula el perfil propio (laminasThermal.js, "Con el rótulo del MOTOR
+ *  presente…"). Lo escribe la recotización con lo que devolvió el motor, y el turno FRESCO se sanea
+ *  en `webhook.js` antes de recotizar — pero **este estado vive 30 días**. En una REEMISIÓN
+ *  (`enviar_informe_termico` sin ventanas frescas) se vuelve a clasificar un `_perfil` que pudo
+ *  guardarse ANTES de ese saneo, y ya no hay forma de saber si ese rótulo vino del motor o del LLM.
+ *  Se borra AL LEER: sin rótulo que avalar, el informe dice "referencia", que es la verdad. Se
+ *  autocura — lo que se guarde de ahora en más ya viene saneado.
+ *
+ *  ⚠️ NO se puede arreglar solo en la entrada fresca: el camino de la reemisión no pasa por ahí.
+ *  Lo cazó Codex en la compuerta (NO APTO), no los tests: el agujero estaba entre dos archivos.
+ *
+ *  📏 MEDIDO el 10-10 contra el estado VIVO (`simple_cache`, 203 fichas, 867 ventanas): 37 ventanas
+ *  traen `_label_motor`; 6 con el rótulo de un sistema modelado y **ninguna de esas 6 con avisos**
+ *  ⇒ hoy este borrado NO cambia ningún veredicto. Cierra el camino antes de que se materialice.
+ */
+export function sinCamposDelMotor(ventanas) {
+  if (!Array.isArray(ventanas)) return [];
+  const sucio = (o) => o && typeof o === 'object' && !Array.isArray(o)
+    && CAMPOS_DEL_MOTOR.some((k) => k in o);
+  return ventanas.map((v) => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return v;
+    if (!sucio(v) && !sucio(v._perfil)) return v;      // lo limpio se devuelve TAL CUAL, sin copiar
+    const limpio = { ...v };                            // copia: el objeto original vive en la caché
+    for (const k of CAMPOS_DEL_MOTOR) delete limpio[k];
+    if (sucio(v._perfil)) {
+      limpio._perfil = { ...v._perfil };
+      for (const k of CAMPOS_DEL_MOTOR) delete limpio._perfil[k];
+    }
+    return limpio;
+  });
+}
+
 export function datosDelInforme(entrantes, recordados) {
   const VACIO = { glassLabel: '', uw: null, producto: '', ventanas: [] };
   // `Number(d.uw) > 0` y no una simple comprobacion de presencia: un Uw de 0 es lo que
@@ -381,10 +426,12 @@ export function datosDelInforme(entrantes, recordados) {
   if (hay(entrantes)) return { datos: limpiar(entrantes), recordar: true };
   // Aunque no haya datos entrantes, si el acumulado crecio hay que volver a guardarlo.
   if (hay(recordados)) {
-    return { datos: limpiar(recordados), recordar: false };
+    // Los campos internos del motor NO sobreviven al estado: ver `sinCamposDelMotor` arriba.
+    const d = limpiar(recordados);
+    return { datos: { ...d, ventanas: sinCamposDelMotor(d.ventanas) }, recordar: false };
   }
   return { datos: VACIO, recordar: false };
 }
 
 export { FIRMA, DEMORA_MS, DEMORA_AVISO_MS };
-export default { normalizarComuna, pedirInformeComuna, armarMensaje, informeParaComuna, esperarAntesDeEnviar, datosDelInforme, FIRMA, VERSION };
+export default { normalizarComuna, pedirInformeComuna, armarMensaje, informeParaComuna, esperarAntesDeEnviar, datosDelInforme, sinCamposDelMotor, FIRMA, VERSION };

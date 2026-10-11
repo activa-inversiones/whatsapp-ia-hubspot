@@ -12,7 +12,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import zlib from 'node:zlib';
+import zlib from 'node:zlib';           // lo usa el extractor de geometria de mas abajo
+import { textoDelPdf } from './textoDelPdf.testutil.js';
 import { generarInformeTermicoPdf } from './informeTermicoPdf.js';
 import { generarInformeVientosPdf } from './informeVientosPdf.js';
 
@@ -52,12 +53,6 @@ function streamsDelPdf(pdf) {
   return salida;
 }
 
-function textoDelPdf(pdf) {
-  const s = streamsDelPdf(pdf).join('');
-  const hex = (s.match(/<([0-9A-Fa-f]+)>/g) || []).map((t) => Buffer.from(t.slice(1, -1), 'hex').toString('latin1'));
-  const lit = (s.match(/\(((?:\\.|[^()\\])*)\)/g) || []).map((t) => t.slice(1, -1).replace(/\\([()\\])/g, '$1'));
-  return [...hex, ...lit].join('');
-}
 
 /**
  * Cada texto de la PRIMERA página con su posición real: { x, yBase, size, txt }.
