@@ -5653,6 +5653,12 @@ Comuna: ${datos.comuna}`
       }));
       const okEI = !!(pdfRes && pdfRes.ok && pdfRes.pdf_sent !== false);
       const quienEI = String(ei.operador || 'Agenda');
+      // [NIM 12-oct] El resultado se contesta APENAS se sabe (el PDF ya salió o no): lo que sigue —mensaje, espejo,
+      // sesión, atribución— no puede dejar a sales-os esperando hasta su tope con la propuesta ya enviada.
+      if (typeof ei.onResultado === 'function') {
+        ei.onResultado({ ok: okEI, quote_number: pdfRes?.quote_number || null, message: pdfRes?.message || null,
+          pdf_sent: pdfRes?.pdf_sent !== false, error: okEI ? null : String(pdfRes?.error || pdfRes?.reason || 'no_emitida') });
+      }
       if (okEI) {
         // El mensaje de entrega es el MISMO que recibe un cliente de WhatsApp (lo arma generarPdf).
         if (pdfRes.message) await safe('pdf.interno.send', () => sendWhatsAppText(from, pdfRes.message));
@@ -5671,10 +5677,6 @@ Comuna: ${datos.comuna}`
         await safe('atribucion.cerrarTurno', () => atribucionAlCerrarTurno({ turno, ...toStoreEI, kv: _carpetas, log: _logAtrib }));
       }
       log(okEI ? 'info' : 'warn', 'pdf.interno', `${from}: emisión interna por ${quienEI} → ${okEI ? (pdfRes?.quote_number || 'sin folio') : `NO emitida (${pdfRes?.error || pdfRes?.reason || 'sin detalle'})`}`);
-      if (typeof ei.onResultado === 'function') {
-        ei.onResultado({ ok: okEI, quote_number: pdfRes?.quote_number || null, message: pdfRes?.message || null,
-          pdf_sent: pdfRes?.pdf_sent !== false, error: okEI ? null : String(pdfRes?.error || pdfRes?.reason || 'no_emitida') });
-      }
       return; // 200 ya enviado; el finally libera el lock
     }
 
