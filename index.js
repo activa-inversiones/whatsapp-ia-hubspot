@@ -288,6 +288,8 @@ import {
 // @patch:sales-os:imports:end
 // [2026-07-07 ZL-F2] Motor Zero-Leaks — re-engagement determinista (ver services/reengagement.js)
 import { reengage } from "./services/reengagement.js";
+// [2026-10-12 · #1500-A] El Oliver interno (sales-os) lee con el cerebro del bot (ver services/oliverInternoLector.js)
+import { leerYCotizar } from "./services/oliverInternoLector.js";
 import { loadSession as loadOliverGptSession } from "./src/oliver-gpt/session-store.js";
 import {
   evaluateLeadValue,
@@ -4957,6 +4959,30 @@ app.get("/internal/agenda-debug", (req, res) => {
 // Doble llave de seguridad vive DENTRO de reengage() (services/reengagement.js):
 // flag ZERO_LEAKS_REENGAGE + ventana Meta 24h + candado por cliente. Este handler
 // solo autentica, cablea deps reales y devuelve el JSON honesto de reengage().
+// [2026-10-12 · #1500-A] EL OLIVER INTERNO LEE CON EL CEREBRO DEL BOT.
+// sales-os (pantalla «Oliver interno» de la agenda) manda el texto del vendedor y recibe las
+// líneas que Oliver cotizó: el MISMO LLM, la MISMA herramienta `calcular_cotizacion` y el MISMO
+// pricer que el WhatsApp. Solo corren las herramientas de precio (nada se guarda ni se envía) y
+// una cantidad > 50 leída de texto libre no se cotiza. Motivo y medición: services/oliverInternoLector.js.
+app.post("/internal/oliver-interno/leer", express.json(), async (req, res) => {
+  try {
+    if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
+    const texto = String(req.body?.texto || "").trim();
+    if (!texto) return res.status(400).json({ ok: false, error: "texto_requerido" });
+    if (texto.length > 4000) return res.status(400).json({ ok: false, error: "texto_demasiado_largo" });
+    const out = await leerYCotizar({
+      texto,
+      comuna: String(req.body?.comuna || "").trim(),
+      color: String(req.body?.color || "").trim(),
+      nombre: String(req.body?.nombre || "").trim(),
+    });
+    return res.json(out);
+  } catch (e) {
+    console.error("[oliver-interno/leer] error:", e?.message || e);
+    return res.status(500).json({ ok: false, error: "lector_fallo", detalle: String(e?.message || e).slice(0, 200) });
+  }
+});
+
 app.post("/internal/reengage", express.json(), async (req, res) => {
   try {
     if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
