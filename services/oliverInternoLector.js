@@ -60,15 +60,43 @@ export function soloCotizar(runTool) {
  * @returns {Promise<{ok:boolean, lineas:Array<{n:number, herramienta:string, pedido:object, resultado:object}>,
  *   bloqueadas:string[], sospechosas:Array<{n:number,cantidad:number}>, respuesta:string, error?:string}>}
  */
+/**
+ * [r4 · Thermos DEFECTO 1] El motor SIN segunda pasada. La respuesta conversacional cuesta una llamada al LLM que
+ * acá nadie lee… salvo cuando Oliver PREGUNTA en vez de cotizar: esa pregunta viene en el `content` de la primera
+ * pasada (handleTurn la empuja a `messages` como assistant pero solo devuelve lo de pass2). Este stub devuelve el
+ * último content del assistant sin llamar al LLM: la pantalla muestra qué pidió Oliver, y no cuesta una pasada.
+ */
+export function motorSinPass2(engine) {
+  return {
+    ...engine,
+    async orchestratorPass2({ messages = [] } = {}) {
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        const m = messages[i];
+        if (m && m.role === 'assistant' && typeof m.content === 'string' && m.content.trim()) return m.content.trim();
+      }
+      return '';
+    },
+  };
+}
+
+/** Lo que el handler colgó NO enumerable (`_interno`, ver tools.js conBolsaInterna) se expone como `interno`. */
+function resultadoConInterno(result) {
+  if (!result || typeof result !== 'object') return result;
+  const bolsa = Object.getOwnPropertyDescriptor(result, '_interno');
+  return bolsa && bolsa.value ? { ...result, interno: bolsa.value } : { ...result };
+}
+
 export async function leerYCotizar({ texto, comuna = '', color = '', nombre = '', deps = {} } = {}) {
   const handleTurn = deps.handleTurn || handleTurnReal;
-  const engine = deps.engine || { ...engineReal, orchestratorPass2: async () => '' };
+  const engine = deps.engine || motorSinPass2(engineReal);
   const exec = soloCotizar(deps.runTool || runToolReal);
 
   const lockedData = {};
   if (comuna) lockedData.comuna = comuna;
   if (color) lockedData.color = color;
-  const state = { ...lockedData, lockedData };
+  // [r4 · Thermos] MODO INTERNO: le escribe un vendedor del equipo (services/internosEquipo.js). Sin esto el prompt
+  // trata al vendedor como cliente frío (reglas de calificación: segmento, presupuesto) y pregunta en vez de cotizar.
+  const state = { ...lockedData, lockedData, modo_interno: true };
   if (nombre) { state.nombre = nombre; state.name = nombre; }
 
   const turn = await handleTurn({
@@ -78,13 +106,51 @@ export async function leerYCotizar({ texto, comuna = '', color = '', nombre = ''
     toolCtx: { textoCliente: String(texto || ''), runTool: exec, engine },
   });
 
-  const lineas = (turn.toolCalls || [])
-    .filter((c) => HERRAMIENTAS_DE_PRECIO.includes(c.name))
-    .map((c, i) => ({ n: i + 1, herramienta: c.name, pedido: c.input, resultado: c.result }));
+  // [r4 · Thermos] Si el LLM repite la MISMA línea (p. ej. tras una tool bloqueada vuelve a cotizar), se cuenta una
+  // vez: el pedido idéntico es la misma ventana. Una con cantidad u otro dato distinto sí es otra línea.
+  const vistos = new Set();
+  let repetidas = 0;
+  const lineas = [];
+  for (const c of turn.toolCalls || []) {
+    if (!HERRAMIENTAS_DE_PRECIO.includes(c.name)) continue;
+    const clave = `${c.name}|${JSON.stringify(c.input || {})}`;
+    if (vistos.has(clave)) { repetidas += 1; continue; }
+    vistos.add(clave);
+    lineas.push({ n: lineas.length + 1, herramienta: c.name, pedido: c.input, resultado: resultadoConInterno(c.result) });
+  }
 
-  const base = { lineas, bloqueadas: exec.bloqueadas, sospechosas: exec.sospechosas, respuesta: String(turn.reply || '') };
+  const base = { lineas, repetidas, bloqueadas: exec.bloqueadas, sospechosas: exec.sospechosas, respuesta: String(turn.reply || '') };
   if (!lineas.length) return { ok: false, error: 'oliver_no_cotizo', ...base };
   return { ok: true, ...base };
 }
 
-export default { leerYCotizar, soloCotizar, HERRAMIENTAS_DE_PRECIO, TOPE_CANTIDAD_TEXTO_LIBRE };
+export const RUTA_LECTOR = '/internal/oliver-interno/leer';
+/** Mismo tope que el cuadro de sales-os (20.000): una lista larga pegada no se rechaza entera [Codex r1]. */
+export const TOPE_TEXTO = 20000;
+
+/**
+ * [r3 · Thermos] La ruta vive acá, no en index.js (6.800 líneas). index.js solo la registra:
+ * `registrarRutaLector(app, { validInternalOperatorToken })`. Auth: el mismo token interno que operator-send.
+ * `leer` y `json` se inyectan para los tests.
+ */
+export function registrarRutaLector(app, { validInternalOperatorToken, leer = leerYCotizar, json = null } = {}) {
+  if (typeof validInternalOperatorToken !== 'function') throw new Error('registrarRutaLector: falta validInternalOperatorToken');
+  const handler = async (req, res) => {
+    try {
+      if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: 'unauthorized' });
+      const texto = String((req.body && req.body.texto) || '').trim();
+      if (!texto) return res.status(400).json({ ok: false, error: 'texto_requerido' });
+      if (texto.length > TOPE_TEXTO) return res.status(400).json({ ok: false, error: 'texto_demasiado_largo', tope: TOPE_TEXTO });
+      // [r4 · Thermos] Tope por campo: entran crudos al contexto del LLM (system-prompt), no son texto libre.
+      const campo = (k) => String((req.body && req.body[k]) || '').trim().slice(0, 80);
+      const out = await leer({ texto, comuna: campo('comuna'), color: campo('color'), nombre: campo('nombre') });
+      return res.json(out);
+    } catch (e) {
+      console.error('[oliver-interno/leer] error:', e && e.message ? e.message : e);
+      return res.status(500).json({ ok: false, error: 'lector_fallo', detalle: String(e && e.message ? e.message : e).slice(0, 200) });
+    }
+  };
+  if (json) app.post(RUTA_LECTOR, json, handler); else app.post(RUTA_LECTOR, handler);
+}
+
+export default { leerYCotizar, soloCotizar, registrarRutaLector, HERRAMIENTAS_DE_PRECIO, TOPE_CANTIDAD_TEXTO_LIBRE, RUTA_LECTOR, TOPE_TEXTO };

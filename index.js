@@ -289,7 +289,7 @@ import {
 // [2026-07-07 ZL-F2] Motor Zero-Leaks — re-engagement determinista (ver services/reengagement.js)
 import { reengage } from "./services/reengagement.js";
 // [2026-10-12 · #1500-A] El Oliver interno (sales-os) lee con el cerebro del bot (ver services/oliverInternoLector.js)
-import { leerYCotizar } from "./services/oliverInternoLector.js";
+import { registrarRutaLector } from "./services/oliverInternoLector.js";
 import { loadSession as loadOliverGptSession } from "./src/oliver-gpt/session-store.js";
 import {
   evaluateLeadValue,
@@ -4964,24 +4964,8 @@ app.get("/internal/agenda-debug", (req, res) => {
 // líneas que Oliver cotizó: el MISMO LLM, la MISMA herramienta `calcular_cotizacion` y el MISMO
 // pricer que el WhatsApp. Solo corren las herramientas de precio (nada se guarda ni se envía) y
 // una cantidad > 50 leída de texto libre no se cotiza. Motivo y medición: services/oliverInternoLector.js.
-app.post("/internal/oliver-interno/leer", express.json(), async (req, res) => {
-  try {
-    if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
-    const texto = String(req.body?.texto || "").trim();
-    if (!texto) return res.status(400).json({ ok: false, error: "texto_requerido" });
-    if (texto.length > 4000) return res.status(400).json({ ok: false, error: "texto_demasiado_largo" });
-    const out = await leerYCotizar({
-      texto,
-      comuna: String(req.body?.comuna || "").trim(),
-      color: String(req.body?.color || "").trim(),
-      nombre: String(req.body?.nombre || "").trim(),
-    });
-    return res.json(out);
-  } catch (e) {
-    console.error("[oliver-interno/leer] error:", e?.message || e);
-    return res.status(500).json({ ok: false, error: "lector_fallo", detalle: String(e?.message || e).slice(0, 200) });
-  }
-});
+// [r3 · Thermos] La ruta vive en services/oliverInternoLector.js (registrarRutaLector); acá solo se registra.
+registrarRutaLector(app, { validInternalOperatorToken, json: express.json() });
 
 app.post("/internal/reengage", express.json(), async (req, res) => {
   try {

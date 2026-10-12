@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  leerYCotizar, soloCotizar, HERRAMIENTAS_DE_PRECIO, TOPE_CANTIDAD_TEXTO_LIBRE,
+  leerYCotizar, soloCotizar, motorSinPass2, HERRAMIENTAS_DE_PRECIO, TOPE_CANTIDAD_TEXTO_LIBRE,
 } from './oliverInternoLector.js';
 
 // La frase exacta del dueño (12-oct 02:53), la que el interno leyó como 500 unidades.
@@ -124,6 +124,56 @@ test('[#1500-A] si Oliver no cotizó nada (preguntó), vuelve ok:false con su re
   assert.equal(out.error, 'oliver_no_cotizo');
   assert.deepEqual(out.lineas, []);
   assert.equal(out.respuesta, '¿Me confirmás el alto de la ventana?');
+});
+
+test('[#1500-A r4 · Thermos DEFECTO 1] la pregunta de Oliver llega aunque la segunda pasada esté anulada: sale del content de la primera', async () => {
+  // En producción `orchestratorPass2` se reemplaza (acá nadie lee la charla), pero cuando el LLM PREGUNTA en vez de
+  // cotizar, su pregunta viene en `pass1.content`. Antes `respuesta` salía '' y la pantalla decía «Oliver no cotizó»
+  // sin decir qué pedía. `motorSinPass2` devuelve el último content del assistant SIN llamar al LLM de nuevo.
+  const base = {
+    async orchestratorPass1() { return { tool_calls: [], content: '¿Me confirmás el alto de la ventana?', raw: {} }; },
+    async orchestratorPass2() { throw new Error('pass2 NO debe llamarse: cuesta una pasada del LLM que nadie lee'); },
+  };
+  const out = await leerYCotizar({ texto: 'una ventana', comuna: 'Temuco', color: 'BLANCO', deps: { engine: motorSinPass2(base), runTool: async () => ({ ok: true }) } });
+  assert.equal(out.ok, false);
+  assert.equal(out.error, 'oliver_no_cotizo');
+  assert.equal(out.respuesta, '¿Me confirmás el alto de la ventana?');
+});
+
+test('[#1500-A r4 · Thermos] el turno corre en MODO INTERNO (vendedor del equipo): el contexto lo dice y no hay preguntas de calificación', async () => {
+  const engine = motorFalso([{ name: 'calcular_cotizacion', input: PEDIDO_BOW }]);
+  const { runTool } = ejecutorFalso();
+  await leerYCotizar({ texto: FRASE_DEL_DUEÑO, comuna: 'Angol', color: 'NOGAL', nombre: 'Mary', deps: { engine, runTool } });
+  const contenido = String(engine.vistos[0].at(-1).content);
+  assert.match(contenido, /MODO INTERNO: TE ESCRIBE ALGUIEN DEL EQUIPO/, 'el bloque de internosEquipo.js entra al turno');
+});
+
+test('[#1500-A r4 · Thermos] si el LLM repite la MISMA línea (p. ej. tras una tool bloqueada), se cuenta una vez', async () => {
+  const engine = motorFalso([
+    { name: 'calcular_cotizacion', input: PEDIDO_BOW },
+    { name: 'generar_pdf_cotizacion', input: {} },
+    { name: 'calcular_cotizacion', input: { ...PEDIDO_BOW } },
+    { name: 'calcular_cotizacion', input: { ...PEDIDO_BOW, cantidad: 2 } },
+  ]);
+  const { runTool } = ejecutorFalso();
+  const out = await leerYCotizar({ texto: FRASE_DEL_DUEÑO, comuna: 'Angol', color: 'NOGAL', deps: { engine, runTool } });
+  assert.equal(out.lineas.length, 2, 'la repetida exacta no se duplica; la de cantidad distinta sí es otra línea');
+  assert.equal(out.repetidas, 1);
+  assert.deepEqual(out.lineas.map((l) => l.n), [1, 2]);
+});
+
+test('[#1500-A r4 · Thermos DEFECTO 2] la bolsa interna del resultado (avisos del motor, color cobrado, fabricación) viaja en `interno`', async () => {
+  // El handler del bot cuelga `_interno` NO enumerable (el LLM del WhatsApp no la ve, JSON.stringify la salta).
+  // El canal interno la expone como `resultado.interno` para que el vendedor vea lo que el motor avisó.
+  const engine = motorFalso([{ name: 'calcular_cotizacion', input: PEDIDO_BOW }]);
+  const runTool = async () => {
+    const r = { ok: true, unit_price: 1, cantidad: 1, producto_label: 'x' };
+    Object.defineProperty(r, '_interno', { value: { avisos: ['el total NO incluye la unión'], color_cobrado: 'NOGAL', aviso_fabricacion: 'hoja > 1200' }, enumerable: false });
+    return r;
+  };
+  const out = await leerYCotizar({ texto: FRASE_DEL_DUEÑO, deps: { engine, runTool } });
+  assert.deepEqual(out.lineas[0].resultado.interno, { avisos: ['el total NO incluye la unión'], color_cobrado: 'NOGAL', aviso_fabricacion: 'hoja > 1200' });
+  assert.equal(JSON.stringify(out.lineas[0].resultado).includes('_interno'), false);
 });
 
 test('[#1500-A] soloCotizar: el envoltorio es puro — rechaza por nombre y por cantidad sin tocar el ejecutor', async () => {

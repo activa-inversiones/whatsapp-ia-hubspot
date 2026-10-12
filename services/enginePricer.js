@@ -1377,6 +1377,8 @@ export async function priceAllEngine(d, customer_id = "") {
 
     // 4) Color / glass_id / comuna / cantidad
     const color = normColorLocal(item.color || d.default_color || "");
+    // [#1500-A r4] El color que de verdad se COBRA queda en el item (el canal interno lo guarda en vez del texto del LLM).
+    item.color_cobrado = color;
     let glass_id = pickGlassId(m.ancho_mm, m.alto_mm, item.ambiente); // por área + baño (la ESQUINA lo re-elige abajo, por su paño mayor)
     item.glass_label = etiquetaVidrio(glass_id);
     const comuna = d.comuna || "";
@@ -1656,6 +1658,10 @@ export async function priceAllEngine(d, customer_id = "") {
     if (Array.isArray(r.avisos) && r.avisos.length) {
       item.price_warning = r.avisos.join(" · ");
     }
+    // [#1500-A r4 · Thermos] Lo que el motor avisó, tal cual (lista) y el aviso de fabricación (#1461), para la bolsa
+    // interna de la tool (conBolsaInterna en tools.js). Aditivo: nadie más los lee.
+    item.avisos_motor = Array.isArray(r.avisos) ? r.avisos.map((a) => String(a)) : [];
+    item.aviso_fabricacion = r.aviso_fabricacion ? String(r.aviso_fabricacion) : null;
     // Persistir especificación para el PDF/etiqueta (antes se perdía): serie + hoja + riel
     item.serie = serie;
     if (r.producto_label) item.producto_label = r.producto_label;

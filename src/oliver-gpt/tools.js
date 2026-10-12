@@ -796,6 +796,26 @@ async function falloDeCotizacion(r, item, ctx) {
  * @param {object} it - el item ya cotizado por el pricer.
  * @returns {{nota_linea?:string, _decir_al_cliente?:string}}
  */
+/**
+ * [2026-10-12 · #1500-A r4 · Thermos DEFECTO 2] LA BOLSA INTERNA DE LA LÍNEA, INVISIBLE PARA EL LLM.
+ * El canal interno de sales-os (services/oliverInternoLector.js) necesita lo que el motor AVISÓ sobre la
+ * línea (`r.avisos` → `price_warning`, p. ej. «el total NO incluye la unión»), el color que de verdad se
+ * COBRÓ (el pricer normaliza: ROBLE DORADO → NOGAL) y el aviso de fabricación (#1461). Nada de eso estaba
+ * en el resultado de la tool, y agregarlo como campo normal cambiaría lo que el LLM del WhatsApp ve y dice.
+ * Por eso va NO enumerable: `JSON.stringify` (lo que recibe el LLM) la salta; `handleTurn` guarda el mismo
+ * objeto en `toolCalls[].result`, y ahí el canal interno la lee. Cero cambio para el WhatsApp.
+ */
+export function conBolsaInterna(it, salida) {
+  const avisos = Array.isArray(it?.avisos_motor) && it.avisos_motor.length
+    ? it.avisos_motor.map((a) => String(a)).filter(Boolean)
+    : (it?.price_warning ? [String(it.price_warning)] : []);
+  Object.defineProperty(salida, '_interno', {
+    value: { avisos, color_cobrado: it?.color_cobrado || null, aviso_fabricacion: it?.aviso_fabricacion || null },
+    enumerable: false, writable: false, configurable: false,
+  });
+  return salida;
+}
+
 export function notaDeLineaParaElLLM(it) {
   if (!it?.nota_linea) return {};
   // El pricer deja `item.esquina` en TODOS los caminos de la esquina (paños del cliente, notacion
@@ -1027,7 +1047,7 @@ export async function runTool(name, input = {}, ctx = {}) {
       // ⚠️ Dejar este disparo "por las dudas" no es inofensivo: vuelve a tomar los candados
       // antes que el despacho bueno y reproduce el defecto entero. Lo cazo Codex.
 
-      return {
+      return conBolsaInterna(it, {
         ok: true,
         unit_price: it.unit_price,            // NETO (sin IVA) — camino V1
         total_neto: it.total_price,
@@ -1076,7 +1096,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         medidas_resueltas: it.measures || `${med.ancho_mm}x${med.alto_mm}mm`,
         termico: it.termico || null,          // [thermal] hoja Uw para el PDF (null = no mostrar)
         _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses otro campo. En "measures" de cada item del PDF pasa medidas_resueltas TAL CUAL.',
-      };
+      });
     }
 
     case 'calcular_por_area': {
@@ -1140,7 +1160,7 @@ export async function runTool(name, input = {}, ctx = {}) {
       if (!r.ok || !(Number(it.unit_price) > 0)) {
         return falloDeCotizacion(r, it, ctx);
       }
-      return {
+      return conBolsaInterna(it, {
         ok: true,
         unit_price: it.unit_price,            // NETO (sin IVA) — camino V1, idéntico a calcular_cotizacion
         total_neto: it.total_price,
@@ -1159,7 +1179,7 @@ export async function runTool(name, input = {}, ctx = {}) {
         referencial: it.referencial || false,
         revision_ingenieria: it.revision_ingenieria || undefined,  // [Codex r2] por area tambien llega al PDF
         _nota_precio: 'unit_price es NETO (sin IVA). Pásalo TAL CUAL a generar_pdf_cotizacion; el PDF agrega el 19% de IVA. NO uses precio_por_m2 ni otro campo.',
-      };
+      });
     }
 
     case 'generar_link_simulador':
