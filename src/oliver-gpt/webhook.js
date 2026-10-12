@@ -5694,6 +5694,9 @@ Comuna: ${datos.comuna}`
       //   · sin folio      → ok:false, error = reason del pipeline ('no_emitida' si no dice)
       // [r4 · Codex r2] La clasificación es una función PURA (services/oliverInternoLiberar.js, con sus tests): enviado /
       // duplicada con folio / en vuelo sin folio (NO es éxito) / folio sin PDF (dudoso | rechazado) / sin folio.
+      // [r5 · NIM] + la opción de la terna que el cliente YA recibió (generarPdf devuelve eleccion:true, arriba ~3636): es
+      // «ya la tiene» (deduped + eleccion), no un rechazo de Meta. Al cliente no se le manda nada: generarPdf ya dejó en su
+      // ficha el evento «eligió la opción X» y en `state.last_quote` cuál quedó como definitiva; el vendedor lo ve en sales-os.
       const resEI = clasificarResultadoEmision(pdfRes);
       const folioEI = resEI.quote_number;
       const dedupEI = resEI.deduped;
@@ -5737,7 +5740,7 @@ Comuna: ${datos.comuna}`
         const histEI = [...history, { role: 'assistant', content: pdfRes.message || `Te preparé tu Propuesta Técnica Económica${pdfRes.quote_number ? ` N° ${pdfRes.quote_number}` : ''} (PDF).` }];
         await persistirEI(histEI);
       }
-      log(okEI || dedupEI ? 'info' : 'warn', 'pdf.interno', `${from}: emisión interna por ${quienEI} → ${okEI ? folioEI || 'sin folio' : (dedupEI ? `duplicada de ${folioEI} (ya la tiene)` : `NO entregada (${errorEI}${folioEI ? `, folio ${folioEI}` : ''})`)}`);
+      log(okEI || dedupEI ? 'info' : 'warn', 'pdf.interno', `${from}: emisión interna por ${quienEI} → ${okEI ? folioEI || 'sin folio' : (dedupEI ? `${resEI.eleccion ? 'opción de la terna' : 'duplicada'} ${folioEI} (ya la tiene)` : `NO entregada (${errorEI}${folioEI ? `, folio ${folioEI}` : ''})`)}`);
       return; // 200 ya enviado; el finally libera el lock
     }
 

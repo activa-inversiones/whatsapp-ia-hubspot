@@ -31,27 +31,31 @@ export function itemsDesdeLineasBot(lineas, defaultColor = '') {
  * [r4 · Codex r2] Lo que `toolCtx.generarPdf` devolvió → lo que sales-os necesita decidir sin reintentar a ciegas. PURA.
  *   · enviado                 → ok:true, pdf_sent:true
  *   · duplicada CON folio     → ok:true, deduped:true (misma propuesta hace <2 min: el cliente YA la tiene; no se reenvía)
+ *   · opción de la terna      → ok:true, deduped:true, eleccion:true (el cliente YA recibió A/B/C por WhatsApp y el vendedor
+ *                               liberó una de esas: generarPdf la deja como definitiva y no emite nada; webhook.js:3636) [r5]
  *   · duplicada SIN folio     → ok:false, 'emision_en_vuelo' (otra idéntica EN CURSO: la primera puede fallar; no se descarta nada)
  *   · folio sin PDF           → ok:false, 'pdf_dudoso' (Meta no confirmó) o 'pdf_no_entregado' (rechazo), con quote_number
  *   · sin folio / null        → ok:false, error = reason|error del pipeline ('no_emitida' si no dice)
- * @returns {{ok:boolean, deduped:boolean, quote_number:string|null, pdf_sent:boolean, error:string|null, message:string|null}}
+ * @returns {{ok:boolean, deduped:boolean, eleccion:boolean, quote_number:string|null, pdf_sent:boolean, error:string|null, message:string|null}}
  */
 export function clasificarResultadoEmision(pdfRes) {
   const r = pdfRes && typeof pdfRes === 'object' ? pdfRes : null;
   const folio = (r && r.quote_number) || null;
   const message = (r && r.message) || null;
+  const base = { ok: false, deduped: false, eleccion: false, quote_number: folio, pdf_sent: false, error: null, message };
   if (!r || r.ok !== true) {
-    return { ok: false, deduped: false, quote_number: folio, pdf_sent: false, error: String((r && (r.error || r.reason)) || 'no_emitida'), message };
+    return { ...base, error: String((r && (r.error || r.reason)) || 'no_emitida') };
   }
-  if (r.deduped) {
-    if (folio) return { ok: true, deduped: true, quote_number: folio, pdf_sent: false, error: null, message };
-    return { ok: false, deduped: false, quote_number: null, pdf_sent: false, error: 'emision_en_vuelo', message };
+  // [r5 · NIM] eleccion:true con folio = «ya la tiene» (la opción B de su terna), NO «Meta rechazó el PDF» como la rotulaba r4.
+  if (r.deduped || r.eleccion === true) {
+    if (folio) return { ...base, ok: true, deduped: true, eleccion: r.eleccion === true };
+    return { ...base, quote_number: null, error: 'emision_en_vuelo' };
   }
   if (r.pdf_sent === false) {
-    if (folio) return { ok: false, deduped: false, quote_number: folio, pdf_sent: false, error: r.entrega_dudosa ? 'pdf_dudoso' : 'pdf_no_entregado', message };
-    return { ok: false, deduped: false, quote_number: null, pdf_sent: false, error: 'no_emitida', message };
+    if (folio) return { ...base, error: r.entrega_dudosa ? 'pdf_dudoso' : 'pdf_no_entregado' };
+    return { ...base, quote_number: null, error: 'no_emitida' };
   }
-  return { ok: true, deduped: false, quote_number: folio, pdf_sent: true, error: null, message };
+  return { ...base, ok: true, pdf_sent: true };
 }
 
 /** Lo que esperó la ruta → la respuesta HTTP. El folio viaja también en el fallo; `detalle` es texto (Thermos E-4). */
@@ -61,7 +65,8 @@ function responderEmision(res, out) {
     return res.status(502).json({ ok: false, error: String((out && out.error) || 'no_emitida'), quote_number: (out && out.quote_number) || null,
       detalle: out && out.message ? String(out.message).slice(0, 300) : null });
   }
-  return res.json({ ok: true, deduped: out.deduped === true, quote_number: out.quote_number || null, message: out.message || null, pdf_sent: out.pdf_sent === true });
+  return res.json({ ok: true, deduped: out.deduped === true, eleccion: out.eleccion === true, quote_number: out.quote_number || null,
+    message: out.message || null, pdf_sent: out.pdf_sent === true });
 }
 
 /**

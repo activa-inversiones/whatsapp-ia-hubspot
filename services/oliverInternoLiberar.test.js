@@ -15,14 +15,26 @@ import { itemsDesdeLineasBot, registrarRutaLiberar, clasificarResultadoEmision, 
 // el webhook): lo que `toolCtx.generarPdf` devuelve → lo que sales-os necesita decidir sin reintentar a ciegas.
 test('[#1500-C r4] clasificarResultadoEmision: enviado / duplicada CON folio / en vuelo SIN folio / folio sin PDF (dudoso o rechazado) / sin folio / null', () => {
   const c = clasificarResultadoEmision;
-  assert.deepEqual(c({ ok: true, quote_number: 'X-1', pdf_sent: true, message: 'Listo' }), { ok: true, deduped: false, quote_number: 'X-1', pdf_sent: true, error: null, message: 'Listo' });
-  assert.deepEqual(c({ ok: true, quote_number: 'X-1', pdf_sent: false, deduped: true }), { ok: true, deduped: true, quote_number: 'X-1', pdf_sent: false, error: null, message: null });
+  assert.deepEqual(c({ ok: true, quote_number: 'X-1', pdf_sent: true, message: 'Listo' }), { ok: true, deduped: false, eleccion: false, quote_number: 'X-1', pdf_sent: true, error: null, message: 'Listo' });
+  assert.deepEqual(c({ ok: true, quote_number: 'X-1', pdf_sent: false, deduped: true }), { ok: true, deduped: true, eleccion: false, quote_number: 'X-1', pdf_sent: false, error: null, message: null });
   // Codex r2 DEFECTO 2: «emisión idéntica EN VUELO» viene como deduped SIN folio: NO es éxito (la primera puede fallar).
-  assert.deepEqual(c({ ok: true, pdf_sent: false, deduped: true, message: 'ya la estoy preparando' }), { ok: false, deduped: false, quote_number: null, pdf_sent: false, error: 'emision_en_vuelo', message: 'ya la estoy preparando' });
-  assert.deepEqual(c({ ok: true, quote_number: 'X-2', pdf_sent: false, entrega_dudosa: true, message: 'Tuve un problema…' }), { ok: false, deduped: false, quote_number: 'X-2', pdf_sent: false, error: 'pdf_dudoso', message: 'Tuve un problema…' });
-  assert.deepEqual(c({ ok: true, quote_number: 'X-3', pdf_sent: false, entrega_dudosa: false, message: 'Meta lo rechazó' }), { ok: false, deduped: false, quote_number: 'X-3', pdf_sent: false, error: 'pdf_no_entregado', message: 'Meta lo rechazó' });
-  assert.deepEqual(c({ ok: false, reason: 'datos_incompletos', message: '¿Qué tipo de apertura?' }), { ok: false, deduped: false, quote_number: null, pdf_sent: false, error: 'datos_incompletos', message: '¿Qué tipo de apertura?' });
-  assert.deepEqual(c(null), { ok: false, deduped: false, quote_number: null, pdf_sent: false, error: 'no_emitida', message: null });
+  assert.deepEqual(c({ ok: true, pdf_sent: false, deduped: true, message: 'ya la estoy preparando' }), { ok: false, deduped: false, eleccion: false, quote_number: null, pdf_sent: false, error: 'emision_en_vuelo', message: 'ya la estoy preparando' });
+  assert.deepEqual(c({ ok: true, quote_number: 'X-2', pdf_sent: false, entrega_dudosa: true, message: 'Tuve un problema…' }), { ok: false, deduped: false, eleccion: false, quote_number: 'X-2', pdf_sent: false, error: 'pdf_dudoso', message: 'Tuve un problema…' });
+  assert.deepEqual(c({ ok: true, quote_number: 'X-3', pdf_sent: false, entrega_dudosa: false, message: 'Meta lo rechazó' }), { ok: false, deduped: false, eleccion: false, quote_number: 'X-3', pdf_sent: false, error: 'pdf_no_entregado', message: 'Meta lo rechazó' });
+  assert.deepEqual(c({ ok: false, reason: 'datos_incompletos', message: '¿Qué tipo de apertura?' }), { ok: false, deduped: false, eleccion: false, quote_number: null, pdf_sent: false, error: 'datos_incompletos', message: '¿Qué tipo de apertura?' });
+  assert.deepEqual(c(null), { ok: false, deduped: false, eleccion: false, quote_number: null, pdf_sent: false, error: 'no_emitida', message: null });
+});
+
+// [#1500-C r5 · NIM 12-oct, verificado en webhook.js:3636 + propuestas-color.js opcionYaEntregada] LA OPCIÓN DE LA TERNA YA ENTREGADA.
+// Si el cliente recibió por WhatsApp una terna de colores A/B/C (<48 h, mismo proyecto) y el vendedor libera desde la agenda
+// ese mismo proyecto con UNO de esos colores, generarPdf no emite nada nuevo: devuelve {ok:true, pdf_sent:false, eleccion:true}
+// con el folio de esa opción (opcionYaEntregada matchea por color aunque el texto del cliente sea ''). Eso es «ya la tiene»,
+// no «Meta rechazó el PDF»: r4 lo rotulaba pdf_no_entregado y el vendedor veía un rechazo falso con la cotización incierta.
+test('[#1500-C r5] clasificarResultadoEmision: la opción de la terna ya entregada (eleccion:true) es «ya la tiene», con eleccion:true, no pdf_no_entregado', () => {
+  const r = clasificarResultadoEmision({ ok: true, quote_number: '0353-B', pdf_sent: false, eleccion: true, message: 'Perfecto: se queda con la opción B — Nogal, N° 0353-B.' });
+  assert.deepEqual(r, { ok: true, deduped: true, eleccion: true, quote_number: '0353-B', pdf_sent: false, error: null, message: 'Perfecto: se queda con la opción B — Nogal, N° 0353-B.' });
+  // Sin folio no hay opción que «ya tenga»: no se inventa un éxito.
+  assert.equal(clasificarResultadoEmision({ ok: true, pdf_sent: false, eleccion: true }).ok, false);
 });
 
 const LINEA_BOW = {
@@ -119,8 +131,15 @@ test('[#1500-C] arma el turno interno: inbound sintético del teléfono del clie
   assert.equal(ei.items.length, 1);
   assert.equal(ei.items[0].unit_price, 792902);
   assert.equal(res.codigo, 200, JSON.stringify(res.cuerpo));
-  assert.deepEqual(res.cuerpo, { ok: true, deduped: false, quote_number: 'CM-FR-004-2026-0800', message: 'Listo ✅', pdf_sent: true });
+  assert.deepEqual(res.cuerpo, { ok: true, deduped: false, eleccion: false, quote_number: 'CM-FR-004-2026-0800', message: 'Listo ✅', pdf_sent: true });
   assert.ok(Number(ei.deadline) > Date.now(), 'lleva plazo (deadline): el webhook no emite después del tope');
+});
+
+test('[#1500-C r5] la opción de la terna ya entregada viaja en el 200: deduped:true y eleccion:true (sales-os lo explica distinto de una duplicada de 2 minutos)', async () => {
+  const { res } = await pedir({ body: BODY_OK, webhook: async (_req, res, deps) => { res.sendStatus(200);
+    deps.emisionInterna.onResultado({ ok: true, deduped: true, eleccion: true, quote_number: 'CM-FR-004-2026-0800-B', pdf_sent: false, message: 'Perfecto: se queda con la opción B.' }); } });
+  assert.equal(res.codigo, 200);
+  assert.deepEqual(res.cuerpo, { ok: true, deduped: true, eleccion: true, quote_number: 'CM-FR-004-2026-0800-B', message: 'Perfecto: se queda con la opción B.', pdf_sent: false });
 });
 
 test('[#1500-C r3 · Thermos] el fallo con folio viaja entero: 502 con error y quote_number, y `detalle` es texto (no un objeto)', async () => {
@@ -134,7 +153,7 @@ test('[#1500-C r3 · Thermos D-N3] una emisión DUPLICADA (el cliente ya la tien
   const { res } = await pedir({ body: BODY_OK, webhook: async (_req, res, deps) => { res.sendStatus(200);
     deps.emisionInterna.onResultado({ ok: true, deduped: true, quote_number: 'CM-FR-004-2026-0800', pdf_sent: false, message: null }); } });
   assert.equal(res.codigo, 200);
-  assert.deepEqual(res.cuerpo, { ok: true, deduped: true, quote_number: 'CM-FR-004-2026-0800', message: null, pdf_sent: false });
+  assert.deepEqual(res.cuerpo, { ok: true, deduped: true, eleccion: false, quote_number: 'CM-FR-004-2026-0800', message: null, pdf_sent: false });
 });
 
 test('[#1500-C] si el webhook no contesta (se cuelga) → 504 emision_sin_respuesta; si contesta ok:false → 502 con el motivo', async () => {

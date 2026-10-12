@@ -247,3 +247,36 @@ test('[#1500-C] sin deps.emisionInterna el turno es el de siempre (handleTurn se
     assert.equal(registro.turnos, 1);
   } finally { restaurar(); }
 });
+
+// [#1500-C r5 · NIM 12-oct] LA OPCIÓN DE LA TERNA YA ENTREGADA (webhook.js ~3636 + propuestas-color.js opcionYaEntregada).
+// El cliente recibió por WhatsApp la terna de colores A/B/C (<48 h) y el vendedor libera desde la agenda el MISMO proyecto
+// (producto + medidas + cantidad) con uno de esos colores: generarPdf no emite nada (la deja como definitiva) y devuelve
+// eleccion:true con ESE folio. r4 lo rotulaba «pdf_no_entregado» y el vendedor veía un rechazo de Meta falso.
+test('[#1500-C r5] terna ya entregada + color del vendedor = una de las opciones: no se emite ni se quema folio, nada al cliente, onResultado deduped+eleccion con el folio de esa opción', async () => {
+  const { ei, resultado } = emision();
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei });
+  const sigProyecto = JSON.stringify(ITEMS.map((it) => [String(it.producto_label).trim().toLowerCase(), String(it.measures).trim(), Number(it.qty) || 1]));
+  const base = 'CM-FR-004-2026-0700';
+  deps.loadSession = async () => ({
+    history: [{ role: 'user', content: 'hola' }],
+    state: { name: 'Claudio', comuna: 'Angol',
+      last_quote: { quote_number: base, quote_base: base, at: Date.now() - 60_000, pdf_sent: true, sig: 'otra-firma', sig_proyecto: sigProyecto, alternativas: 2,
+        opciones: [{ letra: 'A', numero: base, color: 'Blanco' }, { letra: 'B', numero: `${base}-B`, color: 'Nogal' }, { letra: 'C', numero: `${base}-C`, color: 'Roble Dorado' }] } },
+  });
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout, 'onResultado tiene que llamarse');
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(r.deduped, true, JSON.stringify(r));
+    assert.equal(r.eleccion, true, JSON.stringify(r));
+    assert.equal(r.quote_number, `${base}-B`, 'el folio de la opción que el cliente ya tiene (NOGAL = B)');
+    assert.equal(r.pdf_sent, false);
+    assert.equal(registro.docs.length, 0, 'no sale ningún PDF');
+    assert.equal(registro.textos.length, 0, 'al cliente no se le manda nada: no escribió él, y ya tiene el documento');
+    assert.ok(!registro.fetches.some((u) => /\/internal\/quotes\/next-number/.test(u)), 'no se quema folio');
+    const traza = registro.eventos.find((e) => e.metadata && e.metadata.source === 'oliver_gpt_eleccion_opcion');
+    assert.ok(traza, 'queda en la ficha qué opción quedó como definitiva');
+    assert.equal(registro.guardado.state.last_quote.quote_number, `${base}-B`, 'la sesión recuerda la opción definitiva');
+  } finally { restaurar(); }
+});
