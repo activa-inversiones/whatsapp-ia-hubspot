@@ -23,6 +23,16 @@ test('[#1500-C] con input.emision_interna = true no se pregunta ni color ni aper
   assert.equal(g.ok, true, JSON.stringify(g));
 });
 
+test('[#1500-C r3 · Thermos D-N1] el nombre que puso el VENDEDOR no es «asumido»: no hay aviso «no tengo su nombre» ni pendiente de reemisión', () => {
+  const g = quoteDataComplete({ name: 'Claudio Soto', comuna: 'Angol', items: ITEMS, emision_interna: true }, {}, { textoCliente: MARCA, comuna: 'Angol' });
+  assert.equal(g.nombre, 'Claudio Soto');
+  assert.equal(g.nombreAsumido, false, JSON.stringify(g));
+  assert.equal(g.nombreOrigen, 'vendedor');
+  // Sin la bandera, el mismo nombre que no aparece en el chat sigue siendo «asumido» (comportamiento de WhatsApp).
+  const w = quoteDataComplete({ name: 'Claudio Soto', comuna: 'Angol', items: ITEMS }, {}, { textoCliente: 'hola, quiero una ventana fija', comuna: 'Angol' });
+  assert.equal(w.nombreAsumido, true);
+});
+
 test('[#1500-C] la bandera NO apaga lo que sí importa: sin precio o sin nombre sigue bloqueando', () => {
   const sinPrecio = quoteDataComplete({ name: 'Claudio', comuna: 'Angol', items: [{ ...ITEMS[0], unit_price: 0 }], emision_interna: true }, {}, { textoCliente: MARCA, comuna: 'Angol' });
   assert.equal(sinPrecio.ok, false);

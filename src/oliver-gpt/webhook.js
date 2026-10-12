@@ -3909,9 +3909,9 @@ Comuna: ${datos.comuna}`
           // el documento sale a nombre de Juan y no hay nada que asumir ni que avisar: decirle
           // "todavia no tengo su nombre, la emiti como Juan" seria contradecir el propio PDF, y
           // ademas dejaba un `nombre_pendiente` que despues reenviaba el mismo documento.
-          // [#1500-C r3 · Thermos D-N1] En una emisión interna el nombre lo puso el VENDEDOR (ficha del cliente): misma regla
-          // que la atribución del dueño. Sin esto el cliente recibía «como todavía no tengo su nombre, la emití como…».
-          const _nombreAsumido = _gate.nombreAsumido && !atribucion?.name && !input.emision_interna;
+          // [#1500-C r3 · Thermos D-N1] En una emisión interna el nombre lo puso el VENDEDOR: el gate ya lo devuelve como NO asumido
+          // (pdf-intent.js, `emision_interna`), así que esta línea queda igual (la guarda webhook.nombre-tardio.test.js).
+          const _nombreAsumido = _gate.nombreAsumido && !atribucion?.name;
           let _avisoNombre = '';
           if (_nombreAsumido && !state.nombre_avisado_at) {
             // El texto cambia segun DE DONDE salio el nombre, porque no son la misma

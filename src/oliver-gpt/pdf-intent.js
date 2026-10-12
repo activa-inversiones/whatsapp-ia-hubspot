@@ -167,6 +167,11 @@ export function resolverNombre({ input = {}, state = {}, pushName = '', comuna =
  */
 export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
   const missing = [];
+  // [2026-10-12 · #1500-C] EMISIÓN INTERNA (Oliver interno de sales-os): los ítems vienen ya decididos por el
+  // vendedor (cotizados por Oliver) y el «texto del cliente» es una marca sintética; los gates de color y
+  // apertura NO aplican (más abajo), y el NOMBRE lo puso el vendedor desde la ficha: no es «asumido» (Thermos
+  // D-N1: sin esto el cliente recibía «como todavía no tengo su nombre, la emití como…»). Ítems/precio siguen.
+  const _emisionInterna = input && input.emision_interna === true;
   // 🔴 [2026-09-03 · DECISION DEL DUEÑO] EL NOMBRE YA NO FRENA LA COTIZACION.
   //
   // Textual: *"LA IDEA ES COTIZARLE IGUAL A CLIENTE SOLO ACTUALIZAR SI DESPUES VIENE EL
@@ -197,6 +202,7 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
     // La compuerta de procedencia mide contra lo que el cliente escribio. `textoColor` es el
     // mismo texto en IG/FB (ese canal no manda `textoCliente`), asi que sirve para los dos.
     textoCliente: opciones.textoCliente !== undefined ? opciones.textoCliente : opciones.textoColor });
+  if (_emisionInterna && String((input && input.name) || '').trim()) { _nom.asumido = false; _nom.origen = 'vendedor'; }
   const items = Array.isArray(input.items) ? input.items : [];
   if (!items.length) missing.push('items');
   items.forEach((it, i) => {
@@ -238,10 +244,7 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
   // `textoColor` cae a `textoCliente` cuando no se pasa, asi WhatsApp no cambia.
   const textoCliente = opciones.textoCliente;
   const textoColor = opciones.textoColor !== undefined ? opciones.textoColor : textoCliente;
-  // [2026-10-12 · #1500-C] EMISIÓN INTERNA (Oliver interno de sales-os): los ítems vienen ya decididos por el
-  // vendedor (cotizados por Oliver) y el «texto del cliente» es una marca sintética; los gates de color y
-  // apertura NO aplican. Los de ítems/precio/nombre siguen iguales (pdf-intent.emision-interna.test.js).
-  const _emisionInterna = input && input.emision_interna === true;
+  // [#1500-C] Con `_emisionInterna` (definida arriba) los gates de color y apertura no aplican.
   const gateColor = textoColor !== undefined && textoColor !== null && !_emisionInterna;
 
   // 🔴 [2026-08-29] EL BLANCO QUE NADIE PIDIO. El color efectivo de cada item es el suyo o,
