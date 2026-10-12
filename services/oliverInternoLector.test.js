@@ -148,7 +148,10 @@ test('[#1500-A r4 · Thermos] el turno corre en MODO INTERNO (vendedor del equip
   assert.match(contenido, /MODO INTERNO: TE ESCRIBE ALGUIEN DEL EQUIPO/, 'el bloque de internosEquipo.js entra al turno');
 });
 
-test('[#1500-A r4 · Thermos] si el LLM repite la MISMA línea (p. ej. tras una tool bloqueada), se cuenta una vez', async () => {
+test('[#1500-A r5 · Codex] dos líneas IDÉNTICAS se conservan las dos (pueden ser dos ventanas reales); solo se cuenta la repetición para avisar', async () => {
+  // Codex r2 (NO APTO): el dedupe de r4 fusionaba dos llamadas iguales con cantidad 1 — que pueden ser dos unidades
+  // reales — y sales-os retenía la mitad del total. No hay información en la clave para distinguir «reintento del
+  // LLM» de «segunda unidad»: ante la duda se conservan y el vendedor las ve en el borrador.
   const engine = motorFalso([
     { name: 'calcular_cotizacion', input: PEDIDO_BOW },
     { name: 'generar_pdf_cotizacion', input: {} },
@@ -157,9 +160,9 @@ test('[#1500-A r4 · Thermos] si el LLM repite la MISMA línea (p. ej. tras una 
   ]);
   const { runTool } = ejecutorFalso();
   const out = await leerYCotizar({ texto: FRASE_DEL_DUEÑO, comuna: 'Angol', color: 'NOGAL', deps: { engine, runTool } });
-  assert.equal(out.lineas.length, 2, 'la repetida exacta no se duplica; la de cantidad distinta sí es otra línea');
-  assert.equal(out.repetidas, 1);
-  assert.deepEqual(out.lineas.map((l) => l.n), [1, 2]);
+  assert.equal(out.lineas.length, 3, 'ninguna línea se descarta');
+  assert.deepEqual(out.lineas.map((l) => l.n), [1, 2, 3]);
+  assert.equal(out.repetidas, 1, 'se avisa que hubo una repetición exacta, sin tocar las líneas');
 });
 
 test('[#1500-A r4 · Thermos DEFECTO 2] la bolsa interna del resultado (avisos del motor, color cobrado, fabricación) viaja en `interno`', async () => {

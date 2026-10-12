@@ -106,16 +106,17 @@ export async function leerYCotizar({ texto, comuna = '', color = '', nombre = ''
     toolCtx: { textoCliente: String(texto || ''), runTool: exec, engine },
   });
 
-  // [r4 · Thermos] Si el LLM repite la MISMA línea (p. ej. tras una tool bloqueada vuelve a cotizar), se cuenta una
-  // vez: el pedido idéntico es la misma ventana. Una con cantidad u otro dato distinto sí es otra línea.
+  // [r5 · Codex r2 NO APTO] NADA SE DESCARTA. En r4 se fusionaban las llamadas idénticas (sugerencia de Thermos:
+  // «el LLM repite la línea tras una tool bloqueada»), pero dos llamadas iguales con cantidad 1 pueden ser DOS
+  // ventanas reales y sales-os retenía la mitad del total. La clave no distingue «reintento» de «segunda unidad»:
+  // ante la duda, todas las líneas van al borrador (el vendedor las ve) y solo se cuenta la repetición para avisar.
   const vistos = new Set();
   let repetidas = 0;
   const lineas = [];
   for (const c of turn.toolCalls || []) {
     if (!HERRAMIENTAS_DE_PRECIO.includes(c.name)) continue;
     const clave = `${c.name}|${JSON.stringify(c.input || {})}`;
-    if (vistos.has(clave)) { repetidas += 1; continue; }
-    vistos.add(clave);
+    if (vistos.has(clave)) repetidas += 1; else vistos.add(clave);
     lineas.push({ n: lineas.length + 1, herramienta: c.name, pedido: c.input, resultado: resultadoConInterno(c.result) });
   }
 
