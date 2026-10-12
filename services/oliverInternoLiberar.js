@@ -43,12 +43,17 @@ export function registrarRutaLiberar(app, { validInternalOperatorToken, handleWe
       const campo = (k) => String(b[k] || '').trim().slice(0, 80);
       const items = itemsDesdeLineasBot(b.lineas, campo('color'));
       if (!items.length) return res.status(400).json({ ok: false, error: 'sin líneas cotizadas: nada que emitir' });
-      const documentos = b.documentos && typeof b.documentos === 'object' ? { termico: Boolean(b.documentos.termico), vientos: Boolean(b.documentos.vientos) } : null;
+      // `documentos_elegidos` es TRAZA (queda en el evento del chat): el efecto real viaja por la marca «próxima» de
+      // documentos que sales-os deja ANTES de pedir y que generarPdf consume al decidir (cotizacion-documentos/decidir).
+      const de = b.documentos_elegidos && typeof b.documentos_elegidos === 'object' ? b.documentos_elegidos : null;
+      const documentos = de ? { termico: Boolean(de.termico), vientos: Boolean(de.vientos) } : null;
 
       let resolver;
       const resultado = new Promise((r) => { resolver = r; });
       const emisionInterna = {
         items, nombre: campo('nombre'), comuna: campo('comuna'), operador: campo('operador') || 'Agenda', documentos,
+        // [Thermos E-1] Si el webhook recién llega a emitir después del tope (candado del cliente tomado), no emite.
+        deadline: Date.now() + topeEsperaMs,
         onResultado: (r) => resolver(r || { ok: false, error: 'sin_resultado' }),
       };
       const msgId = `interno-${phone}-${Date.now()}`;
@@ -72,8 +77,13 @@ export function registrarRutaLiberar(app, { validInternalOperatorToken, handleWe
         if (timerTope) clearTimeout(timerTope);
       }
       if (out && out.timeout) return res.status(504).json({ ok: false, error: 'emision_sin_respuesta' });
-      if (!out || out.ok !== true) return res.status(502).json({ ok: false, error: String((out && out.error) || 'no_emitida'), detalle: out || null });
-      return res.json({ ok: true, quote_number: out.quote_number || null, message: out.message || null, pdf_sent: out.pdf_sent !== false });
+      // [Thermos r3] El folio viaja también en el fallo ('pdf_dudoso' / 'pdf_no_entregado' traen quote_number: el folio
+      // existe, sales-os no debe quemar otro) y `detalle` es texto, no un objeto (E-4).
+      if (!out || out.ok !== true) {
+        return res.status(502).json({ ok: false, error: String((out && out.error) || 'no_emitida'), quote_number: (out && out.quote_number) || null,
+          detalle: out && out.message ? String(out.message).slice(0, 300) : null });
+      }
+      return res.json({ ok: true, deduped: out.deduped === true, quote_number: out.quote_number || null, message: out.message || null, pdf_sent: out.pdf_sent === true });
     } catch (e) {
       console.error('[oliver-interno/liberar] error:', e && e.message ? e.message : e);
       return res.status(500).json({ ok: false, error: 'lector_fallo', detalle: String(e && e.message ? e.message : e).slice(0, 200) });

@@ -956,6 +956,9 @@ export async function handleWebhook(req, res, deps = {}) {
   let _detenerEscribiendo = () => {};
   try {
     const parseInbound    = deps.parseInbound    || realParseInbound;
+    // [#1500-C] EMISIÓN INTERNA (Oliver interno de sales-os): una sola constante para los dos sitios que la miran
+    // (el takeover y la rama que emite). null = turno normal de chat.
+    const emisionInterna  = (deps.emisionInterna && typeof deps.emisionInterna === 'object') ? deps.emisionInterna : null;
     // [2026-08-08] conPausaHumana: espera lo que un humano tardaría en tipear ese texto
     // antes de mandarlo. Se envuelve ACÁ, en la constante local, porque los ~15 puntos de
     // envío del handler pasan todos por ella — un solo wrap los cubre a todos.
@@ -1390,8 +1393,21 @@ export async function handleWebhook(req, res, deps = {}) {
     }
     const telefonoCliente = turno.cliente;
 
+    // [#1500-C r3 · Codex D2] EMISIÓN INTERNA: el teléfono tiene que ser de un CLIENTE. Si además figura como dueño o
+    // vendedor del equipo, `turno.cliente` puede ser un tercero (atribución) o `puedeEmitir` ser falso: la propuesta
+    // saldría a una persona y el folio quedaría a nombre de otra. Fail-closed, con motivo, y sin tocar nada.
+    if (emisionInterna && (turno.esDuenio || turno.esVendedor)) {
+      log('warn', 'pdf.interno', `${from}: emisión interna rechazada — el teléfono es del equipo (${turno.rol})`);
+      if (typeof emisionInterna.onResultado === 'function') {
+        emisionInterna.onResultado({ ok: false, quote_number: null, message: null, pdf_sent: false, error: 'cliente_es_del_equipo' });
+      }
+      return; // el finally libera el lock
+    }
+
     // ── (2c) RATE-LIMIT — 18 msg/min por waId ───────────────────────────
-    const rate = rateOk(from, rateMap);
+    // [#1500-C r3 · Codex D1] No aplica a una emisión interna: no es un mensaje del cliente, y el aviso de ritmo le
+    // llegaría a él por algo que no escribió.
+    const rate = emisionInterna ? { ok: true } : rateOk(from, rateMap);
     if (!rate.ok) {
       log('info', 'rate_limit', `Rate exceeded para ${from}`);
       // Aviso amigable al cliente; no procesa el turno.
@@ -1424,7 +1440,7 @@ export async function handleWebhook(req, res, deps = {}) {
         (effectiveControl.operator_status && effectiveControl.operator_status !== 'ai'));
 
     // [#1500-C] El takeover humano NO frena una emisión interna: la está liberando una persona desde la agenda.
-    if (aiPaused && !(deps && deps.emisionInterna)) {
+    if (aiPaused && !emisionInterna) {
       // [#966 r3] El texto del cliente se limpia UNA vez (tag roto fuera, tags sanos parseados) para el espejo y la captura de abajo.
       const _textoTakeoverOriginal = inbound.text || '';
       const _lrefTakeover = (deps.parseLandingRef || parseLandingRef)(limpiarTagRoto(_textoTakeoverOriginal));
@@ -1607,7 +1623,9 @@ export async function handleWebhook(req, res, deps = {}) {
     // escribió", el hecho de que ESTÉ ESCRIBIENDO AHORA levanta la restricción: ya hay una
     // conversación iniciada por ella y el re-enganche pasa a ser normal. Sin esto, un
     // cliente cargado a mano quedaría bloqueado para siempre aunque después nos hablara.
-    try { registrarQueNosEscribio(from); } catch { /* nunca puede tumbar el turno */ }
+    // [#1500-C r3 · Codex D3] Una emisión interna NO es el cliente escribiéndonos: no levanta el consentimiento de
+    // reenganche ni finge «escribiendo…» con un id de mensaje inventado.
+    if (!emisionInterna) { try { registrarQueNosEscribio(from); } catch { /* nunca puede tumbar el turno */ } }
 
     // ── (3b) "escribiendo…" + doble check azul ──────────────────────────
     // [2026-08-08] Arranca ACÁ y no antes, a propósito: recién en este punto sabemos que
@@ -1617,7 +1635,7 @@ export async function handleWebhook(req, res, deps = {}) {
     // Meta lo apaga solo a los 25 s; el loop lo refresca cada 18. El stop() va en el
     // finally del handler y aborta también cualquier POST en vuelo.
     // Nota: el mismo POST lleva status:"read" ⇒ también le deja el doble check azul.
-    try { _detenerEscribiendo = mantenerEscribiendo(msgId); } catch { /* cosmético */ }
+    if (!emisionInterna) { try { _detenerEscribiendo = mantenerEscribiendo(msgId); } catch { /* cosmético */ } }
 
     // ── (4) HIDRATACIÓN DE SESIÓN — cache in-memory o Postgres ──────────
     //
@@ -1752,7 +1770,8 @@ export async function handleWebhook(req, res, deps = {}) {
       // Tras 7 días sin hablar (mismo umbral que resetIfInactive) el próximo texto es una LLEGADA NUEVA y se re-clasifica:
       // la sesión sobrevive semanas y un cliente que vuelve por otro anuncio no puede quedar con la clase de julio (NIM, 27-sep).
       const _inactivoLargo = Number(baseState.lastMessageAt) > 0 && (Date.now() - Number(baseState.lastMessageAt)) > INACTIVIDAD_RECLASIFICAR_MS;
-      if (inbound?.text && (state.ref_status === undefined || _inactivoLargo)) {
+      // [#1500-C r3 · Codex D3] La marca sintética de una emisión interna no es «el primer texto del cliente»: no clasifica.
+      if (!emisionInterna && inbound?.text && (state.ref_status === undefined || _inactivoLargo)) {
         state.ref_status = (deps.clasificarPrimerMensaje || clasificarPrimerMensaje)(inbound.text);
         state.ref_status_at = inbound.enviadoAt || new Date().toISOString();
         if (_inactivoLargo) delete state.ref_solo_tag;
@@ -3005,7 +3024,10 @@ Comuna: ${datos.comuna}`
           // ofreciéndola, eso no es que el cliente la haya pedido.
           // [2026-08-31] El armado vive en `normalizers.textoDelCliente`: IG/FB tiene que medir
           // EXACTAMENTE lo mismo para que el gate del color se comporte igual en los dos canales.
-          const _textoCliente = textoDelCliente(history, userText);
+          // [#1500-C r3 · Thermos E-2] En una emisión interna el «texto del cliente» sería el historial viejo de WhatsApp + la
+          // marca sintética: un «de 3 hojas» dicho semanas atrás reescribiría el ítem del vendedor (detectHojas) y re-cotizaría.
+          // Se mide contra NADA: los ítems ya los decidió el vendedor y los gates de color/apertura están apagados.
+          const _textoCliente = input.emision_interna ? '' : textoDelCliente(history, userText);
           // [2026-09-03] `pushName` y `comuna`: con que nombre sale la propuesta cuando el
           // cliente no lo dio. El nombre ya no bloquea (ver pdf-intent.js), asi que estos dos
           // son lo que evita que el documento salga a nombre de "Cliente" a secas.
@@ -3162,7 +3184,8 @@ Comuna: ${datos.comuna}`
           // sobreviviria el turno de todos modos — y no tiene por que: solo tiene que llegar
           // hasta el `state.last_quote` del final de esta misma llamada.
           let _letrasTerna = 0;
-          if (_gate.coloresPropuestos && _gate.coloresPropuestos.length > 1) {
+          // [#1500-C r3 · Thermos E-3] Una emisión interna nunca sale como terna de colores: el vendedor eligió UNO.
+          if (_gate.coloresPropuestos && _gate.coloresPropuestos.length > 1 && !input.emision_interna) {
             _coloresTerna = _gate.coloresPropuestos.slice();
             const _colorA = _coloresTerna[0];
             (input.items || []).forEach((it) => { it.color = _colorA; });
@@ -3886,7 +3909,9 @@ Comuna: ${datos.comuna}`
           // el documento sale a nombre de Juan y no hay nada que asumir ni que avisar: decirle
           // "todavia no tengo su nombre, la emiti como Juan" seria contradecir el propio PDF, y
           // ademas dejaba un `nombre_pendiente` que despues reenviaba el mismo documento.
-          const _nombreAsumido = _gate.nombreAsumido && !atribucion?.name;
+          // [#1500-C r3 · Thermos D-N1] En una emisión interna el nombre lo puso el VENDEDOR (ficha del cliente): misma regla
+          // que la atribución del dueño. Sin esto el cliente recibía «como todavía no tengo su nombre, la emití como…».
+          const _nombreAsumido = _gate.nombreAsumido && !atribucion?.name && !input.emision_interna;
           let _avisoNombre = '';
           if (_nombreAsumido && !state.nombre_avisado_at) {
             // El texto cambia segun DE DONDE salio el nombre, porque no son la misma
@@ -5356,6 +5381,7 @@ Comuna: ${datos.comuna}`
             }
             return {
               ok: true, quote_number: quoteNumber, pdf_sent: false, media_id: waDocMediaId,
+              entrega_dudosa: !!propuestaDudosa, // [#1500-C r3] la emisión interna distingue «dudoso» (incierto) de «rechazado»
               // [2026-07-01 Bug#2 paridad] explícito y honesto: Marcelo la envía (no "si no la ves" vago).
               // [Gemini, compuerta 28-ago] En USTED (el resto del flujo habla de usted) y
               // sin guion largo: este texto SÍ le llega al cliente cuando Meta rechaza.
@@ -5641,8 +5667,15 @@ Comuna: ${datos.comuna}`
     // Lo que NO pasa: el LLM no interviene, la marca sintética no se persiste como mensaje del cliente (queda un
     // evento del OPERADOR con el folio) y el takeover humano no la frena (arriba, `aiPaused`).
     // Decisión del dueño (12-oct 09:50, opción A) tras la prueba real: «Liberar» mandaba solo un texto.
-    if (deps.emisionInterna && typeof deps.emisionInterna === 'object') {
-      const ei = deps.emisionInterna;
+    if (emisionInterna) {
+      const ei = emisionInterna;
+      // [#1500-C r3 · Thermos E-1] Si sales-os ya dejó de esperar (el candado del cliente estaba tomado por un turno largo),
+      // NO se emite después a espaldas de quien ya resolvió «no le llegó»: se contesta 'vencida' y no sale nada.
+      if (Number(ei.deadline) > 0 && Date.now() > Number(ei.deadline)) {
+        log('warn', 'pdf.interno', `${from}: emisión interna vencida antes de emitir (candado/turno largo); no se emite`);
+        if (typeof ei.onResultado === 'function') ei.onResultado({ ok: false, quote_number: null, message: null, pdf_sent: false, error: 'vencida' });
+        return; // el finally libera el lock
+      }
       const itemsEI = Array.isArray(ei.items) ? ei.items : [];
       const grandTotalEI = itemsEI.reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0);
       const pdfRes = await safe('pdf.interno', () => toolCtx.generarPdf({
@@ -5651,17 +5684,51 @@ Comuna: ${datos.comuna}`
         items: itemsEI, grand_total: grandTotalEI,
         emision_interna: true, // el gate de datos no pregunta color ni apertura: ya los decidió el vendedor (pdf-intent.js)
       }));
-      const okEI = !!(pdfRes && pdfRes.ok && pdfRes.pdf_sent !== false);
       const quienEI = String(ei.operador || 'Agenda');
+      // [#1500-C r3 · Thermos D-N2/D-N3] El resultado DISTINGUE lo que sales-os necesita decidir sin reintentar a ciegas:
+      //   · enviado        → ok:true (PDF entregado)
+      //   · deduped        → ok:true, deduped:true (misma propuesta hace <2 min: el cliente YA la tiene; no se reenvía)
+      //   · folio sin PDF  → ok:false, error 'pdf_dudoso' (Meta no confirmó: INCIERTO) o 'pdf_no_entregado' (rechazado),
+      //                      con quote_number: el folio existe, no se quema otro
+      //   · sin folio      → ok:false, error = reason del pipeline ('no_emitida' si no dice)
+      const folioEI = (pdfRes && pdfRes.quote_number) || null;
+      const dedupEI = !!(pdfRes && pdfRes.ok && pdfRes.deduped);
+      const okEI = !!(pdfRes && pdfRes.ok && pdfRes.pdf_sent !== false && !dedupEI);
+      const errorEI = okEI || dedupEI ? null
+        : (folioEI && pdfRes && pdfRes.ok ? (pdfRes.entrega_dudosa ? 'pdf_dudoso' : 'pdf_no_entregado')
+          : String((pdfRes && (pdfRes.error || pdfRes.reason)) || 'no_emitida'));
       // [NIM 12-oct] El resultado se contesta APENAS se sabe (el PDF ya salió o no): lo que sigue —mensaje, espejo,
       // sesión, atribución— no puede dejar a sales-os esperando hasta su tope con la propuesta ya enviada.
       if (typeof ei.onResultado === 'function') {
-        ei.onResultado({ ok: okEI, quote_number: pdfRes?.quote_number || null, message: pdfRes?.message || null,
-          pdf_sent: pdfRes?.pdf_sent !== false, error: okEI ? null : String(pdfRes?.error || pdfRes?.reason || 'no_emitida') });
+        ei.onResultado({ ok: okEI || dedupEI, deduped: dedupEI, quote_number: folioEI, message: (pdfRes && pdfRes.message) || null,
+          pdf_sent: okEI, error: errorEI });
+      }
+      // [Thermos D-N2] Lo que generarPdf dejó en `state` (last_quote con el folio, pdf_sent:false, sig) se PERSISTE
+      // también cuando falló: igual que pdf.deterministic. Sin esto, el reintento no veía el folio y quemaba otro.
+      const persistirEI = async (histEI) => {
+        await landingAttributionReady;
+        const toStoreEI = { history: histEI.length > MAX_HISTORY ? histEI.slice(-MAX_HISTORY) : histEI,
+                            state: { ...state, pending_quote: null, lastMessageAt: Date.now() } };
+        conv.set(from, toStoreEI);
+        persistSessionFn(from, toStoreEI, deps);
+        await safe('atribucion.cerrarTurno', () => atribucionAlCerrarTurno({ turno, ...toStoreEI, kv: _carpetas, log: _logAtrib }));
+      };
+      if (!okEI) {
+        // Folio sin PDF: el cliente ya recibió el anticipo; se le dice lo mismo que en WhatsApp (lo arma generarPdf).
+        if (!dedupEI && folioEI && pdfRes.message) await safe('pdf.interno.send', () => sendWhatsAppText(from, pdfRes.message));
+        await persistirEI(history);
       }
       if (okEI) {
-        // El mensaje de entrega es el MISMO que recibe un cliente de WhatsApp (lo arma generarPdf).
-        if (pdfRes.message) await safe('pdf.interno.send', () => sendWhatsAppText(from, pdfRes.message));
+        // El mensaje de entrega es el MISMO que recibe un cliente de WhatsApp (lo arma generarPdf), y queda ESPEJADO
+        // en su ficha como outbound de Oliver, igual que en pdf.deterministic [Thermos r2 · M3].
+        if (pdfRes.message) {
+          await safe('pdf.interno.send', () => sendWhatsAppText(from, pdfRes.message));
+          await safe('pdf.interno.espejo', () => bridge.pushConversationEvent({
+            channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'outbound', actor_type: 'ai',
+            actor_name: 'Oliver', message_type: 'text', body: pdfRes.message,
+            metadata: { source: 'oliver_gpt_webhook', emision_interna: true, quote_number: pdfRes.quote_number || null },
+          }));
+        }
         await safe('pdf.interno.persistOut', () => bridge.pushConversationEvent({
           channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'outbound', actor_type: 'operator',
           actor_name: quienEI, message_type: 'text',
@@ -5669,14 +5736,9 @@ Comuna: ${datos.comuna}`
           metadata: { source: 'oliver_interno_liberar', quote_number: pdfRes.quote_number || null, operador: quienEI, documentos: ei.documentos || null },
         }));
         const histEI = [...history, { role: 'assistant', content: pdfRes.message || `Te preparé tu Propuesta Técnica Económica${pdfRes.quote_number ? ` N° ${pdfRes.quote_number}` : ''} (PDF).` }];
-        await landingAttributionReady;
-        const toStoreEI = { history: histEI.length > MAX_HISTORY ? histEI.slice(-MAX_HISTORY) : histEI,
-                            state: { ...state, pending_quote: null, lastMessageAt: Date.now() } };
-        conv.set(from, toStoreEI);
-        persistSessionFn(from, toStoreEI, deps);
-        await safe('atribucion.cerrarTurno', () => atribucionAlCerrarTurno({ turno, ...toStoreEI, kv: _carpetas, log: _logAtrib }));
+        await persistirEI(histEI);
       }
-      log(okEI ? 'info' : 'warn', 'pdf.interno', `${from}: emisión interna por ${quienEI} → ${okEI ? (pdfRes?.quote_number || 'sin folio') : `NO emitida (${pdfRes?.error || pdfRes?.reason || 'sin detalle'})`}`);
+      log(okEI || dedupEI ? 'info' : 'warn', 'pdf.interno', `${from}: emisión interna por ${quienEI} → ${okEI ? folioEI || 'sin folio' : (dedupEI ? `duplicada de ${folioEI} (ya la tiene)` : `NO entregada (${errorEI}${folioEI ? `, folio ${folioEI}` : ''})`)}`);
       return; // 200 ya enviado; el finally libera el lock
     }
 

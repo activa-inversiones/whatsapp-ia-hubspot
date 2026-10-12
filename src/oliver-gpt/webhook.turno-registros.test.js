@@ -57,5 +57,7 @@ test('la lista blanca existe y está acotada (si crece, que sea a propósito)', 
   // 19 al 12-oct, A PROPOSITO [#1500-C]: la EMISION INTERNA (Oliver interno de sales-os) deja en el chat un evento
   // del OPERADOR («propuesta N° X liberada desde la agenda por …»): es un mensaje del chat del cliente, no un
   // registro; el registro de la propuesta (quote, folio) va por turno.cliente como siempre.
-  assert.ok(blancas.length <= 19, `crecieron las excepciones [chat]: ${blancas.length}`);
+  // 20 al 12-oct (r2), A PROPOSITO [#1500-C · Thermos M3]: el ESPEJO del texto de entrega de la emision interna
+  // (outbound 'ai', el mismo mensaje que recibio el cliente), gemelo de pdf.det.persistOut.
+  assert.ok(blancas.length <= 20, `crecieron las excepciones [chat]: ${blancas.length}`);
 });

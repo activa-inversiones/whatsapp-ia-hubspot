@@ -103,6 +103,119 @@ test('[#1500-C] la marca sintética NO se persiste como mensaje del cliente; lo 
   } finally { restaurar(); }
 });
 
+test('[#1500-C r2 · Thermos M3] el texto de entrega que recibió el cliente queda ESPEJADO en la ficha (outbound ai), además del evento del operador', async () => {
+  const { ei, resultado } = emision();
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei });
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout && r.ok === true, JSON.stringify(r));
+    const textoEnviado = registro.textos.at(-1);
+    assert.ok(textoEnviado, 'se le mandó el mensaje de entrega');
+    const espejo = registro.eventos.find((e) => e.direction === 'outbound' && e.actor_type === 'ai' && e.body === textoEnviado);
+    assert.ok(espejo, 'el mismo texto que recibió el cliente queda en su ficha como outbound de Oliver');
+    assert.equal(espejo.metadata.emision_interna, true);
+  } finally { restaurar(); }
+});
+
+test('[#1500-C r2 · Thermos M8] dos emisiones IDÉNTICAS al mismo cliente dentro de la ventana: la segunda contesta con el MISMO folio (no un folio nuevo ni un error mudo)', async () => {
+  const { ei, resultado } = emision();
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei });
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r1 = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r1.timeout && r1.ok === true, JSON.stringify(r1));
+    const segunda = emision();
+    const deps2 = { ...deps, emisionInterna: segunda.ei, seen: new Set() };
+    await handleWebhook({ body: {} }, makeRes(), deps2);
+    const r2 = await Promise.race([segunda.resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r2.timeout, 'la segunda también contesta');
+    assert.ok(r2.quote_number, `la segunda trae folio (reusado o revisión), no un vacío: ${JSON.stringify(r2)}`);
+    assert.equal(r2.quote_number, r1.quote_number, 'mismos ítems en minutos = la misma propuesta (anti-duplicado del pipeline)');
+    // [Thermos r3 · D-N3] Y lo dice como ÉXITO SIN ENVÍO (el cliente ya la tiene), no como «no emitida» → sales-os no reintenta.
+    assert.equal(r2.ok, true, JSON.stringify(r2));
+    assert.equal(r2.deduped, true);
+    assert.equal(r2.pdf_sent, false);
+    assert.ok(registro.docs.length >= 1);
+  } finally { restaurar(); }
+});
+
+test('[#1500-C r3 · Codex D1] el límite de ritmo del chat no aplica: con el teléfono «pasado de mensajes» la emisión sale igual y el cliente no recibe el aviso de ritmo', async () => {
+  const { ei, resultado } = emision();
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei });
+  // rateMap: la estructura que lee rateOk(from, rateMap). Se llena como si el cliente hubiera mandado 50 mensajes en el minuto.
+  const rateMap = new Map();
+  rateMap.set(registro.tel, { n: 50, resetAt: Date.now() + 60_000 }); // la forma que lee rateOk(waId, rateMap)
+  deps.rateMap = rateMap;
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout && r.ok === true, `emite aunque el ritmo esté pasado: ${JSON.stringify(r)}`);
+    assert.ok(!registro.textos.some((t) => /Escribes muy r[aá]pido/i.test(t)), `ningún aviso de ritmo al cliente: ${JSON.stringify(registro.textos)}`);
+  } finally { restaurar(); }
+});
+
+test('[#1500-C r3 · Codex D3] la marca sintética NO clasifica la atribución (ref_status) ni queda como «el cliente nos escribió»', async () => {
+  const { ei, resultado } = emision();
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei });
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    await Promise.race([resultado, new Promise((res) => { setTimeout(res, 8000); })]);
+    assert.ok(registro.guardado, 'la sesión se persiste');
+    assert.equal(registro.guardado.state.ref_status, undefined, 'ref_status no se clasificó con la marca');
+  } finally { restaurar(); }
+});
+
+test('[#1500-C r3 · Codex D2] si el teléfono es del EQUIPO (dueño), no se emite: cliente_es_del_equipo, sin PDF ni textos', async () => {
+  const { ei, resultado } = emision();
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei });
+  deps.parseInbound = () => ({ ok: true, from: '56957296035', type: 'text', text: MARCA, msgId: `interno-${Math.random()}`, enviadoAt: Date.now() });
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout, 'contesta');
+    assert.equal(r.ok, false);
+    assert.equal(r.error, 'cliente_es_del_equipo');
+    assert.equal(registro.docs.length, 0);
+    assert.equal(registro.textos.length, 0, 'tampoco el corte «usa CLIENTE…»');
+  } finally { restaurar(); }
+});
+
+test('[#1500-C r3 · Thermos D-N1] el nombre lo puso el vendedor: el cliente NO recibe «como todavía no tengo su nombre» y no queda nombre_pendiente', async () => {
+  const { ei, resultado } = emision({ nombre: 'Claudio Soto' });
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei });
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout && r.ok === true, JSON.stringify(r));
+    assert.ok(!registro.textos.some((t) => /no tengo su nombre|no tengo tu nombre|la emit[ií] como/i.test(t)), `sin aviso de nombre asumido: ${JSON.stringify(registro.textos)}`);
+    assert.equal(registro.guardado.state.nombre_pendiente, undefined);
+  } finally { restaurar(); }
+});
+
+test('[#1500-C r3 · Thermos D-N2] si NO se emitió, la sesión igual se persiste (lo que generarPdf dejó en state no se pierde)', async () => {
+  const { ei, resultado } = emision();
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei, folioOk: false });
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout && r.ok === false);
+    assert.ok(registro.guardado, 'persistida también en fallo, como pdf.deterministic');
+  } finally { restaurar(); }
+});
+
+test('[#1500-C r3 · Thermos E-1] con el plazo vencido antes de emitir, contesta «vencida» y no sale nada', async () => {
+  const { ei, resultado } = emision({ deadline: Date.now() - 1000 });
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei });
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout && r.ok === false && r.error === 'vencida', JSON.stringify(r));
+    assert.equal(registro.docs.length, 0);
+    assert.equal(registro.textos.length, 0);
+  } finally { restaurar(); }
+});
+
 test('[#1500-C] el takeover humano (ai_paused) NO frena la emisión interna: la está liberando una persona', async () => {
   const { ei, resultado } = emision();
   const { deps, registro, restaurar } = harness({ emisionInterna: ei, aiPaused: true });

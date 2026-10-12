@@ -40,7 +40,7 @@ function resFalsa() {
   r.json = (b) => { r.cuerpo = b; return r; };
   return r;
 }
-const BODY_OK = { phone: '56941380749', nombre: 'Claudio', comuna: 'Angol', lineas: [LINEA_BOW], operador: 'Mary', documentos: { termico: true, vientos: false } };
+const BODY_OK = { phone: '56941380749', nombre: 'Claudio', comuna: 'Angol', lineas: [LINEA_BOW], operador: 'Mary', documentos_elegidos: { termico: true, vientos: false } };
 
 async function pedir({ auth = true, body, webhook, topeMs }) {
   const app = appFalsa();
@@ -56,6 +56,20 @@ async function pedir({ auth = true, body, webhook, topeMs }) {
   await h({ body, get: () => '' }, res);
   return { res, llamadas };
 }
+
+test('[#1500-C r2 · Thermos B1] el color que eligió el vendedor (body.color) es el color por defecto de los ítems cuando el LLM no lo puso en el pedido', async () => {
+  const sinColor = { ...LINEA_BOW, pedido: { ...LINEA_BOW.pedido, color: undefined } };
+  const { llamadas } = await pedir({
+    body: { ...BODY_OK, color: 'NOGAL', lineas: [sinColor] },
+    webhook: async (_req, res, deps) => { res.sendStatus(200); deps.emisionInterna.onResultado({ ok: true, quote_number: 'X' }); },
+  });
+  assert.equal(llamadas[0].deps.emisionInterna.items[0].color, 'NOGAL', 'sin color en el pedido, manda el del vendedor');
+  const conColor = await pedir({
+    body: { ...BODY_OK, color: 'BLANCO' },
+    webhook: async (_req, res, deps) => { res.sendStatus(200); deps.emisionInterna.onResultado({ ok: true, quote_number: 'X' }); },
+  });
+  assert.equal(conColor.llamadas[0].deps.emisionInterna.items[0].color, 'NOGAL', 'con color en el pedido (NOGAL), ese manda sobre el default');
+});
 
 test('[#1500-C] sin token interno → 401; sin teléfono o sin líneas cotizadas → 400 y no se emite nada', async () => {
   assert.equal((await pedir({ auth: false, body: BODY_OK })).res.codigo, 401);
@@ -91,7 +105,22 @@ test('[#1500-C] arma el turno interno: inbound sintético del teléfono del clie
   assert.equal(ei.items.length, 1);
   assert.equal(ei.items[0].unit_price, 792902);
   assert.equal(res.codigo, 200, JSON.stringify(res.cuerpo));
-  assert.deepEqual(res.cuerpo, { ok: true, quote_number: 'CM-FR-004-2026-0800', message: 'Listo ✅', pdf_sent: true });
+  assert.deepEqual(res.cuerpo, { ok: true, deduped: false, quote_number: 'CM-FR-004-2026-0800', message: 'Listo ✅', pdf_sent: true });
+  assert.ok(Number(ei.deadline) > Date.now(), 'lleva plazo (deadline): el webhook no emite después del tope');
+});
+
+test('[#1500-C r3 · Thermos] el fallo con folio viaja entero: 502 con error y quote_number, y `detalle` es texto (no un objeto)', async () => {
+  const { res } = await pedir({ body: BODY_OK, webhook: async (_req, res, deps) => { res.sendStatus(200);
+    deps.emisionInterna.onResultado({ ok: false, quote_number: 'CM-FR-004-2026-0801', pdf_sent: false, error: 'pdf_dudoso', message: 'Tuve un problema para adjuntar…' }); } });
+  assert.equal(res.codigo, 502);
+  assert.deepEqual(res.cuerpo, { ok: false, error: 'pdf_dudoso', quote_number: 'CM-FR-004-2026-0801', detalle: 'Tuve un problema para adjuntar…' });
+});
+
+test('[#1500-C r3 · Thermos D-N3] una emisión DUPLICADA (el cliente ya la tiene) es 200 ok con deduped:true y pdf_sent:false', async () => {
+  const { res } = await pedir({ body: BODY_OK, webhook: async (_req, res, deps) => { res.sendStatus(200);
+    deps.emisionInterna.onResultado({ ok: true, deduped: true, quote_number: 'CM-FR-004-2026-0800', pdf_sent: false, message: null }); } });
+  assert.equal(res.codigo, 200);
+  assert.deepEqual(res.cuerpo, { ok: true, deduped: true, quote_number: 'CM-FR-004-2026-0800', message: null, pdf_sent: false });
 });
 
 test('[#1500-C] si el webhook no contesta (se cuelga) → 504 emision_sin_respuesta; si contesta ok:false → 502 con el motivo', async () => {
