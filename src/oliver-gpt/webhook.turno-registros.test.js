@@ -54,5 +54,8 @@ test('la lista blanca existe y está acotada (si crece, que sea a propósito)', 
   // 17 al 30-sep: mensajes inbound/outbound del chat (13), acuses de envío (3), telemetría (1).
   // 18 al 08-oct, A PROPOSITO: el acuse de envio de la propuesta RECOMENDADA del monorriel alto
   // (wamsg:<id>, igual que el de la original; lo pidio Codex para casar un failed de Meta).
-  assert.ok(blancas.length <= 18, `crecieron las excepciones [chat]: ${blancas.length}`);
+  // 19 al 12-oct, A PROPOSITO [#1500-C]: la EMISION INTERNA (Oliver interno de sales-os) deja en el chat un evento
+  // del OPERADOR («propuesta N° X liberada desde la agenda por …»): es un mensaje del chat del cliente, no un
+  // registro; el registro de la propuesta (quote, folio) va por turno.cliente como siempre.
+  assert.ok(blancas.length <= 19, `crecieron las excepciones [chat]: ${blancas.length}`);
 });

@@ -238,7 +238,11 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
   // `textoColor` cae a `textoCliente` cuando no se pasa, asi WhatsApp no cambia.
   const textoCliente = opciones.textoCliente;
   const textoColor = opciones.textoColor !== undefined ? opciones.textoColor : textoCliente;
-  const gateColor = textoColor !== undefined && textoColor !== null;
+  // [2026-10-12 · #1500-C] EMISIÓN INTERNA (Oliver interno de sales-os): los ítems vienen ya decididos por el
+  // vendedor (cotizados por Oliver) y el «texto del cliente» es una marca sintética; los gates de color y
+  // apertura NO aplican. Los de ítems/precio/nombre siguen iguales (pdf-intent.emision-interna.test.js).
+  const _emisionInterna = input && input.emision_interna === true;
+  const gateColor = textoColor !== undefined && textoColor !== null && !_emisionInterna;
 
   // 🔴 [2026-08-29] EL BLANCO QUE NADIE PIDIO. El color efectivo de cada item es el suyo o,
   // si no trae, el recordado de la conversacion — que es exactamente lo que va a ver el motor.
@@ -326,7 +330,7 @@ export function quoteDataComplete(input = {}, state = {}, opciones = {}) {
   // `textoColor`: son la misma cosa en WhatsApp, pero IG/FB manda solo el segundo, y este
   // gate SI bloquea. Cuando compartian variable, activarle el color a IG/FB le activaba
   // tambien la apertura — justo lo que la compuerta cruzada veto.
-  const gateApertura = textoCliente !== undefined && textoCliente !== null;
+  const gateApertura = textoCliente !== undefined && textoCliente !== null && !_emisionInterna; // [#1500-C] ver gateColor
   const faltaTipo = gateApertura && !aperturaFueExplicita(String(textoCliente));
   let tipoAsumido = false;
 

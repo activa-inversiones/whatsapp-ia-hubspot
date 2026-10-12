@@ -290,6 +290,8 @@ import {
 import { reengage } from "./services/reengagement.js";
 // [2026-10-12 · #1500-A] El Oliver interno (sales-os) lee con el cerebro del bot (ver services/oliverInternoLector.js)
 import { registrarRutaLector } from "./services/oliverInternoLector.js";
+// [2026-10-12 · #1500-C] Liberar desde la agenda = la misma propuesta que manda Oliver (ver services/oliverInternoLiberar.js)
+import { registrarRutaLiberar } from "./services/oliverInternoLiberar.js";
 import { loadSession as loadOliverGptSession } from "./src/oliver-gpt/session-store.js";
 import {
   evaluateLeadValue,
@@ -4966,6 +4968,12 @@ app.get("/internal/agenda-debug", (req, res) => {
 // una cantidad > 50 leída de texto libre no se cotiza. Motivo y medición: services/oliverInternoLector.js.
 // [r3 · Thermos] La ruta vive en services/oliverInternoLector.js (registrarRutaLector); acá solo se registra.
 registrarRutaLector(app, { validInternalOperatorToken, json: express.json() });
+// [#1500-C] La emisión entra por handleWebhook (importado tarde, como en /webhook) con deps.emisionInterna.
+registrarRutaLiberar(app, {
+  validInternalOperatorToken,
+  json: express.json(),
+  handleWebhook: async (req, res, deps) => (await import("./src/oliver-gpt/webhook.js")).handleWebhook(req, res, deps),
+});
 
 app.post("/internal/reengage", express.json(), async (req, res) => {
   try {

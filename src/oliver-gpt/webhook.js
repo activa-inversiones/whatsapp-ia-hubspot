@@ -1423,7 +1423,8 @@ export async function handleWebhook(req, res, deps = {}) {
       (effectiveControl.ai_paused === true ||
         (effectiveControl.operator_status && effectiveControl.operator_status !== 'ai'));
 
-    if (aiPaused) {
+    // [#1500-C] El takeover humano NO frena una emisión interna: la está liberando una persona desde la agenda.
+    if (aiPaused && !(deps && deps.emisionInterna)) {
       // [#966 r3] El texto del cliente se limpia UNA vez (tag roto fuera, tags sanos parseados) para el espejo y la captura de abajo.
       const _textoTakeoverOriginal = inbound.text || '';
       const _lrefTakeover = (deps.parseLandingRef || parseLandingRef)(limpiarTagRoto(_textoTakeoverOriginal));
@@ -5632,6 +5633,51 @@ Comuna: ${datos.comuna}`
     // medida o un saludo. Si no es un nombre, no se toca nada y el turno sigue su curso
     // normal: el LLM contesta lo que el cliente haya preguntado. Reemitir por un "ok" seria
     // mandarle un PDF corregido a nombre de "Ok".
+    // ═══ [2026-10-12 · #1500-C] EMISIÓN INTERNA: el Oliver interno de sales-os LIBERA la propuesta por este
+    // mismo camino sin LLM (es el gemelo de `pdf.deterministic`, más abajo). Entra por
+    // /internal/oliver-interno/liberar (services/oliverInternoLiberar.js) con `deps.emisionInterna` =
+    // {items, nombre, comuna, documentos, operador, onResultado}: mismo `toolCtx.generarPdf` (folio del mismo
+    // correlativo, PDF premium, envío por WhatsApp, Zoho, registro ISO, informes y marcas de entrega).
+    // Lo que NO pasa: el LLM no interviene, la marca sintética no se persiste como mensaje del cliente (queda un
+    // evento del OPERADOR con el folio) y el takeover humano no la frena (arriba, `aiPaused`).
+    // Decisión del dueño (12-oct 09:50, opción A) tras la prueba real: «Liberar» mandaba solo un texto.
+    if (deps.emisionInterna && typeof deps.emisionInterna === 'object') {
+      const ei = deps.emisionInterna;
+      const itemsEI = Array.isArray(ei.items) ? ei.items : [];
+      const grandTotalEI = itemsEI.reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.qty) || 1), 0);
+      const pdfRes = await safe('pdf.interno', () => toolCtx.generarPdf({
+        // turno.cliente, no `from`: es un REGISTRO del cliente (regla del reordenamiento 30-sep; el guardia turno-registros).
+        name: ei.nombre || state.name || '', phone: turno.cliente, comuna: ei.comuna || state.comuna || '',
+        items: itemsEI, grand_total: grandTotalEI,
+        emision_interna: true, // el gate de datos no pregunta color ni apertura: ya los decidió el vendedor (pdf-intent.js)
+      }));
+      const okEI = !!(pdfRes && pdfRes.ok && pdfRes.pdf_sent !== false);
+      const quienEI = String(ei.operador || 'Agenda');
+      if (okEI) {
+        // El mensaje de entrega es el MISMO que recibe un cliente de WhatsApp (lo arma generarPdf).
+        if (pdfRes.message) await safe('pdf.interno.send', () => sendWhatsAppText(from, pdfRes.message));
+        await safe('pdf.interno.persistOut', () => bridge.pushConversationEvent({
+          channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'outbound', actor_type: 'operator',
+          actor_name: quienEI, message_type: 'text',
+          body: `Propuesta${pdfRes.quote_number ? ` N° ${pdfRes.quote_number}` : ''} liberada desde la agenda por ${quienEI}`,
+          metadata: { source: 'oliver_interno_liberar', quote_number: pdfRes.quote_number || null, operador: quienEI, documentos: ei.documentos || null },
+        }));
+        const histEI = [...history, { role: 'assistant', content: pdfRes.message || `Te preparé tu Propuesta Técnica Económica${pdfRes.quote_number ? ` N° ${pdfRes.quote_number}` : ''} (PDF).` }];
+        await landingAttributionReady;
+        const toStoreEI = { history: histEI.length > MAX_HISTORY ? histEI.slice(-MAX_HISTORY) : histEI,
+                            state: { ...state, pending_quote: null, lastMessageAt: Date.now() } };
+        conv.set(from, toStoreEI);
+        persistSessionFn(from, toStoreEI, deps);
+        await safe('atribucion.cerrarTurno', () => atribucionAlCerrarTurno({ turno, ...toStoreEI, kv: _carpetas, log: _logAtrib }));
+      }
+      log(okEI ? 'info' : 'warn', 'pdf.interno', `${from}: emisión interna por ${quienEI} → ${okEI ? (pdfRes?.quote_number || 'sin folio') : `NO emitida (${pdfRes?.error || pdfRes?.reason || 'sin detalle'})`}`);
+      if (typeof ei.onResultado === 'function') {
+        ei.onResultado({ ok: okEI, quote_number: pdfRes?.quote_number || null, message: pdfRes?.message || null,
+          pdf_sent: pdfRes?.pdf_sent !== false, error: okEI ? null : String(pdfRes?.error || pdfRes?.reason || 'no_emitida') });
+      }
+      return; // 200 ya enviado; el finally libera el lock
+    }
+
     if (state.nombre_pendiente && Array.isArray(state.nombre_pendiente.items)
         && state.nombre_pendiente.items.length
         && (Date.now() - (state.nombre_pendiente.at || 0)) < FOLIO_REUSO_MS
