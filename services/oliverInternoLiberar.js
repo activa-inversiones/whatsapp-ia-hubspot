@@ -94,6 +94,8 @@ export function registrarRutaLiberar(app, { validInternalOperatorToken, handleWe
       const resultado = new Promise((r) => { resolver = r; });
       const emisionInterna = {
         items, nombre: campo('nombre'), comuna: campo('comuna'), operador: campo('operador') || 'Agenda', documentos,
+        // [#1504 r5] el id del borrador de sales-os: vuelve en el quote-event para que sales-os ate la propuesta por identidad.
+        borrador_id: campo('borrador_id') || null,
         // [Thermos E-1] Si el webhook recién llega a emitir después del tope (candado del cliente tomado), no emite.
         deadline: Date.now() + topeEsperaMs,
         onResultado: (r) => resolver(r || { ok: false, error: 'sin_resultado' }),

@@ -5252,6 +5252,9 @@ Comuna: ${datos.comuna}`
               currency:        'CLP',
               status:          'sent',       // server.js lo mapea a 'quote_sent'
               quote_number:    quoteNumber,
+              // [#1504 r5] Emisión interna: el id del borrador de sales-os que la pidió. sales-os ata por identidad la fila
+              // de esta propuesta a ese borrador («Sí le llegó» ya no adivina por teléfono + total + minutos).
+              borrador_id:     input.borrador_id ? String(input.borrador_id) : null,
               // 🔴 [2026-08-30] A NOMBRE DE QUIEN SE EMITIO. Un documento formal tiene que
               // poder reconstruirse desde la BD: si mañana hay una disputa por una factura,
               // `quotes.payload->'receptor'` dice con que RUT y a que razon social salio esa
@@ -5684,6 +5687,7 @@ Comuna: ${datos.comuna}`
         name: ei.nombre || state.name || '', phone: turno.cliente, comuna: ei.comuna || state.comuna || '',
         items: itemsEI, grand_total: grandTotalEI,
         emision_interna: true, // el gate de datos no pregunta color ni apertura: ya los decidió el vendedor (pdf-intent.js)
+        borrador_id: ei.borrador_id || null, // [#1504 r5] vuelve en el quote-event: sales-os ata la propuesta a su borrador
       }));
       const quienEI = String(ei.operador || 'Agenda');
       // [#1500-C r3 · Thermos D-N2/D-N3] El resultado DISTINGUE lo que sales-os necesita decidir sin reintentar a ciegas:

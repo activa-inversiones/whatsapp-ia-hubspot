@@ -66,7 +66,7 @@ function resFalsa() {
   r.json = (b) => { r.cuerpo = b; return r; };
   return r;
 }
-const BODY_OK = { phone: '56941380749', nombre: 'Claudio', comuna: 'Angol', lineas: [LINEA_BOW], operador: 'Mary', documentos_elegidos: { termico: true, vientos: false } };
+const BODY_OK = { phone: '56941380749', nombre: 'Claudio', comuna: 'Angol', lineas: [LINEA_BOW], operador: 'Mary', documentos_elegidos: { termico: true, vientos: false }, borrador_id: 'q-sales-os-1' };
 
 async function pedir({ auth = true, body, webhook, topeMs }) {
   const app = appFalsa();
@@ -127,6 +127,7 @@ test('[#1500-C] arma el turno interno: inbound sintético del teléfono del clie
   assert.equal(ei.nombre, 'Claudio');
   assert.equal(ei.comuna, 'Angol');
   assert.equal(ei.operador, 'Mary');
+  assert.equal(ei.borrador_id, 'q-sales-os-1', '[#1504 r5] el id del borrador viaja al pipeline y vuelve en el quote-event');
   assert.deepEqual(ei.documentos, { termico: true, vientos: false });
   assert.equal(ei.items.length, 1);
   assert.equal(ei.items[0].unit_price, 792902);

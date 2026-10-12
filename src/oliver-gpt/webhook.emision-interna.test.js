@@ -23,7 +23,7 @@ let telefonoN = 0;
 function harness({ emisionInterna, aiPaused = false, folioOk = true }) {
   telefonoN += 1;
   const TEL = `5694138${String(1000 + telefonoN).slice(-4)}`;
-  const registro = { tel: TEL, turnos: 0, docs: [], textos: [], eventos: [], fetches: [], guardado: null, zoho: 0 };
+  const registro = { tel: TEL, turnos: 0, docs: [], textos: [], eventos: [], fetches: [], guardado: null, zoho: 0, quotes: [] };
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, opts) => {
     const u = String(url);
@@ -55,7 +55,7 @@ function harness({ emisionInterna, aiPaused = false, folioOk = true }) {
       getConversationControl: async () => ({ ai_paused: aiPaused, operator_status: aiPaused ? 'human' : 'ai' }),
       pushConversationEvent: async (ev) => { registro.eventos.push(ev); return { ok: true }; },
       pushLeadEvent: async () => ({ ok: true }),
-      pushQuoteEvent: async () => ({ ok: true }),
+      pushQuoteEvent: async (p) => { registro.quotes.push(p); return { ok: true }; },
     },
     handleTurn: async () => { registro.turnos += 1; return { reply: 'NO DEBERÍA LLAMARSE', history: [], toolCalls: [], state: {} }; },
     ...(emisionInterna ? { emisionInterna } : {}),
@@ -82,6 +82,24 @@ test('[#1500-C] con deps.emisionInterna el webhook emite la propuesta SIN LLM: P
     assert.equal(registro.docs.length >= 1, true, 'el PDF salió por WhatsApp al cliente');
     assert.equal(registro.docs[0].to, registro.tel);
     assert.ok(registro.fetches.some((u) => /\/internal\/quotes\/next-number/.test(u)), 'el folio sale del mismo correlativo que WhatsApp');
+  } finally { restaurar(); }
+});
+
+// [#1504 r5 · abogado del diablo de sales-os] LA PROPUESTA DEL BOT LLEVA EL ID DEL BORRADOR QUE LA PIDIÓ. sales-os marcaba
+// «Sí le llegó» adivinando por teléfono + total + minutos cuál fila del bot era la de ese borrador; con dos borradores del mismo
+// cliente en minutos podía atribuir el folio de A a B. Ahora `emisionInterna.borrador_id` viaja al quote-event ('sent') y
+// sales-os ata por identidad.
+test('[#1504 r5] el quote-event «sent» de una emisión interna lleva `borrador_id` (el id del borrador de sales-os que la pidió)', async () => {
+  const { ei, resultado } = emision({ borrador_id: 'q-sales-os-1' });
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei });
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout && r.ok === true, JSON.stringify(r));
+    const sent = registro.quotes.find((p) => p && p.status === 'sent');
+    assert.ok(sent, 'se registró la propuesta en sales-os');
+    assert.equal(sent.borrador_id, 'q-sales-os-1');
+    assert.equal(sent.quote_number, r.quote_number);
   } finally { restaurar(); }
 });
 
