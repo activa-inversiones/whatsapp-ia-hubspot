@@ -69,6 +69,7 @@ import { pedirVientos, ventanasParaVientos } from '../../services/vientosThermal
 import { motorCotizo, vidrioDelMotor, precioCoincide, elegirVidrio, aplicarVidrio, avisarVidrio, VIDRIO_RESPALDO } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor
 import { generarInformeVientosPdf } from '../../services/informeVientosPdf.js';
 import { decidirDocumentosCotizacion, leerEntregasLocales, marcarEntregaLocal } from '../../services/documentosCotizacion.js'; // [2026-09-30] selector de documentos por cotización
+import { clasificarResultadoEmision } from '../../services/oliverInternoLiberar.js'; // [2026-10-12 · #1500-C] emisión interna: resultado → forma que lee sales-os
 import { numerarVentanas } from '../../services/etiquetaVentana.js'; // [2026-09-19] el numero se congela antes de filtrar
 
 // Cuanto se espera antes de mandar el video. Cae DESPUES del informe termico (4 s + 35 s)
@@ -5691,18 +5692,16 @@ Comuna: ${datos.comuna}`
       //   · folio sin PDF  → ok:false, error 'pdf_dudoso' (Meta no confirmó: INCIERTO) o 'pdf_no_entregado' (rechazado),
       //                      con quote_number: el folio existe, no se quema otro
       //   · sin folio      → ok:false, error = reason del pipeline ('no_emitida' si no dice)
-      const folioEI = (pdfRes && pdfRes.quote_number) || null;
-      const dedupEI = !!(pdfRes && pdfRes.ok && pdfRes.deduped);
-      const okEI = !!(pdfRes && pdfRes.ok && pdfRes.pdf_sent !== false && !dedupEI);
-      const errorEI = okEI || dedupEI ? null
-        : (folioEI && pdfRes && pdfRes.ok ? (pdfRes.entrega_dudosa ? 'pdf_dudoso' : 'pdf_no_entregado')
-          : String((pdfRes && (pdfRes.error || pdfRes.reason)) || 'no_emitida'));
+      // [r4 · Codex r2] La clasificación es una función PURA (services/oliverInternoLiberar.js, con sus tests): enviado /
+      // duplicada con folio / en vuelo sin folio (NO es éxito) / folio sin PDF (dudoso | rechazado) / sin folio.
+      const resEI = clasificarResultadoEmision(pdfRes);
+      const folioEI = resEI.quote_number;
+      const dedupEI = resEI.deduped;
+      const okEI = resEI.ok && resEI.pdf_sent;
+      const errorEI = resEI.error;
       // [NIM 12-oct] El resultado se contesta APENAS se sabe (el PDF ya salió o no): lo que sigue —mensaje, espejo,
       // sesión, atribución— no puede dejar a sales-os esperando hasta su tope con la propuesta ya enviada.
-      if (typeof ei.onResultado === 'function') {
-        ei.onResultado({ ok: okEI || dedupEI, deduped: dedupEI, quote_number: folioEI, message: (pdfRes && pdfRes.message) || null,
-          pdf_sent: okEI, error: errorEI });
-      }
+      if (typeof ei.onResultado === 'function') ei.onResultado(resEI);
       // [Thermos D-N2] Lo que generarPdf dejó en `state` (last_quote con el folio, pdf_sent:false, sig) se PERSISTE
       // también cuando falló: igual que pdf.deterministic. Sin esto, el reintento no veía el folio y quemaba otro.
       const persistirEI = async (histEI) => {

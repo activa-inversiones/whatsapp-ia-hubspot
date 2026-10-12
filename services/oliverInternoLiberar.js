@@ -28,6 +28,43 @@ export function itemsDesdeLineasBot(lineas, defaultColor = '') {
 }
 
 /**
+ * [r4 · Codex r2] Lo que `toolCtx.generarPdf` devolvió → lo que sales-os necesita decidir sin reintentar a ciegas. PURA.
+ *   · enviado                 → ok:true, pdf_sent:true
+ *   · duplicada CON folio     → ok:true, deduped:true (misma propuesta hace <2 min: el cliente YA la tiene; no se reenvía)
+ *   · duplicada SIN folio     → ok:false, 'emision_en_vuelo' (otra idéntica EN CURSO: la primera puede fallar; no se descarta nada)
+ *   · folio sin PDF           → ok:false, 'pdf_dudoso' (Meta no confirmó) o 'pdf_no_entregado' (rechazo), con quote_number
+ *   · sin folio / null        → ok:false, error = reason|error del pipeline ('no_emitida' si no dice)
+ * @returns {{ok:boolean, deduped:boolean, quote_number:string|null, pdf_sent:boolean, error:string|null, message:string|null}}
+ */
+export function clasificarResultadoEmision(pdfRes) {
+  const r = pdfRes && typeof pdfRes === 'object' ? pdfRes : null;
+  const folio = (r && r.quote_number) || null;
+  const message = (r && r.message) || null;
+  if (!r || r.ok !== true) {
+    return { ok: false, deduped: false, quote_number: folio, pdf_sent: false, error: String((r && (r.error || r.reason)) || 'no_emitida'), message };
+  }
+  if (r.deduped) {
+    if (folio) return { ok: true, deduped: true, quote_number: folio, pdf_sent: false, error: null, message };
+    return { ok: false, deduped: false, quote_number: null, pdf_sent: false, error: 'emision_en_vuelo', message };
+  }
+  if (r.pdf_sent === false) {
+    if (folio) return { ok: false, deduped: false, quote_number: folio, pdf_sent: false, error: r.entrega_dudosa ? 'pdf_dudoso' : 'pdf_no_entregado', message };
+    return { ok: false, deduped: false, quote_number: null, pdf_sent: false, error: 'no_emitida', message };
+  }
+  return { ok: true, deduped: false, quote_number: folio, pdf_sent: true, error: null, message };
+}
+
+/** Lo que esperó la ruta → la respuesta HTTP. El folio viaja también en el fallo; `detalle` es texto (Thermos E-4). */
+function responderEmision(res, out) {
+  if (out && out.timeout) return res.status(504).json({ ok: false, error: 'emision_sin_respuesta' });
+  if (!out || out.ok !== true) {
+    return res.status(502).json({ ok: false, error: String((out && out.error) || 'no_emitida'), quote_number: (out && out.quote_number) || null,
+      detalle: out && out.message ? String(out.message).slice(0, 300) : null });
+  }
+  return res.json({ ok: true, deduped: out.deduped === true, quote_number: out.quote_number || null, message: out.message || null, pdf_sent: out.pdf_sent === true });
+}
+
+/**
  * Registra `POST /internal/oliver-interno/liberar`. `handleWebhook` se inyecta (index.js lo importa tarde);
  * `validInternalOperatorToken` es el mismo guardia que operator-send.
  */
@@ -76,14 +113,7 @@ export function registrarRutaLiberar(app, { validInternalOperatorToken, handleWe
       } finally {
         if (timerTope) clearTimeout(timerTope);
       }
-      if (out && out.timeout) return res.status(504).json({ ok: false, error: 'emision_sin_respuesta' });
-      // [Thermos r3] El folio viaja también en el fallo ('pdf_dudoso' / 'pdf_no_entregado' traen quote_number: el folio
-      // existe, sales-os no debe quemar otro) y `detalle` es texto, no un objeto (E-4).
-      if (!out || out.ok !== true) {
-        return res.status(502).json({ ok: false, error: String((out && out.error) || 'no_emitida'), quote_number: (out && out.quote_number) || null,
-          detalle: out && out.message ? String(out.message).slice(0, 300) : null });
-      }
-      return res.json({ ok: true, deduped: out.deduped === true, quote_number: out.quote_number || null, message: out.message || null, pdf_sent: out.pdf_sent === true });
+      return responderEmision(res, out);
     } catch (e) {
       console.error('[oliver-interno/liberar] error:', e && e.message ? e.message : e);
       return res.status(500).json({ ok: false, error: 'lector_fallo', detalle: String(e && e.message ? e.message : e).slice(0, 200) });

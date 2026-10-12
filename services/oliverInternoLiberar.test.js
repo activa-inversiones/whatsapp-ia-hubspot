@@ -9,7 +9,21 @@
 // Hermético: app, auth y handleWebhook se inyectan.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { itemsDesdeLineasBot, registrarRutaLiberar, RUTA_LIBERAR, MARCA_EMISION_INTERNA, TOPE_ESPERA_MS } from './oliverInternoLiberar.js';
+import { itemsDesdeLineasBot, registrarRutaLiberar, clasificarResultadoEmision, RUTA_LIBERAR, MARCA_EMISION_INTERNA, TOPE_ESPERA_MS } from './oliverInternoLiberar.js';
+
+// [#1500-C r4 · Codex r2] LA CLASIFICACIÓN DEL RESULTADO DEL PIPELINE ES UNA FUNCIÓN PURA (y por eso testeable sin montar
+// el webhook): lo que `toolCtx.generarPdf` devuelve → lo que sales-os necesita decidir sin reintentar a ciegas.
+test('[#1500-C r4] clasificarResultadoEmision: enviado / duplicada CON folio / en vuelo SIN folio / folio sin PDF (dudoso o rechazado) / sin folio / null', () => {
+  const c = clasificarResultadoEmision;
+  assert.deepEqual(c({ ok: true, quote_number: 'X-1', pdf_sent: true, message: 'Listo' }), { ok: true, deduped: false, quote_number: 'X-1', pdf_sent: true, error: null, message: 'Listo' });
+  assert.deepEqual(c({ ok: true, quote_number: 'X-1', pdf_sent: false, deduped: true }), { ok: true, deduped: true, quote_number: 'X-1', pdf_sent: false, error: null, message: null });
+  // Codex r2 DEFECTO 2: «emisión idéntica EN VUELO» viene como deduped SIN folio: NO es éxito (la primera puede fallar).
+  assert.deepEqual(c({ ok: true, pdf_sent: false, deduped: true, message: 'ya la estoy preparando' }), { ok: false, deduped: false, quote_number: null, pdf_sent: false, error: 'emision_en_vuelo', message: 'ya la estoy preparando' });
+  assert.deepEqual(c({ ok: true, quote_number: 'X-2', pdf_sent: false, entrega_dudosa: true, message: 'Tuve un problema…' }), { ok: false, deduped: false, quote_number: 'X-2', pdf_sent: false, error: 'pdf_dudoso', message: 'Tuve un problema…' });
+  assert.deepEqual(c({ ok: true, quote_number: 'X-3', pdf_sent: false, entrega_dudosa: false, message: 'Meta lo rechazó' }), { ok: false, deduped: false, quote_number: 'X-3', pdf_sent: false, error: 'pdf_no_entregado', message: 'Meta lo rechazó' });
+  assert.deepEqual(c({ ok: false, reason: 'datos_incompletos', message: '¿Qué tipo de apertura?' }), { ok: false, deduped: false, quote_number: null, pdf_sent: false, error: 'datos_incompletos', message: '¿Qué tipo de apertura?' });
+  assert.deepEqual(c(null), { ok: false, deduped: false, quote_number: null, pdf_sent: false, error: 'no_emitida', message: null });
+});
 
 const LINEA_BOW = {
   n: 1, herramienta: 'calcular_cotizacion',
