@@ -239,7 +239,8 @@ import {
 import { pidioDeNuevo } from '../../services/pidioDeNuevo.js';
 import { clavePendiente, decidirConciliacion, mensajeConciliado } from '../../services/conciliacionDudosa.js'; // [2026-09-16 Kimi] la conciliacion es el mecanismo real, no la idempotencia // [2026-09-16, decision del dueño] el cliente destraba lo que no se reenvia solo // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
 import { modoInternoOliver, textoCorteVendedor, perfilEquipo } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
-import { decidirEntrada, decidirAudio, debeAvisar, RESPUESTA_RUIDO, RESPUESTA_CUARENTENA } from './ruido.js'; // [#1505 · 13-oct] compuerta de ruido y cuarentena de archivos
+import { decidirEntrada, decidirAudio, esArchivoPeligroso } from './ruido.js'; // [#1505 · 13-oct] compuerta de ruido y cuarentena de archivos (decisión pura)
+import { aplicarCompuertaRuido } from './turnoDeterminista.js'; // [#1505] cierre del turno determinista (sin cerebro)
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
 
 /* =========================================================================
@@ -794,43 +795,6 @@ async function resolveUserText(inbound, body, deps, turno) {
 
   // text / button / interactive → ya viene resuelto por parseInbound.
   return { userText: text, mediaResolved: false };
-}
-
-/* =========================================================================
- * [#1505 · 13-oct] COMPUERTA DE RUIDO — lo que pasa cuando decidirEntrada/decidirAudio dicen «ruido» o «cuarentena».
- * Determinista y ANTES del cerebro: el mensaje queda en el cockpit marcado (ruido:true / cuarentena:true + motivo),
- * Oliver contesta UNA vez por número cada 24 h (la cuarentena contesta siempre: es un cliente mandando un archivo),
- * NO se crea lead, NO se llama al LLM, NO se avisa al dueño. El archivo en cuarentena NO se descarga.
- * ========================================================================= */
-async function aplicarCompuertaRuido({ dec, from, msgId, inbound, state, history, bridge, sendWhatsAppText, conv, persistSessionFn, deps, landingAttributionReady }) {
-  const esCuarentena = dec.accion === 'cuarentena';
-  const nombre = dec.archivo?.filename || 'sin nombre';
-  const mime = dec.archivo?.mime || 'tipo desconocido';
-  await safe('ruido.persistIn', () => bridge.pushConversationEvent({
-    channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'inbound', actor_type: 'customer', actor_name: 'Cliente',
-    message_type: inbound.type || 'text',
-    body: esCuarentena ? `[archivo en cuarentena: ${nombre} · ${mime}]` : (inbound.text || `[${inbound.type || 'mensaje'}]`),
-    metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, ruido: !esCuarentena, cuarentena: esCuarentena, motivo: dec.motivo,
-      ...(dec.archivo ? { archivo: dec.archivo } : {}) },
-  }));
-  let avisado = false;
-  if (esCuarentena || debeAvisar(state)) {
-    const texto = esCuarentena ? RESPUESTA_CUARENTENA : RESPUESTA_RUIDO;
-    const r = await safe('ruido.send', () => sendWhatsAppText(from, texto));
-    avisado = Boolean(r && r.ok !== false);
-    if (avisado) {
-      if (!esCuarentena) state.ruido_aviso_at = Date.now();
-      await safe('ruido.persistOut', () => bridge.pushConversationEvent({
-        channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'outbound', actor_type: 'ai', actor_name: 'Oliver IA',
-        message_type: 'text', body: texto, metadata: { source: 'oliver_gpt_webhook', ruido_respuesta: true, motivo: dec.motivo },
-      }));
-    }
-  }
-  await landingAttributionReady;
-  state.lastMessageAt = Date.now();
-  conv.set(from, { history, state });
-  persistSessionFn(from, { history, state }, deps);
-  log('warn', 'ruido', `${dec.accion} (${dec.motivo}) para …${String(from).slice(-4)}${avisado ? ' · avisado' : ' · sin aviso (ya se avisó en 24 h)'}`);
 }
 
 /* =========================================================================
@@ -1526,6 +1490,18 @@ export async function handleWebhook(req, res, deps = {}) {
           const node = raw?.[inbound.type];            // raw.image / raw.audio / raw.document
           const mediaId = node?.id;
           if (!mediaId) return;
+          // [#1505 r2, Codex] la CUARENTENA también rige con un humano atendiendo: un .exe/.zip/.html no se descarga ni
+          // se adjunta al Deal; queda marcado en el chat con id, nombre y tipo (el operador decide si lo baja a mano).
+          if (inbound.type === 'document' && esArchivoPeligroso({ filename: node?.filename, mime: node?.mime_type })) {
+            const archivo = { id: String(mediaId), filename: String(node?.filename || '').trim(), mime: String(node?.mime_type || '').trim() };
+            await bridge.pushConversationEvent({
+              channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'inbound', actor_type: 'customer', actor_name: 'Cliente',
+              message_type: 'document', body: `[archivo en cuarentena: ${archivo.filename || 'sin nombre'} · ${archivo.mime || 'tipo desconocido'}]`,
+              metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, cuarentena: true, motivo: 'archivo_peligroso', ai_paused: true, archivo },
+            });
+            log('warn', 'ruido', `cuarentena en takeover (${archivo.filename || archivo.mime}) para …${String(from).slice(-4)}`);
+            return;
+          }
           const { buffer, mime } = await downloadWaMedia(mediaId, deps);
           const ext = inbound.type === 'image' ? 'jpg' : inbound.type === 'audio' ? 'ogg' : 'bin';
           const filename = node?.filename || `inbound_${from}_${mediaId}.${ext}`;
@@ -1850,24 +1826,23 @@ export async function handleWebhook(req, res, deps = {}) {
     // ── (4d) [#1505 · 13-oct] COMPUERTA DE RUIDO — antes de descargar nada y antes del cerebro ───────────
     // Primer contacto sin intención (sticker, reacción, link solo, texto vacío, imagen sin caption) → ruido;
     // archivo peligroso (siempre) o documento en primer contacto → cuarentena, sin descargar. Ver ruido.js.
+    const _rawRuido = rawMessage(req.body);
+    const _cerrarRuido = (dec) => aplicarCompuertaRuido({ dec, from, msgId, inbound, state, history, bridge, sendWhatsAppText, conv, persistSessionFn, deps, landingAttributionReady, safe, log });
+    // [Thermos r2, ALTO-1] el dueño o un vendedor cotizando para un cliente NUEVO (carpeta vacía → history []) NUNCA es ruido;
+    // solo les rige la cuarentena de archivos peligrosos.
+    const _exentoRuido = Boolean(turno.esDuenio || turno.esVendedor);
     {
-      const _dec = (deps.decidirEntrada || decidirEntrada)({ inbound, raw: rawMessage(req.body), history, env: process.env });
-      if (_dec.accion !== 'seguir') {
-        await aplicarCompuertaRuido({ dec: _dec, from, msgId, inbound, state, history, bridge, sendWhatsAppText, conv, persistSessionFn, deps, landingAttributionReady });
-        return;
-      }
+      const _dec = (deps.decidirEntrada || decidirEntrada)({ inbound, raw: _rawRuido, history, env: process.env });
+      if (_dec.accion === 'cuarentena' || (_dec.accion === 'ruido' && !_exentoRuido)) { await _cerrarRuido(_dec); return; }
     }
 
     // ── (5) MEDIA → userText útil (vision / STT). Resuelve la ceguera V2. ─
     const { userText, mediaResolved } = await resolveUserText(inbound, req.body, deps, turno); // la foto del turno
     // [#1505] un audio de PRIMER contacto que no dijo nada (bolsillo) es ruido; se decide DESPUÉS de transcribir.
     // Solo si de verdad había un audio que transcribir (media id): sin él no hay nada que juzgar.
-    if (inbound.type === 'audio' && rawMessage(req.body)?.audio?.id) {
-      const _da = decidirAudio({ transcript: mediaResolved ? userText : '', mediaResolved, history });
-      if (_da.accion === 'ruido') {
-        await aplicarCompuertaRuido({ dec: _da, from, msgId, inbound, state, history, bridge, sendWhatsAppText, conv, persistSessionFn, deps, landingAttributionReady });
-        return;
-      }
+    if (inbound.type === 'audio' && _rawRuido?.audio?.id && !_exentoRuido) {
+      const _da = (deps.decidirAudio || decidirAudio)({ transcript: mediaResolved ? userText : '', mediaResolved, history });
+      if (_da.accion === 'ruido') { await _cerrarRuido(_da); return; }
     }
     if (!userText) {
       await landingAttributionReady;

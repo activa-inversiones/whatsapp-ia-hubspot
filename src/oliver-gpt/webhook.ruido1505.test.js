@@ -5,6 +5,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { handleWebhook } from './webhook.js';
+import { RESPUESTA_RUIDO, RESPUESTA_CUARENTENA } from './ruido.js';
 
 function makeRes() { return { sentStatus: undefined, sendStatus(c) { this.sentStatus = c; return this; } }; }
 let seq = 0;
@@ -45,7 +46,7 @@ describe('#1505 compuerta de ruido en el webhook', () => {
     assert.equal(spy.handleTurnCalls, 0); assert.equal(spy.leadEvents.length, 0); assert.equal(spy.notifyCalls.length, 0);
     const inb = spy.convEvents.find((e) => e.direction === 'inbound');
     assert.ok(inb); assert.equal(inb.metadata.ruido, true); assert.equal(inb.metadata.motivo, 'tipo_sticker');
-    assert.equal(spy.sendCalls.length, 1); assert.match(spy.sendCalls[0].text, /Soy Oliver/);
+    assert.equal(spy.sendCalls.length, 1); assert.equal(spy.sendCalls[0].text, RESPUESTA_RUIDO);
     assert.ok(spy.convEvents.some((e) => e.direction === 'outbound' && e.metadata.ruido_respuesta === true));
     // segundo sticker del mismo número en la misma hora: queda marcado pero NO se vuelve a contestar
     await handleWebhook(makeReq({ type: 'sticker', text: '[sticker]' }), makeRes(), deps);
@@ -70,7 +71,29 @@ describe('#1505 compuerta de ruido en el webhook', () => {
     const inb = spy.convEvents.find((e) => e.direction === 'inbound');
     assert.equal(inb.metadata.cuarentena, true); assert.equal(inb.metadata.motivo, 'archivo_peligroso');
     assert.match(inb.body, /archivo en cuarentena: factura_pendiente\.exe/);
-    assert.match(spy.sendCalls[0].text, /no abro archivos/);
+    assert.equal(spy.sendCalls[0].text, RESPUESTA_CUARENTENA);
+    // [Copilot r2] el media id queda en el cockpit para que el operador lo baje a mano si hace falta
+    assert.equal(inb.metadata.archivo.id, 'doc1');
+    // segundo archivo peligroso en la misma hora: queda marcado pero NO se vuelve a contestar
+    await handleWebhook(makeReq({ type: 'document', text: '[document]', raw: { document: { id: 'doc2', filename: 'otro.zip', mime_type: 'application/zip' } } }), makeRes(), deps);
+    assert.equal(spy.sendCalls.length, 1, 'una respuesta de cuarentena por número cada 24 h');
+  });
+  test('[Codex r2] con un HUMANO atendiendo (takeover), un .exe tampoco se descarga: queda en cuarentena en el chat', async () => {
+    const { deps, spy } = makeDeps();
+    deps.bridge.getConversationControl = async () => ({ ai_paused: true, operator_status: 'human' });
+    await handleWebhook(makeReq({ type: 'document', text: '[document]', raw: { document: { id: 'docX', filename: 'premio.exe', mime_type: 'application/x-msdownload' } } }), makeRes(), deps);
+    await new Promise((r) => setTimeout(r, 50));   // la captura en takeover es fire-and-forget
+    assert.equal(spy.downloads, 0, 'jamás se descarga');
+    assert.equal(spy.handleTurnCalls, 0);
+    const q = spy.convEvents.find((e) => e.metadata?.cuarentena === true);
+    assert.ok(q, 'queda marcado en cuarentena'); assert.equal(q.metadata.archivo.id, 'docX'); assert.equal(q.metadata.ai_paused, true);
+  });
+  test('[Thermos r2 ALTO-1] el DUEÑO (su número) nunca es ruido aunque su carpeta esté vacía: un sticker suyo sigue al cerebro', async () => {
+    const { deps, spy } = makeDeps();
+    await handleWebhook(makeReq({ type: 'sticker', text: '[sticker]', from: '56957296035' }), makeRes(), deps);
+    // (sin carpeta activa el flujo del dueño le pide el cliente; lo que se defiende acá es que JAMÁS se lo trate como ruido)
+    assert.ok(!spy.convEvents.some((e) => e.metadata?.ruido), 'ningún registro marcado ruido');
+    assert.ok(!spy.sendCalls.some((c) => c.text === RESPUESTA_RUIDO), 'nunca recibe el texto de ruido');
   });
   test('un sticker de un cliente CON historial sigue al cerebro como hoy (no es ruido)', async () => {
     const { deps, spy } = makeDeps();

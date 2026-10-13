@@ -61,5 +61,6 @@ test('la lista blanca existe y está acotada (si crece, que sea a propósito)', 
   // (outbound 'ai', el mismo mensaje que recibio el cliente), gemelo de pdf.det.persistOut.
   // 22 al 13-oct, A PROPOSITO [#1505]: la COMPUERTA DE RUIDO deja en el chat el mensaje marcado (ruido/cuarentena, inbound)
   // y la única respuesta de Oliver (outbound). Son mensajes del chat del número que escribió; no hay registro de cliente.
-  assert.ok(blancas.length <= 22, `crecieron las excepciones [chat]: ${blancas.length}`);
+  // 23 al 13-oct (r2), A PROPOSITO [#1505, Codex]: la cuarentena de archivos peligrosos tambien con un humano atendiendo (takeover).
+  assert.ok(blancas.length <= 23, `crecieron las excepciones [chat]: ${blancas.length}`);
 });
