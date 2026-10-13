@@ -294,6 +294,8 @@ import { registrarRutaLector } from "./services/oliverInternoLector.js";
 import { registrarRutaLiberar } from "./services/oliverInternoLiberar.js";
 // [2026-10-13 · #1513 B] Vista previa de los DIBUJOS del borrador retenido (sin folio, sin enviar). Ver services/oliverInternoDibujos.js
 import { registrarRutaDibujos } from "./services/oliverInternoDibujos.js";
+// [2026-10-13 · #1514 (2)] Abrir el canal con la plantilla más barata desde el inbox/agenda (fuera de la ventana de 24 h)
+import { registrarRutaAbrirCanal } from "./services/abrirCanal.js";
 import { loadSession as loadOliverGptSession } from "./src/oliver-gpt/session-store.js";
 import {
   evaluateLeadValue,
@@ -4978,6 +4980,18 @@ registrarRutaLiberar(app, {
 });
 // [#1513 B] Solo lectura: devuelve un PDF con los dibujos del borrador. No emite, no envía, no escribe.
 registrarRutaDibujos(app, { validInternalOperatorToken, json: express.json({ limit: "2mb" }) });
+// [#1514 (2)] Gemelo interno de /admin/send-template acotado a las plantillas de APERTURA, con el MISMO candado de 48 h.
+registrarRutaAbrirCanal(app, {
+  validInternalOperatorToken,
+  json: express.json(),
+  normPhone,
+  enviar: { recontacto_lead: sendTemplateRecontactoLead }, // [Thermos M2] solo la que está en el candado de 48 h
+  candado: { puedeEnviar: puedeEnviarSeguimiento, marcarEnviado: marcarSeguimientoEnviado, leer: leerEstado, escribir: escribirEstado },
+  nombreDeSesion: (phone) => { try { return String(getSession(phone)?.data?.name || ""); } catch { return ""; } },
+  // [Thermos M1] el MISMO rastro que /admin/send-template: la plantilla se ve en el inbox y en la ficha
+  registrarEvento: (ev) => fireAndForget("pushConversationEvent.abrir-canal", pushConversationEvent(ev)),
+  log: (nivel, etiqueta, detalle) => (nivel === "error" ? logErr(etiqueta, new Error(String(detalle))) : console.log(`[${etiqueta}] ${detalle}`)),
+});
 
 app.post("/internal/reengage", express.json(), async (req, res) => {
   try {
