@@ -292,6 +292,8 @@ import { reengage } from "./services/reengagement.js";
 import { registrarRutaLector } from "./services/oliverInternoLector.js";
 // [2026-10-12 · #1500-C] Liberar desde la agenda = la misma propuesta que manda Oliver (ver services/oliverInternoLiberar.js)
 import { registrarRutaLiberar } from "./services/oliverInternoLiberar.js";
+// [2026-10-13 · #1513 B] Vista previa de los DIBUJOS del borrador retenido (sin folio, sin enviar). Ver services/oliverInternoDibujos.js
+import { registrarRutaDibujos } from "./services/oliverInternoDibujos.js";
 import { loadSession as loadOliverGptSession } from "./src/oliver-gpt/session-store.js";
 import {
   evaluateLeadValue,
@@ -4974,6 +4976,8 @@ registrarRutaLiberar(app, {
   json: express.json(),
   handleWebhook: async (req, res, deps) => (await import("./src/oliver-gpt/webhook.js")).handleWebhook(req, res, deps),
 });
+// [#1513 B] Solo lectura: devuelve un PDF con los dibujos del borrador. No emite, no envía, no escribe.
+registrarRutaDibujos(app, { validInternalOperatorToken, json: express.json({ limit: "2mb" }) });
 
 app.post("/internal/reengage", express.json(), async (req, res) => {
   try {
