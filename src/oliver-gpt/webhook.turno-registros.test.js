@@ -59,5 +59,7 @@ test('la lista blanca existe y está acotada (si crece, que sea a propósito)', 
   // registro; el registro de la propuesta (quote, folio) va por turno.cliente como siempre.
   // 20 al 12-oct (r2), A PROPOSITO [#1500-C · Thermos M3]: el ESPEJO del texto de entrega de la emision interna
   // (outbound 'ai', el mismo mensaje que recibio el cliente), gemelo de pdf.det.persistOut.
-  assert.ok(blancas.length <= 20, `crecieron las excepciones [chat]: ${blancas.length}`);
+  // 22 al 13-oct, A PROPOSITO [#1505]: la COMPUERTA DE RUIDO deja en el chat el mensaje marcado (ruido/cuarentena, inbound)
+  // y la única respuesta de Oliver (outbound). Son mensajes del chat del número que escribió; no hay registro de cliente.
+  assert.ok(blancas.length <= 22, `crecieron las excepciones [chat]: ${blancas.length}`);
 });

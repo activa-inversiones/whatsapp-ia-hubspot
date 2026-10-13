@@ -239,6 +239,7 @@ import {
 import { pidioDeNuevo } from '../../services/pidioDeNuevo.js';
 import { clavePendiente, decidirConciliacion, mensajeConciliado } from '../../services/conciliacionDudosa.js'; // [2026-09-16 Kimi] la conciliacion es el mecanismo real, no la idempotencia // [2026-09-16, decision del dueño] el cliente destraba lo que no se reenvia solo // [2026-09-16 Kimi] no reintentar sin avisar = pérdida silenciosa (caso Katy) // [2026-09-16 Codex] timeout != rechazo: sin esto el informe se reenviaba duplicado
 import { modoInternoOliver, textoCorteVendedor, perfilEquipo } from '../../services/internosEquipo.js'; // [#1059 b] lista del equipo (sales-os /equipo)
+import { decidirEntrada, decidirAudio, debeAvisar, RESPUESTA_RUIDO, RESPUESTA_CUARENTENA } from './ruido.js'; // [#1505 · 13-oct] compuerta de ruido y cuarentena de archivos
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
 
 /* =========================================================================
@@ -793,6 +794,43 @@ async function resolveUserText(inbound, body, deps, turno) {
 
   // text / button / interactive → ya viene resuelto por parseInbound.
   return { userText: text, mediaResolved: false };
+}
+
+/* =========================================================================
+ * [#1505 · 13-oct] COMPUERTA DE RUIDO — lo que pasa cuando decidirEntrada/decidirAudio dicen «ruido» o «cuarentena».
+ * Determinista y ANTES del cerebro: el mensaje queda en el cockpit marcado (ruido:true / cuarentena:true + motivo),
+ * Oliver contesta UNA vez por número cada 24 h (la cuarentena contesta siempre: es un cliente mandando un archivo),
+ * NO se crea lead, NO se llama al LLM, NO se avisa al dueño. El archivo en cuarentena NO se descarga.
+ * ========================================================================= */
+async function aplicarCompuertaRuido({ dec, from, msgId, inbound, state, history, bridge, sendWhatsAppText, conv, persistSessionFn, deps, landingAttributionReady }) {
+  const esCuarentena = dec.accion === 'cuarentena';
+  const nombre = dec.archivo?.filename || 'sin nombre';
+  const mime = dec.archivo?.mime || 'tipo desconocido';
+  await safe('ruido.persistIn', () => bridge.pushConversationEvent({
+    channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'inbound', actor_type: 'customer', actor_name: 'Cliente',
+    message_type: inbound.type || 'text',
+    body: esCuarentena ? `[archivo en cuarentena: ${nombre} · ${mime}]` : (inbound.text || `[${inbound.type || 'mensaje'}]`),
+    metadata: { source: 'oliver_gpt_webhook', msg_id: msgId, ruido: !esCuarentena, cuarentena: esCuarentena, motivo: dec.motivo,
+      ...(dec.archivo ? { archivo: dec.archivo } : {}) },
+  }));
+  let avisado = false;
+  if (esCuarentena || debeAvisar(state)) {
+    const texto = esCuarentena ? RESPUESTA_CUARENTENA : RESPUESTA_RUIDO;
+    const r = await safe('ruido.send', () => sendWhatsAppText(from, texto));
+    avisado = Boolean(r && r.ok !== false);
+    if (avisado) {
+      if (!esCuarentena) state.ruido_aviso_at = Date.now();
+      await safe('ruido.persistOut', () => bridge.pushConversationEvent({
+        channel: 'whatsapp', external_id: from /* [chat] mensaje del chat */, direction: 'outbound', actor_type: 'ai', actor_name: 'Oliver IA',
+        message_type: 'text', body: texto, metadata: { source: 'oliver_gpt_webhook', ruido_respuesta: true, motivo: dec.motivo },
+      }));
+    }
+  }
+  await landingAttributionReady;
+  state.lastMessageAt = Date.now();
+  conv.set(from, { history, state });
+  persistSessionFn(from, { history, state }, deps);
+  log('warn', 'ruido', `${dec.accion} (${dec.motivo}) para …${String(from).slice(-4)}${avisado ? ' · avisado' : ' · sin aviso (ya se avisó en 24 h)'}`);
 }
 
 /* =========================================================================
@@ -1809,8 +1847,28 @@ export async function handleWebhook(req, res, deps = {}) {
       log('error', 'landing_ref.capture', e);
     }
 
+    // ── (4d) [#1505 · 13-oct] COMPUERTA DE RUIDO — antes de descargar nada y antes del cerebro ───────────
+    // Primer contacto sin intención (sticker, reacción, link solo, texto vacío, imagen sin caption) → ruido;
+    // archivo peligroso (siempre) o documento en primer contacto → cuarentena, sin descargar. Ver ruido.js.
+    {
+      const _dec = (deps.decidirEntrada || decidirEntrada)({ inbound, raw: rawMessage(req.body), history, env: process.env });
+      if (_dec.accion !== 'seguir') {
+        await aplicarCompuertaRuido({ dec: _dec, from, msgId, inbound, state, history, bridge, sendWhatsAppText, conv, persistSessionFn, deps, landingAttributionReady });
+        return;
+      }
+    }
+
     // ── (5) MEDIA → userText útil (vision / STT). Resuelve la ceguera V2. ─
     const { userText, mediaResolved } = await resolveUserText(inbound, req.body, deps, turno); // la foto del turno
+    // [#1505] un audio de PRIMER contacto que no dijo nada (bolsillo) es ruido; se decide DESPUÉS de transcribir.
+    // Solo si de verdad había un audio que transcribir (media id): sin él no hay nada que juzgar.
+    if (inbound.type === 'audio' && rawMessage(req.body)?.audio?.id) {
+      const _da = decidirAudio({ transcript: mediaResolved ? userText : '', mediaResolved, history });
+      if (_da.accion === 'ruido') {
+        await aplicarCompuertaRuido({ dec: _da, from, msgId, inbound, state, history, bridge, sendWhatsAppText, conv, persistSessionFn, deps, landingAttributionReady });
+        return;
+      }
+    }
     if (!userText) {
       await landingAttributionReady;
       // [Ronda 2 2026-07-20] También persistir cuando la captura fue CTWA (antes solo
