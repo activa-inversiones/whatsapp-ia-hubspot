@@ -161,7 +161,7 @@ import { notifyHighValue as realNotifyHighValue } from '../../services/highValue
 import { captionTermico, captionVientos } from './captionInforme.js'; // [2026-09-04] el cliente tiene que saber que le mandamos
 import { nombreConLetra, conCorrelativoUnaVez } from './informeLetra.js'; // [2026-09-04 · #651] dos informes distintos no se llaman igual · [2026-09-15] y el correlativo va UNA vez
 import { extractName, isLikelyName } from '../../services/oliverName.js'; // [2026-09-03] el nombre que llega TARDE, para reemitir la propuesta
-import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, fraseRevisionIngenieria, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
+import { isPdfAffirmative, lastAssistantOfferedPdf, itemsFromQuoteCalls, itemsParaPropuestaPdf, fraseRevisionIngenieria, stripMontos, stripAccionesFalsas, quoteDataComplete, datoQuePregunta, preguntaVigente } from './pdf-intent.js'; // [PDF-01] PDF determinista compartido con channel-agent · [Ronda 4] anti acciones-falsas
 // [2026-08-31] LAS TRES PROPUESTAS A/B/C POR COLOR — compartidas con channel-agent.js (IG/FB)
 // para que los dos canales roten igual, usen las MISMAS letras del folio y le digan al
 // cliente lo mismo. `LETRAS_ALTERNATIVA` es ademas la fuente unica del sufijo ISO: antes el
@@ -4042,17 +4042,11 @@ Comuna: ${datos.comuna}`
             // `undefined` cuando no hay terna ⇒ el documento sale exactamente como siempre.
             opcion: _coloresTerna ? { letra: _folios[0].letra, color: _coloresTerna[0] } : undefined,
             default_color: (input.items?.[0]?.color) || state.default_color || '',
-            items:   (input.items || []).map((it) => ({
-              product:        it.producto_label || it.product || 'Ventana',
-              producto_label: it.producto_label || it.product || 'Ventana',
-              measures:       it.measures || '',
-              color:          it.color || '',
-              qty:            Number(it.qty) || 1,
-              unit_price:     Number(it.unit_price) || 0,  // NUNCA inventado: viene del motor
-              glass_label:    it.glass_label || VIDRIO_RESPALDO,
-              ambiente:       it.ambiente || '',
-              termico:        it.termico || null,   // [thermal] Uw aditivo (null = no se muestra)
-            })),
+            // [2026-10-13 · #1516] El mapeo vive en pdf-intent.itemsParaPropuestaPdf (puro, con test): acá se
+            // PERDÍA `pos` (el número que el cliente le puso a su ventana), así que la propuesta salía V1..Vn
+            // mientras el informe térmico y el registro decían V1, V2, V10, V5, V8. Lo cazó el dueño comparando
+            // el borrador de dibujos (que sí respetaba los números) con la propuesta 0642-B.
+            items:   itemsParaPropuestaPdf(input.items),
             quote_num: quoteNumber,
             reemplaza_a: reemplazaA || undefined,   // [2026-10-06] franja «reemplaza a la N° …» (decision del dueño)
           };

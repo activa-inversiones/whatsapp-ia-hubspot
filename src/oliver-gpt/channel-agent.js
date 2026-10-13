@@ -49,7 +49,7 @@ import { loadSession as realLoadSession, persistSession as realPersistSession, r
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
 import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal } from '../../services/zohoCommercial.js';
 import { sendChannelDocument as realSendChannelDocument } from '../../services/multiChannelHandler.js';
-import { stripMontos, stripAccionesFalsas, quoteDataComplete } from './pdf-intent.js'; // [#2] filtro anti precio-suelto + [PDF-RACE] guard de completitud + [Ronda 4] anti acciones-falsas (compartidos con webhook.js)
+import { stripMontos, stripAccionesFalsas, quoteDataComplete, itemsParaPropuestaPdf } from './pdf-intent.js'; // [#2] filtro anti precio-suelto + [PDF-RACE] guard de completitud + [Ronda 4] anti acciones-falsas (compartidos con webhook.js)
 // [2026-07-02 dedupe] escalación desde el módulo COMPARTIDO — las copias locales causaron el bug
 // del título viejo de Marcelo en IG/FB (se actualizó escalation.js y las copias quedaron atrás).
 import { escalationMessage, isEscalationRequest, sendEscalationTemplate } from './escalation.js';
@@ -870,13 +870,8 @@ export async function handleChannelTurn(
             // WhatsApp). `undefined` sin terna => el documento sale exactamente como siempre.
             opcion: _coloresTerna ? { letra: _folios[0].letra, color: _coloresTerna[0] } : undefined,
             default_color: (input.items?.[0]?.color) || state.default_color || '',
-            items: (input.items || []).map((it) => ({
-              product: it.producto_label || it.product || 'Ventana',
-              producto_label: it.producto_label || it.product || 'Ventana',
-              measures: it.measures || '', color: it.color || '',
-              qty: Number(it.qty) || 1, unit_price: Number(it.unit_price) || 0,
-              glass_label: it.glass_label || VIDRIO_RESPALDO, ambiente: it.ambiente || '',
-            })),
+            // [#1516 13-oct] mismo mapeo que WhatsApp (pdf-intent): conserva `pos`, el número del cliente
+            items: itemsParaPropuestaPdf(input.items),
             quote_num: quoteNumber,
           };
           const pdfBuffer = await generatePdf(pdfData, quoteNumber);
@@ -958,6 +953,7 @@ export async function handleChannelTurn(
                       glass_label:    elegirVidrio(it.glass_label, vidrioDelMotor(_p)).vidrio || VIDRIO_RESPALDO,
                       ambiente:       it.ambiente || '',
                       termico:        _p.termico || null,
+                      pos:            it.pos ?? undefined,   // [#1516] el número del cliente, igual que en A
                     };
                   }),
                 };

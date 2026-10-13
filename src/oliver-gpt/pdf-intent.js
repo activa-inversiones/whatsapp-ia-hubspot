@@ -106,6 +106,32 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
  *
  * @returns {{ nombre: string, asumido: boolean, origen: 'cliente'|'perfil_whatsapp'|'comuna'|'generico' }}
  */
+/**
+ * [2026-10-13 · #1516] Los items que recibe la PROPUESTA (quotePdf). Antes era un `.map` inline en webhook.js que
+ * copiaba campo por campo y NO copiaba `pos`: el número que el cliente le puso a su ventana (#798, 19-sep) llegaba al
+ * registro y al informe térmico pero no al PDF de la propuesta, que salía V1..Vn. Medido 13-oct: propuesta 0642-B con
+ * items pos 1,2,10,5,8 en la base y V1..V5 en el papel. PURA: sin precios inventados (unit_price viene del motor).
+ */
+export function itemsParaPropuestaPdf(items) {
+  return (Array.isArray(items) ? items : []).map((it) => {
+    const base = {
+      product:        it.producto_label || it.product || 'Ventana',
+      producto_label: it.producto_label || it.product || 'Ventana',
+      measures:       it.measures || '',
+      color:          it.color || '',
+      qty:            Number(it.qty) || 1,
+      unit_price:     Number(it.unit_price) || 0,  // NUNCA inventado: viene del motor
+      glass_label:    it.glass_label || VIDRIO_RESPALDO,
+      ambiente:       it.ambiente || '',
+      termico:        it.termico || null,   // [thermal] Uw aditivo (null = no se muestra)
+    };
+    // El número del cliente (lo fija numerarVentanas antes de llegar acá). Solo si es un entero > 0.
+    const pos = Number(it.pos);
+    if (Number.isInteger(pos) && pos > 0) base.pos = pos;
+    return base;
+  });
+}
+
 export function resolverNombre({ input = {}, state = {}, pushName = '', comuna = '', textoCliente } = {}) {
   const dicho = String(input.name || state.name || '').trim();
   // 🔴 [2026-09-03 · compuerta cruzada, hallazgo 2 de Codex] COMPUERTA DE PROCEDENCIA.
