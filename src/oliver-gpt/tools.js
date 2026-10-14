@@ -22,7 +22,11 @@ import { VIDRIO_BASE } from '../../services/vidriosBase.js'; // [2026-10-06] rel
 
 // Rango plausible de una ventana/puerta en mm. Fuera de esto = dato dudoso (no cotizar a ciegas).
 const MEDIDA_MIN_MM = 150;
-const MEDIDA_MAX_MM = 6000;
+// [2026-10-14 · #1522] 6000 → 8000. El dueño cotiza una corredera triple riel de 6200×3000 que Winart FABRICA
+// (proyecto 61158, v72556: aviso de alto de hoja, no rechazo) y este tope la devolvía como «medida dudosa».
+// El tope existe para cazar errores de unidad (cm leídos como mm): 8000 sigue lejos de cualquier confusión
+// cm/mm (62 cm ⇄ 620 mm; 6200 cm serían 62.000 mm).
+const MEDIDA_MAX_MM = 8000;
 
 /**
  * Resuelve las medidas finales en mm para cotizar, de forma DETERMINISTA.
@@ -878,6 +882,34 @@ export function notaDeLineaParaElLLM(it) {
  * «puerta 560 + fijo 560 + puerta 560» se cobraban como «Fijo + Proyectante»: otra ventana, sin la
  * puerta y hasta sin un paño. Con cualquier otro tipo o cantidad de paños, los paños VIAJAN.
  */
+/**
+ * 🔴 [2026-10-14 · #1522] EL TEXTO DEL CLIENTE QUE VE EL COTIZADOR ES EL DE ESTA VENTANA, NO EL DE LA LISTA.
+ * Cada llamada a calcular_cotizacion es UNA ventana, y el pricer la trata como «el único ítem» → mira el texto
+ * del cliente para leer hojas, «central fija / laterales fijas» y el límite de medidas. Con una LISTA eso se
+ * contamina: medido en el borrador 70a138c1 (Oliver interno, 17 líneas), «3 hojas, laterales fijas» de la
+ * corredera 4000×400 convirtió en 3 hojas la corredera de 2 hojas 2560×2390, y la palabra «corredera» le puso
+ * avisos de corredera a fijos y proyectantes.
+ * Regla: si el texto describe UNA sola medida, va entero (como siempre). Si describe VARIAS, se conservan los
+ * renglones SIN medidas (contexto general: «medidas ancho x alto») y, de los que traen medidas, solo los que
+ * contienen las dos cifras de ESTA ventana.
+ */
+const RE_MEDIDA_PAR = /(\d{2,5}(?:[.,]\d+)?)\s*(?:mm|cm)?\s*[x×X*]\s*(\d{2,5}(?:[.,]\d+)?)/g;
+export function textoDeEstaVentana(textoCliente, { medidas_texto = '', ancho_mm, alto_mm } = {}) {
+  const t = String(textoCliente || '');
+  const pares = [...t.matchAll(RE_MEDIDA_PAR)];
+  if (pares.length <= 1) return t;
+  const cifras = new Set();
+  for (const m of String(medidas_texto || '').matchAll(RE_MEDIDA_PAR)) { cifras.add(String(Number(m[1]))); cifras.add(String(Number(m[2]))); }
+  if (Number(ancho_mm) > 0) cifras.add(String(Number(ancho_mm)));
+  if (Number(alto_mm) > 0) cifras.add(String(Number(alto_mm)));
+  return t.split(/\r?\n/).filter((linea) => {
+    const enLinea = [...linea.matchAll(RE_MEDIDA_PAR)];
+    if (!enLinea.length) return true;                       // contexto general: se queda
+    if (cifras.size < 2) return false;                      // no sé cuál es la mía: ninguna ajena
+    return enLinea.some((m) => cifras.has(String(Number(m[1]))) && cifras.has(String(Number(m[2]))));
+  }).join('\n');
+}
+
 export function partesParaMotor(partes) {
   const ps = Array.isArray(partes) ? partes : [];
   if (!ps.length) return undefined;
@@ -1041,8 +1073,12 @@ export async function runTool(name, input = {}, ctx = {}) {
         default_color: input.color || '',
         // Las palabras del cliente: el motor las necesita para saber si la lista viene
         // alto x ancho o ancho x alto, en vez de deducirlo por el tamaño.
-        texto_cliente: [ctx.textoCliente, input.medidas_texto, input.descripcion_producto]
+        // [#1522] Solo el renglón de ESTA ventana cuando el cliente mandó una lista (ver textoDeEstaVentana).
+        texto_cliente: [textoDeEstaVentana(ctx.textoCliente, input), input.medidas_texto, input.descripcion_producto]
           .filter(Boolean).join(' \n '),
+        // [#1522] Oliver interno: el vendedor escribe ancho × alto. La regla de «alto > 2400 ⇒ la lista vino al
+        // revés» es para WhatsApp; con el vendedor giraba un fijo de 400×2500 a 2500×400 (borrador 70a138c1).
+        orientacion_confiable: ctx.orientacionConfiable === true ? true : undefined,
       };
       const r = await priceAllEngine(d);
       const it = d.items[0] || {};
@@ -1171,7 +1207,8 @@ export async function runTool(name, input = {}, ctx = {}) {
         // [Codex 2026-08-27] Esta ruta omitía las palabras del cliente y por eso una "línea Andes"
         // pedida solo en el chat se colaba al motor como SLIDING (producto equivocado), esquivando
         // el apagado. Se pasan igual que en la ruta principal.
-        texto_cliente: [ctx.textoCliente, input.descripcion_producto].filter(Boolean).join(' \n '),
+        texto_cliente: [textoDeEstaVentana(ctx.textoCliente, { ancho_mm: ancho, alto_mm: alto }), input.descripcion_producto].filter(Boolean).join(' \n '),
+        orientacion_confiable: ctx.orientacionConfiable === true ? true : undefined,
       };
       const r = await priceAllEngine(d);
       const it = d.items[0] || {};

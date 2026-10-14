@@ -103,24 +103,72 @@ export async function leerYCotizar({ texto, comuna = '', color = '', nombre = ''
     history: [],
     userText: String(texto || ''),
     state,
-    toolCtx: { textoCliente: String(texto || ''), runTool: exec, engine },
+    // [#1522] orientacionConfiable: el vendedor escribe ancho × alto; no se aplica la regla de WhatsApp que
+    // gira la lista cuando hay un alto > 2400 (giraba un fijo 400×2500 a 2500×400).
+    toolCtx: { textoCliente: String(texto || ''), runTool: exec, engine, orientacionConfiable: true },
   });
 
   // [r5 · Codex r2 NO APTO] NADA SE DESCARTA. En r4 se fusionaban las llamadas idénticas (sugerencia de Thermos:
   // «el LLM repite la línea tras una tool bloqueada»), pero dos llamadas iguales con cantidad 1 pueden ser DOS
   // ventanas reales y sales-os retenía la mitad del total. La clave no distingue «reintento» de «segunda unidad»:
   // ante la duda, todas las líneas van al borrador (el vendedor las ve) y solo se cuenta la repetición para avisar.
+  // 🔴 [#1522 · 14-oct] PERO UN REINTENTO SÍ SE PUEDE DISTINGUIR, CONTANDO CONTRA LA NOTA. Medido en el borrador
+  // 70a138c1: 15 renglones y 18 llamadas (la corredera 2560×2390 tres veces, el fijo 2500×400 dos). El LLM copia
+  // el renglón en `descripcion_producto`; si esa descripción aparece K veces en la nota, son K ventanas, y las
+  // llamadas de más son reintentos. Se queda con las ÚLTIMAS K (la corrección, no el primer intento). Una
+  // descripción que no aparece en la nota no se puede contar: se queda entera, como antes.
+  const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[×*]/g, 'x').replace(/\s+/g, ' ').trim();
+  // Se cuentan UNIDADES, no llamadas: «2 × Fijo …» partido por el LLM en dos llamadas de 1 son 2 unidades y se
+  // quedan las dos. Solo se descarta lo que hace pasar la suma de unidades por encima de lo que dice la nota.
+  const renglones = String(texto || '').split(/\r?\n/).map(norm).filter(Boolean);
+  const unidadesEnNota = (desc) => {
+    const d = norm(desc);
+    if (d.length < 8) return 0;
+    return renglones.filter((r) => r.includes(d))
+      .reduce((s, r) => s + (Number((r.match(/^\s*(\d{1,3})\s*x\s/) || [])[1]) || 1), 0);
+  };
+  const llamadas = (turn.toolCalls || []).filter((c) => HERRAMIENTAS_DE_PRECIO.includes(c.name));
+  const porDesc = new Map();
+  llamadas.forEach((c, i) => {
+    const desc = c.input?.descripcion_producto;
+    const tope = unidadesEnNota(desc);
+    if (!tope) return;
+    const clave = `${c.name}|${norm(desc)}`;
+    if (!porDesc.has(clave)) porDesc.set(clave, { tope, idx: [] });
+    porDesc.get(clave).idx.push(i);
+  });
+  const unidades = (i) => Math.max(1, Number(llamadas[i]?.input?.cantidad) || 1);
+  // El resultado que manda es el del ÚLTIMO intento, pero queda en el LUGAR del primero: el orden del borrador
+  // es el de la nota (reclamo del dueño 14-oct: «no sé por qué desordena lo que le envío»).
+  const sobran = new Set();
+  const fuente = llamadas.map((_c, i) => i);
+  for (const { tope, idx } of porDesc.values()) {
+    // Desde el último intento hacia atrás, se toman llamadas mientras quepan en las unidades de la nota.
+    const quedan = [];
+    let suma = 0;
+    for (const i of [...idx].reverse()) {
+      if (suma + unidades(i) > tope) continue;
+      quedan.unshift(i); suma += unidades(i);
+    }
+    if (!quedan.length || quedan.length === idx.length) continue;   // nada que cuadre, o no sobra nada: sin tocar
+    const lugares = idx.slice(0, quedan.length);
+    lugares.forEach((pos, j) => { fuente[pos] = quedan[j]; });
+    idx.slice(quedan.length).forEach((i) => sobran.add(i));
+  }
+
   const vistos = new Set();
   let repetidas = 0;
   const lineas = [];
-  for (const c of turn.toolCalls || []) {
-    if (!HERRAMIENTAS_DE_PRECIO.includes(c.name)) continue;
+  llamadas.forEach((_orig, i) => {
+    if (sobran.has(i)) return;
+    const c = llamadas[fuente[i]];
     const clave = `${c.name}|${JSON.stringify(c.input || {})}`;
     if (vistos.has(clave)) repetidas += 1; else vistos.add(clave);
     lineas.push({ n: lineas.length + 1, herramienta: c.name, pedido: c.input, resultado: resultadoConInterno(c.result) });
-  }
+  });
 
-  const base = { lineas, repetidas, bloqueadas: exec.bloqueadas, sospechosas: exec.sospechosas, respuesta: String(turn.reply || '') };
+  const base = { lineas, repetidas, reintentos_descartados: sobran.size, bloqueadas: exec.bloqueadas, sospechosas: exec.sospechosas, respuesta: String(turn.reply || '') };
   if (!lineas.length) return { ok: false, error: 'oliver_no_cotizo', ...base };
   return { ok: true, ...base };
 }
