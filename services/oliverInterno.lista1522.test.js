@@ -165,3 +165,28 @@ test('🔒 [P3] hojas_fijas [2] (dato corrupto) NO pinta laterales fijas', async
   const p = planoDeVentana({ measures: '4000x400mm', producto_label: 'Corredera SLIDING H80 Doble Riel S75 3 hojas', hojas_fijas: [2] }, { x: 0, y: 0, w: 400, h: 300 });
   assert.equal(p.hojas.filter((h) => h.fijaEnSitio).length, 0);
 });
+
+// ── [#1529 · 14-oct · pedido del dueño] COLOR POR VENTANA ───────────────────────────────────────────
+// Textual: «el cliente a veces pide todo el frente nogal y la parte de atrás blanco, y seguir con elegir color para
+// todos como está ahora».
+test('🔴 [#1529] el color del cuadro ya NO se bloquea: va como color por defecto y el del renglón manda', async () => {
+  const vistos = [];
+  const handleTurn = async (args) => { vistos.push(args); return { toolCalls: [], reply: 'ok' }; };
+  await leerYCotizar({ texto: '1 x Fijo S60 1000x1000 NOGAL\n1 x Fijo S60 800x800 BLANCO', comuna: 'Temuco', color: 'NOGAL', deps: { handleTurn, runTool: async () => ({}) } });
+  assert.equal(vistos[0].state.lockedData.color, undefined, 'no queda bloqueado como DEFINITIVO');
+  assert.match(vistos[0].userText, /Color por defecto: NOGAL\. Úselo SOLO en las ventanas que no dicen color/);
+  assert.doesNotMatch(vistos[0].toolCtx.textoCliente, /Color por defecto/, 'la instrucción no se mezcla con el texto de cada ventana');
+});
+
+test('🔴 [#1529] una ventana sin color recibe el color del cuadro; una con color conserva el suyo', async () => {
+  const { soloCotizar } = await import('./oliverInternoLector.js');
+  const pedidos = [];
+  const exec = soloCotizar(async (name, input) => { pedidos.push(input); return { ok: true }; }, { colorPorDefecto: 'NOGAL' });
+  await exec('calcular_cotizacion', { tipo: 'FIJA', cantidad: 1 });
+  await exec('calcular_cotizacion', { tipo: 'FIJA', cantidad: 1, color: 'BLANCO' });
+  assert.equal(pedidos[0].color, 'NOGAL');
+  assert.equal(pedidos[1].color, 'BLANCO');
+  const sinDefecto = soloCotizar(async (name, input) => { pedidos.push(input); return { ok: true }; });
+  await sinDefecto('calcular_cotizacion', { tipo: 'FIJA', cantidad: 1 });
+  assert.equal(pedidos[2].color, undefined, 'sin color general no se inventa ninguno');
+});

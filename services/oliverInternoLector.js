@@ -28,7 +28,7 @@ export const TOPE_CANTIDAD_TEXTO_LIBRE = 50;
  * cantidad implausible. Función pura (no toca red): lo que rechaza queda en `exec.bloqueadas` /
  * `exec.sospechosas` para que el canal interno se lo muestre al vendedor.
  */
-export function soloCotizar(runTool) {
+export function soloCotizar(runTool, { colorPorDefecto = '' } = {}) {
   const bloqueadas = [];
   const sospechosas = [];
   let n = 0;
@@ -47,6 +47,9 @@ export function soloCotizar(runTool) {
         error: `cantidad ${cantidad} leída de texto libre supera ${TOPE_CANTIDAD_TEXTO_LIBRE}: no se cotiza hasta confirmarla`,
       };
     }
+    // [#1529] Con color general, una ventana que el LLM dejó SIN color recibe ese color (antes lo garantizaba el
+    // bloqueo en lockedData); sin esto el pricer caería al color por defecto del motor (BLANCO, el más barato).
+    if (colorPorDefecto && !String((input && input.color) || '').trim()) input = { ...input, color: colorPorDefecto };
     return runTool(name, input, ctx);
   };
   exec.bloqueadas = bloqueadas;
@@ -89,11 +92,18 @@ function resultadoConInterno(result) {
 export async function leerYCotizar({ texto, comuna = '', color = '', nombre = '', deps = {} } = {}) {
   const handleTurn = deps.handleTurn || handleTurnReal;
   const engine = deps.engine || motorSinPass2(engineReal);
-  const exec = soloCotizar(deps.runTool || runToolReal);
+  const exec = soloCotizar(deps.runTool || runToolReal, { colorPorDefecto: color });
 
   const lockedData = {};
   if (comuna) lockedData.comuna = comuna;
-  if (color) lockedData.color = color;
+  // 🔴 [2026-10-14 · #1529 · pedido del dueño] EL COLOR DEL CUADRO YA NO SE BLOQUEA: es el color POR DEFECTO.
+  // Textual: «el cliente a veces pide todo el frente nogal y la parte de atrás blanco». Bloqueado en `lockedData`
+  // (que el prompt declara DEFINITIVO) Oliver lo aplicaba a TODAS las ventanas aunque el renglón dijera otro.
+  // Ahora va como instrucción solo al LLM: el color escrito en cada renglón manda. NO va a `textoCliente` (lo que el
+  // cotizador lee por ventana), para que no se mezcle con el color del renglón.
+  const instruccionColor = color
+    ? `\n\n[Color por defecto: ${color}. Úselo SOLO en las ventanas que no dicen color; si un renglón dice su color, ese manda.]`
+    : '';
   // [r4 · Thermos] MODO INTERNO: le escribe un vendedor del equipo (services/internosEquipo.js). Sin esto el prompt
   // trata al vendedor como cliente frío (reglas de calificación: segmento, presupuesto) y pregunta en vez de cotizar.
   const state = { ...lockedData, lockedData, modo_interno: true };
@@ -101,7 +111,7 @@ export async function leerYCotizar({ texto, comuna = '', color = '', nombre = ''
 
   const turn = await handleTurn({
     history: [],
-    userText: String(texto || ''),
+    userText: String(texto || '') + instruccionColor,
     state,
     // [#1522] orientacionConfiable: el vendedor escribe ancho × alto; no se aplica la regla de WhatsApp que
     // gira la lista cuando hay un alto > 2400 (giraba un fijo 400×2500 a 2500×400).
