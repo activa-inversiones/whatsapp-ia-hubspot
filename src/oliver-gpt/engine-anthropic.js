@@ -30,6 +30,18 @@ import { reportarCosto as reportarCostoCompartido } from '../../services/reporte
 
 const MODEL = () => process.env.AI_MODEL_ANTHROPIC || 'claude-sonnet-4-6';
 const EFFORT = () => (process.env.AI_EFFORT ?? 'medium').trim();   // [2026-06-21] default medium (low loopeaba/no encadenaba PDF); '' => no enviar
+// [2026-10-14 · #1518] CEREBRO PARTIDO POR PASADA, por variables (sin cambiar nada si no se setean):
+//   pass1 (decidir + herramientas = la plata) y pass2 (el texto al cliente) pueden ir en modelos y
+//   esfuerzos distintos. Pedido del dueño: Opus 5.5 donde se cotiza, Sonnet 5.5 donde se escribe.
+//   AI_MODEL_ANTHROPIC_PASS1 / _PASS2 → caen a AI_MODEL_ANTHROPIC · AI_EFFORT_PASS1 / _PASS2 → caen a AI_EFFORT.
+//   Opus 5.5 y Sonnet 5.5 piensan DENTRO del tope de max_tokens: por eso pass2 deja de estar fijo en 900
+//   (OLIVER_PASS2_MAX_TOKENS). Reversible al instante borrando las variables.
+const MODEL_PASS = (n) => (process.env[`AI_MODEL_ANTHROPIC_PASS${n}`] || '').trim() || MODEL();
+const EFFORT_PASS = (n) => {
+  const v = process.env[`AI_EFFORT_PASS${n}`];
+  return v === undefined ? EFFORT() : String(v).trim();
+};
+const MAX_TOKENS_PASS2 = () => (Number(process.env.OLIVER_PASS2_MAX_TOKENS) > 0 ? Number(process.env.OLIVER_PASS2_MAX_TOKENS) : 900);
 const CACHE_ON = () => (process.env.AI_CACHE ?? '1') !== '0';
 // [2026-07-08] TTL del caché de prompt. Default '1h': antes era 5min (ephemeral), y como los
 // clientes responden espaciado el caché se vencía entre mensajes → se re-pagaba el prompt entero
@@ -170,8 +182,8 @@ function systemParam(system) {
   return [{ type: 'text', text: s, cache_control: cc }];
 }
 
-function maybeOutputConfig() {
-  const e = EFFORT();
+function maybeOutputConfig(pass = null) {
+  const e = pass ? EFFORT_PASS(pass) : EFFORT();
   return e ? { output_config: { effort: e } } : {};
 }
 
@@ -180,7 +192,7 @@ function maybeOutputConfig() {
 export async function anthropicPass1({ system, messages = [], tools = [], _client } = {}) {
   const client = _client || getAnthropicClient();
   const resp = await client.messages.create({
-    model: MODEL(),
+    model: MODEL_PASS(1),
     // [2026-07-14] 1800 -> 4096 (env OLIVER_PASS1_MAX_TOKENS): la planilla de 15 filas del 13-jul
     // choco el tope 3 veces (out=1800 exacto) — pass1 emite ~15 tool_use de calcular_cotizacion en
     // una pasada y el corte a mitad del JSON deja input={} -> cotizacion con filas PERDIDAS en
@@ -190,7 +202,7 @@ export async function anthropicPass1({ system, messages = [], tools = [], _clien
     system: systemParam(system),
     tools: _toAnthropicTools(tools),
     messages: _toAnthropicMessages(messages),
-    ...maybeOutputConfig(),
+    ...maybeOutputConfig(1),
   });
   logModelOnce(resp);
   logUsage('pass1', resp);
@@ -203,11 +215,11 @@ export async function anthropicPass2({ system, messages = [], _client } = {}) {
   const client = _client || getAnthropicClient();
   const conv = dropTrailingAssistant(_toAnthropicMessages(messages));
   const resp = await client.messages.create({
-    model: MODEL(),
-    max_tokens: 900, // [2026-06-21] subido de 650: evitar cortar respuestas/entrega de propuesta
+    model: MODEL_PASS(2),
+    max_tokens: MAX_TOKENS_PASS2(), // [2026-06-21] 650→900; [#1518] env OLIVER_PASS2_MAX_TOKENS (los modelos 5.x piensan dentro del tope)
     system: systemParam(system),
     messages: conv,
-    ...maybeOutputConfig(),
+    ...maybeOutputConfig(2),
   });
   logModelOnce(resp);
   logUsage('pass2', resp);

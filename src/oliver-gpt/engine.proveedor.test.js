@@ -81,7 +81,9 @@ test('los dos cerebros pueden escribir lo mismo: el techo de pass2 es 900 en amb
     readFile(new URL('./engine-anthropic.js', import.meta.url), 'utf8'),
   ]);
   const tGpt = Number((gpt.match(/OLIVER_PASS2_MAX_TOKENS\) : (\d+)/) || [])[1]);
-  const tClaude = Number((claude.match(/max_tokens: (\d+), \/\/ \[2026-06-21\]/) || [])[1]);
+  // [#1518 14-oct] Claude lee el MISMO env que GPT (OLIVER_PASS2_MAX_TOKENS) con el mismo default: la igualdad
+  // de los dos cerebros ahora es por variable compartida, y acá se sigue fijando que el default sea 900 en ambos.
+  const tClaude = Number((claude.match(/OLIVER_PASS2_MAX_TOKENS\) : (\d+)/) || [])[1]);
   assert.equal(tClaude, 900, 'referencia: el lado de Claude, subido el 21-jun');
   assert.equal(tGpt, 900,
     `GPT quedo en ${tGpt}. El 14,13% de sus mensajes llegaba a 620+ chars (contra 0,38% de `
