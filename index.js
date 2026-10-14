@@ -296,6 +296,7 @@ import { registrarRutaLiberar } from "./services/oliverInternoLiberar.js";
 import { registrarRutaDibujos } from "./services/oliverInternoDibujos.js";
 // [2026-10-13 · #1514 (2)] Abrir el canal con la plantilla más barata desde el inbox/agenda (fuera de la ventana de 24 h)
 import { registrarRutaAbrirCanal } from "./services/abrirCanal.js";
+import { eventosDeLlamada, soloAvisosDeLlamada, reenviarEventosLlamada, registrarRutaAccionLlamada } from "./services/llamadasWhatsapp.js"; // [#702] llamadas de WhatsApp
 import { loadSession as loadOliverGptSession } from "./src/oliver-gpt/session-store.js";
 import {
   evaluateLeadValue,
@@ -4993,6 +4994,22 @@ registrarRutaAbrirCanal(app, {
   log: (nivel, etiqueta, detalle) => (nivel === "error" ? logErr(etiqueta, new Error(String(detalle))) : console.log(`[${etiqueta}] ${detalle}`)),
 });
 
+// [#702 · 14-oct] Contestar / rechazar / colgar una llamada de WhatsApp. Solo la plataforma (token interno).
+registrarRutaAccionLlamada(app, {
+  validInternalOperatorToken,
+  json: express.json({ limit: "64kb" }),
+  llamarMeta: async (cuerpo) => {
+    try {
+      const r = await axiosWA.post(`/${META.PHONE_ID}/calls`, cuerpo);
+      return { ok: Boolean(r && r.data && r.data.success !== false), data: r && r.data };
+    } catch (e) {
+      const err = e && e.response && e.response.data && e.response.data.error;
+      return { ok: false, status: e && e.response && e.response.status, error: (err && (err.code + " " + err.message)) || String((e && e.message) || e).slice(0, 200) };
+    }
+  },
+  log: (nivel, etiqueta, detalle) => (nivel === "error" ? logErr(etiqueta, new Error(String(detalle))) : console.log(`[${etiqueta}] ${detalle}`)),
+});
+
 app.post("/internal/reengage", express.json(), async (req, res) => {
   try {
     if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
@@ -5396,6 +5413,23 @@ app.post("/admin/send-template-bulk", express.json({ limit: "1mb" }), async (req
 // [FIX P14] Aumentar límite del body parser del bot para archivos base64 hasta 25MB
 // (ya debería estar configurado, pero forzamos)
 app.post("/webhook", async (req, res) => {
+  // 📞 [#702 · 14-oct] AVISOS DE LLAMADA (field 'calls'). Van PRIMERO y salen solos: un aviso de llamada no es un
+  // mensaje y no tiene que pasar por Oliver ni por ningún comando. Con firma verificada; se le reenvía a la
+  // plataforma, que guarda la llamada y la muestra en el inbox. Sin avisos de llamada, este bloque no hace nada.
+  try {
+    const _llam = eventosDeLlamada(req.body);
+    if (_llam.length && verifySig(req)) {
+      // 🔴 [revisión 14-oct] Si Meta junta en el MISMO body un aviso de llamada y otra cosa (mensajes, estados), la
+      // llamada se reenvía SIN cortar el flujo: el resto sigue al camino normal de Oliver. Solo si el body trae
+      // ÚNICAMENTE llamadas se contesta 200 y se sale acá.
+      const _soloLlamadas = soloAvisosDeLlamada(req.body);
+      const _reenvio = reenviarEventosLlamada(_llam, { url: process.env.SALES_OS_URL || "", token: INTERNAL_OPERATOR_TOKEN })
+        .then((r) => console.log(`[llamada.evento] ${_llam.map((e) => `${e.evento}:${e.call_id.slice(-6)}`).join(",")} → plataforma ${r.ok ? "ok" : (r.status || r.error)}`));
+      if (_soloLlamadas) { res.sendStatus(200); await _reenvio; return; }
+      _reenvio.catch(() => {});
+    }
+  } catch (e) { try { logErr("llamada_evento", e); } catch {} }
+
   // [2026-07-06 COMANDOS] Chuleta del dueño: "comandos" / "/comandos" → lista de palabras predefinidas.
   // Solo ADMIN, intercept temprano (mismo patrón que agenda). Determinista, no pasa por el LLM.
   try {
