@@ -998,9 +998,15 @@ export async function priceAllEngine(d, customer_id = "") {
     d.texto_cliente,
     ...d.items.map((it) => [it.descripcion, it.product, it.ambiente].filter(Boolean).join(" ")),
   ].filter(Boolean).join(" \n "));
-  const tableIsAltoAncho = _declarado
-    ? _declarado === "alto_ancho"
-    : measured.some((mm) => mm && mm.alto_mm > 2400);
+  // 🔴 [2026-10-13 · #1517] ORIENTACIÓN CONFIABLE = NO SE DA VUELTA NADA. Las medidas del Oliver interno las
+  // escribe el VENDEDOR ya en ancho×alto y vienen de `medidas_resueltas` (el motor ya las normalizó al retener).
+  // Sin esto, la regla física «ningún alto > 2400» daba vuelta la LISTA ENTERA en la emisión: con un fijo de
+  // 2600×2700 (alto 2700, legítimo: un paño de fachada) las cinco ventanas de Christian Jélvez salieron giradas
+  // en la propuesta mientras el borrador de dibujos las mostraba bien. La declaración del cliente y la física
+  // siguen mandando para WhatsApp: acá no cambia nada si el flag no viene.
+  const tableIsAltoAncho = d.orientacion_confiable === true
+    ? false
+    : (_declarado ? _declarado === "alto_ancho" : measured.some((mm) => mm && mm.alto_mm > 2400));
   if (_declarado) d.orientacion_declarada = _declarado;   // para el aviso al cliente
 
   // 🔴 [2026-08-26] EL DOBLE-SWAP MUERE ACA. El riesgo era conocido y HOY se midio: si el

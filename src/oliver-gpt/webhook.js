@@ -3485,6 +3485,10 @@ Comuna: ${datos.comuna}`
               // punto por donde sale el PDF, y trabajaba a ciegas: no sabia que la clienta
               // habia escrito "LAS MEDIDAS ESTAN ALTO POR ANCHO".
               texto_cliente: _textoCliente,
+              // [#1517 13-oct] En la emisión interna las medidas ya están en ancho×alto (las escribió el vendedor y
+              // el motor las resolvió al retener): el pre-pass de orientación NO las da vuelta. Caso 0642-B: un
+              // fijo de 2600×2700 hacía girar las 5 ventanas. Para WhatsApp (sin el flag) todo sigue igual.
+              orientacion_confiable: input.emision_interna === true,
             };
             // ⚠️ [2026-09-19] SE PROBO cambiar esto por `priceAllFn` (la via inyectable que el
             // archivo ya tiene y que otros dos puntos usan) para poder testear el copy-back de

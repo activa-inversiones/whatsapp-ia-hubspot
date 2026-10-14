@@ -19,6 +19,8 @@
    ════════════════════════════════════════════════════════════════════════ */
 
 /* ─── strip: quita acentos/diacríticos (PORTAR TAL CUAL — index.js 470) ─── */
+import { rotulosDeVentanas } from '../../services/etiquetaVentana.js'; // [#1516] el número de ventana se decide en UN solo lugar
+
 export function strip(s) {
   return String(s || "")
     .normalize("NFD")
@@ -695,7 +697,10 @@ export function anticipoDeLoCotizado(items) {
   };
 
   const numerar = lista.length > 1;   // "V1" de una sola ventana es ruido
-  const visibles = lista.slice(0, TOPE_RESUMEN).map((x, i) => linea(x, i, numerar));
+  // [#1516 13-oct] El rótulo es el del CLIENTE (pos), decidido en UN solo lugar (etiquetaVentana.rotulosDeVentanas):
+  // el chat decía «V1..V5» mientras el PDF y la ficha decían V1, V2, V10, V5, V8.
+  const rotulos = rotulosDeVentanas(lista);
+  const visibles = lista.slice(0, TOPE_RESUMEN).map((x, i) => linea(x, i, numerar).replace(/^V\d+ · /, numerar ? `${rotulos[i] || `V${i + 1}`} · ` : ''));
   const sobran = lista.length - visibles.length;
 
   return `Su Propuesta Técnica Económica considera:\n${visibles.join('\n')}`

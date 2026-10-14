@@ -41,6 +41,18 @@ test('🔴 lista lo cotizado con numero, cantidad, tipo y medidas', () => {
   assert.doesNotMatch(t, /S60/, '[Gemini] la serie de fabrica NO va al chat: siglas sin explicar');
 });
 
+test('[#1516] el resumen numera como el CLIENTE (pos): V1, V2, V10, V5, V8 — no V1..V5', () => {
+  const t = anticipoDeLoCotizado([
+    it({ measures: '2000x800', pos: 1 }), it({ measures: '680x2150', pos: 2 }), it({ measures: '1400x2200', pos: 10 }),
+    it({ measures: '2600x2700', pos: 5 }), it({ measures: '2100x1800', pos: 8 }),
+  ]);
+  assert.match(t, /V10 · /);
+  assert.match(t, /V5 · /);
+  assert.match(t, /V8 · /);
+  assert.doesNotMatch(t, /V3 · |V4 · /);
+  assert.match(t, /2600 de ancho × 2700 de alto/, 'las medidas salen como las escribió el vendedor');
+});
+
 test('🔴 el color aparece, que es justo lo que se estaba perdiendo', () => {
   assert.match(anticipoDeLoCotizado([it({ color: 'Nogal' })]), /Nogal/);
 });
