@@ -103,3 +103,11 @@ test('🔴 [#1522] la corredera 6200×3000 (Winart v72556) ya no se devuelve com
   // El tope sigue cazando un error de unidad grosero.
   assert.equal(resolverMedidasMm({ ancho_mm: 62000, alto_mm: 3000, medidas_texto: '62000×3000 mm' }).ok, false);
 });
+
+test('🔴 [#1522] un FIJO grande se cotiza (decide el motor); una ventana que abre igual de grande sigue frenada', async () => {
+  const { validateDimensionsLocal } = await import('./enginePricer.js');
+  // La lista del dueño, borrador 84aa783e: estos dos se caían con «excede todos los límites».
+  assert.equal(validateDimensionsLocal('Fijo S60 1500×2340 mm NEWBLACK', 1500, 2340), null);
+  assert.equal(validateDimensionsLocal('Fijo S60 400x2500 mm NEWBLACK', 400, 2500), null);
+  assert.equal(validateDimensionsLocal('Proyectante S60', 1500, 2340)?.escalate, true, 'la proyectante tiene tope real');
+});

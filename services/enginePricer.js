@@ -894,6 +894,14 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
     return null;   // el ancho lo valida el motor, paño por paño
   }
 
+  // 🔴 [2026-10-14 · #1522] UN FIJO NO TIENE EL TOPE DE UNA VENTANA QUE ABRE. Este chequeo local aplicaba
+  // 1930×1930 a TODO S60 y, si se pasaba, ESCALABA (no se cotizaba): en la lista del dueño (borrador 84aa783e)
+  // se cayeron «2 × Fijo 1500×2340» y «2 × Fijo 400×2500». El motor los cotiza sin aviso, y la tabla de
+  // límites del dueño (sales-os limitesFabricacion.js, 10-oct) limita solo las aperturas, no el fijo.
+  // Para el fijo decide el MOTOR (revisarFabricabilidad), que es la fuente única de esos límites.
+  let _aperturaLim = null;
+  try { _aperturaLim = mapAperturaToEngine(product); } catch { _aperturaLim = null; }
+  if (_aperturaLim === "FIJA") return null;
   const lim = FABRICATION_LIMITS.S60.ventana;
   if (ancho_mm > lim.maxAncho || alto_mm > lim.maxAlto) {
     const slidingLim = FABRICATION_LIMITS.SLIDING.H98;
