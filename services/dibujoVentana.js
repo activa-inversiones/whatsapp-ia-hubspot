@@ -569,6 +569,9 @@ function tipoDeParte(t) {
   if (s.includes("OSCILO")) return "OSCILOBATIENTE";
   if (s.includes("PROYECT")) return "PROYECTANTE";
   if (s.includes("ABAT") || s.includes("BATIENTE")) return "BATIENTE";
+  // [2026-10-14 · #1519] PUERTA / PUERTA_ENVOLVENTE dentro de una compuesta («puerta envolvente
+  // exterior 560 + fijo 2000», Winart v72554): se dibuja como hoja abatible (bastidor + arco).
+  if (s.includes("PUERTA")) return "BATIENTE";
   // 🔴 [2026-09-11, correccion del dueño] LA CORREDERA FALTABA y caia al `return "FIJA"`:
   // el paño que corre se dibujaba como un paño fijo, sin flecha y sin manilla.
   // Textual: *"PUSISTE LA FORMA DE PROYECTANTE DEBE SER LA FIGURA DE CORREDERA"*.
@@ -614,9 +617,10 @@ export function partesDesdeLabel(it, ancho_mm, alto_mm) {
   const vertical = /vertical|arriba|abajo|superior|inferior/i.test(label);
 
   // 1) El caso rico: el label trae cada paño con su medida — "Proyectante 1100mm (arriba)".
-  const conMedida = [...label.matchAll(/(fij[ao]|proyectante|abatible|oscilobatiente|corredera|corrediza)[^\d+]{0,12}(\d+(?:[.,]\d+)?)\s*mm/gi)]
+  // [#1519] + «Puerta envolvente 560mm» / «Puerta 560mm» → se dibuja como BATIENTE.
+  const conMedida = [...label.matchAll(/(fij[ao]|proyectante|abatible|oscilobatiente|corredera|corrediza|puerta(?:\s+envolvente)?)[^\d+]{0,12}(\d+(?:[.,]\d+)?)\s*mm/gi)]
     .map((m) => ({ tipo: m[1].toUpperCase().startsWith('FIJ') ? 'FIJA'
-                     : /^CORRED/i.test(m[1]) ? 'CORREDERA' : m[1].toUpperCase(),
+                     : /^CORRED/i.test(m[1]) ? 'CORREDERA' : /^PUERTA/i.test(m[1]) ? 'BATIENTE' : m[1].toUpperCase(),
                    mm: parseFloat(m[2].replace(',', '.')) }));
   if (conMedida.length >= 2) {
     // 🔴 [2026-08-31] LOS PANOS TIENEN QUE SUMAR LA VENTANA. Es la comprobacion que caza
@@ -834,6 +838,18 @@ function centralFijaDe(it) {
   return /\bcentral\s+fij[ao]\b/.test(t)
     || /\bcentro\s+fij[ao]\b/.test(t)
     || /\b(?:hoja|pano|panel)\s+(?:central|del\s+centro|del\s+medio)\s+fij[ao]\b/.test(t);
+}
+
+// [2026-10-14 · #1519] EL CASO INVERSO: las DOS laterales fijas y solo corre la del medio
+// (Winart v72554, S75 doble riel 3 hojas 4000×400; dueño: «la corredera tiene los laterales
+// fijos y solo el centro es corredera»). El motor lo rotula «, laterales fijas».
+function lateralesFijasDe(it) {
+  // [Thermos calidad r1 · Codex r2 #4] SOLO lo que el MOTOR cobró: el campo, o la frase EXACTA que escribe
+  // `sufijoHojasCorredera` («3 hojas, laterales fijas») en la etiqueta. Nada de descripción ni label libre:
+  // «el cliente dijo laterales fijas, falta recotizar» no puede cambiar la figura de lo que se cobró.
+  if (Number(it?.hojas_fijas) === 2) return true;
+  const t = [it?.producto_label, it?.product].filter(Boolean).join(' ').toLowerCase();
+  return /\b3\s*hojas,\s*laterales\s+fijas\b/.test(t);
 }
 
 // Encaja el rectángulo ancho×alto dentro de la caja disponible SIN deformarlo.
@@ -1321,6 +1337,10 @@ function planoDeVentana(it, caja) {
   // Cuál paño va fijo: el del medio, y solo si son impares y el pedido lo dice. Con -1 no hay
   // ninguno fijo y todo se dibuja exactamente como antes.
   const idxFija = (corre && !esMono && n >= 3 && n % 2 === 1 && centralFijaDe(it)) ? (n - 1) / 2 : -1;
+  // [#1519] Laterales fijas: las hojas 0 y n-1 quedan fijadas (bastidor, sin flecha ni manilla) en
+  // el riel exterior; la del medio es la UNICA que corre, en el riel interior, y SI lleva manilla
+  // (cierra contra una lateral). Solo con 3 hojas y si no manda ya la central fija.
+  const lateralesFijas = corre && !esMono && n === 3 && idxFija < 0 && lateralesFijasDe(it);
   // 🔴 [2026-09-18, correccion del dueño] EL TRIPLE RIEL TIENE TRES VIAS, NO DOS. Textual:
   // *"te quedo como 2 rieles, las hojas se desplazan sobre rieles diferentes, todas las flechas
   // ademas hacia el mismo lado"*. Es su propia regla de negocio del 18-sep: *"si quiere mover
@@ -1329,7 +1349,7 @@ function planoDeVentana(it, caja) {
   // `repartirHojas` alterna par/impar porque asume DOS vias — correcto para el doble riel, que
   // es lo unico que existia hasta hoy. Con tres hojas sobre tres rieles cada una va a su propia
   // profundidad y TODAS corren hacia el mismo lado: se apilan juntas contra un costado.
-  const esTripleRiel = corre && !esMono && n >= 3 && idxFija < 0 && tripleRielDe(it);
+  const esTripleRiel = corre && !esMono && n >= 3 && idxFija < 0 && !lateralesFijas && tripleRielDe(it);
   const hojas = repartirHojas(
     intX - pisa, intY - pisa, intW + 2 * pisa, intH + 2 * pisa, n, corre, TRASLAPE_MM * escala, esMono,
   ).map((r) => {
@@ -1360,7 +1380,7 @@ function planoDeVentana(it, caja) {
     // se fabrica y, de paso, contradecia el listado de materiales que ya se cobra.
     // Por eso NO se le cambia el tipo (seguiria el camino del pano fijo, que no lleva hoja):
     // se marca `fijaEnSitio`, que quita SOLO la flecha y la manilla.
-    const fijaEnSitio = r.idx === idxFija;
+    const fijaEnSitio = r.idx === idxFija || (lateralesFijas && (r.idx === 0 || r.idx === n - 1));
     const tipoPano = tipo;
     const sinB = tipoPano === "FIJA" || (esMono && r.idx >= 1);
     const perfil = sinB ? junquillo : perfilHoja;
@@ -1385,14 +1405,14 @@ function planoDeVentana(it, caja) {
       // Winart en las cuatro anclas de 3 hojas (2 manillas, no 3). Solo se aplica con un numero
       // IMPAR de hojas, que es donde hay un "medio": en 2 y 4 hojas no se toca nada, y ahi la
       // calibracion dice 2 y 3 manillas respectivamente.
-      sinManilla: corre && n >= 3 && n % 2 === 1 && r.idx === (n - 1) / 2,
+      sinManilla: !lateralesFijas && corre && n >= 3 && n % 2 === 1 && r.idx === (n - 1) / 2,
       // 🔴 [2026-09-18, 2a correccion del dueño] LA HOJA FIJADA VA EN EL OTRO RIEL, POR FUERA.
       // Textual: *"me gustaria que quedara en el otro riel o sea por fuera"*. Ademas de como se
       // ve, es lo que hace que la ventana FUNCIONE: las dos laterales tienen que poder correr
       // POR DELANTE de la fija, y para eso la fija no puede compartir su via. Por defecto
       // `repartirHojas` alterna par/impar y le tocaba el riel interior (adelante), justo el que
       // necesitan las que se mueven. Convencion de la casa: riel 1 = interior = adelante.
-      ...(idxFija >= 0 ? { riel: fijaEnSitio ? 0 : 1 } : null),
+      ...(idxFija >= 0 || lateralesFijas ? { riel: fijaEnSitio ? 0 : 1 } : null),
       // Triple riel: cada hoja en SU via. riel 0 = la mas exterior (atras), riel n-1 = interior
       // (adelante). El pintado ordena por riel, asi que quedan escalonadas de verdad.
       ...(esTripleRiel ? { riel: r.idx } : null),
@@ -1404,6 +1424,7 @@ function planoDeVentana(it, caja) {
         : (tipoPano !== "CORREDERA" || fijaEnSitio ? 0
           // Triple riel: TODAS al mismo lado — se apilan juntas contra un costado.
           : esTripleRiel ? 1
+            : lateralesFijas ? 1
             : (idxFija >= 0 ? (r.idx < idxFija ? 1 : -1) : (r.idx % 2 === 0 ? 1 : -1))),
     };
   });

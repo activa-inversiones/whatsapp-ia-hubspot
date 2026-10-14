@@ -263,3 +263,31 @@ test('🔒 las demas partidas de esa lista no cambian de comportamiento', () => 
     assert.equal(r.ambiguo, false, `${t} tampoco puede escalar`);
   }
 });
+
+// [2026-10-14 · #1519] EL CASO INVERSO (Winart v72554, S75 doble riel 3 hojas 4000×400): las DOS
+// laterales fijas y solo corre la del medio. Dueño: «la corredera tiene los laterales fijos y solo
+// el centro es corredera». Es doble riel, 1 hoja activa, hojas_fijas = 2.
+test('🔒 «solo corre la del medio» / «laterales fijas» = doble riel con las 2 laterales fijas', () => {
+  for (const t of [
+    'corredera 3 hojas 4000x400, solo corre la del medio',
+    'corredera doble riel 3 hojas, laterales fijas y centro se mueve',
+    'corredera 3 hojas los lados fijos y el centro corre',
+    'corredera de 3 hojas, solo se mueve la central',
+  ]) {
+    assert.equal(detectHojas(t), 3, t);
+    const r = detectConfigCorredera(t, 3);
+    assert.equal(r.lateralesFijas, true, t);
+    assert.equal(r.centralFija, false, t);
+    assert.equal(r.riel, 'DOBLE', t);
+    assert.equal(r.activos, 1, t);
+    assert.equal(r.ambiguo, false, t);
+  }
+});
+test('🔒 la «central fija» de siempre NO se confunde con laterales fijas', () => {
+  for (const t of ['corredera 3 hojas con la del medio fija', 'corredera 3 hojas solo se mueven las de los lados']) {
+    const r = detectConfigCorredera(t, 3);
+    assert.equal(r.centralFija, true, t);
+    assert.equal(r.lateralesFijas, false, t);
+    assert.equal(r.activos, 2, t);
+  }
+});

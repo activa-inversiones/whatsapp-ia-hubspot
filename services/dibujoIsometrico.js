@@ -495,8 +495,9 @@ export function dibujarVentanaIso(doc, caja, it) {
     }
   }
 
-  const fijada = p.hojas.find((h) => h.fijaEnSitio && h.vidrioRect);
-  if (fijada) {
+  // [#1519 · Codex r1 #5] TODAS las fijadas llevan su «FIJA»: con laterales fijas son DOS, y `.find`
+  // rotulaba solo la primera (la figura que mira el cliente decía que la derecha corría).
+  for (const fijada of p.hojas.filter((h) => h.fijaEnSitio && h.vidrioRect)) {
     const v = fijada.vidrioRect;
     const alto = 7;
     if (v.w > 16 && v.h > alto) {

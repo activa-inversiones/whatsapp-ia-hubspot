@@ -243,7 +243,9 @@ export async function calcularCotizacion(params = {}) {
   if (angulo !== undefined) payload.angulo = Number(angulo);
   if (riel !== undefined) payload.riel = riel;
   if (activos !== undefined) payload.activos = Number(activos);
-  if (hojas_fijas !== undefined) payload.hojas_fijas = Number(hojas_fijas);
+  // [#1519 · Codex r2 #3] Viaja TAL CUAL: Number('dos') = NaN se serializaba como null y el motor lo leía
+  // como «sin fijas» (cotizaba todas móviles en silencio). El motor valida estricto y rechaza con su motivo.
+  if (hojas_fijas !== undefined && hojas_fijas !== null) payload.hojas_fijas = hojas_fijas;
   if (color !== undefined) payload.color = normalizeColor(color);
   if (comuna !== undefined) payload.comuna = comuna;
   if (cantidad !== undefined) payload.cantidad = Number(cantidad);

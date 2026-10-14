@@ -256,6 +256,9 @@ export const TOOL_DEFS = [
               'y el sistema arma el riel y la hoja fija solo. ' +
               'COMPUESTA = SOLO panos que NO corren ("mitad fija + mitad proyectante unidas"; UNA ventana; el ancho es el VANO ' +
               'completo y el sistema lo reparte 50/50 — si el cliente da los anchos de cada paño, usa `partes`). ' +
+              'UNA PUERTA ABATIBLE EXTERIOR UNIDA A UN FIJO ("puerta envolvente 560 + fijo 2000", "puerta + fijo + puerta") TAMBIEN ES ' +
+              'COMPUESTA: tipo COMPUESTA con `partes` [{tipo:PUERTA_ENVOLVENTE, ancho_mm}, {tipo:FIJA, ancho_mm}], NUNCA dos items separados. ' +
+              'CORREDERA de 3 hojas "donde solo corre la del medio" / "laterales fijas": sigue siendo CORREDERA (doble riel), copialo tal cual. ' +
               'Puertas abatibles: PUERTA (1 hoja exterior), PUERTA_DOBLE (2 hojas), PUERTA_INTERIOR. ' +
               'La puerta corredera de patio va como CORREDERA. NUNCA TERMOPANEL (es vidrio).',
           },
@@ -284,7 +287,10 @@ export const TOOL_DEFS = [
               type: 'object',
               additionalProperties: false,
               properties: {
-                tipo: { type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE'], description: 'Apertura de ESTE paño.' },
+                // [2026-10-14 · #1519] + PUERTA_ENVOLVENTE / PUERTA: «puerta abatir exterior 560 + fijo 2000» es UNA
+                // ventana compuesta (así la arma Winart: dos marcos + acople). Usar PUERTA_ENVOLVENTE para la puerta
+                // exterior normal; PUERTA solo si el cliente pide zapata.
+                tipo: { type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE', 'PUERTA_ENVOLVENTE', 'PUERTA'], description: 'Apertura de ESTE paño. PUERTA_ENVOLVENTE = puerta abatible exterior (la normal); PUERTA = con zapata.' },
                 ancho_mm: { type: 'number', description: 'Ancho de ESTE paño en milimetros. Usalo en orientacion HORIZONTAL.' },
                 alto_mm: { type: 'number', description: 'Alto de ESTE paño en milimetros. Usalo en orientacion VERTICAL (paños apilados).' },
               },
@@ -864,6 +870,22 @@ export function notaDeLineaParaElLLM(it) {
  * cliente. Ahora se compara CADA dimension presente, y ante datos parciales o dispares se
  * CONSERVAN las partes — perder el dato explicito del cliente es el error caro.
  */
+/**
+ * Los paños que viajan al motor. Devuelve undefined SOLO cuando el reparto pedido ES el default del motor:
+ * DOS paños iguales de FIJA + PROYECTANTE (el motor reparte el vano mitad y mitad con el acople adentro).
+ *
+ * 🔴 [#1519 · Codex r2 #1] Antes se descartaba por medidas solamente, y «puerta 1000 + fijo 1000» o
+ * «puerta 560 + fijo 560 + puerta 560» se cobraban como «Fijo + Proyectante»: otra ventana, sin la
+ * puerta y hasta sin un paño. Con cualquier otro tipo o cantidad de paños, los paños VIAJAN.
+ */
+export function partesParaMotor(partes) {
+  const ps = Array.isArray(partes) ? partes : [];
+  if (!ps.length) return undefined;
+  const tipos = ps.map((p) => String(p?.tipo || '').toUpperCase());
+  const esElDefault = ps.length === 2 && tipos.includes('FIJA') && tipos.includes('PROYECTANTE');
+  return esElDefault && partesTodasIguales(ps) ? undefined : ps;
+}
+
 export function partesTodasIguales(ps) {
   return ['alto_mm', 'ancho_mm', 'medida_mm'].every((k) => {
     const vals = ps.map((p) => Number(p?.[k]));
@@ -1005,11 +1027,7 @@ export async function runTool(name, input = {}, ctx = {}) {
           // (total 2202 ≠ los 2200 que pidio la clienta) y el precio difiere del reparto
           // canonico del dueño (mitad y mitad DEL VANO, acople adentro). Si todos los paños
           // son iguales, eso ES el default del motor: se dejan caer y el motor reparte bien.
-          partes: (() => {
-            const ps = Array.isArray(input.partes) ? input.partes : [];
-            if (!ps.length) return undefined;
-            return partesTodasIguales(ps) ? undefined : ps;
-          })(),
+          partes: partesParaMotor(input.partes),
           // [2026-08-25] El eje viaja con el item hasta el motor y hasta el dibujo del PDF.
           orientacion: input.orientacion || undefined,
           // [2026-09-26 · #947] La ventana en esquina YA ARMADA desde los paños del cliente.

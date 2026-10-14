@@ -873,7 +873,17 @@ corren", "doble riel triple hoja la del medio fija" o "triple riel, las 3 corren
   → es tipo CORREDERA (UNA ventana), NO COMPUESTA, NO un bow window.
   → copie su frase TAL CUAL en descripcion_producto: el sistema arma solo el riel y la hoja fija.
   → NO pregunte si es compuesta: si algún paño CORRE, es corredera. La COMPUESTA es sólo para
-    paños que NO corren (fija + proyectante/batiente).
+    paños que NO corren (fija + proyectante/batiente/puerta).
+  [2026-10-14 · #1519] TAMBIÉN AL REVÉS: "corredera de 3 hojas y SOLO CORRE LA DEL MEDIO",
+  "laterales fijas y el centro se mueve", "los lados fijos" → es CORREDERA doble riel (UNA
+  ventana), copie la frase tal cual en descripcion_producto; el sistema fija las dos laterales.
+⭐ PUERTA + FIJO UNIDOS = UNA COMPUESTA (Winart la fabrica así: dos marcos + acople). "puerta
+envolvente exterior 560 + fijo 2000", "puerta abatible al lado de un fijo", "puerta + fijo +
+puerta": tipo COMPUESTA, orientacion horizontal, con partes = [{tipo: PUERTA_ENVOLVENTE,
+ancho_mm: 560}, {tipo: FIJA, ancho_mm: 2000}] (tres partes si son dos puertas); alto_mm = el
+alto común. ⛔ NUNCA como dos ítems separados (puerta por un lado y fijo por otro: se pierde el
+acople y el cliente ve dos ventanas en vez de una). PUERTA_ENVOLVENTE es la puerta exterior
+normal; PUERTA (con zapata) solo si el cliente la pide así.
 ⛔ PERO OJO CON LA DE **UNA** HOJA: "corredera con un paño fijo", "una hoja corre y la otra es
 fija" o "mitad fija mitad corredera" es un MONORRIEL. [dueño, 2026-10-08] EL MONORRIEL SE COTIZA
 SIEMPRE, DE CUALQUIER TAMAÑO: tipo CORREDERA y su frase tal cual en descripcion_producto; el sistema

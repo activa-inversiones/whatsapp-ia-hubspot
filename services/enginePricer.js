@@ -162,6 +162,7 @@ function detectarAperturaLocal(text) {
   const _corredoraNombrada =
     /corredera|corrediz|sliding|deslizan/.test(tl)
     // el verbo, con limites de palabra y sin el "no corren" del cliente que aclara que son fijas
+    // [#1519] + el singular: «solo corre la del medio» / «solo se mueve la central» nombran una corredera por el verbo.
     || (/\b(?:corren|corran|m[oó]viles|moviles)\b|\bse\s+mueven\b/.test(tl)
         && !/\bno\s+(?:corren|corran|se\s+mueven)\b/.test(tl))
     // la estructura: rieles y conteo de hojas. Solo la corredera tiene rieles.
@@ -454,6 +455,18 @@ export function detectConfigCorredera(texto, hojas) {
     /\bsolo\s+(?:se\s+)?(?:mueven|corren|abren)\s+(?:las\s+)?(?:de\s+)?(?:los\s+)?(?:lados|laterales|extremos|costados)\b/,
     /\b(?:laterales|de\s+los\s+lados)\s+corred(?:eras?|izas?)\b/,
   ];
+  // 🔴 [2026-10-14 · #1519] EL CASO INVERSO: LAS DOS LATERALES FIJAS Y SOLO CORRE LA DEL MEDIO. Winart v72554
+  // (S75 DOBLERIEL TRES HOJA, 4000x400): 1 traslapo, 2 carros, suples «hoja corredera a fija» en las laterales.
+  // El dueño lo pidió así, textual: «la corredera tiene los laterales fijos y solo el centro es corredera».
+  // Es doble riel con hojas_fijas = 2 (el motor ya lo acepta). Frases: «solo corre la del medio», «solo se
+  // mueve la central», «laterales fijas/fijos», «los lados fijos y el centro corre».
+  const RE_LATERALES_FIJAS = [
+    new RegExp(`\\bsolo\\s+(?:se\\s+)?(?:corre|mueve|abre|desliza)\\s+(?:la\\s+|el\\s+)?(?:${PIEZA}\\s+)?${MEDIO}\\b`),
+    /\b(?:laterales|los\s+lados|los\s+costados|los\s+extremos|las\s+de\s+los\s+lados)\s+(?:son\s+|van\s+|quedan\s+)?fij[ao]s\b/,
+    /\bfij[ao]s\s+(?:los\s+|las\s+)?(?:laterales|lados|costados|extremos)\b/,
+    // ⛔ [Codex r1 #3] NO se acepta «la central es corredera» a secas: no dice nada de las laterales
+    // («la central es corredera y las laterales también» son TRES móviles). Hace falta «solo» o «fijas».
+  ];
 
   // "las 3 corren". Se aceptan las conjugaciones que usa el cliente (corran/corren/se abren/se
   // mueven), el "pa" chileno, y "para la derecha/izquierda" ademas de "a un lado".
@@ -567,9 +580,58 @@ export function detectConfigCorredera(texto, hojas) {
   else if (mandaTriple) riel = 'TRIPLE';
   else if (dosRieles) riel = 'DOBLE';
 
+  // [#1519] Laterales fijas, con la MISMA disciplina que la central fija y el triple riel:
+  //  · NEGADA no cuenta («no quiero laterales fijas», «los lados no son fijos») [Codex r1 #1];
+  //  · contra otra configuración en la MISMA frase → ambiguo, escala [Codex r1 #2];
+  //  · en frases distintas → gana la ÚLTIMA (el cliente cambió de idea) [Codex r1 #2].
+  // 🔴 [Codex r2 #2] LA NEGACIÓN ES POR TRAMO, NO DE TODO EL HISTORIAL. Se borran (con espacios, para no
+  // mover posiciones) los tramos NEGADOS y recién ahí se busca la última afirmación. Así «no quiero
+  // laterales fijas. ahora quiero laterales fijas» pide laterales fijas (gana la última), y «laterales
+  // fijas no, que corran las tres» / «los laterales fijos no» quedan negadas.
+  const LADOS = '(?:las\\s+|los\\s+)?(?:laterales|lados|costados|extremos)';
+  const RE_NIEGA_LATERALES = [
+    new RegExp(`\\b${NEG}${LADOS}\\s+fij[ao]s?`, 'g'),
+    new RegExp(`\\b${LADOS}\\s+no\\s+(?:son\\s+|van\\s+|quedan\\s+|sean\\s+)?fij[ao]s?`, 'g'),
+    new RegExp(`\\b${LADOS}\\s+fij[ao]s?\\s*,?\\s+no\\b`, 'g'),
+    // [NIM r1, verificado] «solo corre la del medio no» / «que no solo corra la del medio»: la forma
+    // «solo corre» también se niega. («no, solo corre la del medio» es AFIRMATIVA: el «no» contesta otra cosa.)
+    new RegExp(`\\bsolo\\s+(?:se\\s+)?(?:corre|mueve|abre|desliza)\\s+(?:la\\s+|el\\s+)?(?:${PIEZA}\\s+)?${MEDIO}\\s*,?\\s+no\\b`, 'g'),
+    new RegExp(`\\b${NEG}solo\\s+(?:se\\s+)?(?:corr|muev|abr|desliz)[a-z]*\\s+(?:la\\s+|el\\s+)?(?:${PIEZA}\\s+)?${MEDIO}`, 'g'),
+  ];
+  const tAfirmado = RE_NIEGA_LATERALES.reduce((acc, re) => acc.replace(re, (m) => ' '.repeat(m.length)), t);
+  let posLaterales = -1;
+  for (const re of RE_LATERALES_FIJAS) {
+    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+    let m;
+    while ((m = g.exec(tAfirmado)) !== null) { if (m.index > posLaterales) posLaterales = m.index; }
+  }
+  // Y la última NEGACIÓN también compite: «laterales fijas. no quiero laterales fijas» → gana el «no».
+  let posNiegaLaterales = -1;
+  for (const re of RE_NIEGA_LATERALES) {
+    const g = new RegExp(re.source, re.flags);
+    let m;
+    while ((m = g.exec(t)) !== null) { if (m.index > posNiegaLaterales) posNiegaLaterales = m.index; }
+  }
+  const quiereLaterales = posLaterales >= 0 && posLaterales > posNiegaLaterales && Number(hojas) === 3;
+  if (quiereLaterales) {
+    const choca = (otraPos) => otraPos >= 0 && segmentoDe(otraPos) === segmentoDe(posLaterales);
+    if ((quiereTriple && choca(posTriple)) || (quiereFija && choca(posFija))) {
+      return {
+        riel: undefined, activos: undefined, centralFija: false, lateralesFijas: false, ambiguo: true,
+        motivo: 'el pedido dice a la vez que las laterales van fijas y otra configuración de hojas: son ventanas distintas',
+      };
+    }
+  }
+  const lateralesFijas = quiereLaterales
+    && !(quiereTriple && posTriple > posLaterales)
+    && !(quiereFija && posFija > posLaterales);
+  if (lateralesFijas) {
+    // Una sola hoja corre (la del medio) y cierra contra una lateral fija: doble riel.
+    return { riel: 'DOBLE', activos: 1, centralFija: false, lateralesFijas: true, ambiguo: false, motivo: undefined };
+  }
   // Hojas que CIERRAN: con la central fija, cierran las 2 laterales contra ella.
   const activos = (mandaFija && Number(hojas) === 3) ? 2 : undefined;
-  return { riel, activos, centralFija: mandaFija, ambiguo: false, motivo: undefined };
+  return { riel, activos, centralFija: mandaFija, lateralesFijas: false, ambiguo: false, motivo: undefined };
 }
 
 
@@ -760,7 +822,14 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
     return null;
   }
 
-  if (p.includes("PUERTA")) {
+  // [#1519 · test de ronda 2] Una COMPUESTA con un paño puerta NO es una puerta de 2560 de ancho: sin
+  // esta exclusión «puerta 560 + fijo 2000» caía acá y salía referencial («supera 1970») AUN a 1780 de
+  // alto. La compuesta tiene su propia rama más abajo (alto común, el ancho lo valida el motor por paño).
+  // [Codex r2 #6] Se decide por la APERTURA que se le manda al motor, no por la palabra: «PUERTA COMPUESTA
+  // EXTERIOR» es una puerta (sigue acá); «Ventana compuesta: Puerta envolvente 560mm + Fijo» es COMPUESTA.
+  let _apertura = null;
+  try { _apertura = mapAperturaToEngine(product); } catch { _apertura = null; }
+  if (p.includes("PUERTA") && _apertura !== "COMPUESTA") {
     const lim = FABRICATION_LIMITS.S60.puerta;
     if (ancho_mm > lim.maxAncho || alto_mm > lim.maxAlto) {
       // [2026-08-25] Mismo defecto y mismo arreglo que la corredera de arriba: el clamp del
@@ -806,7 +875,10 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
       }
       return null;   // el alto lo valida el motor, paño por paño
     }
-    const limC = FABRICATION_LIMITS.S60.ventana;
+    // [#1519 · Thermos r1] Con una PUERTA entre los paños, el alto común es el de la puerta (2000-2200
+    // habitual): se valida contra el máximo de PUERTA S60 (2400), no el de ventana (1930). Sin esto toda
+    // «puerta + fijo» de alto real salía referencial con «supera el máximo estándar».
+    const limC = /\bPUERTA/.test(p) ? FABRICATION_LIMITS.S60.puerta : FABRICATION_LIMITS.S60.ventana;
     if (alto_mm > limC.maxAlto) {
       return {
         message: `La ventana compuesta de ${alto_mm} mm de alto supera el máximo estándar (${limC.maxAlto} mm); precio referencial sujeto a confirmación en la visita técnica.`,
@@ -1607,7 +1679,8 @@ export async function priceAllEngine(d, customer_id = "") {
         // La hoja del medio FIJA hay que DECLARARLA: el motor no la puede adivinar, y de ella
         // dependen los carros (van por hoja que corre, no por hoja) y el suple de hoja fija.
         // Sin declararla el BOM es el de siempre, que es lo que queremos en todo lo demas.
-        hojas_fijas: _cfgCorr.centralFija ? 1 : undefined,
+        // [#1519] laterales fijas (solo corre la del medio) = 2 fijas; central fija = 1.
+        hojas_fijas: _cfgCorr.lateralesFijas ? 2 : (_cfgCorr.centralFija ? 1 : undefined),
         ancho_mm: m.ancho_mm, alto_mm: m.alto_mm,
         color, glass_id, comuna, cantidad,
         // [2026-08-25 · Codex] El eslabon que faltaba: sin esto los anchos de paño del

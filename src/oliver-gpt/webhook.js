@@ -250,7 +250,7 @@ import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09
 // [2026-06-24] Deriva UNA apertura clara del texto de un label de producto (o null si no hay
 // exactamente una). Mismo criterio que el guard de agent.js. Se usa para el blindaje label↔precio
 // del PDF: solo validamos ítems cuya apertura es inequívoca (si no, no tocamos → conservador).
-function aperturaFromLabel(text) {
+export function aperturaFromLabel(text) {
   const t = String(text || '').toLowerCase();
   // 🔴 [2026-08-26] LA COMPUESTA VA PRIMERO, Y POR ESO SE ESCAPABA DEL BLINDAJE.
   // Este blindaje re-cotiza en el motor y CORRIGE el precio si no corresponde al label. Solo
@@ -273,7 +273,9 @@ function aperturaFromLabel(text) {
   // CORREDERA + FIJA ⇒ null ⇒ el item quedaba FUERA del blindaje de precio (lo cazo Codex en el tridente).
   // SOLO la frase exacta que escribe el MOTOR ("3 hojas, central fija"): un texto libre como "corredera + ventana
   // del medio fija" tiene un fijo de verdad y sigue siendo ambiguo (Codex r2: el patron amplio lo tragaba).
-  const tSinCentral = t.replace(/\b3\s*hojas,\s*central\s+fija\b/g, ' ');   // el motor la escribe SOLO para 3 hojas (Codex r3)
+  // [#1519 · Thermos r1] + «3 hojas, laterales fijas», la otra frase que escribe el motor para 3 hojas.
+  // Sin esto la corredera de laterales fijas quedaba fuera del blindaje (CORREDERA + FIJA ⇒ null).
+  const tSinCentral = t.replace(/\b3\s*hojas,\s*(?:central\s+fija|laterales\s+fijas)\b/g, ' ');   // el motor la escribe SOLO para 3 hojas (Codex r3)
   if (/\bfij[ao]s?\b/.test(tSinCentral)) f.add('FIJA');
   return f.size === 1 ? [...f][0] : null;
 }
