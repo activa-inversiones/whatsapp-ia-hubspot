@@ -62,9 +62,18 @@ export function registrarRutaAbrirCanal(app, {
         log('error', 'abrir-canal.envio', `${phone} ${template} ${result && result.error}`);
         return res.status(502).json({ ok: false, error: (result && result.error) || 'envio_fallo', template });
       }
-      if (c.clave) await candado.marcarEnviado(c.clave, { escribir: candado.escribir, onError: (e) => log('warn', 'abrir-canal.candado.escribir', e && e.message) });
       // [Thermos B2] _sendMetaTemplate devuelve `msgId`; se aceptan las otras formas por si cambia.
       const messageId = result.msgId || result.message_id || result.messageId || null;
+      // 🔴 [Codex post-despliegue 14-oct · P1] SIN ID DE META NO SE DICE «ENVIADA» NI SE CIERRA EL CANDADO. Antes un
+      // `{ok:true, msgId:null}` respondía sent:true y marcaba el candado: la pantalla decía «✅ Plantilla enviada» y,
+      // si Meta la había rechazado después, el vendedor no podía reintentar en 48 h. Ahora se dice que no se pudo
+      // confirmar y se deja el reintento libre (la regla del repo: aceptar el HTTP no prueba la entrega).
+      if (!messageId) {
+        log('warn', 'abrir-canal.sin-id', `${phone} ${template}: Meta no devolvió id del mensaje`);
+        return res.json({ ok: true, sent: false, template, phone, reason: 'sin_confirmacion_de_meta',
+          detalle: 'Meta no confirmó el envío (no devolvió el id del mensaje). Revisá el chat del cliente antes de reintentar.' });
+      }
+      if (c.clave) await candado.marcarEnviado(c.clave, { escribir: candado.escribir, onError: (e) => log('warn', 'abrir-canal.candado.escribir', e && e.message) });
       if (typeof registrarEvento === 'function') {
         try {
           registrarEvento({

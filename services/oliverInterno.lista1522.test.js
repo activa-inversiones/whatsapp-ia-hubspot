@@ -111,3 +111,57 @@ test('🔴 [#1522] un FIJO grande se cotiza (decide el motor); una ventana que a
   assert.equal(validateDimensionsLocal('Fijo S60 400x2500 mm NEWBLACK', 400, 2500), null);
   assert.equal(validateDimensionsLocal('Proyectante S60', 1500, 2340)?.escalate, true, 'la proyectante tiene tope real');
 });
+
+// ── [Codex post-despliegue 14-oct] guardias de la ronda que se hizo sobre lo ya desplegado ─────────────
+test('🔴 [P0] dos renglones DISTINTOS que el LLM normaliza igual siguen siendo DOS ventanas (no se descarta ninguna)', async () => {
+  const { runTool } = ejecutorFalso();
+  const nota = '1 x Ventana fija S60 1000x1000\n1 x Fijo S60 1000x1000';
+  const engine = motorFalso([L('Fijo S60 1000x1000', '1000x1000', 1), L('Fijo S60 1000x1000', '1000x1000', 1)]);
+  const out = await leerYCotizar({ texto: nota, comuna: 'Vilcún', color: 'NEGRO', deps: { engine, runTool } });
+  assert.equal(out.lineas.length, 2);
+  assert.equal(out.reintentos_descartados, 0);
+});
+
+test('🔒 [P0] el descarte nunca deja menos unidades que la nota (2 × X + 1 × X con dos intentos de 2)', async () => {
+  const { runTool } = ejecutorFalso();
+  const nota = '2 x Fijo S60 1000x1000\n1 x Fijo S60 1000x1000';
+  const engine = motorFalso([L('Fijo S60 1000x1000', '1000x1000', 2), L('Fijo S60 1000x1000', '1000x1000', 2)]);
+  const out = await leerYCotizar({ texto: nota, comuna: 'Vilcún', color: 'NEGRO', deps: { engine, runTool } });
+  const u = out.lineas.reduce((s, l) => s + Number(l.pedido.cantidad), 0);
+  assert.ok(u >= 3, `quedaron ${u} unidades para una nota de 3`);
+});
+
+test('🔴 [P0] WhatsApp junta burbujas con DOS espacios: la frase general de otra burbuja se conserva', () => {
+  const t = textoDeEstaVentana('todas en 3 hojas  Corredera 1000x800\nCorredera 2000x1500', { medidas_texto: '2000x1500' });
+  assert.match(t, /todas en 3 hojas/);
+  assert.match(t, /2000x1500/);
+  assert.doesNotMatch(t, /1000x800/);
+});
+
+test('🔴 [P0] una medida CUADRADA no se borra a sí misma; metros con coma y bow de 3 cifras se reconocen', () => {
+  assert.match(textoDeEstaVentana('Fijo 2000x2000\nFijo 1000x1000', { medidas_texto: '2000x2000' }), /2000x2000/);
+  const m = textoDeEstaVentana('corredera 2 hojas 2,5x1,2\ncorredera 3 hojas, laterales fijas 4000x400', { medidas_texto: '2,5x1,2' });
+  assert.doesNotMatch(m, /laterales fijas/);
+  const b = textoDeEstaVentana('bow 2500x1500x500 con proyectantes\nbow 2500x1500x700 fijo', { medidas_texto: '2500x1500x700' });
+  assert.match(b, /x700 fijo/);
+  assert.doesNotMatch(b, /con proyectantes/);
+});
+
+test('🔒 [P0] si no reconoce SU renglón, va el texto entero (como antes), nunca vacío', () => {
+  const t = 'Fijo 2000x1500\nFijo 1000x1000';
+  assert.equal(textoDeEstaVentana(t, { medidas_texto: '777x777' }), t);
+});
+
+test('🔴 [P1] PROYECTANTE + FIJA iguales en horizontal NO es el default (abre del otro lado): viaja', async () => {
+  const { partesParaMotor } = await import('../src/oliver-gpt/tools.js');
+  const inv = [{ tipo: 'PROYECTANTE', ancho_mm: 1000 }, { tipo: 'FIJA', ancho_mm: 1000 }];
+  assert.deepEqual(partesParaMotor(inv, 'horizontal'), inv);
+  assert.equal(partesParaMotor(inv, 'vertical'), undefined, 'en vertical ESE es el default (abre arriba)');
+  assert.equal(partesParaMotor([{ tipo: 'FIJA', ancho_mm: 1000 }, { tipo: 'PROYECTANTE', ancho_mm: 1000 }]), undefined);
+});
+
+test('🔒 [P3] hojas_fijas [2] (dato corrupto) NO pinta laterales fijas', async () => {
+  const { planoDeVentana } = await import('./dibujoVentana.js');
+  const p = planoDeVentana({ measures: '4000x400mm', producto_label: 'Corredera SLIDING H80 Doble Riel S75 3 hojas', hojas_fijas: [2] }, { x: 0, y: 0, w: 400, h: 300 });
+  assert.equal(p.hojas.filter((h) => h.fijaEnSitio).length, 0);
+});

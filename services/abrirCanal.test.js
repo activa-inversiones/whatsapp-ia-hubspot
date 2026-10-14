@@ -25,7 +25,7 @@ test('toda plantilla de apertura está en el candado de seguimiento real (puedeE
   }
 });
 
-function armar({ permitido = true, clave = 'k1', envioOk = true } = {}) {
+function armar({ permitido = true, clave = 'k1', envioOk = true, sinId = false } = {}) {
   const rutas = {};
   const app = { post: (r, ...f) => { rutas[r] = f[f.length - 1]; } };
   const llamadas = { envios: [], marcas: [], candados: [], eventos: [] };
@@ -34,7 +34,7 @@ function armar({ permitido = true, clave = 'k1', envioOk = true } = {}) {
     normPhone: (s) => String(s || '').replace(/\D/g, ''),
     enviar: {
       // forma REAL de _sendMetaTemplate: { ok, msgId }
-      recontacto_lead: async (phone, nombre) => { llamadas.envios.push(['recontacto_lead', phone, nombre]); return envioOk ? { ok: true, msgId: 'wamid.1' } : { ok: false, error: 'meta_132000' }; },
+      recontacto_lead: async (phone, nombre) => { llamadas.envios.push(['recontacto_lead', phone, nombre]); return envioOk ? { ok: true, msgId: sinId ? null : 'wamid.1' } : { ok: false, error: 'meta_132000' }; },
     },
     candado: {
       puedeEnviar: async (args) => { llamadas.candados.push(args); return permitido ? { permitido: true, clave } : { permitido: false, razon: 'enviada_hace_menos_de_48h' }; },
@@ -113,4 +113,14 @@ test('Meta rechaza → 502 con el error, y el candado NO se marca (se puede rein
   assert.equal(r.body.error, 'meta_132000');
   assert.equal(llamadas.marcas.length, 0);
   assert.equal(llamadas.eventos.length, 0, 'Meta rechazó: no se registra como enviada');
+});
+
+test('🔴 [Codex post-despliegue 14-oct] sin id de Meta NO dice «enviada» ni cierra el candado (se puede reintentar)', async () => {
+  const { h, llamadas } = armar({ sinId: true });
+  const r = res();
+  await h({ headers: { 'x-api-key': 'ok' }, body: { phone: '+56 9 5442 9329', customer_name: 'Jorge Riffo' } }, r);
+  assert.equal(r.code, 200);
+  assert.equal(r.body.sent, false);
+  assert.equal(r.body.reason, 'sin_confirmacion_de_meta');
+  assert.deepEqual(llamadas.marcas, [], 'el candado de 48 h NO se marca sin confirmación');
 });

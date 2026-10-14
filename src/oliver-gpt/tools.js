@@ -893,28 +893,67 @@ export function notaDeLineaParaElLLM(it) {
  * renglones SIN medidas (contexto general: «medidas ancho x alto») y, de los que traen medidas, solo los que
  * contienen las dos cifras de ESTA ventana.
  */
-const RE_MEDIDA_PAR = /(\d{2,5}(?:[.,]\d+)?)\s*(?:mm|cm)?\s*[x×X*]\s*(\d{2,5}(?:[.,]\d+)?)/g;
+// [Codex post-despliegue 14-oct · P0] Reescrita: (a) WhatsApp junta las burbujas con DOS ESPACIOS, no con salto
+// de línea ⇒ «todas en 3 hojas» en otra burbuja se perdía: se corta también por 2+ espacios; (b) una medida
+// CUADRADA (2000x2000) dejaba una sola cifra y se borraba su propio renglón: se compara la MEDIDA ENTERA (par u
+// orden inverso, y la 3ª cifra del bow si la hay); (c) «2,5x1,2» en metros no se reconocía: se aceptan
+// decimales cortos; (d) si no se reconoce el renglón de ESTA ventana, va el texto ENTERO (como antes del cambio)
+// en vez de un texto vacío.
+const NUM_MEDIDA = '(\\d{2,5}(?:[.,]\\d+)?|\\d{1,2}[.,]\\d+)';
+const RE_MEDIDA_PAR = new RegExp(`${NUM_MEDIDA}\\s*(?:mm|cm|m)?\\s*[x×X*]\\s*${NUM_MEDIDA}(?:\\s*(?:mm|cm|m)?\\s*[x×X*]\\s*${NUM_MEDIDA})?`, 'g');
+const numMedida = (s) => Number(String(s).replace(',', '.'));
+const claveMedida = (m) => {
+  const a = numMedida(m[1]); const b = numMedida(m[2]); const c = m[3] ? numMedida(m[3]) : null;
+  return { par: [a, b].sort((x, y) => x - y).join('x'), c };
+};
 export function textoDeEstaVentana(textoCliente, { medidas_texto = '', ancho_mm, alto_mm } = {}) {
   const t = String(textoCliente || '');
-  const pares = [...t.matchAll(RE_MEDIDA_PAR)];
-  if (pares.length <= 1) return t;
-  const cifras = new Set();
-  for (const m of String(medidas_texto || '').matchAll(RE_MEDIDA_PAR)) { cifras.add(String(Number(m[1]))); cifras.add(String(Number(m[2]))); }
-  if (Number(ancho_mm) > 0) cifras.add(String(Number(ancho_mm)));
-  if (Number(alto_mm) > 0) cifras.add(String(Number(alto_mm)));
-  return t.split(/\r?\n/).filter((linea) => {
-    const enLinea = [...linea.matchAll(RE_MEDIDA_PAR)];
-    if (!enLinea.length) return true;                       // contexto general: se queda
-    if (cifras.size < 2) return false;                      // no sé cuál es la mía: ninguna ajena
-    return enLinea.some((m) => cifras.has(String(Number(m[1]))) && cifras.has(String(Number(m[2]))));
-  }).join('\n');
+  if ([...t.matchAll(RE_MEDIDA_PAR)].length <= 1) return t;
+  const mias = [...String(medidas_texto || '').matchAll(RE_MEDIDA_PAR)].map(claveMedida);
+  if (!mias.length && Number(ancho_mm) > 0 && Number(alto_mm) > 0) {
+    mias.push({ par: [Number(ancho_mm), Number(alto_mm)].sort((x, y) => x - y).join('x'), c: null });
+  }
+  if (!mias.length) return t;
+  const esMia = (m) => {
+    const k = claveMedida(m);
+    return mias.some((x) => x.par === k.par && (x.c === null || k.c === null || x.c === k.c));
+  };
+  // Por renglón; dentro de cada renglón, por burbuja (2+ espacios). Un trozo SIN medida es contexto general
+  // («todas en 3 hojas»), SALVO que empiece como renglón de ventana («1 × Corredera … 2 hojas,») — entonces es
+  // la cabeza de la medida que viene después en ese mismo renglón y corre su suerte (medido: la nota del dueño
+  // trae «2 hojas,  2560×2390» con dos espacios, y esa cabeza se le pegaba a las otras ventanas).
+  const CABEZA_DE_VENTANA = /^\d{1,3}\s*[x×X*]\s+\S/;
+  let reconocida = false;
+  const quedan = [];
+  for (const renglon of t.split(/\r?\n/)) {
+    const trozos = renglon.split(/\s{2,}/).map((s) => s.trim()).filter(Boolean);
+    let cabeza = null;
+    for (const trozo of trozos) {
+      const enTrozo = [...trozo.matchAll(RE_MEDIDA_PAR)];
+      if (!enTrozo.length) {
+        if (CABEZA_DE_VENTANA.test(trozo)) { cabeza = trozo; continue; }
+        quedan.push(trozo);                                   // contexto general: se queda
+        continue;
+      }
+      const mio = enTrozo.some(esMia);
+      if (mio) { reconocida = true; if (cabeza) quedan.push(cabeza); quedan.push(trozo); }
+      cabeza = null;
+    }
+    if (cabeza) quedan.push(cabeza);                          // cabeza sin medida después: no es de nadie más
+  }
+  return reconocida ? quedan.join('\n') : t;
 }
 
-export function partesParaMotor(partes) {
+export function partesParaMotor(partes, orientacion) {
   const ps = Array.isArray(partes) ? partes : [];
   if (!ps.length) return undefined;
   const tipos = ps.map((p) => String(p?.tipo || '').toUpperCase());
-  const esElDefault = ps.length === 2 && tipos.includes('FIJA') && tipos.includes('PROYECTANTE');
+  // [Codex post-despliegue · P1] EL ORDEN TAMBIÉN ES PARTE DEL DEFAULT: define qué paño abre. El motor arma
+  // horizontal = FIJA + PROYECTANTE (fijo a la izquierda) y vertical = PROYECTANTE + FIJA (abre arriba).
+  // «PROYECTANTE + FIJA» horizontal iguales es OTRA ventana (abre a la izquierda): viaja.
+  const vertical = String(orientacion || '').toLowerCase() === 'vertical';
+  const orden = vertical ? ['PROYECTANTE', 'FIJA'] : ['FIJA', 'PROYECTANTE'];
+  const esElDefault = ps.length === 2 && tipos[0] === orden[0] && tipos[1] === orden[1];
   return esElDefault && partesTodasIguales(ps) ? undefined : ps;
 }
 
@@ -1059,7 +1098,7 @@ export async function runTool(name, input = {}, ctx = {}) {
           // (total 2202 ≠ los 2200 que pidio la clienta) y el precio difiere del reparto
           // canonico del dueño (mitad y mitad DEL VANO, acople adentro). Si todos los paños
           // son iguales, eso ES el default del motor: se dejan caer y el motor reparte bien.
-          partes: partesParaMotor(input.partes),
+          partes: partesParaMotor(input.partes, input.orientacion),
           // [2026-08-25] El eje viaja con el item hasta el motor y hasta el dibujo del PDF.
           orientacion: input.orientacion || undefined,
           // [2026-09-26 · #947] La ventana en esquina YA ARMADA desde los paños del cliente.

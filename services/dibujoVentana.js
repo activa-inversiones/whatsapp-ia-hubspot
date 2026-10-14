@@ -847,7 +847,7 @@ function lateralesFijasDe(it) {
   // [Thermos calidad r1 · Codex r2 #4] SOLO lo que el MOTOR cobró: el campo, o la frase EXACTA que escribe
   // `sufijoHojasCorredera` («3 hojas, laterales fijas») en la etiqueta. Nada de descripción ni label libre:
   // «el cliente dijo laterales fijas, falta recotizar» no puede cambiar la figura de lo que se cobró.
-  if (Number(it?.hojas_fijas) === 2) return true;
+  if (it?.hojas_fijas === 2 || it?.hojas_fijas === '2') return true;   // [Codex post-despliegue · P3] sin Number(): [2] no es 2
   const t = [it?.producto_label, it?.product].filter(Boolean).join(' ').toLowerCase();
   return /\b3\s*hojas,\s*laterales\s+fijas\b/.test(t);
 }

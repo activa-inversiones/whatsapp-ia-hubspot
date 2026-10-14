@@ -112,62 +112,44 @@ export async function leerYCotizar({ texto, comuna = '', color = '', nombre = ''
   // «el LLM repite la línea tras una tool bloqueada»), pero dos llamadas iguales con cantidad 1 pueden ser DOS
   // ventanas reales y sales-os retenía la mitad del total. La clave no distingue «reintento» de «segunda unidad»:
   // ante la duda, todas las líneas van al borrador (el vendedor las ve) y solo se cuenta la repetición para avisar.
-  // 🔴 [#1522 · 14-oct] PERO UN REINTENTO SÍ SE PUEDE DISTINGUIR, CONTANDO CONTRA LA NOTA. Medido en el borrador
-  // 70a138c1: 15 renglones y 18 llamadas (la corredera 2560×2390 tres veces, el fijo 2500×400 dos). El LLM copia
-  // el renglón en `descripcion_producto`; si esa descripción aparece K veces en la nota, son K ventanas, y las
-  // llamadas de más son reintentos. Se queda con las ÚLTIMAS K (la corrección, no el primer intento). Una
-  // descripción que no aparece en la nota no se puede contar: se queda entera, como antes.
-  const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .replace(/[×*]/g, 'x').replace(/\s+/g, ' ').trim();
-  // Se cuentan UNIDADES, no llamadas: «2 × Fijo …» partido por el LLM en dos llamadas de 1 son 2 unidades y se
-  // quedan las dos. Solo se descarta lo que hace pasar la suma de unidades por encima de lo que dice la nota.
-  const renglones = String(texto || '').split(/\r?\n/).map(norm).filter(Boolean);
-  const unidadesEnNota = (desc) => {
-    const d = norm(desc);
-    if (d.length < 8) return 0;
-    return renglones.filter((r) => r.includes(d))
-      .reduce((s, r) => s + (Number((r.match(/^\s*(\d{1,3})\s*x\s/) || [])[1]) || 1), 0);
-  };
+  // 🔴 [#1522 · 14-oct] PERO UN REINTENTO SÍ SE PUEDE DISTINGUIR: POR EL TOTAL DE UNIDADES DE LA NOTA.
+  // Medido en el borrador 70a138c1: 15 renglones (32 unidades) y 18 llamadas (36 unidades): la corredera
+  // 2560×2390 tres veces y el fijo 2500×400 dos, agregadas al final.
+  // [Codex post-despliegue · P0] La 1ª versión comparaba la DESCRIPCIÓN que escribe el LLM contra los renglones,
+  // y eso falla: si el LLM normaliza «Ventana fija S60 1000x1000» y «Fijo S60 1000x1000» al mismo texto, borraba
+  // una ventana REAL (subcobro del 50 %). Regla nueva, que no lee textos del LLM:
+  //   · se suman las unidades de la NOTA (renglones con medida; «N ×» al inicio, si no 1);
+  //   · solo si las llamadas suman MÁS que la nota, se descartan llamadas IDÉNTICAS a una anterior (mismo
+  //     pedido exacto), desde la última, y solo mientras el total no baje de la nota.
+  // Nunca puede quedar por debajo de lo que pidió el vendedor. Si la nota no tiene medidas legibles, no se toca.
+  const RE_RENGLON_MEDIDA = /\d{2,5}(?:[.,]\d+)?\s*(?:mm|cm)?\s*[x×X*]\s*\d{2,5}/;
+  // SOLO EN FORMATO DE LISTA: cada renglón con medida empieza con «N ×». En texto libre («necesito 2 ventanas
+  // 1000x1000») la cantidad no se puede leer con seguridad, y dos llamadas iguales pueden ser dos ventanas reales
+  // (guardia #1500-A r5): ahí no se descarta nada.
+  const conMedida = String(texto || '').split(/\r?\n/).filter((r) => RE_RENGLON_MEDIDA.test(r));
+  const RE_CANT = /^\s*(\d{1,3})\s*[x×X*]\s/;
+  const esLista = conMedida.length > 0 && conMedida.every((r) => RE_CANT.test(r));
+  const unidadesNota = esLista ? conMedida.reduce((s, r) => s + Number(r.match(RE_CANT)[1]), 0) : 0;
   const llamadas = (turn.toolCalls || []).filter((c) => HERRAMIENTAS_DE_PRECIO.includes(c.name));
-  const porDesc = new Map();
-  llamadas.forEach((c, i) => {
-    const desc = c.input?.descripcion_producto;
-    const tope = unidadesEnNota(desc);
-    if (!tope) return;
-    const clave = `${c.name}|${norm(desc)}`;
-    if (!porDesc.has(clave)) porDesc.set(clave, { tope, idx: [] });
-    porDesc.get(clave).idx.push(i);
-  });
-  const unidades = (i) => Math.max(1, Number(llamadas[i]?.input?.cantidad) || 1);
-  // El resultado que manda es el del ÚLTIMO intento, pero queda en el LUGAR del primero: el orden del borrador
-  // es el de la nota (reclamo del dueño 14-oct: «no sé por qué desordena lo que le envío»).
+  const unidades = (c) => Math.max(1, Number(c?.input?.cantidad) || 1);
+  const claveDe = (c) => `${c.name}|${JSON.stringify(c.input || {})}`;
+  let exceso = unidadesNota > 0 ? llamadas.reduce((s, c) => s + unidades(c), 0) - unidadesNota : 0;
   const sobran = new Set();
-  const fuente = llamadas.map((_c, i) => i);
-  for (const { tope, idx } of porDesc.values()) {
-    // Desde el último intento hacia atrás, se toman llamadas mientras quepan en las unidades de la nota.
-    const quedan = [];
-    let suma = 0;
-    for (const i of [...idx].reverse()) {
-      if (suma + unidades(i) > tope) continue;
-      quedan.unshift(i); suma += unidades(i);
-    }
-    if (!quedan.length || quedan.length === idx.length) continue;   // nada que cuadre, o no sobra nada: sin tocar
-    const lugares = idx.slice(0, quedan.length);
-    lugares.forEach((pos, j) => { fuente[pos] = quedan[j]; });
-    idx.slice(quedan.length).forEach((i) => sobran.add(i));
+  for (let i = llamadas.length - 1; i > 0 && exceso > 0; i -= 1) {
+    const k = claveDe(llamadas[i]);
+    const hayAnterior = llamadas.slice(0, i).some((c, j) => !sobran.has(j) && claveDe(c) === k);
+    if (hayAnterior && unidades(llamadas[i]) <= exceso) { sobran.add(i); exceso -= unidades(llamadas[i]); }
   }
 
   const vistos = new Set();
   let repetidas = 0;
   const lineas = [];
-  llamadas.forEach((_orig, i) => {
+  llamadas.forEach((c, i) => {
     if (sobran.has(i)) return;
-    const c = llamadas[fuente[i]];
-    const clave = `${c.name}|${JSON.stringify(c.input || {})}`;
+    const clave = claveDe(c);
     if (vistos.has(clave)) repetidas += 1; else vistos.add(clave);
     lineas.push({ n: lineas.length + 1, herramienta: c.name, pedido: c.input, resultado: resultadoConInterno(c.result) });
   });
-
   const base = { lineas, repetidas, reintentos_descartados: sobran.size, bloqueadas: exec.bloqueadas, sospechosas: exec.sospechosas, respuesta: String(turn.reply || '') };
   if (!lineas.length) return { ok: false, error: 'oliver_no_cotizo', ...base };
   return { ok: true, ...base };
