@@ -63,6 +63,14 @@ export function soloAvisosDeLlamada(body) {
     && en.changes.every((ch) => ch && ch.field === 'calls'));
 }
 
+/** El mismo body SIN los cambios de llamada (para que el flujo de mensajes lea el mensaje del cliente en changes[0]). */
+export function quitarAvisosDeLlamada(body) {
+  if (!body || !Array.isArray(body.entry)) return body;
+  return { ...body, entry: body.entry
+    .map((en) => ({ ...en, changes: (Array.isArray(en && en.changes) ? en.changes : []).filter((ch) => !(ch && ch.field === 'calls')) }))
+    .filter((en) => en.changes.length > 0) };
+}
+
 /** Reenvía los avisos a la plataforma. Nunca lanza: devuelve {ok, status|error}. */
 export async function reenviarEventosLlamada(eventos, { fetchImpl = globalThis.fetch, url = '', token = '', timeoutMs = 8000 } = {}) {
   const base = String(url || '').replace(/\/+$/, '');

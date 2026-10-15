@@ -296,7 +296,7 @@ import { registrarRutaLiberar } from "./services/oliverInternoLiberar.js";
 import { registrarRutaDibujos } from "./services/oliverInternoDibujos.js";
 // [2026-10-13 · #1514 (2)] Abrir el canal con la plantilla más barata desde el inbox/agenda (fuera de la ventana de 24 h)
 import { registrarRutaAbrirCanal } from "./services/abrirCanal.js";
-import { eventosDeLlamada, soloAvisosDeLlamada, reenviarEventosLlamada, registrarRutaAccionLlamada } from "./services/llamadasWhatsapp.js"; // [#702] llamadas de WhatsApp
+import { eventosDeLlamada, soloAvisosDeLlamada, quitarAvisosDeLlamada, reenviarEventosLlamada, registrarRutaAccionLlamada } from "./services/llamadasWhatsapp.js"; // [#702] llamadas de WhatsApp
 import { loadSession as loadOliverGptSession } from "./src/oliver-gpt/session-store.js";
 import {
   evaluateLeadValue,
@@ -5000,7 +5000,7 @@ registrarRutaAccionLlamada(app, {
   json: express.json({ limit: "64kb" }),
   llamarMeta: async (cuerpo) => {
     try {
-      const r = await axiosWA.post(`/${META.PHONE_ID}/calls`, cuerpo);
+      const r = await axiosWA.post(`/${META.PHONE_ID}/calls`, cuerpo, { timeout: 7000 }); // [Codex 15-oct] menor que los 8 s de la plataforma
       return { ok: Boolean(r && r.data && r.data.success !== false), data: r && r.data };
     } catch (e) {
       const err = e && e.response && e.response.data && e.response.data.error;
@@ -5424,9 +5424,19 @@ app.post("/webhook", async (req, res) => {
       // ÚNICAMENTE llamadas se contesta 200 y se sale acá.
       const _soloLlamadas = soloAvisosDeLlamada(req.body);
       const _reenvio = reenviarEventosLlamada(_llam, { url: process.env.SALES_OS_URL || "", token: INTERNAL_OPERATOR_TOKEN })
-        .then((r) => console.log(`[llamada.evento] ${_llam.map((e) => `${e.evento}:${e.call_id.slice(-6)}`).join(",")} → plataforma ${r.ok ? "ok" : (r.status || r.error)}`));
-      if (_soloLlamadas) { res.sendStatus(200); await _reenvio; return; }
+        .then((r) => { console.log(`[llamada.evento] ${_llam.map((e) => `${e.evento}:${e.call_id.slice(-6)}`).join(",")} → plataforma ${r.ok ? "ok" : (r.status || r.error)}`); return r; });
+      if (_soloLlamadas) {
+        // [Codex 15-oct · P1] Se le responde a Meta DESPUÉS de guardar: si la plataforma no la registró, 500 ⇒ Meta
+        // reintenta el aviso (antes se respondía 200 primero y la llamada desaparecía si la plataforma estaba caída).
+        const r = await _reenvio;
+        res.sendStatus(r && r.ok ? 200 : 500);
+        return;
+      }
       _reenvio.catch(() => {});
+      // 🔴 [Codex 15-oct · P0] Body MIXTO: `extractMsg` solo lee entry[0].changes[0]; si ahí está la llamada, el mensaje
+      // del cliente (changes[1]) se perdía. Se quitan los cambios de llamada antes de seguir al flujo de Oliver. La firma
+      // ya se verificó (verifySig memoiza sobre el cuerpo original), así que esto no la afecta.
+      req.body = quitarAvisosDeLlamada(req.body);
     }
   } catch (e) { try { logErr("llamada_evento", e); } catch {} }
 

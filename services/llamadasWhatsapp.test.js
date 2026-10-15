@@ -77,3 +77,15 @@ test('🔴 [revisión 14-oct] un body con llamada Y mensaje NO es «solo llamada
   assert.equal(soloAvisosDeLlamada({ entry: [] }), false);
   assert.equal(soloAvisosDeLlamada(null), false);
 });
+
+test('🔴 [Codex 15-oct · P0] aviso MIXTO: al quitar la llamada, el mensaje del cliente queda en changes[0] (lo que lee extractMsg)', async () => {
+  const { quitarAvisosDeLlamada } = await import('./llamadasWhatsapp.js');
+  const llamada = { field: 'calls', value: { calls: [{ id: 'wacid.A', event: 'connect', direction: 'USER_INITIATED' }] } };
+  const mensaje = { field: 'messages', value: { messages: [{ id: 'wamid.1', type: 'text', text: { body: 'hola' } }] } };
+  const limpio = quitarAvisosDeLlamada({ object: 'whatsapp_business_account', entry: [{ id: 'W', changes: [llamada, mensaje] }] });
+  assert.equal(limpio.entry[0].changes[0].field, 'messages');
+  assert.equal(limpio.entry[0].changes[0].value.messages[0].text.body, 'hola');
+  const soloLlamada = quitarAvisosDeLlamada({ entry: [{ changes: [llamada] }, { changes: [mensaje] }] });
+  assert.equal(soloLlamada.entry.length, 1, 'una entrada que solo traía la llamada se va entera');
+  assert.equal(soloLlamada.entry[0].changes[0].field, 'messages');
+});
