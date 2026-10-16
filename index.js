@@ -296,7 +296,7 @@ import { registrarRutaLiberar } from "./services/oliverInternoLiberar.js";
 import { registrarRutaDibujos } from "./services/oliverInternoDibujos.js";
 // [2026-10-13 · #1514 (2)] Abrir el canal con la plantilla más barata desde el inbox/agenda (fuera de la ventana de 24 h)
 import { registrarRutaAbrirCanal } from "./services/abrirCanal.js";
-import { eventosDeLlamada, soloAvisosDeLlamada, quitarAvisosDeLlamada, reenviarEventosLlamada, registrarRutaAccionLlamada } from "./services/llamadasWhatsapp.js"; // [#702] llamadas de WhatsApp
+import { eventosDeLlamada, soloAvisosDeLlamada, quitarAvisosDeLlamada, reenviarEventosLlamada, registrarRutaAccionLlamada, registrarRutaPermisoLlamada, respuestasPermisoLlamada, interceptarRespuestasPermiso, reenviarRespuestasPermiso } from "./services/llamadasWhatsapp.js"; // [#702] llamadas de WhatsApp (+ etapa 2: llamar al cliente)
 import { loadSession as loadOliverGptSession } from "./src/oliver-gpt/session-store.js";
 import {
   evaluateLeadValue,
@@ -5010,6 +5010,26 @@ registrarRutaAccionLlamada(app, {
   log: (nivel, etiqueta, detalle) => (nivel === "error" ? logErr(etiqueta, new Error(String(detalle))) : console.log(`[${etiqueta}] ${detalle}`)),
 });
 
+// [2026-10-16 · #702 etapa 2] Permiso del cliente para LLAMARLO por WhatsApp: consultar (call_permissions) y pedir
+// (interactive call_permission_request). Solo la plataforma (token interno); el texto lo fija services/llamadasWhatsapp.js.
+const _metaError = (e) => {
+  const err = e && e.response && e.response.data && e.response.data.error;
+  return { ok: false, status: e && e.response && e.response.status, error: (err && (err.code + " " + err.message)) || String((e && e.message) || e).slice(0, 200) };
+};
+registrarRutaPermisoLlamada(app, {
+  validInternalOperatorToken,
+  json: express.json({ limit: "16kb" }),
+  consultarMeta: async (tel) => {
+    try { const r = await axiosWA.get(`/${META.PHONE_ID}/call_permissions`, { params: { user_wa_id: tel }, timeout: 7000 }); return { ok: true, data: r && r.data }; }
+    catch (e) { return _metaError(e); }
+  },
+  enviarMeta: async (cuerpo) => {
+    try { const r = await axiosWA.post(`/${META.PHONE_ID}/messages`, cuerpo, { timeout: 7000 }); return { ok: true, data: r && r.data }; }
+    catch (e) { return _metaError(e); }
+  },
+  log: (nivel, etiqueta, detalle) => (nivel === "error" ? logErr(etiqueta, new Error(String(detalle))) : console.log(`[${etiqueta}] ${detalle}`)),
+});
+
 app.post("/internal/reengage", express.json(), async (req, res) => {
   try {
     if (!validInternalOperatorToken(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
@@ -5439,6 +5459,21 @@ app.post("/webhook", async (req, res) => {
       req.body = quitarAvisosDeLlamada(req.body);
     }
   } catch (e) { try { logErr("llamada_evento", e); } catch {} }
+
+  // 📞 [2026-10-16 · #702 etapa 2] RESPUESTA DEL CLIENTE AL PERMISO DE LLAMADA (interactive call_permission_reply).
+  // No es texto del cliente: sin esto Oliver recibía el JSON del botón como si el cliente lo hubiera escrito. Se le
+  // reenvía a la plataforma (que guarda el permiso y lo muestra en el inbox) y se saca del body; si venía junto a un
+  // mensaje de verdad, ese mensaje sigue su camino intacto (ver quitarRespuestasPermiso).
+  try {
+    if (respuestasPermisoLlamada(req.body).length && verifySig(req)) {
+      const _perm = await interceptarRespuestasPermiso(req.body, {
+        reenviar: (resp) => reenviarRespuestasPermiso(resp, { url: process.env.SALES_OS_URL || "", token: INTERNAL_OPERATOR_TOKEN })
+          .then((r) => { console.log(`[llamada.permiso] ${resp.map((x) => `${x.respuesta}:…${x.telefono.slice(-4)}`).join(",")} → plataforma ${r.ok ? "ok" : (r.status || r.error)}`); return r; }),
+      });
+      if (_perm.accion === "responder") { res.sendStatus(_perm.status); return; }
+      req.body = _perm.body;
+    }
+  } catch (e) { try { logErr("llamada_permiso", e); } catch {} }
 
   // [2026-07-06 COMANDOS] Chuleta del dueño: "comandos" / "/comandos" → lista de palabras predefinidas.
   // Solo ADMIN, intercept temprano (mismo patrón que agenda). Determinista, no pasa por el LLM.
