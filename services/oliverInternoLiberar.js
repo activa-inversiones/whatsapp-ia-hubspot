@@ -58,6 +58,42 @@ export function clasificarResultadoEmision(pdfRes) {
   return { ...base, ok: true, pdf_sent: true };
 }
 
+/**
+ * [2026-10-16 · #1524] El turno interno, en UNA función: la usan «liberar» (propuesta) y «solo informes». Antes vivía inline
+ * en la ruta de liberar; la de informes necesita exactamente lo mismo (inbound sintético con la marca, `res` mudo, promesa
+ * `onResultado`, tope que no sostiene el proceso), y dos copias de esto se desincronizan. El cuerpo es el de antes.
+ * @returns {Promise<object>} lo que el webhook pasó a `onResultado`, o {ok:false, error:'emision_sin_respuesta', timeout:true}
+ */
+export async function correrTurnoInterno({ handleWebhook, phone, emisionInterna, topeEsperaMs = TOPE_ESPERA_MS }) {
+  let resolver;
+  const resultado = new Promise((r) => { resolver = r; });
+  const ei = {
+    ...emisionInterna,
+    // [Thermos E-1] Si el webhook recién llega a emitir después del tope (candado del cliente tomado), no emite.
+    deadline: Date.now() + topeEsperaMs,
+    onResultado: (r) => resolver(r || { ok: false, error: 'sin_resultado' }),
+  };
+  const msgId = `interno-${phone}-${Date.now()}`;
+  const parseInbound = () => ({ ok: true, from: phone, type: 'text', text: MARCA_EMISION_INTERNA, msgId, enviadoAt: Date.now() });
+  // El webhook contesta 200 a su `res` apenas entra (ACK de Meta) y sigue trabajando: acá se le da un `res` mudo y
+  // se espera el resultado real por la promesa.
+  const resMudo = { sendStatus: () => {}, status: () => ({ json: () => {}, send: () => {} }), json: () => {}, send: () => {} };
+  const corrida = handleWebhook({ body: {}, headers: {}, query: {} }, resMudo, { parseInbound, emisionInterna: ei });
+  // El temporizador no sostiene el proceso (unref) y se limpia al resolver: medido con node --test, el timer de
+  // 150 s mantenía vivo el event loop y el archivo de tests «fallaba» por tiempo con sus 5 casos en verde.
+  let timerTope = null;
+  const tope = new Promise((r) => {
+    timerTope = setTimeout(() => r({ ok: false, error: 'emision_sin_respuesta', timeout: true }), topeEsperaMs);
+    if (timerTope && typeof timerTope.unref === 'function') timerTope.unref();
+  });
+  // Si el webhook explota ANTES de resolver, la promesa de la corrida rechaza: el llamador devuelve 500 con el motivo.
+  try {
+    return await Promise.race([resultado, tope, corrida.then(() => resultado)]);
+  } finally {
+    if (timerTope) clearTimeout(timerTope);
+  }
+}
+
 /** Lo que esperó la ruta → la respuesta HTTP. El folio viaja también en el fallo; `detalle` es texto (Thermos E-4). */
 function responderEmision(res, out) {
   if (out && out.timeout) return res.status(504).json({ ok: false, error: 'emision_sin_respuesta' });
@@ -90,36 +126,14 @@ export function registrarRutaLiberar(app, { validInternalOperatorToken, handleWe
       const de = b.documentos_elegidos && typeof b.documentos_elegidos === 'object' ? b.documentos_elegidos : null;
       const documentos = de ? { termico: Boolean(de.termico), vientos: Boolean(de.vientos) } : null;
 
-      let resolver;
-      const resultado = new Promise((r) => { resolver = r; });
-      const emisionInterna = {
-        items, nombre: campo('nombre'), comuna: campo('comuna'), operador: campo('operador') || 'Agenda', documentos,
-        // [#1504 r5] el id del borrador de sales-os: vuelve en el quote-event para que sales-os ate la propuesta por identidad.
-        borrador_id: campo('borrador_id') || null,
-        // [Thermos E-1] Si el webhook recién llega a emitir después del tope (candado del cliente tomado), no emite.
-        deadline: Date.now() + topeEsperaMs,
-        onResultado: (r) => resolver(r || { ok: false, error: 'sin_resultado' }),
-      };
-      const msgId = `interno-${phone}-${Date.now()}`;
-      const parseInbound = () => ({ ok: true, from: phone, type: 'text', text: MARCA_EMISION_INTERNA, msgId, enviadoAt: Date.now() });
-      // El webhook contesta 200 a su `res` apenas entra (ACK de Meta) y sigue trabajando: acá se le da un `res` mudo y
-      // se espera el resultado real por la promesa.
-      const resMudo = { sendStatus: () => {}, status: () => ({ json: () => {}, send: () => {} }), json: () => {}, send: () => {} };
-      const corrida = handleWebhook({ body: {}, headers: {}, query: {} }, resMudo, { parseInbound, emisionInterna });
-      // El temporizador no sostiene el proceso (unref) y se limpia al resolver: medido con node --test, el timer de
-      // 150 s mantenía vivo el event loop y el archivo de tests «fallaba» por tiempo con sus 5 casos en verde.
-      let timerTope = null;
-      const tope = new Promise((r) => {
-        timerTope = setTimeout(() => r({ ok: false, error: 'emision_sin_respuesta', timeout: true }), topeEsperaMs);
-        if (timerTope && typeof timerTope.unref === 'function') timerTope.unref();
+      const out = await correrTurnoInterno({
+        handleWebhook, phone, topeEsperaMs,
+        emisionInterna: {
+          items, nombre: campo('nombre'), comuna: campo('comuna'), operador: campo('operador') || 'Agenda', documentos,
+          // [#1504 r5] el id del borrador de sales-os: vuelve en el quote-event para que sales-os ate la propuesta por identidad.
+          borrador_id: campo('borrador_id') || null,
+        },
       });
-      // Si el webhook explota ANTES de resolver, la promesa de la corrida rechaza: se devuelve 500 con el motivo.
-      let out;
-      try {
-        out = await Promise.race([resultado, tope, corrida.then(() => resultado)]);
-      } finally {
-        if (timerTope) clearTimeout(timerTope);
-      }
       return responderEmision(res, out);
     } catch (e) {
       console.error('[oliver-interno/liberar] error:', e && e.message ? e.message : e);
@@ -129,4 +143,4 @@ export function registrarRutaLiberar(app, { validInternalOperatorToken, handleWe
   if (json) app.post(RUTA_LIBERAR, json, handler); else app.post(RUTA_LIBERAR, handler);
 }
 
-export default { itemsDesdeLineasBot, registrarRutaLiberar, RUTA_LIBERAR, MARCA_EMISION_INTERNA, TOPE_ESPERA_MS };
+export default { itemsDesdeLineasBot, registrarRutaLiberar, correrTurnoInterno, RUTA_LIBERAR, MARCA_EMISION_INTERNA, TOPE_ESPERA_MS };

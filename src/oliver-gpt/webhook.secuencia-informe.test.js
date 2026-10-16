@@ -854,8 +854,18 @@ test('📑 sales-os que no contesta a tiempo ⇒ regla local (techo de tiempo)',
   const { decidirDocumentosCotizacion } = await import('../../services/documentosCotizacion.js');
   const colgado = (u, { signal }) => new Promise((_, rej) => signal.addEventListener('abort', () => rej(new Error('abort'))));
   const t0 = Date.now();
-  const r = await decidirDocumentosCotizacion({ telefono: '56911112222', quoteNumber: 'X-1', termicoEntregado: true },
-    { fetchImpl: colgado, url: 'http://x', token: 't', timeoutMs: 50 });
+  // ⚠️ [2026-10-16 · #1524] Se le agregó el `setInterval` y ACÁ QUEDA POR QUÉ. Medido el 16-oct sobre `main` (sin tocar nada):
+  // este test salía CANCELADO y arrastraba a los 10 siguientes («Promise resolution is still pending but the event loop has
+  // already resolved»): `AbortSignal.timeout` NO sostiene el proceso (su timer es unref, así lo define Node) y el fetch falso
+  // colgado no deja nada más vivo, así que node --test cortaba antes de los 50 ms. En el bot real el loop lo sostiene el
+  // servidor. Lo que se prueba no cambia (al vencer el techo, regla local): solo se sostiene el loop mientras se espera.
+  // La orden: «npm test completo… ningún rojo» (tarea programada #1524 del dueño, 15/16-oct).
+  const vivo = setInterval(() => {}, 10);
+  let r;
+  try {
+    r = await decidirDocumentosCotizacion({ telefono: '56911112222', quoteNumber: 'X-1', termicoEntregado: true },
+      { fetchImpl: colgado, url: 'http://x', token: 't', timeoutMs: 50 });
+  } finally { clearInterval(vivo); }
   assert.ok(Date.now() - t0 < 2000);
   assert.deepEqual([r.termico, r.vientos, r.origen], [false, true, 'local_falta_informe']);
 });

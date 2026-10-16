@@ -349,7 +349,12 @@ test('🔒 tramo 2 — el hook recuerda las ventanas y las recupera en el re-env
   // acumula las partidas entre turnos para la propuesta desde jun-2026, y de ahi se toma.
   // Efecto lateral valioso: informe y propuesta declaran SIEMPRE las mismas ventanas.
   const wh2 = await leer('../src/oliver-gpt/webhook.js');
-  assert.match(wh2, /const ventanasProyecto = \(input\.items \|\| \[\]\)\.map/,
+  // ⚠️ [2026-10-16 · #1524] ANCLA ACTUALIZADA (no invertida). El mapeo items→ventanas estaba escrito DOS veces dentro de
+  // generarPdf, idéntico; «Liberar → solo informes» (pedido del dueño 14-oct: «los 3 por separado») lo necesitaba una
+  // tercera. Pasó a UNA función, `ventanasDelInformeTermico(items)`, y los dos caminos de la propuesta la llaman con
+  // `input.items`. Lo que se protege no cambió: las ventanas salen de los ítems de la propuesta. La conducta la prueba
+  // además webhook.solo-informes1524.test.js (pos, medidas, vidrio y Uw viajan).
+  assert.match(wh2, /const ventanasProyecto = ventanasDelInformeTermico\(input\.items\)/,
     'las ventanas salen de los items de la propuesta');
   assert.match(wh2, /if \(docSent\) \{/,
     'y solo si la propuesta se entrego de verdad: no se promete un informe a quien no cotizo');
@@ -382,9 +387,14 @@ test('🔴 el informe se despacha con la PROPUESTA y con el proyecto completo', 
   // incluye: una modificación no reenvía el informe (ver webhook.selector-documentos.test.js).
   assert.match(bloque, /if \(docSent && !modoInformePrimero && docsSel\.termico\) \{/,
     'solo si la propuesta se entrego, no se despacho ya en la secuencia, y el selector lo incluye');
-  assert.match(bloque, /const ventanasProyecto = \(input\.items \|\| \[\]\)\.map/,
+  // ⚠️ [2026-10-16 · #1524] ANCLA ACTUALIZADA (no invertida). El mapeo items→ventanas estaba escrito DOS veces dentro de
+  // generarPdf, idéntico; «Liberar → solo informes» (pedido del dueño 14-oct: «los 3 por separado») lo necesitaba una
+  // tercera. Pasó a UNA función, `ventanasDelInformeTermico(items)`, y los dos caminos de la propuesta la llaman con
+  // `input.items`. Lo que se protege no cambió: las ventanas salen de los ítems de la propuesta. La conducta la prueba
+  // además webhook.solo-informes1524.test.js (pos, medidas, vidrio y Uw viajan).
+  assert.match(bloque, /const ventanasProyecto = ventanasDelInformeTermico\(input\.items\)/,
     'las ventanas salen de los items de la propuesta, que es donde esta el proyecto entero');
-  assert.match(bloque, /uw: it\.termico\?\.uw \?\? null/,
+  assert.match(trozo(wh, 'export function ventanasDelInformeTermico', '}));'), /uw: it\.termico\?\.uw \?\? null/,
     'con el Uw que el motor ya calculo para cada una');
   assert.doesNotMatch(bloque, /await despacharInforme/,
     'sin await: el informe no puede demorar el PDF que el cliente esta esperando');
@@ -394,7 +404,8 @@ test('🔒 la cantidad viaja CRUDA desde el item, sin lavarla', async () => {
   // Un `|| 1` aca convierte un dato ausente en un 1 indistinguible de uno informado, y
   // `resumenVentanas` ya no puede marcarlo como incierto.
   const wh = await leer('../src/oliver-gpt/webhook.js');
-  const bloque = trozo(wh, 'const ventanasProyecto', '}));');
+  // [2026-10-16 · #1524] El mapeo vive ahora en `ventanasDelInformeTermico` (ver la nota del tramo 2): se mira ahí.
+  const bloque = trozo(wh, 'export function ventanasDelInformeTermico', '}));');
   assert.match(bloque, /cantidad: it\.qty,/);
   assert.doesNotMatch(bloque, /cantidad:[^,]*\|\| 1/);
 });

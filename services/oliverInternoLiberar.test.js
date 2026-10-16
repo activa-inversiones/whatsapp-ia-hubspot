@@ -158,7 +158,17 @@ test('[#1500-C r3 · Thermos D-N3] una emisión DUPLICADA (el cliente ya la tien
 });
 
 test('[#1500-C] si el webhook no contesta (se cuelga) → 504 emision_sin_respuesta; si contesta ok:false → 502 con el motivo', async () => {
-  const colgado = await pedir({ body: BODY_OK, topeMs: 30, webhook: async (_req, res) => { res.sendStatus(200); /* nunca llama onResultado */ } });
+  // ⚠️ [2026-10-16 · #1524] Se le agregó el `setInterval` y ACÁ QUEDA POR QUÉ. Medido el 16-oct sobre `main` (sin tocar nada):
+  // este test y el siguiente salían CANCELADOS («Promise resolution is still pending but the event loop has already
+  // resolved»). El tope de la ruta es un timer `unref` A PROPÓSITO (no puede sostener el proceso: ver correrTurnoInterno);
+  // con el webhook colgado no queda NADA vivo en el loop y node --test corta antes de que venza. En el servidor el loop lo
+  // sostiene Express. Lo que se prueba no cambia (504 al vencer el tope): solo se sostiene el loop mientras se espera.
+  // La orden: «npm test completo… ningún rojo» (tarea programada #1524 del dueño, 15/16-oct).
+  const vivo = setInterval(() => {}, 10);
+  let colgado;
+  try {
+    colgado = await pedir({ body: BODY_OK, topeMs: 30, webhook: async (_req, res) => { res.sendStatus(200); /* nunca llama onResultado */ } });
+  } finally { clearInterval(vivo); }
   assert.equal(colgado.res.codigo, 504);
   assert.equal(colgado.res.cuerpo.error, 'emision_sin_respuesta');
   assert.equal(TOPE_ESPERA_MS, 150000, 'el tope por defecto cubre folio + PDF + envío + informes');

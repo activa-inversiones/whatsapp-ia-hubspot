@@ -292,6 +292,8 @@ import { reengage } from "./services/reengagement.js";
 import { registrarRutaLector } from "./services/oliverInternoLector.js";
 // [2026-10-12 · #1500-C] Liberar desde la agenda = la misma propuesta que manda Oliver (ver services/oliverInternoLiberar.js)
 import { registrarRutaLiberar } from "./services/oliverInternoLiberar.js";
+// [2026-10-16 · #1524] «Liberar → solo los informes» (térmico y/o clima y viento) sin propuesta. Ver services/oliverInternoInformes.js
+import { registrarRutaInformes } from "./services/oliverInternoInformes.js";
 // [2026-10-13 · #1513 B] Vista previa de los DIBUJOS del borrador retenido (sin folio, sin enviar). Ver services/oliverInternoDibujos.js
 import { registrarRutaDibujos } from "./services/oliverInternoDibujos.js";
 // [2026-10-13 · #1514 (2)] Abrir el canal con la plantilla más barata desde el inbox/agenda (fuera de la ventana de 24 h)
@@ -4975,6 +4977,12 @@ app.get("/internal/agenda-debug", (req, res) => {
 registrarRutaLector(app, { validInternalOperatorToken, json: express.json() });
 // [#1500-C] La emisión entra por handleWebhook (importado tarde, como en /webhook) con deps.emisionInterna.
 registrarRutaLiberar(app, {
+  validInternalOperatorToken,
+  json: express.json(),
+  handleWebhook: async (req, res, deps) => (await import("./src/oliver-gpt/webhook.js")).handleWebhook(req, res, deps),
+});
+// [#1524] Mismo guardia y mismo turno interno que liberar, pero SOLO los informes pedidos (sin propuesta ni folio).
+registrarRutaInformes(app, {
   validInternalOperatorToken,
   json: express.json(),
   handleWebhook: async (req, res, deps) => (await import("./src/oliver-gpt/webhook.js")).handleWebhook(req, res, deps),
