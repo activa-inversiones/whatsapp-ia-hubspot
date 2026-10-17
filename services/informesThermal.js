@@ -5,7 +5,7 @@
 //
 // Mismo NOMBRE y misma FIRMA que los generadores locales (generarInformeTermicoPdf /
 // generarInformeVientosPdf): webhook.js solo cambia de donde los importa. THERMAL corre el MISMO
-// codigo (trasladado 1:1, hashes en activa-thermal/informes_pdf/ORIGEN.md) y le agrega la marca
+// codigo (trasladado 1:1, manifiesto activa-thermal/informes_pdf/ORIGEN.json + test anti-divergencia) y le agrega la marca
 // ACTIVA THERMAL en la cabecera.
 //
 //   POST {THERMAL_API_URL}/api/v1/informes/termico.pdf   (CM-FR-006)
