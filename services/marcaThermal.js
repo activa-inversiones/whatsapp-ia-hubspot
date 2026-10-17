@@ -16,8 +16,8 @@ export const RUTA_LOGO_THERMAL_NEGATIVO = path.join(_AQUI, '..', 'assets', 'marc
 
 // Logo negativo YA compuesto sobre el NAVY de la franja (#0B3D6F): una sola imagen JPEG (calidad 92, sin submuestreo de color), sin mascara
 // alfa (con alfa pdfkit incrusta 2 objetos). Si cambia el NAVY, regenerar el JPG.
-// Proporcion medida del PNG (1200 x 354 px; reducido desde 2723 x 804: a 62 pt de alto alcanza
-// ~430 dpi y el PDF baja de ~139 KB a ~60 KB). Alto en la franja de 90 pt: 62 pt, centrado.
+// Proporcion medida (1200 x 354 px; reducido desde 2723 x 804: a 62 pt de alto alcanza
+// ~430 dpi; en JPEG el informe pesa ~101-114 KB contra ~139 KB con el PNG grande). Alto en la franja de 90 pt: 62 pt, centrado.
 const PROPORCION = 1200 / 354;
 export const ALTO_LOGO_PT = 62;
 
