@@ -49,7 +49,8 @@ import { acquireLock, LOCKS } from '../../services/lockTelefono.js';
 import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado, borrarDurable as borrarEstadoDurable } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS, datosDelInforme } from '../../services/informeTermico.js';
-import { generarInformeTermicoPdf } from '../../services/informeTermicoPdf.js';
+// [2026-10-17, dueno] Los informes los EMITE ACTIVA THERMAL; el local queda de respaldo (ver informesThermal.js).
+import { generarInformeTermicoPdf } from '../../services/informesThermal.js';
 import { laminasParaInforme, laminaTermopanel, perfilesLaminasDe } from '../../services/laminasThermal.js';   // [2026-08-24] isotermas del FEM
 import { getClient as realGetClient } from './engine.js';
 import { parseExcelWindows } from './parseExcel.js';
@@ -67,7 +68,7 @@ import { elegirVideo, mensajeDelVideo, mediaIdsDisponibles } from '../../service
 // de la casa), Oliver arma el PDF y lo entrega como 2o documento.
 import { pedirVientos, ventanasParaVientos } from '../../services/vientosThermal.js';
 import { motorCotizo, vidrioDelMotor, precioCoincide, elegirVidrio, aplicarVidrio, avisarVidrio, VIDRIO_RESPALDO } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor
-import { generarInformeVientosPdf } from '../../services/informeVientosPdf.js';
+import { generarInformeVientosPdf } from '../../services/informesThermal.js';
 import { decidirDocumentosCotizacion, leerEntregasLocales, marcarEntregaLocal } from '../../services/documentosCotizacion.js'; // [2026-09-30] selector de documentos por cotización
 import { clasificarResultadoEmision } from '../../services/oliverInternoLiberar.js'; // [2026-10-12 · #1500-C] emisión interna: resultado → forma que lee sales-os
 import { numerarVentanas } from '../../services/etiquetaVentana.js'; // [2026-09-19] el numero se congela antes de filtrar
