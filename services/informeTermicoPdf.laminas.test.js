@@ -72,7 +72,11 @@ const conLaminas = (nombre) => ({
 // la firma de correo con los dos logotipos.
 // El test de mas abajo comprueba que esas 2 imagenes de marca ESTAN: sin el, este descuento
 // podria enmascarar una figura filtrada.
-const IMAGENES_DE_MARCA_DEL_PIE = 2;
+// [2026-10-17] +1: la cabecera ahora lleva el logo ACTIVA THERMAL (decision del dueno: los informes
+// los emite THERMAL). Pasa a 3 imagenes de marca = logo THERMAL (cabecera) + logo y sello del pie.
+// El test de guardia de abajo ahora exige EXACTAMENTE 3 sin figuras: si la cabecera pierde el logo
+// o aparece una imagen de mas, falla, en vez de enmascarar una figura filtrada.
+const IMAGENES_DE_MARCA_DEL_PIE = 3;
 const contarTodasLasImagenes = (pdf) => (pdf.toString('latin1').match(/\/Subtype\s*\/Image/g) || []).length;
 const contarImagenes = (pdf) => contarTodasLasImagenes(pdf) - IMAGENES_DE_MARCA_DEL_PIE;
 
@@ -209,8 +213,8 @@ test('🔒 [#392] el aviso legal lleva la razon social Y el RUT verificados del 
 
 test('🔴 el pie SIEMPRE trae las 2 imagenes de marca (si no, contarImagenes enmascararia una figura filtrada)', async () => {
   const pdf = await generarInformeTermicoPdf(DATOS, {});
-  assert.ok(contarTodasLasImagenes(pdf) >= IMAGENES_DE_MARCA_DEL_PIE,
-    'el logo y el sello del pie deben estar: el descuento de contarImagenes depende de eso');
+  assert.equal(contarTodasLasImagenes(pdf), IMAGENES_DE_MARCA_DEL_PIE,
+    'logo THERMAL de cabecera + logo y sello del pie, y nada mas: el descuento de contarImagenes depende de eso');
 });
 
 // ── [2026-10-07] DOS PERFILES COMO REFERENCIA (decisión del dueño) ─────────────────────────

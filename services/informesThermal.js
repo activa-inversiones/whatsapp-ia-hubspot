@@ -18,8 +18,10 @@
 // RESPALDO: si THERMAL no contesta (caido, timeout, 5xx, sin Node), se usa el generador LOCAL de
 // siempre y se deja un log `[informes] RESPALDO LOCAL` para medir cuantas veces pasa. Es una red
 // de seguridad TRANSITORIA: con cero respaldos en el periodo que el dueno defina, el generador
-// local se retira y queda una sola verdad (THERMAL). Mientras exista, el PDF de respaldo sale con
-// la cabecera vieja: eso es lo que dice el log, y por eso se mide.
+// local se retira y queda una sola verdad (THERMAL). El respaldo usa los MISMOS generadores con la
+// MISMA cabecera ACTIVA THERMAL (services/marcaThermal.js, copia del de THERMAL): el cliente no ve
+// dos marcas. Timeout del bot (30 s) > el de THERMAL (25 s): THERMAL corta antes y no cobra un PDF
+// que el bot ya descarto.
 //
 // INFORMES_DESDE_THERMAL=0 apaga la ruta nueva (vuelve 100% al local) sin redeploy de codigo.
 import { generarInformeTermicoPdf as termicoLocal } from './informeTermicoPdf.js';
@@ -70,6 +72,11 @@ async function conRespaldo(tipo, local, datos, opciones, deps = {}) {
   const res = await pedirPdfAThermal(tipo, datos, opciones, deps);
   if (res.pdf) return res.pdf;
   if (res.sinDatos) return null;
+  if (/^HTTP (401|403|429)$/.test(res.error || '')) {
+    // Thermos 17-oct: un RECHAZO no es una caida — es la key mal puesta, sin permiso de emisor o la
+    // cuota agotada. Si se tratara igual que una caida, el 100 % saldria del respaldo sin que nadie lo note.
+    console.error(`[informes] ALERTA THERMAL RECHAZO ${tipo}: ${res.error} — revisar THERMAL_API_KEY / INFORMES_EMISOR_CLIENTES / cuota`);
+  }
   console.warn(`[informes] RESPALDO LOCAL ${tipo} folio=${opciones?.numeroInforme || '-'}: ${res.error}`);
   return local(datos, opciones);
 }

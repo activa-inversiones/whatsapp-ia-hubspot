@@ -25,6 +25,7 @@
 // y sin pdfkit, no cambia el arranque del bot.
 import { identificarCliente, dibujarIdentidadCliente, textoInlineReceptor, destinatarioLegal } from './bloqueIdentidadPdf.js';
 import { dibujarPieDocumento, sellarConfidencialidad, dibujarInsigniaEnergetica } from './pieDocumentoPdf.js';
+import { dibujarCabeceraThermal } from './marcaThermal.js';
 import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
 
 export const VERSION = '1.1.0';
@@ -485,10 +486,9 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
       const W = doc.page.width;
 
       // ── ENCABEZADO ──────────────────────────────────────────────────────
-      doc.rect(0, 0, W, 90).fill(NAVY);
-      doc.fillColor('#fff').fontSize(22).font('Helvetica-Bold').text('ACTIVA INVERSIONES', 50, 28);
-      doc.fillColor(GOLD).fontSize(10).font('Helvetica').text('Ventanas PVC · Termopanel · Fábrica en Temuco', 50, 56);
-      doc.fillColor('#fff').fontSize(9).text('Evaluación energética acreditada MINVU', 50, 72);
+      // [2026-10-17, dueno] El informe lo emite ACTIVA THERMAL (I+D+i): logo en la franja.
+      // "Activa Inversiones" sigue en el pie de cada pagina y en la firma.
+      dibujarCabeceraThermal(doc, { ancho: W, navy: NAVY, gold: GOLD });
 
       // ── LOGO "EVALUACIÓN ENERGÉTICA" (pedido del dueño, 24-ago) ─────────
       // Las flechas de la etiqueta de eficiencia (A→G), dibujadas en vector — cero

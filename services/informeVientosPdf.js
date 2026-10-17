@@ -20,6 +20,7 @@ import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2
 // tienen que verse de la misma casa, y este es el bloque donde una divergencia se nota.
 import { identificarCliente, dibujarIdentidadCliente, textoInlineReceptor, destinatarioLegal } from './bloqueIdentidadPdf.js';
 import { dibujarPieDocumento, sellarConfidencialidad, dibujarInsigniaEnergetica } from './pieDocumentoPdf.js';
+import { dibujarCabeceraThermal } from './marcaThermal.js';
 
 const NAVY = '#0B3D6F';
 const GOLD = '#C4993B';
@@ -78,10 +79,8 @@ export async function generarInformeVientosPdf(datos, {
   const fin = new Promise((res) => doc.on('end', () => res(Buffer.concat(chunks))));
 
   // ── Cabecera de marca (identica al termico) ─────────────────────────────
-  doc.rect(0, 0, W, 90).fill(NAVY);
-  doc.fillColor('#fff').fontSize(22).font('Helvetica-Bold').text('ACTIVA INVERSIONES', 50, 28);
-  doc.fillColor(GOLD).fontSize(10).font('Helvetica').text('Ventanas PVC · Termopanel · Fábrica en Temuco', 50, 56);
-  doc.fillColor('#fff').fontSize(9).text('Evaluación energética acreditada MINVU', 50, 72);
+  // [2026-10-17, dueno] El informe lo emite ACTIVA THERMAL (I+D+i): logo en la franja.
+  dibujarCabeceraThermal(doc, { ancho: W, navy: NAVY, gold: GOLD });
 
   // Insignia de evaluacion energetica, la misma de los otros dos documentos
   // (dueno 25-sep: *"debe traspasarse a todos"*).
