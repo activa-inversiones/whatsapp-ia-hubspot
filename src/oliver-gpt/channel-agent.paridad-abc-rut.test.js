@@ -73,7 +73,7 @@ const vaciar = () => new Promise((r) => { setImmediate(r); });
  * @param {Array<{text:string, cotiza?:boolean, llm?:object}>} opts.turnos
  */
 function armar(opts = {}) {
-  const spy = { pdfs: [], documentos: [], quoteEvents: [], deals: [], sondas: [], textos: [], alertas: [], eventos: [], plantillas: [] };
+  const spy = { pdfs: [], documentos: [], quoteEvents: [], deals: [], sondas: [], textos: [], alertas: [], eventos: [], plantillas: [], guardados: [] };
   const senderId = `IG_paridad_${++_seq}`;
   spy.senderId = senderId;
   const conv = new Map();
@@ -108,9 +108,22 @@ function armar(opts = {}) {
       });
       return Buffer.from(`%PDF-1.4 ${numero}`);
     },
-    sendChannelDocument: async (_canal, _to, _buf, filename) => {
+    sendChannelDocument: async (_canal, _to, buf, filename) => {
       spy.documentos.push(String(filename).replace(/\.pdf$/, ''));
+      spy.enviados = spy.enviados || {};
+      spy.enviados[filename] = buf;
+      if (opts.envioFalla) return { ok: false, error: 'Meta rechazo el adjunto' };
       return { ok: true, messageId: `mid-${spy.documentos.length}` };
+    },
+    // [21-oct · CM-FR-004] El guardado del PDF en sales-os (mediaStore.saveMedia, el MISMO de
+    // WhatsApp). `opts.guardadoFalla`: 'lanza' | 'null' (el real NUNCA lanza: devuelve null) |
+    // 'colgado' (sales-os no contesta nunca: solo lo deja pasar que NADIE espere al guardado).
+    saveMedia: async (o) => {
+      spy.guardados.push(o);
+      if (opts.guardadoFalla === 'colgado') return new Promise(() => {});
+      if (opts.guardadoFalla === 'lanza') throw new Error('sales-os caido');
+      if (opts.guardadoFalla === 'null') return null;
+      return { media: { id: spy.guardados.length } };
     },
     // El motor de precios, FALSO pero fiel: cada color a un precio distinto, y guardando la
     // sonda COMPLETA que recibio — es lo unico que permite ver si viajo la orientacion.
@@ -765,4 +778,90 @@ test('IG [#1088] camino normal: el motor contesta ⇒ el vidrio llega igual que 
   assert.equal(spy.pdfs[0].vidrio, '5+12+5');
   assert.equal(spy.pdfs[0].unit_price, PRECIO.Nogal);
   assert.deepEqual(lineas.filter((l) => /vidrio\.sonda_/.test(l)), [], 'sin problemas, sin ruido');
+});
+
+/* =========================================================================
+ * [21-oct · CM-FR-004] LA PROPUESTA DE IG/FB QUEDA GUARDADA, COMO LA DE WHATSAPP
+ * =========================================================================
+ * Medido el 21-oct (revision independiente del formato CM-FR-004): las 10 propuestas de
+ * Instagram del 15-jun al 04-ago NO estan en `media_attachments` ni en WorkDrive. En WhatsApp
+ * el PDF sube por `POST /api/v5/media/store` (webhook.js, Paso 3a) y ese INSERT es el que
+ * dispara el archivado en la carpeta COTIZACIONES; channel-agent.js no lo llamaba nunca.
+ * Estos tests se pusieron ROJOS con el defecto puesto (0 guardados) antes del arreglo. */
+
+test('🔴 IG [CM-FR-004] la propuesta A y sus opciones B y C quedan guardadas en sales-os con su folio', async () => {
+  const spy = await correr({ turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1200' }] });
+  assert.equal(spy.documentos.length, 3, `se esperaban A, B y C: ${spy.documentos.join(', ')}`);
+  await esperar(() => spy.guardados.length >= 3);
+
+  assert.deepEqual(spy.guardados.map((g) => g.filename), [
+    'CM-FR-004-2026-0392.pdf', 'CM-FR-004-2026-0392-B.pdf', 'CM-FR-004-2026-0392-C.pdf',
+  ], 'cada folio emitido tiene que quedar guardado con su propio nombre');
+  for (const g of spy.guardados) {
+    // El identificador de la conversacion de IG (el mismo con que index.js guarda la media
+    // ENTRANTE de IG/FB): sin eso el cockpit no la cuelga del hilo del cliente.
+    assert.equal(g.phone, spy.senderId);
+    assert.equal(g.direction, 'outbound');
+    assert.equal(g.mediaType, 'document');
+    assert.equal(g.mimeType, 'application/pdf');
+    assert.ok(Buffer.isBuffer(g.buffer) && g.buffer.length > 0, `${g.filename} se guardo sin contenido`);
+  }
+  // Es el MISMO binario que recibio el cliente, no otro generado aparte. [Codex 21-oct] se
+  // compara contra el buffer que de verdad se le paso a Meta, no solo contra su contenido.
+  for (const g of spy.guardados) {
+    assert.ok(spy.enviados?.[g.filename], `${g.filename} se guardo pero no se envio`);
+    assert.ok(g.buffer.equals(spy.enviados[g.filename]), `${g.filename}: lo guardado no es lo que recibio el cliente`);
+  }
+  // El id del mensaje de Meta queda como referencia (como en la media entrante de IG/FB).
+  assert.equal(spy.guardados[0].waMediaId, 'mid-1');
+});
+
+test('🔴 IG [CM-FR-004] con el color dicho sale UNA propuesta, y esa una queda guardada', async () => {
+  const spy = await correr({
+    item: { producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
+      measures: '1500x1200', color: 'Nogal', qty: 1, unit_price: PRECIO.Nogal, glass_label: '4+12+4' },
+    turnos: [{ cotiza: true, text: 'cotizame una corredera nogal de 1500x1200' }],
+  });
+  await esperar(() => spy.guardados.length >= 1);
+  assert.equal(spy.guardados.length, 1);
+  assert.equal(spy.guardados[0].filename, 'CM-FR-004-2026-0392.pdf');
+  assert.equal(spy.guardados[0].aiDescription, 'Propuesta CM-FR-004-2026-0392');
+});
+
+test('🔒 IG [CM-FR-004] si sales-os falla al guardar, el cliente recibe igual sus propuestas y su mensaje', async () => {
+  for (const guardadoFalla of ['lanza', 'null']) {
+    const spy = await correr({ guardadoFalla, turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1200' }] });
+    assert.equal(spy.documentos.length, 3, `[${guardadoFalla}] el guardado fallido freno el envio`);
+    assert.ok(spy.textos.length >= 1, `[${guardadoFalla}] el cliente quedo sin respuesta`);
+    assert.ok(spy.quoteEvents.some((e) => e.status === 'sent'), `[${guardadoFalla}] se perdio la conversion`);
+  }
+});
+
+test('🔒 IG [CM-FR-004] un folio emitido queda guardado aunque Meta no lo haya entregado (igual que WhatsApp)', async () => {
+  // Paridad con webhook.js: el Paso 3a guarda sin mirar `docSent`. El registro del documento
+  // emitido no depende de que Meta lo haya aceptado; el operador lo ve y lo reenvia a mano.
+  const spy = await correr({
+    envioFalla: true,
+    item: { producto_label: 'Corredera SLIDING H80', product: 'Corredera SLIDING H80',
+      measures: '1500x1200', color: 'Nogal', qty: 1, unit_price: PRECIO.Nogal, glass_label: '4+12+4' },
+    turnos: [{ cotiza: true, text: 'cotizame una corredera nogal de 1500x1200' }],
+  });
+  await esperar(() => spy.guardados.length >= 1);
+  assert.equal(spy.guardados.length, 1);
+  assert.equal(spy.guardados[0].waMediaId, '');
+});
+
+test('🔒 IG [CM-FR-004 · Codex 21-oct] sales-os COLGADO (no contesta nunca): el turno termina igual, con las 3 propuestas, el texto y la conversion', async () => {
+  // Con un rechazo inmediato o un null (test de arriba) el turno terminaria rapido AUNQUE
+  // alguien le pusiera `await` al guardado. Solo un guardado que nunca contesta prueba que
+  // nadie lo espera: con `await`, el turno queda colgado y este tope lo hace fallar.
+  let tope;
+  const spy = await Promise.race([
+    correr({ guardadoFalla: 'colgado', turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1200' }] }),
+    new Promise((_, rej) => { tope = setTimeout(() => rej(new Error('el turno quedo esperando al guardado en sales-os')), 3000); }),
+  ]).finally(() => clearTimeout(tope));
+  assert.equal(spy.documentos.length, 3, 'el guardado colgado freno las opciones B/C');
+  assert.equal(spy.guardados.length, 3, 'se intento guardar A, B y C');
+  assert.ok(spy.textos.length >= 1, 'el cliente quedo sin respuesta');
+  assert.ok(spy.quoteEvents.some((e) => e.status === 'sent'), 'se perdio la conversion');
 });
