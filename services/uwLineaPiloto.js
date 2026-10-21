@@ -19,28 +19,35 @@
 //  - Thermal es un PROVEEDOR: si no contesta, no se manda y la propuesta sigue su curso.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { createHash } from 'node:crypto';
+
 // Folios VIGENTES tras la reemisión del 20-oct (activa-thermal origin/main,
 // tools/informe_nodo/informe_uw.py: VIGENTE + REEMPLAZOS). El código lleva el sufijo que
 // pide la verificación pública. 🔴 Si Thermal reemite una ventana, ESTA tabla se actualiza
 // con el folio nuevo: el viejo sigue verificable pero dice «reemplazado».
 // Las llaves son el rótulo EXACTO que pone el motor (medido en `quotes.payload.items`,
-// 120 días, 21-oct): «Corredera SLIDING H98 Doble Riel S75» 225 · «Corredera ANDES 66
+// 120 días, 21-oct). `sha256` = el que publica la verificación pública de cada folio (leído
+// 21-oct, igual al del PDF descargado): el bot solo entrega ESE archivo exacto (Thermos r1). Rótulos: «Corredera SLIDING H98 Doble Riel S75» 225 · «Corredera ANDES 66
 // Monorriel» 6 · «Corredera SLIDING H98 Triple Riel S75» 3 · Andes 66 doble riel: 0 hoy.
 export const CATALOGO_UW_LINEA = Object.freeze({
   'corredera sliding h98 triple riel s75': Object.freeze({
     ventana: 'V1', folio: 'AT-NCH3137-1-2026-000026', codigo: 'AT-NCH3137-1-2026-000026-aa8c17',
+    sha256: '462563e72efac4e1f60ee954fc91a3a5efcac3632f66f359183529ae69ffca0f',
     linea: 'Corredera S75 H98 triple riel', archivo: 'Corredera-S75-H98-Triple-Riel',
   }),
   'corredera sliding h98 doble riel s75': Object.freeze({
     ventana: 'V2N', folio: 'AT-NCH3137-1-2026-000027', codigo: 'AT-NCH3137-1-2026-000027-7492c9',
+    sha256: '49cd9956631948c374f12b3011606a4667a90165801497e236f934c05fb56bec',
     linea: 'Corredera S75 H98 doble riel', archivo: 'Corredera-S75-H98-Doble-Riel',
   }),
   'corredera andes 66 monorriel': Object.freeze({
     ventana: 'V4N', folio: 'AT-NCH3137-1-2026-000028', codigo: 'AT-NCH3137-1-2026-000028-13ffa7',
+    sha256: 'f1c9b7e7769b3d3d27d34e6eb9237f864e1c58c21486d12b4a6981d7482852d0',
     linea: 'Corredera Andes H66 monorriel', archivo: 'Corredera-Andes-H66-Monorriel',
   }),
   'corredera andes 66 doble riel': Object.freeze({
     ventana: 'V5N', folio: 'AT-NCH3137-1-2026-000029', codigo: 'AT-NCH3137-1-2026-000029-034e94',
+    sha256: '7afeca8bb6626077fddb8df49da781de93dc56a144ffd6d07259dd2bab2cc428',
     linea: 'Corredera Andes H66 doble riel', archivo: 'Corredera-Andes-H66-Doble-Riel',
   }),
 });
@@ -88,6 +95,7 @@ export function enPilotoUwLinea(waId, { lista = listaPiloto() } = {}) {
 
 /** Descarga el PDF de la verificación PÚBLICA de Thermal. Devuelve un Buffer o lanza. */
 export async function descargarInformeUw(codigo, {
+  sha256 = null,
   fetchImpl = fetch,
   baseUrl = process.env.THERMAL_API_URL || 'https://activa-thermal-production.up.railway.app',
   timeoutMs = 15_000,
@@ -101,6 +109,11 @@ export async function descargarInformeUw(codigo, {
   const buf = Buffer.from(await r.arrayBuffer());
   if (buf.length > MAX_BYTES) throw new Error(`PDF de ${buf.length} bytes, sobre el tope`);
   if (buf.subarray(0, 5).toString('latin1') !== '%PDF-') throw new Error('la respuesta no es un PDF');
+  // Si el catálogo trae el hash, el archivo tiene que ser ESE: un PDF regenerado o cambiado no
+  // sale al cliente aunque la verificación siga respondiendo.
+  if (sha256 && createHash('sha256').update(buf).digest('hex') !== sha256) {
+    throw new Error(`el PDF de ${codigo} no coincide con el sha256 del catálogo`);
+  }
   return buf;
 }
 
@@ -108,11 +121,14 @@ export async function descargarInformeUw(codigo, {
 export const nombreParaCliente = (e) => `Informe-Uw-${e.archivo}-${e.folio}.pdf`;
 
 /** Nombre del archivo ISO de ESTA entrega. El mismo PDF va a muchos clientes y WorkDrive no
- *  sobrescribe (`overwrite:false`): sin un sufijo por entrega, la 2ª copia fallaría al archivar. */
-export function nombreParaArchivo(e, telefono, ahora = new Date()) {
+ *  sobrescribe (`overwrite:false`): sin un sufijo por entrega, la 2ª copia fallaría al archivar.
+ *  [Codex r1] Minuto + 4 dígitos podía repetirse (dos entregas al mismo teléfono en el mismo
+ *  minuto): va el id del mensaje de Meta, que es único por envío, y milisegundos de respaldo. */
+export function nombreParaArchivo(e, telefono, ahora = new Date(), msgId = '') {
   const tel4 = String(telefono || '').replace(/\D/g, '').slice(-4) || '0000';
-  const ts = ahora.toISOString().replace(/[-:T]/g, '').slice(0, 12);
-  return `Informe-Uw-${e.archivo}-${e.folio}-entrega-${ts}-${tel4}.pdf`;
+  const ts = ahora.toISOString().replace(/[-:T.Z]/g, '').slice(0, 17);
+  const id = String(msgId || '').replace(/[^0-9A-Za-z]/g, '').slice(-12);
+  return `Informe-Uw-${e.archivo}-${e.folio}-entrega-${ts}-${tel4}${id ? `-${id}` : ''}.pdf`;
 }
 
 /** Lo que acompaña al PDF. Dice qué es y qué NO es (tridente 21-oct). Sin siglas sin explicar
@@ -127,6 +143,7 @@ export function captionUwLinea(e) {
     `Puede comprobar que es auténtico con el código QR del documento.`;
 }
 
-/** Clave del candado: una entrega por cliente y por ventana tipo (90 días, como el selector). */
-export const claveEntregaUw = (cliente, e) => `uw_linea_entregado:${cliente}:${e.ventana}`;
-export const TTL_ENTREGA_UW_S = 90 * 24 * 3600;
+/** Tipo de entrega para el candado que YA usa el selector de documentos
+ *  (`documentosCotizacion.js`: `claveEntrega(telefono, tipo)` + `entregaTtlSeg()`), en vez de
+ *  un candado paralelo con su propia llave y su propio TTL (Thermos calidad r1, B3). */
+export const tipoEntregaUw = (e) => `uw_linea:${e.ventana}`;

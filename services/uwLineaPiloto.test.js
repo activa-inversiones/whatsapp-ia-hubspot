@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CATALOGO_UW_LINEA, elegirInformesUwLinea, listaPiloto, enPilotoUwLinea, descargarInformeUw,
-  nombreParaCliente, nombreParaArchivo, captionUwLinea, claveEntregaUw, MAX_INFORMES_UW,
+  nombreParaCliente, nombreParaArchivo, captionUwLinea, tipoEntregaUw, MAX_INFORMES_UW,
 } from './uwLineaPiloto.js';
 
 test('calce EXACTO: los rótulos reales del motor encuentran su ventana tipo', () => {
@@ -73,9 +73,12 @@ test('cada entrada del catálogo tiene un código que la descarga acepta', () =>
 test('nombres: el del cliente lleva el folio (se archiva en CM-FR-008); el de archivo es único por entrega', () => {
   const e = CATALOGO_UW_LINEA['corredera sliding h98 doble riel s75'];
   assert.equal(nombreParaCliente(e), 'Informe-Uw-Corredera-S75-H98-Doble-Riel-AT-NCH3137-1-2026-000027.pdf');
-  const a = nombreParaArchivo(e, '56957296035', new Date('2026-10-21T10:05:00Z'));
-  assert.equal(a, 'Informe-Uw-Corredera-S75-H98-Doble-Riel-AT-NCH3137-1-2026-000027-entrega-202610211005-6035.pdf');
-  assert.notEqual(a, nombreParaArchivo(e, '56911112222', new Date('2026-10-21T10:05:00Z')));
+  const t = new Date('2026-10-21T10:05:07.123Z');
+  const a = nombreParaArchivo(e, '56957296035', t, 'wamid.HBgLNTY5NTcyOTYwMzUVAgARGBI4');
+  assert.equal(a, 'Informe-Uw-Corredera-S75-H98-Doble-Riel-AT-NCH3137-1-2026-000027-entrega-20261021100507123-6035-MzUVAgARGBI4.pdf');
+  // [Codex r1] dos entregas al MISMO teléfono en el mismo instante: el id del mensaje las separa
+  assert.notEqual(nombreParaArchivo(e, '56957296035', t, 'wamid.A1'), nombreParaArchivo(e, '56957296035', t, 'wamid.B2'));
+  assert.notEqual(a, nombreParaArchivo(e, '56911112222', t, 'wamid.HBgLNTY5NTcyOTYwMzUVAgARGBI4'));
   assert.doesNotMatch(a, /CM-FR-004/, 'sin folio de propuesta: el archivo ISO lo mandaría a CM-FR-004');
 });
 
@@ -85,6 +88,12 @@ test('el texto dice qué es y qué NO es, sin claims sin respaldo', () => {
   assert.match(c, /NCh 3137/);
   assert.match(c, /código QR/);
   assert.doesNotMatch(c, /certificad|laboratorio|garantiza/i);
-  assert.equal(claveEntregaUw('56957296035', CATALOGO_UW_LINEA['corredera andes 66 monorriel']),
-    'uw_linea_entregado:56957296035:V4N');
+  assert.equal(tipoEntregaUw(CATALOGO_UW_LINEA['corredera andes 66 monorriel']), 'uw_linea:V4N');
+});
+
+test('si el catálogo trae el sha256, un PDF distinto NO se entrega', async () => {
+  const ok = async () => new Response(Buffer.from('%PDF-1.7 otro'), { status: 200 });
+  await assert.rejects(descargarInformeUw('AT-NCH3137-1-2026-000027-7492c9',
+    { fetchImpl: ok, sha256: CATALOGO_UW_LINEA['corredera sliding h98 doble riel s75'].sha256 }), /sha256/);
+  for (const e of Object.values(CATALOGO_UW_LINEA)) assert.match(e.sha256, /^[0-9a-f]{64}$/, e.ventana);
 });
