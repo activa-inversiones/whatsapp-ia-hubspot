@@ -550,10 +550,9 @@ test('📐 D6 la primera entrega deja la marca (TTL del selector) y el rastro pa
   assert.ok(rastro && rastro.valor?.tipo === 'uw_linea' && rastro.valor?.clave === clave, `rastro: ${JSON.stringify(rastro)}`);
 });
 
-test('📐 D8 la marca MANUAL del cockpit (térmico/vientos) NO fuerza reenviar el Uw', async () => {
-  const { deps, spy, telefono, estado } = armarUw();
+test('📐 D8 con selección MANUAL del cockpit el Uw no se agrega (ni el primero: nadie lo eligió)', async () => {
+  const { deps, spy, telefono } = armarUw();
   deps.decidirDocumentosCotizacion = async () => ({ termico: true, vientos: true, propuesta: true, origen: 'manual' });
-  estado.set(`docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`, { valor: { at: Date.now() }, expira: Date.now() + 3_600_000 });
   await conPiloto(telefono, async () => {
     await handleWebhook({ body: {} }, makeRes(), deps);
     assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
@@ -582,4 +581,20 @@ test('📐 D9 el «reset» del cliente suelta también el candado del Uw (como t
     assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
   });
   assert.equal(cuenta(spy, 'uw'), 1, `después del reset vuelve a salir — linea: ${JSON.stringify(spy.linea)}`);
+});
+
+test('📐 D10 Meta no confirma (sin id de mensaje): NO cuenta como enviado, queda «dudoso» y no se reintenta solo', async () => {
+  const { deps, spy, telefono, estado } = armarUw();
+  const enviar = deps.sendWaDocument;
+  deps.sendWaDocument = async (to, m, filename, cap) => {
+    const r = await enviar(to, m, filename, cap);
+    return /^Informe-Uw/.test(filename || '') ? { ok: true } : r;   // 200 sin wamid
+  };
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  const marca = estado.get(`docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`);
+  assert.equal(marca?.valor?.dudoso, true, `marca: ${JSON.stringify(marca)}`);
+  assert.ok(!spy.medios.some((m) => /^Informe-Uw/.test(m.filename)), 'lo no confirmado NO se archiva como entregado');
 });

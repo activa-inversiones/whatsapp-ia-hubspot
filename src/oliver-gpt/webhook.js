@@ -4483,18 +4483,35 @@ Comuna: ${datos.comuna}`
                 // rompe el orden aprobado por el dueño. Se corta acá, justo antes de enviar.
                 if (techo.vencido) return 'vencido';
                 const envio = media ? await sendWaDocument(from, media, archivo, captionUwLinea(e)) : null;
+                // [Codex r2] HTTP 200 no prueba entrega (AGENTS.md). Misma regla que vientos:
+                //  - sin `ok` y con resultado DESCONOCIDO (timeout/5xx: quizá llegó) ⇒ candado
+                //    «dudoso», NO se reintenta solo y se avisa al dueño;
+                //  - `ok` SIN id de mensaje ⇒ tampoco hay cómo conciliarlo después: mismo trato;
+                //  - sin `ok` y rechazo claro ⇒ fallo, la próxima cotización reintenta.
+                // Solo `ok` + `msgId` cuenta como enviado, y deja el rastro para el acuse.
+                const _clU = clasificarEnvio(envio || {});
+                const dudoso = Boolean(media) && ((envio?.ok === true && !envio?.msgId)
+                  || (envio?.ok !== true && _clU.resultado === RESULTADO_META.DESCONOCIDO));
+                if (dudoso) {
+                  cuenta.fallos += 1;
+                  log('error', 'generarPdf.uwLinea', `${from}: informe Uw ${e.folio}: resultado DESCONOCIDO (${_clU.motivo || 'sin id de mensaje'}) — NO se reintenta. Revisar si llegó.`);
+                  avisarEntregaDudosa({ tipo: 'Informe Uw de la línea', folio: e.folio, motivo: _clU.motivo || 'sin id de mensaje', nombre: clientName || '' });
+                  try { await escribir(clave, { at: Date.now(), folio: e.folio, dudoso: true }, entregaTtlSeg()); }
+                  catch { /* sin candado puede repetirse; el aviso ya salió */ }
+                  continue;
+                }
                 if (!(envio && envio.ok === true)) {
-                  log('warn', 'generarPdf.uwLinea', `${from}: informe Uw ${e.folio} NO se entregó`);
+                  log('warn', 'generarPdf.uwLinea', `${from}: informe Uw ${e.folio} NO se entregó (${_clU.motivo || 'sin envío'})`);
                   cuenta.fallos += 1;
                   continue;
                 }
                 cuenta.enviados += 1;
-                try { await escribir(clave, { at: Date.now(), folio: e.folio, quote: quoteNumber || null }, entregaTtlSeg()); }
+                try { await escribir(clave, { at: Date.now(), folio: e.folio, quote: quoteNumber || null, msgId: envio.msgId }, entregaTtlSeg()); }
                 catch { /* el candado evita repetir; perderlo solo repite el PDF */ }
                 // [Codex r1] `ok` = Meta aceptó el POST, NO que llegó. El rastro deja que el acuse
                 // `failed` posterior (`acuse.fallo`) suelte este candado y avise, igual que con el
                 // informe térmico: si no, un 131047 dejaba al cliente sin Uw durante todo el candado.
-                if (envio.msgId) {
+                {
                   try {
                     await escribir(`wamsg:${envio.msgId}`, {
                       msgId: envio.msgId, tipo: 'uw_linea', folio: e.folio,
@@ -4507,7 +4524,7 @@ Comuna: ${datos.comuna}`
                   actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
                   body: `📐 Informe Uw de la línea ${e.linea} (${e.folio}) enviado al cliente · piloto`,
                   metadata: { source: 'oliver_gpt_uw_linea_piloto', folio: e.folio, ventana: e.ventana,
-                              filename: archivo, media_id: media, quote_number: quoteNumber || null },
+                              filename: archivo, media_id: media, msg_id: envio.msgId, quote_number: quoteNumber || null },
                 }));
                 // Registro ISO de la ENTREGA: nombre único por entrega (WorkDrive no sobrescribe y
                 // el mismo PDF va a muchos clientes); el folio AT-NCH3137-1 lo manda a CM-FR-008.
