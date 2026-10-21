@@ -4478,6 +4478,7 @@ Comuna: ${datos.comuna}`
               try {
                 const pdf = await (deps.descargarInformeUw || descargarInformeUw)(e.codigo, { sha256: e.sha256 });
                 const archivo = nombreParaCliente(e);
+                if (techo.vencido) return 'vencido';   // [NIM] ni siquiera se sube un PDF que no va a salir
                 const media = await uploadWaDocument(pdf, archivo);
                 // Si el techo ya venció, la propuesta pudo salir: un informe DESPUÉS del precio
                 // rompe el orden aprobado por el dueño. Se corta acá, justo antes de enviar.
@@ -4511,14 +4512,12 @@ Comuna: ${datos.comuna}`
                 // [Codex r1] `ok` = Meta aceptó el POST, NO que llegó. El rastro deja que el acuse
                 // `failed` posterior (`acuse.fallo`) suelte este candado y avise, igual que con el
                 // informe térmico: si no, un 131047 dejaba al cliente sin Uw durante todo el candado.
-                {
-                  try {
+                try {
                     await escribir(`wamsg:${envio.msgId}`, {
                       msgId: envio.msgId, tipo: 'uw_linea', folio: e.folio,
                       telefono: String(from) /* [chat] destinatario del envío */, cliente: String(claves.cliente), clave,
                     }, 3 * 24 * 3600);
-                  } catch { /* sin rastro: un rechazo tardío no suelta el candado */ }
-                }
+                } catch { /* sin rastro: un rechazo tardío no suelta el candado */ }
                 safe('generarPdf.uwLinea.espejo', () => bridge.pushConversationEvent({
                   channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound',
                   actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
