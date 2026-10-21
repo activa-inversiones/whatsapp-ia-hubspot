@@ -70,6 +70,7 @@ import { pedirVientos, ventanasParaVientos } from '../../services/vientosThermal
 import { motorCotizo, vidrioDelMotor, precioCoincide, elegirVidrio, aplicarVidrio, avisarVidrio, VIDRIO_RESPALDO } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor
 import { generarInformeVientosPdf } from '../../services/informesThermal.js';
 import { decidirDocumentosCotizacion, leerEntregasLocales, marcarEntregaLocal } from '../../services/documentosCotizacion.js'; // [2026-09-30] selector de documentos por cotización
+import { elegirInformesUwLinea, enPilotoUwLinea, descargarInformeUw, nombreParaCliente, nombreParaArchivo, captionUwLinea, claveEntregaUw, TTL_ENTREGA_UW_S } from '../../services/uwLineaPiloto.js'; // [2026-10-21] piloto informe Uw de la línea (#1575)
 import { clasificarResultadoEmision } from '../../services/oliverInternoLiberar.js'; // [2026-10-12 · #1500-C] emisión interna: resultado → forma que lee sales-os
 import { numerarVentanas } from '../../services/etiquetaVentana.js'; // [2026-09-19] el numero se congela antes de filtrar
 
@@ -4434,6 +4435,58 @@ Comuna: ${datos.comuna}`
               new Promise((res) => { vence = setTimeout(() => res('timeout'), techoMs); }),
             ]).finally(() => { if (vence) clearTimeout(vence); });
           };
+          // 📐 [2026-10-21 · #1575] PILOTO: el informe Uw de la LÍNEA cotizada (ACTIVA Thermal,
+          // folio AT-NCH3137-1, QR público). Decisión del dueño: primero solo a su número, solo
+          // calce exacto de línea. Va después de vientos y antes del precio, con su propio techo:
+          // como los otros informes, es un regalo que jamás retiene la propuesta.
+          const enviarUwLinea = async () => {
+            if (!enPilotoUwLinea(from)) return 'fuera_piloto';
+            const elegidos = elegirInformesUwLinea(input.items || []);
+            if (!elegidos.length) return 'sin_linea';
+            const leer = deps.leerEstado || leerEstado;
+            const escribir = deps.escribirEstado || escribirEstado;
+            let enviados = 0;
+            for (const e of elegidos) {
+              const clave = claveEntregaUw(claves.cliente, e);
+              try { if (!docsForzar && await leer(clave)) continue; }   // ya lo tiene (90 días)
+              catch { /* sin estado: se manda; es un piloto acotado a una lista */ }
+              const pdf = await (deps.descargarInformeUw || descargarInformeUw)(e.codigo);
+              const archivo = nombreParaCliente(e);
+              const media = await uploadWaDocument(pdf, archivo);
+              const envio = media ? await sendWaDocument(from, media, archivo, captionUwLinea(e)) : null;
+              if (!(envio && envio.ok === true)) {
+                log('warn', 'generarPdf.uwLinea', `${from}: informe Uw ${e.folio} NO se entregó`);
+                continue;
+              }
+              enviados += 1;
+              try { await escribir(clave, { at: Date.now(), folio: e.folio, quote: quoteNumber || null }, TTL_ENTREGA_UW_S); }
+              catch { /* el candado evita repetir; perderlo solo repite el PDF */ }
+              safe('generarPdf.uwLinea.espejo', () => bridge.pushConversationEvent({
+                channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound',
+                actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
+                body: `📐 Informe Uw de la línea ${e.linea} (${e.folio}) enviado al cliente · piloto`,
+                metadata: { source: 'oliver_gpt_uw_linea_piloto', folio: e.folio, ventana: e.ventana,
+                            filename: archivo, media_id: media, quote_number: quoteNumber || null },
+              }));
+              // Registro ISO de la ENTREGA: nombre único por entrega (WorkDrive no sobrescribe y
+              // el mismo PDF va a muchos clientes); el folio AT-NCH3137-1 lo manda a CM-FR-008.
+              safe('generarPdf.uwLinea.registro', () => (deps.saveMedia || saveMedia)({
+                phone: telefonoCliente, direction: 'outbound', mediaType: 'document',
+                mimeType: 'application/pdf', filename: nombreParaArchivo(e, telefonoCliente),
+                buffer: pdf, waMediaId: media,
+                aiDescription: `Informe Uw de la línea ${e.linea} ${e.folio} (piloto, cotización ${quoteNumber || 's/n'})`,
+              }));
+            }
+            return enviados ? 'enviado' : 'ya_entregado_o_fallo';
+          };
+          const enviarUwLineaConTecho = async () => {
+            const techoMs = Number(deps.seqUwLineaTimeoutMs ?? 30_000);
+            let vence = null;
+            return Promise.race([
+              safe('generarPdf.uwLinea', enviarUwLinea),
+              new Promise((res) => { vence = setTimeout(() => res('timeout'), techoMs); }),
+            ]).finally(() => { if (vence) clearTimeout(vence); });
+          };
           log('info', 'generarPdf.docsSel',
             `${from}: ${quoteNumber} → térmico=${docsSel.termico} vientos=${docsSel.vientos} (${docsSel.origen})`);
 
@@ -4557,6 +4610,10 @@ Comuna: ${datos.comuna}`
               const resVientos = !docsSel.vientos ? 'no_seleccionado'
                 : (VIENTOS_OMITIDO_POR_TERMICO[resultadoInforme] || await enviarVientosConTecho());
               log('info', 'generarPdf.secuencia', `${from}: vientos → ${resVientos || 'sin_resultado'}`);
+              // 📐 Paso 5-ter (#1575, piloto): el informe Uw de la línea, si el cliente está en la
+              // lista y la línea calza exacto. Con techo: nunca retiene el precio.
+              const resUwLinea = await enviarUwLineaConTecho();
+              log('info', 'generarPdf.secuencia', `${from}: uw_linea → ${resUwLinea || 'sin_resultado'}`);
               if (resultadoInforme === 'enviado') {
                 // Paso 6 de la secuencia: el video cae ENTRE el informe y la propuesta (solo con
                 // la secuencia completa: el video acompaña al térmico).
