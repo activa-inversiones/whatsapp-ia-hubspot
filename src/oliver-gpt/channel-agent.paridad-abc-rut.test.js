@@ -108,15 +108,19 @@ function armar(opts = {}) {
       });
       return Buffer.from(`%PDF-1.4 ${numero}`);
     },
-    sendChannelDocument: async (_canal, _to, _buf, filename) => {
+    sendChannelDocument: async (_canal, _to, buf, filename) => {
       spy.documentos.push(String(filename).replace(/\.pdf$/, ''));
+      spy.enviados = spy.enviados || {};
+      spy.enviados[filename] = buf;
       if (opts.envioFalla) return { ok: false, error: 'Meta rechazo el adjunto' };
       return { ok: true, messageId: `mid-${spy.documentos.length}` };
     },
     // [21-oct · CM-FR-004] El guardado del PDF en sales-os (mediaStore.saveMedia, el MISMO de
-    // WhatsApp). `opts.guardadoFalla`: 'lanza' | 'null' (el real NUNCA lanza: devuelve null).
+    // WhatsApp). `opts.guardadoFalla`: 'lanza' | 'null' (el real NUNCA lanza: devuelve null) |
+    // 'colgado' (sales-os no contesta nunca: solo lo deja pasar que NADIE espere al guardado).
     saveMedia: async (o) => {
       spy.guardados.push(o);
+      if (opts.guardadoFalla === 'colgado') return new Promise(() => {});
       if (opts.guardadoFalla === 'lanza') throw new Error('sales-os caido');
       if (opts.guardadoFalla === 'null') return null;
       return { media: { id: spy.guardados.length } };
@@ -802,8 +806,12 @@ test('🔴 IG [CM-FR-004] la propuesta A y sus opciones B y C quedan guardadas e
     assert.equal(g.mimeType, 'application/pdf');
     assert.ok(Buffer.isBuffer(g.buffer) && g.buffer.length > 0, `${g.filename} se guardo sin contenido`);
   }
-  // Es el MISMO binario que recibio el cliente, no otro generado aparte.
-  assert.match(spy.guardados[1].buffer.toString(), /CM-FR-004-2026-0392-B/);
+  // Es el MISMO binario que recibio el cliente, no otro generado aparte. [Codex 21-oct] se
+  // compara contra el buffer que de verdad se le paso a Meta, no solo contra su contenido.
+  for (const g of spy.guardados) {
+    assert.ok(spy.enviados?.[g.filename], `${g.filename} se guardo pero no se envio`);
+    assert.ok(g.buffer.equals(spy.enviados[g.filename]), `${g.filename}: lo guardado no es lo que recibio el cliente`);
+  }
   // El id del mensaje de Meta queda como referencia (como en la media entrante de IG/FB).
   assert.equal(spy.guardados[0].waMediaId, 'mid-1');
 });
@@ -841,4 +849,19 @@ test('🔒 IG [CM-FR-004] un folio emitido queda guardado aunque Meta no lo haya
   await esperar(() => spy.guardados.length >= 1);
   assert.equal(spy.guardados.length, 1);
   assert.equal(spy.guardados[0].waMediaId, '');
+});
+
+test('🔒 IG [CM-FR-004 · Codex 21-oct] sales-os COLGADO (no contesta nunca): el turno termina igual, con las 3 propuestas, el texto y la conversion', async () => {
+  // Con un rechazo inmediato o un null (test de arriba) el turno terminaria rapido AUNQUE
+  // alguien le pusiera `await` al guardado. Solo un guardado que nunca contesta prueba que
+  // nadie lo espera: con `await`, el turno queda colgado y este tope lo hace fallar.
+  let tope;
+  const spy = await Promise.race([
+    correr({ guardadoFalla: 'colgado', turnos: [{ cotiza: true, text: 'quiero cotizar una corredera de 1500x1200' }] }),
+    new Promise((_, rej) => { tope = setTimeout(() => rej(new Error('el turno quedo esperando al guardado en sales-os')), 3000); }),
+  ]).finally(() => clearTimeout(tope));
+  assert.equal(spy.documentos.length, 3, 'el guardado colgado freno las opciones B/C');
+  assert.equal(spy.guardados.length, 3, 'se intento guardar A, B y C');
+  assert.ok(spy.textos.length >= 1, 'el cliente quedo sin respuesta');
+  assert.ok(spy.quoteEvents.some((e) => e.status === 'sent'), 'se perdio la conversion');
 });
