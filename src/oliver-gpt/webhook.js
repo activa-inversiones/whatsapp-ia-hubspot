@@ -70,7 +70,7 @@ import { pedirVientos, ventanasParaVientos } from '../../services/vientosThermal
 import { motorCotizo, vidrioDelMotor, precioCoincide, elegirVidrio, aplicarVidrio, avisarVidrio, VIDRIO_RESPALDO } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor
 import { generarInformeVientosPdf } from '../../services/informesThermal.js';
 import { decidirDocumentosCotizacion, leerEntregasLocales, marcarEntregaLocal, claveEntrega, entregaTtlSeg } from '../../services/documentosCotizacion.js'; // [2026-09-30] selector de documentos por cotización
-import { elegirInformesUwLinea, enPilotoUwLinea, descargarInformeUw, nombreParaCliente, nombreParaArchivo, captionUwLinea, tipoEntregaUw } from '../../services/uwLineaPiloto.js'; // [2026-10-21] piloto informe Uw de la línea (#1575)
+import { elegirInformesUwLinea, enPilotoUwLinea, descargarInformeUw, nombreParaCliente, nombreParaArchivo, captionUwLinea, tipoEntregaUw } from '../../services/uwLineaPiloto.js'; // [2026-10-21] piloto informe Uw de la línea (#1581)
 import { clasificarResultadoEmision } from '../../services/oliverInternoLiberar.js'; // [2026-10-12 · #1500-C] emisión interna: resultado → forma que lee sales-os
 import { numerarVentanas } from '../../services/etiquetaVentana.js'; // [2026-09-19] el numero se congela antes de filtrar
 
@@ -1326,7 +1326,7 @@ export async function handleWebhook(req, res, deps = {}) {
             }
           }
 
-          // 2-bis. [2026-10-21 · #1575] El Uw del piloto: se suelta SU candado (la clave viaja en el
+          // 2-bis. [2026-10-21 · #1581] El Uw del piloto: se suelta SU candado (la clave viaja en el
           // rastro) para que la próxima cotización lo vuelva a intentar.
           if (rastro.tipo === 'uw_linea' && rastro.clave && esElVigente) {
             try { (deps.borrarEstado || borrarEstado)(rastro.clave); } catch { /* vence solo */ }
@@ -4442,7 +4442,7 @@ Comuna: ${datos.comuna}`
               new Promise((res) => { vence = setTimeout(() => res('timeout'), techoMs); }),
             ]).finally(() => { if (vence) clearTimeout(vence); });
           };
-          // 📐 [2026-10-21 · #1575] PILOTO: el informe Uw de la LÍNEA cotizada (ACTIVA Thermal,
+          // 📐 [2026-10-21 · #1581] PILOTO: el informe Uw de la LÍNEA cotizada (ACTIVA Thermal,
           // folio AT-NCH3137-1, QR público). Decisión del dueño: primero solo a su número, solo
           // calce exacto de línea. Va después de vientos y antes del precio, con su propio techo:
           // como los otros informes, es un regalo que jamás retiene la propuesta.
@@ -4675,7 +4675,7 @@ Comuna: ${datos.comuna}`
               const resVientos = !docsSel.vientos ? 'no_seleccionado'
                 : (VIENTOS_OMITIDO_POR_TERMICO[resultadoInforme] || await enviarVientosConTecho());
               log('info', 'generarPdf.secuencia', `${from}: vientos → ${resVientos || 'sin_resultado'}`);
-              // 📐 Paso 5-ter (#1575, piloto): el informe Uw de la línea, si el cliente está en la
+              // 📐 Paso 5-ter (#1581, piloto): el informe Uw de la línea, si el cliente está en la
               // lista y la línea calza exacto. Con techo: nunca retiene el precio.
               const resUwLinea = await enviarUwLineaConTecho();
               log('info', 'generarPdf.secuencia', `${from}: uw_linea → ${resUwLinea || 'sin_resultado'}`);

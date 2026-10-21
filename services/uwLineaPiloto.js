@@ -8,7 +8,7 @@
 // «Abatible S60» NO recibe el V8H oscilobatiente y la «Puerta abatible exterior con
 // zapata S60» NO recibe el V9 Zenia: «No, son distintas»).
 // Propuesta: temp-sales-os `_activa-docs/PROPUESTA-INFORMES-AUTOMATICOS-CLIENTE-2026-10-21.md`
-// (IMP-CM-FR-027, hueco H5) · tablero #1575.
+// (IMP-CM-FR-027, hueco H5) · tablero #1581 (renumerado desde #1575).
 //
 // Qué es y qué NO es:
 //  - Es el informe que ACTIVA Thermal YA emitió con folio AT-NCH3137-1-… y QR verificable,

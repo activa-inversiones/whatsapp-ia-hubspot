@@ -100,7 +100,7 @@ function armar({ informeEnvio = { ok: true, msgId: 'doc.1' }, informeCuelga = fa
     sendWaDocument: async (to, mediaId, filename) => {
       const tipo = /^Informe-Vientos/.test(filename || '') ? 'vientos'
         : /^Informe-Termico/.test(filename || '') ? 'informe'
-          : /^Informe-Uw/.test(filename || '') ? 'uw' : 'propuesta';   // [#1575] piloto Uw de la línea
+          : /^Informe-Uw/.test(filename || '') ? 'uw' : 'propuesta';   // [#1581] piloto Uw de la línea
       spy.linea.push(tipo);
       if (tipo === 'informe') return informeEnvio;
       return { ok: true, msgId: `${tipo}.1` };
@@ -452,7 +452,7 @@ test('⏸️ D ningun informe salio (los dos ya recibidos) ⇒ NO hay pausa ante
   assert.ok(!x.spy.linea.includes(`dormir:${PAUSA_PRECIO_MS}`), `pausa de mas — linea: ${JSON.stringify(x.spy.linea)}`);
 });
 
-/* ── D · [#1575, 21-oct] PILOTO: el informe Uw de la LÍNEA cotizada ──────────────────────
+/* ── D · [#1581, 21-oct] PILOTO: el informe Uw de la LÍNEA cotizada ──────────────────────
  * Decisión del dueño: «entreguemos el informe Uw/Uf de la línea cotizada, primero a una
  * lista chica de clientes»; piloto «Solo mi número primero»; solo calce EXACTO de línea.
  * Va después de vientos y ANTES del precio, con su propio techo: nunca retiene la propuesta. */
