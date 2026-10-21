@@ -98,7 +98,9 @@ function armar({ informeEnvio = { ok: true, msgId: 'doc.1' }, informeCuelga = fa
     generatePdf: async (data) => { spy.propuestas.push(data); return Buffer.alloc(2048, 3); },
     uploadWaDocument: async () => 'media.1',
     sendWaDocument: async (to, mediaId, filename) => {
-      const tipo = /^Informe-Vientos/.test(filename || '') ? 'vientos' : (/^Informe-Termico/.test(filename || '') ? 'informe' : 'propuesta');
+      const tipo = /^Informe-Vientos/.test(filename || '') ? 'vientos'
+        : /^Informe-Termico/.test(filename || '') ? 'informe'
+          : /^Informe-Uw/.test(filename || '') ? 'uw' : 'propuesta';   // [#1581] piloto Uw de la línea
       spy.linea.push(tipo);
       if (tipo === 'informe') return informeEnvio;
       return { ok: true, msgId: `${tipo}.1` };
@@ -448,4 +450,151 @@ test('⏸️ D ningun informe salio (los dos ya recibidos) ⇒ NO hay pausa ante
   assert.ok(await esperar(() => pos(x.spy, 'propuesta') >= 0), 'la propuesta sale');
   assert.equal(cuenta(x.spy, 'informe') + cuenta(x.spy, 'vientos'), 0, 'control: no salio ningun informe');
   assert.ok(!x.spy.linea.includes(`dormir:${PAUSA_PRECIO_MS}`), `pausa de mas — linea: ${JSON.stringify(x.spy.linea)}`);
+});
+
+/* ── D · [#1581, 21-oct] PILOTO: el informe Uw de la LÍNEA cotizada ──────────────────────
+ * Decisión del dueño: «entreguemos el informe Uw/Uf de la línea cotizada, primero a una
+ * lista chica de clientes»; piloto «Solo mi número primero»; solo calce EXACTO de línea.
+ * Va después de vientos y ANTES del precio, con su propio techo: nunca retiene la propuesta. */
+
+const H98 = [{ producto: 'Corredera SLIDING H98 Doble Riel S75', medidas: '2000x1400mm', vidrio: '5+12+5', ambiente: 'Living', cantidad: 1, precio: 130000 }];
+function conPiloto(lista, fn) {
+  const previo = process.env.UW_LINEA_PILOTO_LISTA;
+  process.env.UW_LINEA_PILOTO_LISTA = lista;
+  return fn().finally(() => {
+    if (previo === undefined) delete process.env.UW_LINEA_PILOTO_LISTA; else process.env.UW_LINEA_PILOTO_LISTA = previo;
+  });
+}
+function armarUw(opts = {}) {
+  const a = armar({ ventanas: H98, ...opts });
+  a.spy.descargas = []; a.spy.medios = [];
+  a.deps.descargarInformeUw = async (codigo) => { a.spy.descargas.push(codigo); return Buffer.from('%PDF-1.7 uw'); };
+  a.deps.saveMedia = async (m) => { a.spy.medios.push(m); return { ok: true }; };
+  return a;
+}
+
+test('📐 D1 en el piloto y con calce exacto: térmico → vientos → Uw de la línea → propuesta, archivado con nombre único', async () => {
+  const { deps, spy, telefono } = armarUw();
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta sale siempre');
+  });
+  assert.equal(cuenta(spy, 'uw'), 1, `linea: ${JSON.stringify(spy.linea)}`);
+  assert.ok(pos(spy, 'vientos') < pos(spy, 'uw') && pos(spy, 'uw') < pos(spy, 'propuesta'),
+    `vientos → uw → propuesta — linea: ${JSON.stringify(spy.linea)}`);
+  assert.deepEqual(spy.descargas, ['AT-NCH3137-1-2026-000027-7492c9'], 'H98 doble riel = V2N vigente');
+  assert.ok(await esperar(() => spy.medios.some((m) => /^Informe-Uw-.*-entrega-\d{17}-\d{4}-[0-9A-Za-z]+\.pdf$/.test(m.filename))),
+    `registro ISO con nombre por entrega — ${JSON.stringify(spy.medios.map((m) => m.filename))}`);
+});
+
+test('📐 D2 FUERA del piloto no sale (la lista por defecto es solo el número del dueño)', async () => {
+  const { deps, spy } = armarUw();
+  await conPiloto('', async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  assert.equal(cuenta(spy, 'uw'), 0);
+  assert.deepEqual(spy.descargas, []);
+});
+
+test('📐 D3 en el piloto pero SIN calce exacto (H80) no sale nada', async () => {
+  const { deps, spy, telefono } = armarUw({ ventanas: [{ ...H98[0], producto: 'Corredera SLIDING H80 Doble Riel S75' }] });
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  assert.equal(cuenta(spy, 'uw'), 0);
+  assert.deepEqual(spy.descargas, []);
+});
+
+test('📐 D4 Thermal no contesta: la propuesta sale igual (techo propio), sin informe Uw', async () => {
+  const { deps, spy, telefono } = armarUw();
+  deps.descargarInformeUw = () => new Promise(() => {});   // cuelga para siempre
+  deps.seqUwLineaTimeoutMs = 200;
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta jamás espera al informe Uw');
+  });
+  assert.equal(cuenta(spy, 'uw'), 0);
+});
+
+test('📐 D5 un cliente que YA recibió el Uw de esa línea (candado de 90 días) no lo recibe de nuevo', async () => {
+  // El bot no emite dos propuestas iguales en 2 minutos (guardia anti-doble-folio), así que el
+  // «ya lo recibió» se prueba con la marca que deja la primera entrega.
+  const { deps, spy, telefono, estado } = armarUw();
+  estado.set(`docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`, { valor: { at: Date.now() }, expira: Date.now() + 3_600_000 });
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  assert.equal(cuenta(spy, 'uw'), 0, `linea: ${JSON.stringify(spy.linea)}`);
+  assert.deepEqual(spy.descargas, [], 'ni siquiera se descarga');
+});
+
+test('📐 D6 la primera entrega deja la marca (TTL del selector) y el rastro para el acuse de Meta', async () => {
+  const { deps, spy, telefono, estado } = armarUw();
+  const ttls = new Map();
+  const escribir = deps.escribirEstado;
+  deps.escribirEstado = (k, v, ttl) => { ttls.set(k, ttl); return escribir(k, v, ttl); };
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  assert.equal(cuenta(spy, 'uw'), 1);
+  const clave = `docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`;
+  const marca = estado.get(clave);
+  assert.ok(marca && marca.valor?.folio === 'AT-NCH3137-1-2026-000027', `marca: ${JSON.stringify(marca)}`);
+  assert.equal(ttls.get(clave), 90 * 24 * 3600, 'el mismo TTL del selector (COTIZACION_DOCS_VENTANA_DIAS, 90 por defecto)');
+  // [Codex r1] `ok` de Meta no es entrega: queda el rastro para que un `failed` tardío suelte el candado.
+  const rastro = estado.get('wamsg:uw.1');
+  assert.ok(rastro && rastro.valor?.tipo === 'uw_linea' && rastro.valor?.clave === clave, `rastro: ${JSON.stringify(rastro)}`);
+});
+
+test('📐 D8 con selección MANUAL del cockpit el Uw no se agrega (ni el primero: nadie lo eligió)', async () => {
+  const { deps, spy, telefono } = armarUw();
+  deps.decidirDocumentosCotizacion = async () => ({ termico: true, vientos: true, propuesta: true, origen: 'manual' });
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  assert.equal(cuenta(spy, 'uw'), 0, `linea: ${JSON.stringify(spy.linea)}`);
+});
+
+test('📐 D7 Thermal contesta TARDE (después del techo): el Uw NO llega después de la propuesta', async () => {
+  const { deps, spy, telefono } = armarUw();
+  deps.seqUwLineaTimeoutMs = 100;
+  deps.descargarInformeUw = async () => { await new Promise((r) => { setTimeout(r, 400); }); return Buffer.from('%PDF-1.7 tarde'); };
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+    await new Promise((r) => { setTimeout(r, 700); });   // deja terminar la descarga tardía
+  });
+  assert.equal(cuenta(spy, 'uw'), 0, `nada después del precio — linea: ${JSON.stringify(spy.linea)}`);
+});
+
+test('📐 D9 el «reset» del cliente suelta también el candado del Uw (como térmico y vientos)', async () => {
+  const { deps, spy, telefono, estado } = armarUw();
+  estado.set(`docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`, { valor: { at: Date.now() - 60_000 }, expira: Date.now() + 3_600_000 });
+  estado.set(`informe_reset:${telefono}`, { valor: Date.now() - 1_000, expira: Date.now() + 3_600_000 });
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  assert.equal(cuenta(spy, 'uw'), 1, `después del reset vuelve a salir — linea: ${JSON.stringify(spy.linea)}`);
+});
+
+test('📐 D10 Meta no confirma (sin id de mensaje): NO cuenta como enviado, queda «dudoso» y no se reintenta solo', async () => {
+  const { deps, spy, telefono, estado } = armarUw();
+  const enviar = deps.sendWaDocument;
+  deps.sendWaDocument = async (to, m, filename, cap) => {
+    const r = await enviar(to, m, filename, cap);
+    return /^Informe-Uw/.test(filename || '') ? { ok: true } : r;   // 200 sin wamid
+  };
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  const marca = estado.get(`docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`);
+  assert.equal(marca?.valor?.dudoso, true, `marca: ${JSON.stringify(marca)}`);
+  assert.ok(!spy.medios.some((m) => /^Informe-Uw/.test(m.filename)), 'lo no confirmado NO se archiva como entregado');
 });

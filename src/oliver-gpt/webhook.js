@@ -69,7 +69,8 @@ import { elegirVideo, mensajeDelVideo, mediaIdsDisponibles } from '../../service
 import { pedirVientos, ventanasParaVientos } from '../../services/vientosThermal.js';
 import { motorCotizo, vidrioDelMotor, precioCoincide, elegirVidrio, aplicarVidrio, avisarVidrio, VIDRIO_RESPALDO } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor
 import { generarInformeVientosPdf } from '../../services/informesThermal.js';
-import { decidirDocumentosCotizacion, leerEntregasLocales, marcarEntregaLocal } from '../../services/documentosCotizacion.js'; // [2026-09-30] selector de documentos por cotización
+import { decidirDocumentosCotizacion, leerEntregasLocales, marcarEntregaLocal, claveEntrega, entregaTtlSeg } from '../../services/documentosCotizacion.js'; // [2026-09-30] selector de documentos por cotización
+import { elegirInformesUwLinea, enPilotoUwLinea, descargarInformeUw, nombreParaCliente, nombreParaArchivo, captionUwLinea, tipoEntregaUw } from '../../services/uwLineaPiloto.js'; // [2026-10-21] piloto informe Uw de la línea (#1581)
 import { clasificarResultadoEmision } from '../../services/oliverInternoLiberar.js'; // [2026-10-12 · #1500-C] emisión interna: resultado → forma que lee sales-os
 import { numerarVentanas } from '../../services/etiquetaVentana.js'; // [2026-09-19] el numero se congela antes de filtrar
 
@@ -1265,7 +1266,8 @@ export async function handleWebhook(req, res, deps = {}) {
             return;
           }
 
-          const que = rastro.tipo === 'informe_termico' ? 'Informe térmico' : 'Propuesta';
+          const que = rastro.tipo === 'informe_termico' ? 'Informe térmico'
+            : rastro.tipo === 'uw_linea' ? 'Informe Uw de la línea' : 'Propuesta';
           const detalle = ac.motivo || `código ${ac.codigo ?? 'desconocido'}`;
 
           // 🔴 [2026-09-16] EL FALLO TAMBIÉN DEJA EVENTO. Hasta hoy solo lo dejaba la
@@ -1322,6 +1324,12 @@ export async function handleWebhook(req, res, deps = {}) {
             for (const k of [base, `${base}:en_curso`]) {
               try { (deps.borrarEstado || borrarEstado)(k); } catch { /* vence solo */ }
             }
+          }
+
+          // 2-bis. [2026-10-21 · #1581] El Uw del piloto: se suelta SU candado (la clave viaja en el
+          // rastro) para que la próxima cotización lo vuelva a intentar.
+          if (rastro.tipo === 'uw_linea' && rastro.clave && esElVigente) {
+            try { (deps.borrarEstado || borrarEstado)(rastro.clave); } catch { /* vence solo */ }
           }
 
           // 3. Avisarle a Marcelo: un documento que no llego es una venta detenida.
@@ -4434,6 +4442,116 @@ Comuna: ${datos.comuna}`
               new Promise((res) => { vence = setTimeout(() => res('timeout'), techoMs); }),
             ]).finally(() => { if (vence) clearTimeout(vence); });
           };
+          // 📐 [2026-10-21 · #1581] PILOTO: el informe Uw de la LÍNEA cotizada (ACTIVA Thermal,
+          // folio AT-NCH3137-1, QR público). Decisión del dueño: primero solo a su número, solo
+          // calce exacto de línea. Va después de vientos y antes del precio, con su propio techo:
+          // como los otros informes, es un regalo que jamás retiene la propuesta.
+          const enviarUwLinea = async (techo = { vencido: false }) => {
+            if (!enPilotoUwLinea(from)) return 'fuera_piloto';
+            // [Thermos r1] Solo cuando el que escribe ES el cliente. En modo atribución (el dueño
+            // cotiza a nombre de X) el PDF le llegaría al dueño y quedaría registrado como de X:
+            // la medición del piloto contaría una entrega que X nunca recibió.
+            if (String(from).replace(/\D/g, '') !== String(claves.cliente).replace(/\D/g, '')) return 'atribucion';
+            // [Thermos r1] Selección MANUAL del cockpit: el dueño eligió qué documentos van y el
+            // selector no conoce el Uw ⇒ no se agrega un documento que nadie eligió.
+            if (docsForzar) return 'seleccion_manual';
+            const elegidos = elegirInformesUwLinea(input.items || []);
+            if (!elegidos.length) {
+              log('info', 'generarPdf.uwLinea', `${from}: sin línea del catálogo — ${(input.items || []).map((it) => it.producto_label || it.product || '').join(' | ')}`);
+              return 'sin_linea';
+            }
+            const leer = deps.leerEstado || leerEstado;
+            const escribir = deps.escribirEstado || escribirEstado;
+            const cuenta = { enviados: 0, yaTenia: 0, fallos: 0 };
+            for (const e of elegidos) {
+              // Mismo candado que el selector de documentos (llave y TTL), por CLIENTE.
+              // [Codex r1] NO lo salta `docsForzar`: esa marca manual del cockpit decide térmico y
+              // vientos; el selector no conoce el Uw, así que no puede ordenar reenviarlo.
+              const clave = claveEntrega(claves.cliente, tipoEntregaUw(e));
+              try {
+                // [Thermos r1] El `reset` del cliente suelta también este candado, igual que en
+                // térmico y vientos (`candadoVigente`): el dueño prueba como cliente nuevo.
+                const resetAt = Number(await leer(claves.reset)) || 0;
+                if (candadoVigente(await leer(clave), resetAt)) { cuenta.yaTenia += 1; continue; }
+              } catch { /* sin estado: se manda; es un piloto acotado a una lista */ }
+              // [Thermos r1] Un ítem que falla no corta los demás.
+              try {
+                const pdf = await (deps.descargarInformeUw || descargarInformeUw)(e.codigo, { sha256: e.sha256 });
+                const archivo = nombreParaCliente(e);
+                if (techo.vencido) return 'vencido';   // [NIM] ni siquiera se sube un PDF que no va a salir
+                const media = await uploadWaDocument(pdf, archivo);
+                // Si el techo ya venció, la propuesta pudo salir: un informe DESPUÉS del precio
+                // rompe el orden aprobado por el dueño. Se corta acá, justo antes de enviar.
+                if (techo.vencido) return 'vencido';
+                const envio = media ? await sendWaDocument(from, media, archivo, captionUwLinea(e)) : null;
+                // [Codex r2] HTTP 200 no prueba entrega (AGENTS.md). Misma regla que vientos:
+                //  - sin `ok` y con resultado DESCONOCIDO (timeout/5xx: quizá llegó) ⇒ candado
+                //    «dudoso», NO se reintenta solo y se avisa al dueño;
+                //  - `ok` SIN id de mensaje ⇒ tampoco hay cómo conciliarlo después: mismo trato;
+                //  - sin `ok` y rechazo claro ⇒ fallo, la próxima cotización reintenta.
+                // Solo `ok` + `msgId` cuenta como enviado, y deja el rastro para el acuse.
+                const _clU = clasificarEnvio(envio || {});
+                const dudoso = Boolean(media) && ((envio?.ok === true && !envio?.msgId)
+                  || (envio?.ok !== true && _clU.resultado === RESULTADO_META.DESCONOCIDO));
+                if (dudoso) {
+                  cuenta.fallos += 1;
+                  log('error', 'generarPdf.uwLinea', `${from}: informe Uw ${e.folio}: resultado DESCONOCIDO (${_clU.motivo || 'sin id de mensaje'}) — NO se reintenta. Revisar si llegó.`);
+                  avisarEntregaDudosa({ tipo: 'Informe Uw de la línea', folio: e.folio, motivo: _clU.motivo || 'sin id de mensaje', nombre: clientName || '' });
+                  try { await escribir(clave, { at: Date.now(), folio: e.folio, dudoso: true }, entregaTtlSeg()); }
+                  catch { /* sin candado puede repetirse; el aviso ya salió */ }
+                  continue;
+                }
+                if (!(envio && envio.ok === true)) {
+                  log('warn', 'generarPdf.uwLinea', `${from}: informe Uw ${e.folio} NO se entregó (${_clU.motivo || 'sin envío'})`);
+                  cuenta.fallos += 1;
+                  continue;
+                }
+                cuenta.enviados += 1;
+                try { await escribir(clave, { at: Date.now(), folio: e.folio, quote: quoteNumber || null, msgId: envio.msgId }, entregaTtlSeg()); }
+                catch { /* el candado evita repetir; perderlo solo repite el PDF */ }
+                // [Codex r1] `ok` = Meta aceptó el POST, NO que llegó. El rastro deja que el acuse
+                // `failed` posterior (`acuse.fallo`) suelte este candado y avise, igual que con el
+                // informe térmico: si no, un 131047 dejaba al cliente sin Uw durante todo el candado.
+                try {
+                    await escribir(`wamsg:${envio.msgId}`, {
+                      msgId: envio.msgId, tipo: 'uw_linea', folio: e.folio,
+                      telefono: String(from) /* [chat] destinatario del envío */, cliente: String(claves.cliente), clave,
+                    }, 3 * 24 * 3600);
+                } catch { /* sin rastro: un rechazo tardío no suelta el candado */ }
+                safe('generarPdf.uwLinea.espejo', () => bridge.pushConversationEvent({
+                  channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound',
+                  actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
+                  body: `📐 Informe Uw de la línea ${e.linea} (${e.folio}) enviado al cliente · piloto`,
+                  metadata: { source: 'oliver_gpt_uw_linea_piloto', folio: e.folio, ventana: e.ventana,
+                              filename: archivo, media_id: media, msg_id: envio.msgId, quote_number: quoteNumber || null },
+                }));
+                // Registro ISO de la ENTREGA: nombre único por entrega (WorkDrive no sobrescribe y
+                // el mismo PDF va a muchos clientes); el folio AT-NCH3137-1 lo manda a CM-FR-008.
+                safe('generarPdf.uwLinea.registro', () => (deps.saveMedia || saveMedia)({
+                  phone: telefonoCliente, direction: 'outbound', mediaType: 'document',
+                  mimeType: 'application/pdf', filename: nombreParaArchivo(e, telefonoCliente, new Date(), envio.msgId),
+                  buffer: pdf, waMediaId: media,
+                  aiDescription: `Informe Uw de la línea ${e.linea} ${e.folio} (piloto, cotización ${quoteNumber || 's/n'})`,
+                }));
+              } catch (err) {
+                cuenta.fallos += 1;
+                log('warn', 'generarPdf.uwLinea', `${from}: informe Uw ${e.folio}: ${err?.message || err}`);
+              }
+            }
+            // [Thermos r1] Resultados separados: el log es la medición del piloto.
+            log('info', 'generarPdf.uwLinea', `${from}: enviados=${cuenta.enviados} ya_tenia=${cuenta.yaTenia} fallos=${cuenta.fallos}`);
+            if (cuenta.enviados) return 'enviado';
+            return cuenta.fallos ? 'fallo' : 'ya_entregado';
+          };
+          const enviarUwLineaConTecho = async () => {
+            const techoMs = Number(deps.seqUwLineaTimeoutMs ?? 30_000);
+            const techo = { vencido: false };
+            let vence = null;
+            return Promise.race([
+              safe('generarPdf.uwLinea', () => enviarUwLinea(techo)),
+              new Promise((res) => { vence = setTimeout(() => { techo.vencido = true; res('timeout'); }, techoMs); }),
+            ]).finally(() => { if (vence) clearTimeout(vence); });
+          };
           log('info', 'generarPdf.docsSel',
             `${from}: ${quoteNumber} → térmico=${docsSel.termico} vientos=${docsSel.vientos} (${docsSel.origen})`);
 
@@ -4557,6 +4675,10 @@ Comuna: ${datos.comuna}`
               const resVientos = !docsSel.vientos ? 'no_seleccionado'
                 : (VIENTOS_OMITIDO_POR_TERMICO[resultadoInforme] || await enviarVientosConTecho());
               log('info', 'generarPdf.secuencia', `${from}: vientos → ${resVientos || 'sin_resultado'}`);
+              // 📐 Paso 5-ter (#1581, piloto): el informe Uw de la línea, si el cliente está en la
+              // lista y la línea calza exacto. Con techo: nunca retiene el precio.
+              const resUwLinea = await enviarUwLineaConTecho();
+              log('info', 'generarPdf.secuencia', `${from}: uw_linea → ${resUwLinea || 'sin_resultado'}`);
               if (resultadoInforme === 'enviado') {
                 // Paso 6 de la secuencia: el video cae ENTRE el informe y la propuesta (solo con
                 // la secuencia completa: el video acompaña al térmico).
@@ -4577,7 +4699,9 @@ Comuna: ${datos.comuna}`
               // tenía la propuesta encima. [05-oct] Si salió ALGÚN informe —el térmico o el
               // de vientos—, no solo el térmico: con el térmico caído, el de vientos y el
               // precio caían pegados. Un informe repetido o caído (o ninguno) no gana demora.
-              if (resultadoInforme === 'enviado' || resVientos === 'enviado') {
+              // [Thermos r1] El Uw del piloto también es un documento antes del precio: si fue el
+              // único que salió, el precio no puede caer pegado a él.
+              if (resultadoInforme === 'enviado' || resVientos === 'enviado' || resUwLinea === 'enviado') {
                 await esperarAntesDeEnviar({ dormir: deps.dormir || null, ms: SEQ_PRECIO_MS });
               }
               // Despues, derecho a la propuesta. En timeout el térmico puede llegar después por
