@@ -49,6 +49,7 @@ import { loadSession as realLoadSession, persistSession as realPersistSession, r
 import { generatePremiumQuotePdf as realGeneratePdf } from '../../services/quotePdf.js';
 import { upsertZohoDeal as realUpsertZohoDeal, addZohoNote as realAddZohoNote, attachPdfToDeal as realAttachPdfToDeal } from '../../services/zohoCommercial.js';
 import { sendChannelDocument as realSendChannelDocument } from '../../services/multiChannelHandler.js';
+import { saveMedia as realSaveMedia } from '../../mediaStore.js'; // [21-oct · CM-FR-004] el MISMO guardado de la media IG/FB entrante (index.js)
 import { stripMontos, stripAccionesFalsas, quoteDataComplete, itemsParaPropuestaPdf } from './pdf-intent.js'; // [#2] filtro anti precio-suelto + [PDF-RACE] guard de completitud + [Ronda 4] anti acciones-falsas (compartidos con webhook.js)
 // [2026-07-02 dedupe] escalación desde el módulo COMPARTIDO — las copias locales causaron el bug
 // del título viejo de Marcelo en IG/FB (se actualizó escalation.js y las copias quedaron atrás).
@@ -265,6 +266,7 @@ export async function handleChannelTurn(
   const addZohoNote           = deps.addZohoNote            || realAddZohoNote;
   const attachPdfToDeal       = deps.attachPdfToDeal        || realAttachPdfToDeal;
   const sendChannelDocument   = deps.sendChannelDocument   || realSendChannelDocument;
+  const saveMedia             = deps.saveMedia             || realSaveMedia;
   const priceAllFn            = deps.priceAllEngine        || realPriceAllEngine;   // [2026-08-31] precio por color, inyectable para poder probarlo
   const sondaVidrioTopeMs     = Number(deps.sondaVidrioTopeMs) || SONDA_VIDRIO_TOPE_MS;   // [#1088] inyectable para no esperar 8 s en los tests
   const loadSession          = deps.loadSession            || realLoadSession;
@@ -884,6 +886,21 @@ export async function handleChannelTurn(
           const pdfSent = !!(sr && sr.ok !== false);
           const outsideWindow = !!(sr && sr.outsideWindow);
 
+          // 🔴 Paso 3a: GUARDAR el PDF en sales-os (media_attachments) — [21-oct · CM-FR-004]
+          // Medido el 21-oct: las propuestas de IG/FB no quedaban en la BD ni en WorkDrive
+          // (10 de Instagram, 15-jun a 04-ago, sin copia). WhatsApp lo hace en webhook.js
+          // (Paso 3a) y ese INSERT es el que dispara el archivado en COTIZACIONES. Paridad:
+          //   - se guarda AUNQUE Meta no lo haya entregado (webhook.js no mira `docSent`);
+          //   - phone = senderId, el id de la conversacion de IG/FB (index.js guarda asi la
+          //     media entrante de IG/FB, y es el external_id que usa el inbox);
+          //   - fire-and-forget: saveMedia nunca lanza y tiene timeout propio; si falla, log
+          //     y el cliente recibe su mensaje igual.
+          safe('generarPdf.storeMedia', () => saveMedia({
+            phone: senderId, direction: 'outbound', mediaType: 'document', mimeType: 'application/pdf',
+            filename, buffer: pdfBuffer, waMediaId: sr?.messageId || '',
+            aiDescription: `Propuesta ${quoteNumber}`,
+          }));
+
           // 🎨 Paso 3-bis: LAS OTRAS DOS PROPUESTAS (opciones B y C)
           // Mismo diseno que WhatsApp (webhook.js, Paso 3b-bis) y por las mismas razones:
           //   - CADA UNA AISLADA: el `try` va DENTRO del bucle, asi un fallo en la B no se
@@ -965,6 +982,12 @@ export async function handleChannelTurn(
                 const _sentOp = !!(_srOp && _srOp.ok !== false);
                 if (_sentOp) _opcionesEntregadas.push({ letra: _letraOp, color: _colorOp, numero: _numOp, total: _totalOp });
                 else log('error', 'generarPdf.opcion', `${convKey}: opcion ${_letraOp} (${_colorOp}) ${_numOp} NO se pudo entregar`);
+                // Cada folio queda guardado como la A (mismo Paso 3a; webhook.js hace lo mismo con B/C).
+                safe('generarPdf.opcion.storeMedia', () => saveMedia({
+                  phone: senderId, direction: 'outbound', mediaType: 'document', mimeType: 'application/pdf',
+                  filename: `${_numOp}.pdf`, buffer: _bufOp, waMediaId: _srOp?.messageId || '',
+                  aiDescription: `Propuesta ${_numOp} · opción ${_letraOp} ${_colorOp}`,
+                }));
 
                 await safe('generarPdf.opcion.registro', () => bridge.pushQuoteEvent({
                   phone: crmPhone, channel, customer_name: clientName,
