@@ -37,6 +37,13 @@ function makeDeps({ enviado = null, overrides = {} } = {}) {
     leerEstado: async (k) => (estado.has(k) ? estado.get(k).valor : null),
     escribirEstado: (k, v) => estado.set(k, { valor: v, expira: null }),
     borrarEstado: (k) => { spy.borrados.push(k); estado.delete(k); },
+    // [2026-10-22] Misma semántica que `estadoPersistente.borrarSi`: compara y borra en un paso.
+    borrarEstadoSi: async (k, cond) => {
+      const v = estado.has(k) ? estado.get(k).valor : null;
+      if (v == null) return { borrado: false, motivo: 'no_existe' };
+      if (!cond(v)) return { borrado: false, motivo: 'no_coincide' };
+      spy.borrados.push(k); estado.delete(k); return { borrado: true };
+    },
     handleTurn: async () => { spy.turnos += 1; return { reply: 'x', history: [], toolCalls: [], state: {} }; },
     sendWhatsAppText: async (to, body) => { spy.textos.push({ to, body }); return { ok: true, msgId: 'm1' }; },
     notifyHighValue: async (...a) => { spy.avisos.push(a); return { sent: true }; },
@@ -373,4 +380,13 @@ test('📐 Uw: el failed del MISMO envío que puso el candado sí lo suelta (la 
   await handleWebhook({ body: acuse('failed', 'wamid.UW_1', { errors: [{ code: 131047, title: 'x' }] }) }, makeRes(), deps);
   await new Promise((r) => setTimeout(r, 120));
   assert.ok(spy.borrados.includes(CLAVE_UW), `borrados: ${JSON.stringify(spy.borrados)}`);
+});
+
+test('📐 Uw: sin candado (venció o ya se soltó) el failed no rompe nada ni borra otra cosa', async () => {
+  const { deps, spy } = makeDeps({ enviado: rastroUw('wamid.UW_2') });
+  const res = makeRes();
+  await handleWebhook({ body: acuse('failed', 'wamid.UW_2', { errors: [{ code: 131047, title: 'x' }] }) }, res, deps);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(res.sentStatus, 200);
+  assert.ok(!spy.borrados.includes(CLAVE_UW), `borrados: ${JSON.stringify(spy.borrados)}`);
 });

@@ -46,7 +46,7 @@ import {
 } from '../../services/atribucionTurno.js';
 import { acquireLock, LOCKS } from '../../services/lockTelefono.js';
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
-import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado, borrarDurable as borrarEstadoDurable } from '../../services/estadoPersistente.js';
+import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado, borrarSi as borrarEstadoSi, borrarDurable as borrarEstadoDurable } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS, datosDelInforme } from '../../services/informeTermico.js';
 // [2026-10-17, dueno] Los informes los EMITE ACTIVA THERMAL; el local queda de respaldo (ver informesThermal.js).
@@ -1334,12 +1334,16 @@ export async function handleWebhook(req, res, deps = {}) {
           // que sí llegó, y la próxima cotización repetía el informe. El candado guarda el `msgId`
           // de quien lo puso; si no coincide (o no hay candado), no se toca.
           if (rastro.tipo === 'uw_linea' && rastro.clave && esElVigente) {
-            let actual = null;
-            try { actual = await (deps.leerEstado || leerEstado)(rastro.clave); } catch { actual = null; }
-            if (actual && actual.msgId === ac.msgId) {
-              try { (deps.borrarEstado || borrarEstado)(rastro.clave); } catch { /* vence solo */ }
-            } else {
-              log('info', 'acuse.uwLinea', `failed de ${ac.msgId}: el candado es de ${actual?.msgId || 'nadie'} — no se suelta`);
+            // Los candados «dudosos» no dejan rastro `wamsg:` (no llegan acá) y todo candado de una
+            // entrega aceptada guarda su `msgId` desde #14: no hay candado legítimo sin id que soltar.
+            // [Codex r1] Comparar y borrar en UN paso (`borrarSi`): leer y después borrar dejaba que
+            // un reenvío reescribiera el candado en el medio y el borrado se llevara el nuevo.
+            if (ac.msgId) {
+              let r = { borrado: false, motivo: 'error' };
+              try {
+                r = await (deps.borrarEstadoSi || borrarEstadoSi)(rastro.clave, (v) => v?.msgId === ac.msgId);
+              } catch { /* vence solo */ }
+              if (!r.borrado) log('info', 'acuse.uwLinea', `failed de ${ac.msgId}: el candado no se suelta (${r.motivo})`);
             }
           }
 
