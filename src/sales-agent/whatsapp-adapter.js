@@ -437,9 +437,11 @@ export async function uploadWaDocument(docBuffer, filename) {
  * @param {string} mediaId   id devuelto por uploadWaDocument
  * @param {string} filename  nombre de archivo que verá el receptor
  * @param {string} [caption] texto que acompaña al documento (opcional)
+ * @param {{signal?: AbortSignal}} [opts] [2026-10-22] permite CANCELAR el POST (piloto Uw: el techo
+ *   no puede soltar la propuesta con un envío en vuelo). Sin `opts`, igual que siempre.
  * @returns {Promise<{ ok: boolean, msgId?: string, error?: string }>}
  */
-export async function sendWaDocument(to, mediaId, filename, caption = '') {
+export async function sendWaDocument(to, mediaId, filename, caption = '', opts = {}) {
   if (!META.TOKEN || !META.PHONE_ID) {
     throw new Error('[wa-adapter] sendWaDocument: meta_credentials_missing');
   }
@@ -449,7 +451,7 @@ export async function sendWaDocument(to, mediaId, filename, caption = '') {
       to: String(to).replace(/^\+/, ''),
       type: 'document',
       document: { id: mediaId, filename, caption: caption || '' },
-    });
+    }, opts?.signal ? { signal: opts.signal } : undefined);
     const msgId = r.data?.messages?.[0]?.id;
     console.log(`[wa-adapter] document_sent to=${to} file=${filename} msgId=${msgId || '?'}`);
     return { ok: true, msgId, wamid: msgId };

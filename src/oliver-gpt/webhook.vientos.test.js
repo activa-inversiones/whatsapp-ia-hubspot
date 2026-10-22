@@ -840,3 +840,25 @@ test('📐 D20 [Codex r3] el archivo falla una vez y se REINTENTA en el momento,
   assert.ok(await esperar(() => estado.get(clave)?.valor?.archivo === 'si'), `marca: ${JSON.stringify(estado.get(clave))}`);
   assert.equal(archivosUw(spy).length, 1);
 });
+
+test('📐 D21 [Codex r5] el POST sigue en vuelo cuando vence el seguro: se CANCELA y el Uw NO llega después del precio', async () => {
+  const { deps, spy, telefono, estado } = armarUw();
+  deps.seqUwLineaTimeoutMs = 300; deps.seqUwLineaReservaMs = 100; deps.seqUwLineaEnvioMaxMs = 100;
+  const enviar = deps.sendWaDocument;
+  // Un POST lento que TERMINARÍA BIEN a los 600 ms, pero que respeta la cancelación (como axios con `signal`)
+  deps.sendWaDocument = (to, m, filename, cap, opts) => {
+    if (!/^Informe-Uw/.test(filename || '')) return enviar(to, m, filename, cap);
+    return new Promise((res, rej) => {
+      const t = setTimeout(() => { spy.linea.push('uw'); res({ ok: true, msgId: 'uw.tarde' }); }, 600);
+      opts?.signal?.addEventListener('abort', () => { clearTimeout(t); rej(Object.assign(new Error('canceled'), { code: 'ERR_CANCELED' })); });
+    });
+  };
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta sale');
+    await new Promise((r) => { setTimeout(r, 800); });   // más allá de cuando el POST habría terminado
+  });
+  assert.equal(cuenta(spy, 'uw'), 0, `nada después del precio — linea: ${JSON.stringify(spy.linea)}`);
+  const marca = estado.get(`docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`);
+  assert.equal(marca?.valor?.dudoso, true, `queda dudoso (no se reintenta solo): ${JSON.stringify(marca)}`);
+});

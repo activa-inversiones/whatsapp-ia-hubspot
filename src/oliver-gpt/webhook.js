@@ -4608,9 +4608,26 @@ Comuna: ${datos.comuna}`
                 // [2026-10-22 · Copilot r2] La reserva se vuelve a mirar JUSTO antes del envío: la subida del
                 // PDF a Meta también es un POST y puede comerse el margen que quedaba antes de subirlo.
                 if (Date.now() + techo.reservaMs > techo.vence) return 'sin_tiempo';
-                techo.enEnvio = media ? sendWaDocument(from, media, archivo, captionUwLinea(e)) : null;
-                const envio = techo.enEnvio ? await techo.enEnvio : null;
+                // [2026-10-22 · Codex r5] El POST se puede CANCELAR: si el techo y su seguro vencen con
+                // él en vuelo, se aborta antes de soltar la propuesta (ver `enviarUwLineaConTecho`).
+                const cancelar = new AbortController();
+                techo.abortar = () => cancelar.abort();
+                techo.enEnvio = media ? sendWaDocument(from, media, archivo, captionUwLinea(e), { signal: cancelar.signal }) : null;
+                let envio = null;
+                try { envio = techo.enEnvio ? await techo.enEnvio : null; }
+                catch (err) { envio = { ok: false, error: String(err?.message || err), abortado: cancelar.signal.aborted }; }
                 techo.enEnvio = null;
+                techo.abortar = null;
+                if (cancelar.signal.aborted) {
+                  // Abortado por el techo: puede que Meta igual lo haya aceptado antes del corte (eso
+                  // ningún cliente lo puede saber). Mismo trato que un resultado DESCONOCIDO: candado
+                  // «dudoso» (no se reintenta solo), aviso al dueño, y nada se registra como entregado.
+                  cuenta.fallos += 1;
+                  log('error', 'generarPdf.uwLinea', `${from}: informe Uw ${e.folio}: POST abortado por el techo — NO se reintenta. Revisar si llegó.`);
+                  avisarEntregaDudosa({ tipo: 'Informe Uw de la línea', folio: e.folio, motivo: 'abortado por el techo', nombre: clientName || '' });
+                  try { escribir(clave, { at: Date.now(), folio: e.folio, dudoso: true }, entregaTtlSeg()); } catch { /* el aviso ya salió */ }
+                  return 'vencido';
+                }
                 if (envio?.ok === true && envio?.msgId) techo.algunoAceptado = true;
                 // [Codex r2] HTTP 200 no prueba entrega (AGENTS.md). Misma regla que vientos:
                 //  - sin `ok` y con resultado DESCONOCIDO (timeout/5xx: quizá llegó) ⇒ candado
@@ -4681,10 +4698,21 @@ Comuna: ${datos.comuna}`
                   const enVuelo = techo.enEnvio;
                   if (enVuelo) {
                     let tope = null;
-                    await Promise.race([
-                      Promise.resolve(enVuelo).catch(() => null),
-                      new Promise((r) => { tope = setTimeout(r, envioMaxMs); }),
+                    const termino = await Promise.race([
+                      Promise.resolve(enVuelo).then(() => true, () => true),
+                      new Promise((r) => { tope = setTimeout(() => r(false), envioMaxMs); }),
                     ]).finally(() => { if (tope) clearTimeout(tope); });
+                    if (!termino && techo.abortar) {
+                      // [Codex r5] Vencido también el seguro: se CANCELA el POST y se espera a que la
+                      // cancelación se asiente antes de soltar la propuesta (un adaptador que respeta
+                      // `signal` rechaza en el acto; si no la respeta, se espera hasta el mismo tope).
+                      techo.abortar();
+                      let tope2 = null;
+                      await Promise.race([
+                        Promise.resolve(enVuelo).catch(() => null),
+                        new Promise((r) => { tope2 = setTimeout(r, envioMaxMs); }),
+                      ]).finally(() => { if (tope2) clearTimeout(tope2); });
+                    }
                   }
                   // Si el POST en vuelo terminó aceptado, es un documento antes del precio: lleva pausa.
                   res(techo.algunoAceptado ? 'enviado' : 'timeout');
