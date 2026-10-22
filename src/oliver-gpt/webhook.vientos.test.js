@@ -753,3 +753,34 @@ test('📐 D16 un READ sin delivered previo también registra la entrega', async
   await handleWebhook({ body: read }, makeRes(), deps);
   assert.ok(await esperar(() => archivosUw(spy).length === 1));
 });
+
+test('📐 D13d [Copilot r2] la SUBIDA del PDF se come la reserva: el envío NO arranca (nada después del precio)', async () => {
+  const { deps, spy, telefono } = armarUw();
+  deps.seqUwLineaTimeoutMs = 600; deps.seqUwLineaReservaMs = 400;
+  const subir = deps.uploadWaDocument;
+  deps.uploadWaDocument = async (pdf, nombre) => {
+    if (/^Informe-Uw/.test(nombre || '')) await new Promise((r) => { setTimeout(r, 300); });   // upload lento
+    return subir(pdf, nombre);
+  };
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+    await new Promise((r) => { setTimeout(r, 500); });
+  });
+  assert.equal(cuenta(spy, 'uw'), 0, `linea: ${JSON.stringify(spy.linea)}`);
+});
+
+test('📐 D17 un archivo «en curso» abandonado (el proceso murió) se retoma pasado el plazo', async () => {
+  const { deps, spy, telefono, estado } = armarUw();
+  deps.uwArchivoEnCursoMs = 50;
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  const clave = `docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`;
+  const v = estado.get(clave).valor;
+  estado.set(clave, { valor: { ...v, pendiente: false, archivo: 'en_curso', archivoDesde: Date.now() - 1000 }, expira: Date.now() + 3_600_000 });
+  await handleWebhook({ body: deliveredUw(telefono) }, makeRes(), deps);
+  assert.ok(await esperar(() => archivosUw(spy).length === 1), 'se retomó el archivo');
+  assert.equal(estado.get(clave).valor.archivo, 'si');
+});

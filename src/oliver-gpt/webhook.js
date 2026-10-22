@@ -1145,6 +1145,7 @@ export async function handleWebhook(req, res, deps = {}) {
     //     'fallo'). Si falla, queda 'fallo' y el siguiente `delivered`/`read` de ese msgId lo
     //     REINTENTA — antes, un fallo transitorio dejaba el registro ISO perdido 90 días (Codex r1).
     // ⚠️ Atómico dentro del proceso; el KV de sales-os no tiene compare-and-set entre instancias.
+    const ARCHIVO_EN_CURSO_MS = Number(deps.uwArchivoEnCursoMs ?? 5 * 60_000);
     const registrarEntregaUw = async (rastro, ac) => {
       if (!rastro?.clave || !ac?.msgId) return;
       const actualizarSi = deps.actualizarEstadoSi || actualizarEstadoSi;
@@ -1169,8 +1170,11 @@ export async function handleWebhook(req, res, deps = {}) {
       let tomado = { actualizado: false, motivo: 'error' };
       try {
         tomado = await actualizarSi(rastro.clave,
-          (v) => esDeEste(v) && v?.pendiente === false && (v?.archivo === 'no' || v?.archivo === 'fallo'),
-          (v) => ({ ...v, archivo: 'en_curso' }), entregaTtlSeg());
+          // 'en_curso' VIEJO (el proceso murió a mitad de archivar) también se puede retomar: pasado
+          // ARCHIVO_EN_CURSO_MS nadie lo está haciendo (Copilot r2).
+          (v) => esDeEste(v) && v?.pendiente === false && (v?.archivo === 'no' || v?.archivo === 'fallo'
+            || (v?.archivo === 'en_curso' && Date.now() - Number(v?.archivoDesde || 0) > ARCHIVO_EN_CURSO_MS)),
+          (v) => ({ ...v, archivo: 'en_curso', archivoDesde: Date.now() }), entregaTtlSeg());
       } catch { /* sin toma: otro intento lo hará */ }
       if (!tomado.actualizado) {
         if (!promovido.actualizado) log('info', 'acuse.uwLinea', `${ac.estado || 'acuse'} de ${ac.msgId}: nada que registrar (${promovido.motivo}/${tomado.motivo})`);
@@ -4581,6 +4585,9 @@ Comuna: ${datos.comuna}`
                 // techo vence mientras este POST viaja, el techo ESPERA a que termine (tope = timeout
                 // del adaptador, 15 s) antes de soltar la propuesta. Así el Uw no puede caer después
                 // del precio por un POST que ya había salido.
+                // [2026-10-22 · Copilot r2] La reserva se vuelve a mirar JUSTO antes del envío: la subida del
+                // PDF a Meta también es un POST y puede comerse el margen que quedaba antes de subirlo.
+                if (Date.now() + techo.reservaMs > techo.vence) return 'sin_tiempo';
                 techo.enEnvio = media ? sendWaDocument(from, media, archivo, captionUwLinea(e)) : null;
                 const envio = techo.enEnvio ? await techo.enEnvio : null;
                 techo.enEnvio = null;
