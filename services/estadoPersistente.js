@@ -204,6 +204,29 @@ export function liberarReserva(clave, token) {
   return true;
 }
 
+/**
+ * [2026-10-22 · Codex, compuerta del candado Uw] BORRA SOLO SI EL VALOR VIGENTE CUMPLE `condicion`.
+ * Leer y después borrar en dos pasos dejaba una ventana: entre el `await` de la lectura y el
+ * borrado, otra ejecución podía reescribir la clave (un reenvío con candado nuevo) y el borrado
+ * se llevaba ESE. Acá la lectura remota solo hidrata la memoria; la comparación y el borrado
+ * ocurren en el MISMO paso síncrono sobre la memoria, como `liberarReserva`: dentro de este
+ * proceso nada puede intercalarse. ⚠️ Entre DOS instancias (durante un deploy) no es atómico:
+ * el KV de sales-os no tiene compare-and-delete.
+ * @returns {Promise<{borrado:boolean, motivo?:string}>}
+ */
+export async function borrarSi(clave, condicion) {
+  const r = await leerConEstado(clave);           // hidrata la memoria si hace falta
+  if (!r.ok) return { borrado: false, motivo: 'no_se_pudo_leer' };
+  const e = MEMORIA.get(clave);                     // ← desde acá, síncrono hasta el borrado
+  const valor = vigente(e) ? e.valor : null;
+  if (valor === null || valor === undefined) return { borrado: false, motivo: 'no_existe' };
+  let cumple = false;
+  try { cumple = Boolean(condicion(valor)); } catch { cumple = false; }
+  if (!cumple) return { borrado: false, motivo: 'no_coincide' };
+  borrar(clave);
+  return { borrado: true };
+}
+
 export function borrar(clave) {
   MEMORIA.delete(clave);
   pedir('DELETE', clave).catch(() => {});
@@ -226,4 +249,4 @@ export async function borrarDurable(clave) {
 /** Para tests. */
 export function _reset() { MEMORIA.clear(); }
 
-export default { leer, leerConEstado, leerLocal, escribir, escribirDurable, reservar, liberarReserva, borrar, borrarDurable, PERSISTENCIA_ACTIVA };
+export default { leer, leerConEstado, leerLocal, escribir, escribirDurable, reservar, liberarReserva, borrarSi, borrar, borrarDurable, PERSISTENCIA_ACTIVA };
