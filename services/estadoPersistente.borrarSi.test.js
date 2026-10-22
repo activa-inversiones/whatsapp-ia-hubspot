@@ -142,3 +142,41 @@ test('🔴 [Codex r3] dos transiciones seguidas de la MISMA clave llegan a la ba
     delete process.env.SALES_OS_URL; delete process.env.SALES_OS_OPERATOR_TOKEN;
   }
 });
+
+test('🔴 [Codex r4] escribir(A) con PUT LENTO y enseguida actualizarSi(→B) con PUT rápido: la base termina en B', async () => {
+  const fetchPrevio = global.fetch;
+  const base = new Map();
+  let nPut = 0;
+  global.fetch = async (url, opts = {}) => {
+    const clave = decodeURIComponent(String(url).split('/internal/kv/')[1] || '');
+    const metodo = opts.method || 'GET';
+    if (metodo === 'GET') return { ok: true, json: async () => ({ ok: true, valor: base.has(clave) ? base.get(clave) : null }) };
+    if (metodo === 'PUT') {
+      const n = ++nPut;
+      await new Promise((r) => { setTimeout(r, n === 1 ? 150 : 5); });   // el PUT de escribir(A) termina ÚLTIMO
+      base.set(clave, JSON.parse(opts.body).valor);
+      return { ok: true, json: async () => ({ ok: true }) };
+    }
+    if (metodo === 'DELETE') { await new Promise((r) => { setTimeout(r, 5); }); base.delete(clave); return { ok: true, json: async () => ({ ok: true }) }; }
+    return { ok: false, json: async () => ({}) };
+  };
+  process.env.SALES_OS_URL = 'http://sales-os.test';
+  process.env.SALES_OS_OPERATOR_TOKEN = 'token-de-prueba';
+  try {
+    const m = await import('./estadoPersistente.js?orden=2');
+    m.escribir(K, { msgId: 'wamid.A', pendiente: true }, 60);          // SIN esperar
+    const r = await m.actualizarSi(K, (v) => v.pendiente === true, (v) => ({ ...v, pendiente: false }), 60);
+    assert.equal(r.actualizado, true);
+    await new Promise((res) => { setTimeout(res, 250); });
+    assert.equal(base.get(K)?.pendiente, false, `la base quedó con ${JSON.stringify(base.get(K))}: el PUT viejo pisó al nuevo`);
+    // y un borrar() que sigue a un escribir() lento tampoco deja la clave viva en la base
+    nPut = 0;
+    m.escribir('otra', { x: 1 }, 60);
+    m.borrar('otra');
+    await new Promise((res) => { setTimeout(res, 250); });
+    assert.equal(base.has('otra'), false, 'el DELETE salió después del PUT');
+  } finally {
+    global.fetch = fetchPrevio;
+    delete process.env.SALES_OS_URL; delete process.env.SALES_OS_OPERATOR_TOKEN;
+  }
+});
