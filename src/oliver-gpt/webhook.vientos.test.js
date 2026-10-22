@@ -662,25 +662,54 @@ test('📐 D12 el delivered de un envío que ya NO es el del candado (otro msgId
   assert.equal(estado.get(clave).valor.msgId, 'uw.OTRO', 'el candado del otro envío no se toca');
 });
 
-test('📐 D13 [Codex P2 en #14] el techo vence con el POST del Uw EN VUELO: la propuesta espera a que termine, nunca antes', async () => {
-  const { deps, spy, telefono } = armarUw();
-  deps.seqUwLineaTimeoutMs = 100;
+// [2026-10-22 · Codex r1] P2 con RESERVA: un POST de Uw arranca solo si cabe entero antes del techo.
+const conPostLento = (deps, ms) => {
   const enviar = deps.sendWaDocument;
   deps.sendWaDocument = async (to, m, filename, cap) => {
-    if (/^Informe-Uw/.test(filename || '')) await new Promise((r) => { setTimeout(r, 400); });   // POST lento
+    if (/^Informe-Uw/.test(filename || '')) await new Promise((r) => { setTimeout(r, ms); });
     return enviar(to, m, filename, cap);
   };
+};
+
+test('📐 D13 el POST del Uw cabe en la reserva: llega ANTES del precio, sin pasar el techo', async () => {
+  const { deps, spy, telefono } = armarUw();
+  deps.seqUwLineaTimeoutMs = 600; deps.seqUwLineaReservaMs = 400;
+  conPostLento(deps, 250);
   await conPiloto(telefono, async () => {
     await handleWebhook({ body: {} }, makeRes(), deps);
     assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
   });
   assert.equal(cuenta(spy, 'uw'), 1, `linea: ${JSON.stringify(spy.linea)}`);
-  assert.ok(pos(spy, 'uw') < pos(spy, 'propuesta'), `el Uw en vuelo llega ANTES del precio — linea: ${JSON.stringify(spy.linea)}`);
+  assert.ok(pos(spy, 'uw') < pos(spy, 'propuesta'), `linea: ${JSON.stringify(spy.linea)}`);
+});
+
+test('📐 D13b ya no queda tiempo para un POST entero: el Uw NO arranca (nada después del precio)', async () => {
+  const { deps, spy, telefono } = armarUw();
+  deps.seqUwLineaTimeoutMs = 600; deps.seqUwLineaReservaMs = 400;
+  deps.descargarInformeUw = async () => { await new Promise((r) => { setTimeout(r, 300); }); return Buffer.from('%PDF-1.7 uw'); };
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+    await new Promise((r) => { setTimeout(r, 600); });
+  });
+  assert.equal(cuenta(spy, 'uw'), 0, `linea: ${JSON.stringify(spy.linea)}`);
+});
+
+test('📐 D13c un adaptador que se pasa de su timeout: el techo da el seguro corto y el Uw igual llega antes del precio', async () => {
+  const { deps, spy, telefono } = armarUw();
+  deps.seqUwLineaTimeoutMs = 500; deps.seqUwLineaReservaMs = 300; deps.seqUwLineaEnvioMaxMs = 400;
+  conPostLento(deps, 650);   // arranca a tiempo, termina 150 ms después del techo (dentro del seguro)
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  assert.equal(cuenta(spy, 'uw'), 1, `linea: ${JSON.stringify(spy.linea)}`);
+  assert.ok(pos(spy, 'uw') < pos(spy, 'propuesta'), `linea: ${JSON.stringify(spy.linea)}`);
 });
 
 test('📐 D14 el POST en vuelo se cuelga más allá del tope: la propuesta sale igual (nunca se pierde)', async () => {
   const { deps, spy, telefono } = armarUw();
-  deps.seqUwLineaTimeoutMs = 100;
+  deps.seqUwLineaTimeoutMs = 300; deps.seqUwLineaReservaMs = 100;
   deps.seqUwLineaEnvioMaxMs = 150;
   const enviar = deps.sendWaDocument;
   deps.sendWaDocument = (to, m, filename, cap) => (/^Informe-Uw/.test(filename || '') ? new Promise(() => {}) : enviar(to, m, filename, cap));
@@ -688,4 +717,39 @@ test('📐 D14 el POST en vuelo se cuelga más allá del tope: la propuesta sale
     await handleWebhook({ body: {} }, makeRes(), deps);
     assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta no se pierde');
   });
+});
+
+test('📐 D15 el archivo ISO falla en el delivered: el próximo acuse (read) lo REPARA, sin duplicar el evento', async () => {
+  const { deps, spy, telefono, estado } = armarUw();
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  const guardar = deps.saveMedia;
+  let fallar = true;
+  deps.saveMedia = async (m) => { if (fallar && /^Informe-Uw/.test(m.filename || '')) throw new Error('sales-os caído'); return guardar(m); };
+  await handleWebhook({ body: deliveredUw(telefono) }, makeRes(), deps);
+  const clave = `docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`;
+  assert.ok(await esperar(() => estado.get(clave)?.valor?.archivo === 'fallo'), `marca: ${JSON.stringify(estado.get(clave))}`);
+  assert.deepEqual(archivosUw(spy), []);
+  fallar = false;
+  const read = { entry: [{ changes: [{ value: { statuses: [{ id: 'uw.1', status: 'read', recipient_id: telefono }] } }] }] };
+  await handleWebhook({ body: read }, makeRes(), deps);
+  assert.ok(await esperar(() => archivosUw(spy).length === 1), 'el read reparó el archivo');
+  assert.equal(estado.get(clave).valor.archivo, 'si');
+  await handleWebhook({ body: read }, makeRes(), deps);
+  await new Promise((r) => { setTimeout(r, 100); });
+  assert.equal(archivosUw(spy).length, 1, 'y no se duplica');
+  assert.equal(spy.eventos.filter((e) => /Informe Uw.*ENTREGADO/.test(e.body || '')).length, 1, 'el evento sale una sola vez');
+});
+
+test('📐 D16 un READ sin delivered previo también registra la entrega', async () => {
+  const { deps, spy, telefono } = armarUw();
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  const read = { entry: [{ changes: [{ value: { statuses: [{ id: 'uw.1', status: 'read', recipient_id: telefono }] } }] }] };
+  await handleWebhook({ body: read }, makeRes(), deps);
+  assert.ok(await esperar(() => archivosUw(spy).length === 1));
 });

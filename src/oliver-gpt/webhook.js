@@ -1137,24 +1137,46 @@ export async function handleWebhook(req, res, deps = {}) {
     // los unicos que dejamos rastreados: un texto suelto que falla lo arregla el proximo
     // mensaje, un PDF que no llego no se arregla solo.
     // 📐 [2026-10-22 · Codex P1 en #14] Entrega CONFIRMADA del informe Uw del piloto (#1581).
-    // 1) Promueve el candado PENDIENTE de ESTE msgId a entregado, en un paso (actualizarSi): el
-    //    `delivered` repetido por Meta no lo promueve dos veces, y un candado que ya es de otro
-    //    envío no se toca. 2) Solo quien lo promovió escribe el evento y el archivo ISO, con el PDF
-    //    vuelto a bajar de la verificación pública y comprobado por sha256 (el mismo que se envió).
+    // Dos pasos con idempotencia SEPARADA, para que un fallo del archivo se pueda reparar:
+    //  1) ENTREGA: el candado PENDIENTE de ESTE msgId pasa a entregado (TTL del selector), en un
+    //     paso (`actualizarSi`). Solo quien lo promueve emite el evento «ENTREGADO»: el
+    //     `delivered` repetido por Meta no lo duplica y un candado de otro envío no se toca.
+    //  2) ARCHIVO ISO: lo toma quien deja `archivo: 'en_curso'` (otro paso atómico, desde 'no' o
+    //     'fallo'). Si falla, queda 'fallo' y el siguiente `delivered`/`read` de ese msgId lo
+    //     REINTENTA — antes, un fallo transitorio dejaba el registro ISO perdido 90 días (Codex r1).
+    // ⚠️ Atómico dentro del proceso; el KV de sales-os no tiene compare-and-set entre instancias.
     const registrarEntregaUw = async (rastro, ac) => {
       if (!rastro?.clave || !ac?.msgId) return;
-      let r = { actualizado: false, motivo: 'error' };
+      const actualizarSi = deps.actualizarEstadoSi || actualizarEstadoSi;
+      const esDeEste = (v) => v?.msgId === ac.msgId;
+      let promovido = { actualizado: false, motivo: 'error' };
       try {
-        r = await (deps.actualizarEstadoSi || actualizarEstadoSi)(rastro.clave,
-          (v) => v?.msgId === ac.msgId && v?.pendiente === true,
-          (v) => ({ ...v, pendiente: false, entregadoAt: Date.now() }), entregaTtlSeg());
+        promovido = await actualizarSi(rastro.clave,
+          (v) => esDeEste(v) && v?.pendiente === true,
+          (v) => ({ ...v, pendiente: false, entregadoAt: Date.now(), archivo: 'no' }), entregaTtlSeg());
       } catch { /* sin promoción: el candado pendiente vence solo */ }
-      if (!r.actualizado) {
-        log('info', 'acuse.uwLinea', `delivered de ${ac.msgId}: no se registra (${r.motivo})`);
+      const cliente = String(rastro.cliente || rastro.telefono || '');
+      if (promovido.actualizado) {
+        await safe('acuse.uwLinea.espejo', () => (deps.bridge || realBridge).pushConversationEvent({
+          channel: 'whatsapp', external_id: cliente, direction: 'outbound',
+          actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
+          body: `📐 Informe Uw de la línea ${rastro.linea || ''} (${rastro.folio}) ENTREGADO al cliente · piloto`.replace(/\s+/g, ' '),
+          metadata: { source: 'oliver_gpt_uw_linea_piloto', folio: rastro.folio, ventana: rastro.ventana || null,
+                      msg_id: ac.msgId, media_id: rastro.media || null, quote_number: rastro.quote || null },
+        }));
+      }
+      // Paso 2: el archivo, si nadie lo hizo todavía (o falló antes)
+      let tomado = { actualizado: false, motivo: 'error' };
+      try {
+        tomado = await actualizarSi(rastro.clave,
+          (v) => esDeEste(v) && v?.pendiente === false && (v?.archivo === 'no' || v?.archivo === 'fallo'),
+          (v) => ({ ...v, archivo: 'en_curso' }), entregaTtlSeg());
+      } catch { /* sin toma: otro intento lo hará */ }
+      if (!tomado.actualizado) {
+        if (!promovido.actualizado) log('info', 'acuse.uwLinea', `${ac.estado || 'acuse'} de ${ac.msgId}: nada que registrar (${promovido.motivo}/${tomado.motivo})`);
         return;
       }
-      const cliente = String(rastro.cliente || rastro.telefono || '');
-      let archivado = false;
+      let ok = false;
       try {
         const pdf = await (deps.descargarInformeUw || descargarInformeUw)(rastro.codigo, { sha256: rastro.sha256 });
         await (deps.saveMedia || saveMedia)({
@@ -1165,18 +1187,14 @@ export async function handleWebhook(req, res, deps = {}) {
           buffer: pdf, waMediaId: rastro.media || null,
           aiDescription: `Informe Uw de la línea ${rastro.linea || ''} ${rastro.folio} (piloto, cotización ${rastro.quote || 's/n'}) · entregado`,
         });
-        archivado = true;
+        ok = true;
       } catch (err) {
-        log('error', 'acuse.uwLinea', `ENTREGADO ${rastro.folio} (${ac.msgId}) pero NO archivado: ${err?.message || err}`);
+        log('error', 'acuse.uwLinea', `ENTREGADO ${rastro.folio} (${ac.msgId}) pero NO archivado (se reintenta con el próximo acuse): ${err?.message || err}`);
       }
-      await safe('acuse.uwLinea.espejo', () => (deps.bridge || realBridge).pushConversationEvent({
-        channel: 'whatsapp', external_id: cliente, direction: 'outbound',
-        actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
-        body: `📐 Informe Uw de la línea ${rastro.linea || ''} (${rastro.folio}) ENTREGADO al cliente · piloto${archivado ? '' : ' · ⚠️ sin archivo ISO'}`
-          .replace(/\s+/g, ' '),
-        metadata: { source: 'oliver_gpt_uw_linea_piloto', folio: rastro.folio, ventana: rastro.ventana || null,
-                    msg_id: ac.msgId, media_id: rastro.media || null, quote_number: rastro.quote || null, archivado },
-      }));
+      try {
+        await actualizarSi(rastro.clave, (v) => esDeEste(v) && v?.archivo === 'en_curso',
+          (v) => ({ ...v, archivo: ok ? 'si' : 'fallo' }), entregaTtlSeg());
+      } catch { /* queda 'en_curso': no se duplica; el log de arriba lo dice */ }
     };
     const acuses = (deps.parseStatuses || realParseStatuses)(req.body);
     if (acuses.length) {
@@ -1242,6 +1260,17 @@ export async function handleWebhook(req, res, deps = {}) {
           // nunca manda esto ⇒ la ausencia NO significa "no leyó".
           // Se repite a propósito (Meta reintenta): sales-os deduplica por `wamid` / usa MAX.
           // Sin await y con .catch mudo: registrar una lectura jamás demora el 200 a Meta.
+          // 📐 [2026-10-22 · Copilot] Un `read` prueba la entrega tanto como un `delivered` (y a veces
+          // llega sin `delivered` previo): para el Uw del piloto también registra (o repara el archivo).
+          if (ac.estado === 'read') {
+            await safe('acuse.lectura.uw', async () => {
+              const rastro = await (deps.leerEstado || leerEstado)(`wamsg:${ac.msgId}`);
+              if (rastro?.tipo !== 'uw_linea') return;
+              const d = (x) => String(x || '').replace(/\D/g, '');
+              if (ac.telefono && rastro.telefono && d(ac.telefono) !== d(rastro.telefono)) return;
+              await registrarEntregaUw(rastro, ac);
+            });
+          }
           if (ac.estado === 'read' && ac.telefono) {
             const _b = deps.bridge || realBridge;
             if (typeof _b.logOliverEvent === 'function') {
@@ -1385,7 +1414,9 @@ export async function handleWebhook(req, res, deps = {}) {
             if (ac.msgId) {
               let r = { borrado: false, motivo: 'error' };
               try {
-                r = await (deps.borrarEstadoSi || borrarEstadoSi)(rastro.clave, (v) => v?.msgId === ac.msgId);
+                // [2026-10-22 · Codex/Copilot] y solo si sigue PENDIENTE: un `failed` que llega después de un
+                // `delivered` no puede soltar un candado ya entregado (habilitaría un duplicado).
+                r = await (deps.borrarEstadoSi || borrarEstadoSi)(rastro.clave, (v) => v?.msgId === ac.msgId && v?.pendiente === true);
               } catch { /* vence solo */ }
               if (!r.borrado) log('info', 'acuse.uwLinea', `failed de ${ac.msgId}: el candado no se suelta (${r.motivo})`);
             }
@@ -4538,6 +4569,10 @@ Comuna: ${datos.comuna}`
                 const pdf = await (deps.descargarInformeUw || descargarInformeUw)(e.codigo, { sha256: e.sha256 });
                 const archivo = nombreParaCliente(e);
                 if (techo.vencido) return 'vencido';   // [NIM] ni siquiera se sube un PDF que no va a salir
+                // [2026-10-22 · Codex r1] RESERVA: un POST nuevo arranca solo si cabe ENTERO antes del techo
+                // (su peor caso = timeout del adaptador, 15 s). Así el techo es de 30 s de verdad: al vencer
+                // no queda ningún POST en vuelo esperando, salvo que el adaptador no respete su timeout.
+                if (Date.now() + techo.reservaMs > techo.vence) return 'sin_tiempo';
                 const media = await uploadWaDocument(pdf, archivo);
                 // Si el techo ya venció, la propuesta pudo salir: un informe DESPUÉS del precio
                 // rompe el orden aprobado por el dueño. Se corta acá, justo antes de enviar.
@@ -4578,16 +4613,19 @@ Comuna: ${datos.comuna}`
                 // TTL_PENDIENTE_UW_S) y el evento «entregado» y el archivo ISO se escriben recién
                 // con el acuse `delivered` de ESTE msgId (`registrarEntregaUw`, en el bloque de acuses).
                 // El rastro lleva lo necesario para hacerlo sin depender de este turno.
-                try { await escribir(clave, { at: Date.now(), folio: e.folio, quote: quoteNumber || null, msgId: envio.msgId, pendiente: true }, TTL_PENDIENTE_UW_S); }
-                catch { /* el candado evita repetir; perderlo solo repite el PDF */ }
+                // [Codex r1] El RASTRO primero y el candado después, sin `await` entre el POST y ellos:
+                // `escribir` pone la memoria en el acto, así que dentro del proceso ningún acuse puede
+                // procesarse entre la respuesta de Meta y estas dos líneas.
                 try {
-                  await escribir(`wamsg:${envio.msgId}`, {
+                  escribir(`wamsg:${envio.msgId}`, {
                     msgId: envio.msgId, tipo: 'uw_linea', folio: e.folio,
                     telefono: String(from) /* [chat] destinatario del envío */, cliente: String(claves.cliente), clave,
                     codigo: e.codigo, sha256: e.sha256, archivo: e.archivo, linea: e.linea, ventana: e.ventana,
                     quote: quoteNumber || null, media,
                   }, TTL_PENDIENTE_UW_S);
                 } catch { /* sin rastro: ni el `delivered` ni el `failed` pueden cerrar este envío */ }
+                try { escribir(clave, { at: Date.now(), folio: e.folio, quote: quoteNumber || null, msgId: envio.msgId, pendiente: true }, TTL_PENDIENTE_UW_S); }
+                catch { /* el candado evita repetir; perderlo solo repite el PDF */ }
                 log('info', 'generarPdf.uwLinea', `${from}: informe Uw ${e.folio} ACEPTADO por Meta (${envio.msgId}) — se registra con el delivered`);
               } catch (err) {
                 cuenta.fallos += 1;
@@ -4601,10 +4639,12 @@ Comuna: ${datos.comuna}`
           };
           const enviarUwLineaConTecho = async () => {
             const techoMs = Number(deps.seqUwLineaTimeoutMs ?? 30_000);
-            // Tope de la espera de un envío ya en vuelo: el timeout del adaptador de WhatsApp (15 s)
-            // más margen. El POST termina antes sí o sí; este tope es solo un seguro.
-            const envioMaxMs = Number(deps.seqUwLineaEnvioMaxMs ?? 17_000);
-            const techo = { vencido: false, enEnvio: null, algunoAceptado: false };
+            // Presupuesto de un POST a Meta: el timeout del adaptador de WhatsApp (15 s) + margen. Se
+            // RESERVA dentro del techo (no arranca un POST que no cabe) y, si aun así uno sigue en vuelo
+            // al vencer (un adaptador que no respeta su timeout), se le da un seguro corto: total ≤ 32 s.
+            const reservaMs = Number(deps.seqUwLineaReservaMs ?? 17_000);
+            const envioMaxMs = Number(deps.seqUwLineaEnvioMaxMs ?? 2_000);
+            const techo = { vencido: false, enEnvio: null, algunoAceptado: false, vence: Date.now() + techoMs, reservaMs };
             let vence = null;
             return Promise.race([
               safe('generarPdf.uwLinea', () => enviarUwLinea(techo)),
