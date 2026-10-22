@@ -348,3 +348,29 @@ test('[Codex r2] un MENSAJE con timestamp fuera de rango no lanza: enviadoAt nul
   assert.equal(r.ok, true);
   assert.equal(r.enviadoAt, null);
 });
+
+// ── [2026-10-22] PILOTO Uw (#1581): un `failed` VIEJO no puede soltar el candado de un envío NUEVO ──
+// Comentario de Codex en whatsapp-ia-hubspot#14 (P2): tras un `reset`, la misma línea se manda de
+// nuevo; si después llega el `failed` atrasado del envío ANTERIOR, traía la misma `clave` y borraba
+// el candado que dejó el envío nuevo (que sí llegó). La próxima cotización mandaba el mismo
+// informe otra vez. El candado guarda el `msgId` del envío que lo puso: solo ESE fallo lo suelta.
+const CLAVE_UW = 'docs_entregado:uw_linea:V2N:940415964';
+const rastroUw = (msgId) => ({ msgId, tipo: 'uw_linea', folio: 'AT-NCH3137-1-2026-000027',
+  telefono: '56940415964', cliente: '56940415964', clave: CLAVE_UW });
+
+test('📐 Uw: el failed de un envío VIEJO NO suelta el candado del envío nuevo que sí llegó', async () => {
+  const { deps, spy } = makeDeps({ enviado: rastroUw('wamid.UW_VIEJO') });
+  deps._estado.set(CLAVE_UW, { valor: { at: Date.now(), folio: 'AT-NCH3137-1-2026-000027', msgId: 'wamid.UW_NUEVO' }, expira: null });
+  await handleWebhook({ body: acuse('failed', 'wamid.UW_VIEJO', { errors: [{ code: 131047, title: 'x' }] }) }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.ok(!spy.borrados.includes(CLAVE_UW), `no se toca el candado del envío nuevo — borrados: ${JSON.stringify(spy.borrados)}`);
+  assert.equal(deps._estado.get(CLAVE_UW)?.valor?.msgId, 'wamid.UW_NUEVO');
+});
+
+test('📐 Uw: el failed del MISMO envío que puso el candado sí lo suelta (la próxima cotización reintenta)', async () => {
+  const { deps, spy } = makeDeps({ enviado: rastroUw('wamid.UW_1') });
+  deps._estado.set(CLAVE_UW, { valor: { at: Date.now(), msgId: 'wamid.UW_1' }, expira: null });
+  await handleWebhook({ body: acuse('failed', 'wamid.UW_1', { errors: [{ code: 131047, title: 'x' }] }) }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.ok(spy.borrados.includes(CLAVE_UW), `borrados: ${JSON.stringify(spy.borrados)}`);
+});

@@ -1328,8 +1328,19 @@ export async function handleWebhook(req, res, deps = {}) {
 
           // 2-bis. [2026-10-21 · #1581] El Uw del piloto: se suelta SU candado (la clave viaja en el
           // rastro) para que la próxima cotización lo vuelva a intentar.
+          // [2026-10-22 · Codex en #14] Solo si el candado sigue siendo de ESTE envío. El envío de
+          // Uw no escribe `ultimo_msg`, así que `esElVigente` no distingue un reenvío posterior
+          // (tras un `reset`): el `failed` atrasado del envío viejo borraba el candado del nuevo,
+          // que sí llegó, y la próxima cotización repetía el informe. El candado guarda el `msgId`
+          // de quien lo puso; si no coincide (o no hay candado), no se toca.
           if (rastro.tipo === 'uw_linea' && rastro.clave && esElVigente) {
-            try { (deps.borrarEstado || borrarEstado)(rastro.clave); } catch { /* vence solo */ }
+            let actual = null;
+            try { actual = await (deps.leerEstado || leerEstado)(rastro.clave); } catch { actual = null; }
+            if (actual && actual.msgId === ac.msgId) {
+              try { (deps.borrarEstado || borrarEstado)(rastro.clave); } catch { /* vence solo */ }
+            } else {
+              log('info', 'acuse.uwLinea', `failed de ${ac.msgId}: el candado es de ${actual?.msgId || 'nadie'} — no se suelta`);
+            }
           }
 
           // 3. Avisarle a Marcelo: un documento que no llego es una venta detenida.
