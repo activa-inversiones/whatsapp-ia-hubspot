@@ -26,6 +26,7 @@
 import { identificarCliente, dibujarIdentidadCliente, textoInlineReceptor, destinatarioLegal } from './bloqueIdentidadPdf.js';
 import { dibujarPieDocumento, sellarConfidencialidad, dibujarInsigniaEnergetica } from './pieDocumentoPdf.js';
 import { dibujarCabeceraThermal } from './marcaThermal.js';
+import { filasUfDosModelos, TEXTO_UF_DOS_MODELOS } from './ufDosModelos.js'; // [2026-10-22] los dos Uf lado a lado
 import { etiquetaVentana, rotulosDeVentanas } from './etiquetaVentana.js'; // [2026-09-19] el numero de ventana se decide en UN solo lugar
 
 export const VERSION = '1.1.0';
@@ -784,6 +785,54 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
         doc.fillColor(DARK).fontSize(12).font('Helvetica-Bold').text(valor, 290, y + 3, { width: W - 345, align: 'right' });
         y += 25;
       };
+
+      // ── LOS DOS Uf DEL MARCO, LADO A LADO ───────────────────────────────
+      // [2026-10-22] Decisión del dueño (21-oct): «declarar ambos Uf, explicando que vienen de
+      // modelos distintos»; imagen aprobada el 22-oct. Qué fila va y con qué número lo decide
+      // `filasUfDosModelos` (pura, testeada). Sin filas no se dibuja nada: el informe queda igual.
+      const filasUf = filasUfDosModelos(ventanas);
+      if (filasUf.length) {
+        const T = TEXTO_UF_DOS_MODELOS;
+        seccion(T.titulo);
+        parrafo(T.entrada, { size: 9.5 });
+        const XU = { lin: 58, a: 200, b: 330 };
+        saltoSiNoCabe(36);
+        doc.rect(50, y, W - 100, 30).fill(NAVY);
+        doc.fillColor(GOLD).fontSize(7.5).font('Helvetica-Bold').text('LÍNEA', XU.lin, y + 6);
+        doc.text(T.cabecera1, XU.a, y + 6);
+        doc.text(T.cabecera2, XU.b, y + 6);
+        doc.fillColor('#cbd5e1').fontSize(6.5).font('Helvetica').text(T.sub1, XU.a, y + 17);
+        doc.text(T.sub2, XU.b, y + 17);
+        y += 36;
+        for (const f of filasUf) {
+          const alto = 12 * f.nodos.length + 18;
+          saltoSiNoCabe(alto + 4);
+          doc.fillColor(DARK).fontSize(8).font('Helvetica-Bold').text(f.linea, XU.lin, y, { width: 135 });
+          doc.fillColor(DARK).fontSize(13).font('Helvetica-Bold').text(dec(f.ufModelo1, 2), XU.a, y - 2, { lineBreak: false });
+          doc.fillColor(GRAY).fontSize(6.5).font('Helvetica').text(T.pie1, XU.a, y + 13, { width: 120 });
+          f.nodos.forEach((n, i) => {
+            doc.fillColor(GRAY).fontSize(7.5).font('Helvetica').text(n.nodo, XU.b, y + i * 12, { width: 130, lineBreak: false });
+            doc.fillColor(DARK).font('Helvetica-Bold').text(dec(n.uf, 1), XU.b + 130, y + i * 12, { width: 30, align: 'right' });
+          });
+          doc.fillColor(GRAY).fontSize(6.5).font('Helvetica')
+            .text(`W/m²K · folio ${f.folio}`, XU.b, y + f.nodos.length * 12 + 1, { width: 200, lineBreak: false });
+          y += alto;
+          doc.strokeColor('#eef2f6').lineWidth(0.5).moveTo(50, y - 4).lineTo(W - 50, y - 4).stroke();
+        }
+        y += 6;
+        const caja = (titulo, texto) => {
+          saltoSiNoCabe(50);
+          doc.fillColor(NAVY).fontSize(8.5).font('Helvetica-Bold').text(titulo, 58, y, { width: W - 116 });
+          y = doc.y + 2;
+          doc.fillColor(DARK).fontSize(8.5).font('Helvetica').text(texto, 58, y, { width: W - 116, align: 'justify' });
+          y = doc.y + 8;
+        };
+        caja(T.modelo1Titulo, T.modelo1);
+        caja(T.modelo2Titulo, T.modelo2);
+        saltoSiNoCabe(24);
+        doc.fillColor(GRAY).fontSize(7.5).font('Helvetica-Oblique').text(T.cierre, 58, y, { width: W - 116 });
+        y = doc.y + 12;
+      }
 
       // ═══ GRÁFICOS ═══════════════════════════════════════════════════════
       // [2026-08-21] Pedido del dueño: "pensé que tendría gráficas para que se vea
