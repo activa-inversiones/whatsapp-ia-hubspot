@@ -66,15 +66,16 @@ export const TEXTO_UF_DOS_MODELOS = Object.freeze({
   sub2: 'Motor fem-tri de ACTIVA THERMAL',
   pie1: 'W/m²K · un valor para el perfil',
   modelo1Titulo: 'Modelo 1 — Informe de transmitancia térmica de WinHouse (THERM · NCh 3137/2)',
-  modelo1: 'Un Uf para el perfil completo, del informe firmado por el Evaluador CEV Bernardo Quilaman '
-    + 'Cayuqueo (tabla C.1). El ensayo se hizo sobre el sistema S75 con hoja H80; su valor se aplica a la '
-    + 'hoja H98 del mismo sistema. Es el Uf con que se calculó el Uw de sus ventanas, informado más arriba.',
+  modelo1: 'Un Uf para el perfil completo. El informe, firmado por el Evaluador CEV Bernardo Quilaman '
+    + 'Cayuqueo, lo entrega para el sistema S75 con hoja H80 (tabla C.1); ACTIVA aplica ese valor a la hoja '
+    + 'H98 del mismo sistema. Es el Uf con que se calculó el Uw de sus ventanas, informado más arriba.',
   modelo2Titulo: 'Modelo 2 — Motor de elementos finitos fem-tri de ACTIVA THERMAL (NCh 3137/2 · ISO 10077-2)',
   modelo2: 'Un Uf por cada nodo del marco (cada corte: los rieles inferiores y el traslapo), calculado sobre '
     + 'la geometría de la hoja H98. Uf = (L2D - Up·bp)/bf, con dos cifras significativas (cl. 7.4). Cada '
     + 'informe tiene folio y es verificable con su código QR.',
-  cierre: 'Los dos valores difieren porque los modelos difieren: geometría modelada (H80 / H98) y forma de '
-    + 'informar (perfil completo / nodo a nodo). Ninguno se ajusta para acercarlo al otro.',
+  cierre: 'Los dos modelos difieren en la geometría modelada (H80 / H98) y en la forma de informar (perfil '
+    + 'completo / nodo a nodo). Sus valores se declaran tal como salen de cada uno: ninguno se ajusta para '
+    + 'acercarlo al otro.',
 });
 
 const normalizar = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
