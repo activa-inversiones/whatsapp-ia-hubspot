@@ -67,9 +67,13 @@ export const TEXTO_UF_DOS_MODELOS = Object.freeze({
   sub2: 'Motor fem-tri de ACTIVA THERMAL',
   pie1: 'W/m²K · un valor para el perfil',
   modelo1Titulo: 'Modelo 1 — Informe de transmitancia térmica de WinHouse (THERM · NCh 3137/2)',
-  modelo1: 'Un Uf para el perfil completo. El informe, firmado por el Evaluador CEV Bernardo Quilaman '
+  // [Codex r5] Método declarado, tal como lo titula el informe fuente (activa-thermal
+  // data/uf_winhouse.json `_fuente.convenciones`): THERM, NCh 3137/2, tabla C.1 con panel de sustitución.
+  modelo1: 'Un Uf para el perfil completo, calculado con el programa THERM según NCh 3137/2 con panel de '
+    + 'sustitución: Uf = (L2D - Up·bp)/bf. El informe, firmado por el Evaluador CEV Bernardo Quilaman '
     + 'Cayuqueo, lo entrega para el sistema S75 con hoja H80 (tabla C.1); ACTIVA aplica ese valor a la hoja '
-    + 'H98 del mismo sistema. Es el Uf con que se calculó el Uw de sus ventanas, informado más arriba.',
+    + 'H98 del mismo sistema. Es el Uf con que se calculó el Uw de las ventanas de cada línea de esta tabla, '
+    + 'informado más arriba.',
   modelo2Titulo: 'Modelo 2 — Motor de elementos finitos fem-tri de ACTIVA THERMAL (NCh 3137/2 · ISO 10077-2)',
   modelo2: 'Un Uf por cada nodo del marco (cada corte: los rieles inferiores y el traslapo), calculado sobre '
     + 'la geometría de la hoja H98. Uf = (L2D - Up·bp)/bf, con dos cifras significativas (cl. 7.4). Cada '
@@ -113,8 +117,9 @@ export function filasUfDosModelos(ventanas) {
     // Una fila por LÍNEA, y la línea se declara solo si TODAS sus ventanas tienen un modelo 1
     // compatible e igual. [Codex r2-r4 · Copilot r4] Basta UNA ventana de la línea sin Uf, con
     // otro perfil (un Uf de otro perfil al lado sería comparar dos marcos distintos) o con un Uf
-    // distinto (comparado como se imprime, a 2 decimales) para que la línea NO se declare: la
-    // frase «es el Uf con que se calculó el Uw de sus ventanas» tiene que ser cierta para todas.
+    // distinto (comparado EXACTO: el redondeo es solo para imprimir) para que la línea NO se
+    // declare: «es el Uf con que se calculó el Uw de las ventanas de cada línea» tiene que ser
+    // cierto para todas.
     let fila = vistas.get(clave);
     if (!fila) {
       fila = { linea: fem.linea, folio: fem.folio, ufModelo1: null, nodos: fem.nodos.map((n) => ({ ...n })) };
@@ -124,7 +129,7 @@ export function filasUfDosModelos(ventanas) {
     const m1 = ufModelo1(v);
     if (!m1 || m1.uf === null || m1.perfil !== fem.perfil) { fila.inconsistente = true; continue; }
     if (fila.ufModelo1 === null) fila.ufModelo1 = m1.uf;
-    else if (m1.uf.toFixed(2) !== fila.ufModelo1.toFixed(2)) fila.inconsistente = true;
+    else if (m1.uf !== fila.ufModelo1) fila.inconsistente = true;
   }
   return filas.filter((f) => !f.inconsistente && f.ufModelo1 !== null);
 }

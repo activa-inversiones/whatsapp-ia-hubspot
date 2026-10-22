@@ -62,8 +62,9 @@ test('una fila por LÍNEA, no por ventana, en el orden del proyecto', () => {
 test('🔴 [Codex r2-r3] misma línea con Uf distintos del modelo 1: esa línea NO se declara (ni el primero, ni juntos)', () => {
   const filas = filasUfDosModelos([ventana(DOBLE, H98(2.31)), ventana(DOBLE, H98(2.3)), ventana(TRIPLE, H98())]);
   assert.deepEqual(filas.map((f) => f.linea), ['Corredera S75 H98 triple riel'], 'la doble se cae; la triple sigue');
-  // Iguales a como se imprimen (2 decimales) no son una discrepancia.
-  assert.equal(filasUfDosModelos([ventana(DOBLE, H98(2.3)), ventana(DOBLE, H98(2.300001))]).length, 1);
+  // [Codex r5] Se compara EXACTO: dos Uf que se imprimirían igual («2,30») siguen siendo distintos.
+  assert.deepEqual(filasUfDosModelos([ventana(DOBLE, H98(2.301)), ventana(DOBLE, H98(2.304))]), []);
+  assert.equal(filasUfDosModelos([ventana(DOBLE, H98(2.3)), ventana(DOBLE, H98(2.3))]).length, 1, 'iguales sí');
 });
 
 test('🔴 [Codex r4 · Copilot r4] UNA ventana de la línea sin modelo 1 compatible invalida la LÍNEA entera', () => {
@@ -111,7 +112,9 @@ test('🔴 [Copilot/Codex r1-r2] el modelo 1 dice que el informe es del H80 y qu
   const T = TEXTO_UF_DOS_MODELOS;
   assert.match(T.modelo1, /hoja H80 \(tabla C\.1\)/);
   assert.match(T.modelo1, /ACTIVA aplica ese valor a la hoja H98/);
-  assert.match(T.modelo1, /Es el Uf con que se calculó el Uw/);
+  assert.match(T.modelo1, /Es el Uf con que se calculó el Uw de las ventanas de cada línea/);
+  // [Codex r5] el método del modelo 1 también se declara, no solo su procedencia.
+  assert.match(T.modelo1, /programa THERM según NCh 3137\/2 con panel de sustitución: Uf = \(L2D - Up·bp\)\/bf/);
   assert.match(T.cierre, /perfil completo \/ nodo a nodo/);
   // Ni una causa no medida («difieren porque…») ni una verificabilidad que el cliente no recibe (QR).
   assert.doesNotMatch(Object.values(T).join(' '), /porque|QR/);

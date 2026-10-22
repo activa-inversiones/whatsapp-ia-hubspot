@@ -825,9 +825,9 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
           doc.fillColor(DARK).fontSize(8).font('Helvetica-Bold').text(f.linea, XU.lin, y, { width: 135 });
           doc.fillColor(DARK).fontSize(13).font('Helvetica-Bold').text(dec(f.ufModelo1, 2), XU.a, y - 2, { lineBreak: false });
           doc.fillColor(GRAY).fontSize(6.5).font('Helvetica').text(T.pie1, XU.a, y + 13, { width: 120 });
-          f.nodos.forEach((n, i) => {
-            doc.fillColor(GRAY).fontSize(7.5).font('Helvetica').text(n.nodo, XU.b, y + i * 12, { width: 130, lineBreak: false });
-            doc.fillColor(DARK).font('Helvetica-Bold').text(dec(n.uf, 1), XU.b + 130, y + i * 12, { width: 30, align: 'right' });
+          f.nodos.forEach((n, k) => {
+            doc.fillColor(GRAY).fontSize(7.5).font('Helvetica').text(n.nodo, XU.b, y + k * 12, { width: 130, lineBreak: false });
+            doc.fillColor(DARK).font('Helvetica-Bold').text(dec(n.uf, 1), XU.b + 130, y + k * 12, { width: 30, align: 'right' });
           });
           doc.fillColor(GRAY).fontSize(6.5).font('Helvetica')
             .text(`W/m²K · folio ${f.folio}`, XU.b, y + f.nodos.length * 12 + 1, { width: 200, lineBreak: false });
