@@ -46,7 +46,7 @@ import {
 } from '../../services/atribucionTurno.js';
 import { acquireLock, LOCKS } from '../../services/lockTelefono.js';
 // [2026-08-08] Estado que sobrevive a un redeploy (respaldo en Postgres). Ver §14b·bis.
-import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado, borrarSi as borrarEstadoSi, borrarDurable as borrarEstadoDurable } from '../../services/estadoPersistente.js';
+import { leer as leerEstado, leerConEstado, escribir as escribirEstado, escribirDurable as escribirEstadoDurable, reservar as reservarEstado, liberarReserva, borrar as borrarEstado, borrarSi as borrarEstadoSi, actualizarSi as actualizarEstadoSi, borrarDurable as borrarEstadoDurable } from '../../services/estadoPersistente.js';
 // [2026-08-21] El informe térmico de la comuna, que se manda ANTES de la cotización.
 import { pedirInformeComuna, normalizarComuna, esperarAntesDeEnviar, COMUNA_REFERENCIA, FIRMA, DEMORA_AVISO_MS, datosDelInforme } from '../../services/informeTermico.js';
 // [2026-10-17, dueno] Los informes los EMITE ACTIVA THERMAL; el local queda de respaldo (ver informesThermal.js).
@@ -70,7 +70,7 @@ import { pedirVientos, ventanasParaVientos } from '../../services/vientosThermal
 import { motorCotizo, vidrioDelMotor, precioCoincide, elegirVidrio, aplicarVidrio, avisarVidrio, VIDRIO_RESPALDO } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor
 import { generarInformeVientosPdf } from '../../services/informesThermal.js';
 import { decidirDocumentosCotizacion, leerEntregasLocales, marcarEntregaLocal, claveEntrega, entregaTtlSeg } from '../../services/documentosCotizacion.js'; // [2026-09-30] selector de documentos por cotización
-import { elegirInformesUwLinea, enPilotoUwLinea, descargarInformeUw, nombreParaCliente, nombreParaArchivo, captionUwLinea, tipoEntregaUw } from '../../services/uwLineaPiloto.js'; // [2026-10-21] piloto informe Uw de la línea (#1581)
+import { elegirInformesUwLinea, enPilotoUwLinea, descargarInformeUw, nombreParaCliente, nombreParaArchivo, captionUwLinea, tipoEntregaUw, TTL_PENDIENTE_UW_S } from '../../services/uwLineaPiloto.js'; // [2026-10-21] piloto informe Uw de la línea (#1581)
 import { clasificarResultadoEmision } from '../../services/oliverInternoLiberar.js'; // [2026-10-12 · #1500-C] emisión interna: resultado → forma que lee sales-os
 import { numerarVentanas } from '../../services/etiquetaVentana.js'; // [2026-09-19] el numero se congela antes de filtrar
 
@@ -1136,6 +1136,90 @@ export async function handleWebhook(req, res, deps = {}) {
     // Solo se actua sobre los DOCUMENTOS (propuesta e informe), que son los que importan y
     // los unicos que dejamos rastreados: un texto suelto que falla lo arregla el proximo
     // mensaje, un PDF que no llego no se arregla solo.
+    // 📐 [2026-10-22 · Codex P1 en #14] Entrega CONFIRMADA del informe Uw del piloto (#1581).
+    //  1) ENTREGA: el candado PENDIENTE de ESTE msgId pasa a entregado (TTL del selector), en un
+    //     paso (`actualizarSi`): el `delivered` repetido no lo promueve dos veces y un candado de
+    //     otro envío no se toca.
+    //  2) EFECTOS, cada uno con su propia idempotencia RECUPERABLE (Codex r1 y r2): el evento
+    //     «ENTREGADO» y el archivo ISO. Cada efecto lo toma quien lo deja 'en_curso' (desde 'no',
+    //     'fallo' o un 'en_curso' abandonado); si falla queda 'fallo' y el próximo `delivered`/`read`
+    //     de ese msgId lo REINTENTA. Así ninguno de los dos se pierde por un fallo transitorio y
+    //     ninguno se duplica dentro del proceso.
+    // ⚠️ Atómico dentro del proceso; el KV de sales-os no tiene compare-and-set entre instancias.
+    const EFECTO_EN_CURSO_MS = Number(deps.uwArchivoEnCursoMs ?? 5 * 60_000);
+    // Esperas entre reintentos de un efecto (evento / archivo). Peor caso: 3 intentos × ~25 s + 10 s ≪ 5 min.
+    const REINTENTOS_EFECTO_MS = Array.isArray(deps.uwReintentosMs) ? deps.uwReintentosMs : [2_000, 8_000];
+    const registrarEntregaUw = async (rastro, ac) => {
+      if (!rastro?.clave || !ac?.msgId) return;
+      const actualizarSi = deps.actualizarEstadoSi || actualizarEstadoSi;
+      const esDeEste = (v) => v?.msgId === ac.msgId;
+      let promovido = { actualizado: false, motivo: 'error' };
+      try {
+        promovido = await actualizarSi(rastro.clave,
+          (v) => esDeEste(v) && v?.pendiente === true,
+          (v) => ({ ...v, pendiente: false, entregadoAt: Date.now(), evento: 'no', archivo: 'no' }), entregaTtlSeg());
+      } catch { /* sin promoción: el candado pendiente vence solo */ }
+      const cliente = String(rastro.cliente || rastro.telefono || '');
+      // Un efecto que se hace UNA vez y se reintenta si falló. `hacer` devuelve true si quedó hecho.
+      const efecto = async (campo, hacer) => {
+        const desde = `${campo}Desde`;
+        let tomado = { actualizado: false };
+        try {
+          tomado = await actualizarSi(rastro.clave,
+            (v) => esDeEste(v) && v?.pendiente === false && (v?.[campo] === 'no' || v?.[campo] === 'fallo'
+              || (v?.[campo] === 'en_curso' && Date.now() - Number(v?.[desde] || 0) > EFECTO_EN_CURSO_MS)),
+            (v) => ({ ...v, [campo]: 'en_curso', [desde]: Date.now() }), entregaTtlSeg());
+        } catch { /* sin toma: otro acuse lo hará */ }
+        if (!tomado.actualizado) return null;
+        // [Codex r3] Reintento EN EL MOMENTO, con espera creciente: no depender de que Meta mande otro
+        // acuse. Si aun así falla, queda 'fallo' (el próximo `delivered`/`read` lo retoma) y el log lo grita.
+        let ok = false;
+        for (let intento = 0; intento <= REINTENTOS_EFECTO_MS.length && !ok; intento++) {
+          if (intento > 0) await new Promise((r) => { setTimeout(r, REINTENTOS_EFECTO_MS[intento - 1]); });
+          try { ok = Boolean(await hacer()); }
+          catch (err) {
+            log(intento === REINTENTOS_EFECTO_MS.length ? 'error' : 'warn', 'acuse.uwLinea',
+              `${campo} de ${rastro.folio} (${ac.msgId}) falló (intento ${intento + 1}/${REINTENTOS_EFECTO_MS.length + 1}): ${err?.message || err}`);
+          }
+        }
+        try {
+          await actualizarSi(rastro.clave, (v) => esDeEste(v) && v?.[campo] === 'en_curso',
+            (v) => ({ ...v, [campo]: ok ? 'si' : 'fallo' }), entregaTtlSeg());
+        } catch { /* queda 'en_curso': se retoma pasado el plazo */ }
+        return ok;
+      };
+      const hizoEvento = await efecto('evento', async () => {
+        // `pushConversationEvent` NO lanza: devuelve {ok}. `skipped` = la ingesta está apagada en
+        // este entorno: no hay nada que reintentar.
+        const r = await (deps.bridge || realBridge).pushConversationEvent({
+          channel: 'whatsapp', external_id: cliente, direction: 'outbound',
+          actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
+          body: `📐 Informe Uw de la línea ${rastro.linea || ''} (${rastro.folio}) ENTREGADO al cliente · piloto`.replace(/\s+/g, ' '),
+          metadata: { source: 'oliver_gpt_uw_linea_piloto', folio: rastro.folio, ventana: rastro.ventana || null,
+                      msg_id: ac.msgId, media_id: rastro.media || null, quote_number: rastro.quote || null },
+        });
+        if (!(r?.ok === true || r?.skipped === true)) throw new Error('sales-os no confirmó el evento');
+        return true;
+      });
+      const hizoArchivo = await efecto('archivo', async () => {
+        const pdf = await (deps.descargarInformeUw || descargarInformeUw)(rastro.codigo, { sha256: rastro.sha256 });
+        // `saveMedia` NO lanza: ante HTTP de error o red caída devuelve null (mediaStore.js). Sin
+        // respuesta de sales-os, el archivo NO quedó: se marca 'fallo' para reintentarlo.
+        const guardado = await (deps.saveMedia || saveMedia)({
+          phone: cliente, direction: 'outbound', mediaType: 'document', mimeType: 'application/pdf',
+          // Nombre único por entrega (WorkDrive no sobrescribe; el mismo PDF va a muchos clientes).
+          // El folio AT-NCH3137-1 lo archiva en CM-FR-008 (sales-os #32).
+          filename: nombreParaArchivo({ archivo: rastro.archivo, folio: rastro.folio }, cliente, new Date(), ac.msgId),
+          buffer: pdf, waMediaId: rastro.media || null,
+          aiDescription: `Informe Uw de la línea ${rastro.linea || ''} ${rastro.folio} (piloto, cotización ${rastro.quote || 's/n'}) · entregado`,
+        });
+        if (!guardado) throw new Error('sales-os no confirmó el guardado (saveMedia devolvió null)');
+        return true;
+      });
+      if (!promovido.actualizado && hizoEvento === null && hizoArchivo === null) {
+        log('info', 'acuse.uwLinea', `${ac.estado || 'acuse'} de ${ac.msgId}: nada que registrar (${promovido.motivo})`);
+      }
+    };
     const acuses = (deps.parseStatuses || realParseStatuses)(req.body);
     if (acuses.length) {
       for (const ac of acuses) {
@@ -1168,6 +1252,8 @@ export async function handleWebhook(req, res, deps = {}) {
               // puede dar por entregado el documento de otro cliente.
               const d = (x) => String(x || '').replace(/\D/g, '');
               if (ac.telefono && rastro.telefono && d(ac.telefono) !== d(rastro.telefono)) return;
+              // 📐 [2026-10-22 · Codex P1 en #14] El Uw del piloto se REGISTRA recién acá.
+              if (rastro.tipo === 'uw_linea') await registrarEntregaUw(rastro, ac);
               // ⚠️ [Kimi, compuerta] ESTE EVENTO SE REPITE, A PROPÓSITO. Meta reintrega los
               // webhooks hasta recibir un 200, así que el mismo `delivered` llega 1-3 veces y
               // acá NO se consume el rastro (lo necesita el camino de fallo de abajo).
@@ -1198,6 +1284,17 @@ export async function handleWebhook(req, res, deps = {}) {
           // nunca manda esto ⇒ la ausencia NO significa "no leyó".
           // Se repite a propósito (Meta reintenta): sales-os deduplica por `wamid` / usa MAX.
           // Sin await y con .catch mudo: registrar una lectura jamás demora el 200 a Meta.
+          // 📐 [2026-10-22 · Copilot] Un `read` prueba la entrega tanto como un `delivered` (y a veces
+          // llega sin `delivered` previo): para el Uw del piloto también registra (o repara el archivo).
+          if (ac.estado === 'read') {
+            await safe('acuse.lectura.uw', async () => {
+              const rastro = await (deps.leerEstado || leerEstado)(`wamsg:${ac.msgId}`);
+              if (rastro?.tipo !== 'uw_linea') return;
+              const d = (x) => String(x || '').replace(/\D/g, '');
+              if (ac.telefono && rastro.telefono && d(ac.telefono) !== d(rastro.telefono)) return;
+              await registrarEntregaUw(rastro, ac);
+            });
+          }
           if (ac.estado === 'read' && ac.telefono) {
             const _b = deps.bridge || realBridge;
             if (typeof _b.logOliverEvent === 'function') {
@@ -1341,7 +1438,9 @@ export async function handleWebhook(req, res, deps = {}) {
             if (ac.msgId) {
               let r = { borrado: false, motivo: 'error' };
               try {
-                r = await (deps.borrarEstadoSi || borrarEstadoSi)(rastro.clave, (v) => v?.msgId === ac.msgId);
+                // [2026-10-22 · Codex/Copilot] y solo si sigue PENDIENTE: un `failed` que llega después de un
+                // `delivered` no puede soltar un candado ya entregado (habilitaría un duplicado).
+                r = await (deps.borrarEstadoSi || borrarEstadoSi)(rastro.clave, (v) => v?.msgId === ac.msgId && v?.pendiente === true);
               } catch { /* vence solo */ }
               if (!r.borrado) log('info', 'acuse.uwLinea', `failed de ${ac.msgId}: el candado no se suelta (${r.motivo})`);
             }
@@ -4494,11 +4593,42 @@ Comuna: ${datos.comuna}`
                 const pdf = await (deps.descargarInformeUw || descargarInformeUw)(e.codigo, { sha256: e.sha256 });
                 const archivo = nombreParaCliente(e);
                 if (techo.vencido) return 'vencido';   // [NIM] ni siquiera se sube un PDF que no va a salir
+                // [2026-10-22 · Codex r1] RESERVA: un POST nuevo arranca solo si cabe ENTERO antes del techo
+                // (su peor caso = timeout del adaptador, 15 s). Así el techo es de 30 s de verdad: al vencer
+                // no queda ningún POST en vuelo esperando, salvo que el adaptador no respete su timeout.
+                if (Date.now() + techo.reservaMs > techo.vence) return 'sin_tiempo';
                 const media = await uploadWaDocument(pdf, archivo);
                 // Si el techo ya venció, la propuesta pudo salir: un informe DESPUÉS del precio
                 // rompe el orden aprobado por el dueño. Se corta acá, justo antes de enviar.
                 if (techo.vencido) return 'vencido';
-                const envio = media ? await sendWaDocument(from, media, archivo, captionUwLinea(e)) : null;
+                // [2026-10-22 · Codex P2 en #14] El envío EN VUELO queda a la vista del techo: si el
+                // techo vence mientras este POST viaja, el techo ESPERA a que termine (tope = timeout
+                // del adaptador, 15 s) antes de soltar la propuesta. Así el Uw no puede caer después
+                // del precio por un POST que ya había salido.
+                // [2026-10-22 · Copilot r2] La reserva se vuelve a mirar JUSTO antes del envío: la subida del
+                // PDF a Meta también es un POST y puede comerse el margen que quedaba antes de subirlo.
+                if (Date.now() + techo.reservaMs > techo.vence) return 'sin_tiempo';
+                // [2026-10-22 · Codex r5] El POST se puede CANCELAR: si el techo y su seguro vencen con
+                // él en vuelo, se aborta antes de soltar la propuesta (ver `enviarUwLineaConTecho`).
+                const cancelar = new AbortController();
+                techo.abortar = () => cancelar.abort();
+                techo.enEnvio = media ? sendWaDocument(from, media, archivo, captionUwLinea(e), { signal: cancelar.signal }) : null;
+                let envio = null;
+                try { envio = techo.enEnvio ? await techo.enEnvio : null; }
+                catch (err) { envio = { ok: false, error: String(err?.message || err), abortado: cancelar.signal.aborted }; }
+                techo.enEnvio = null;
+                techo.abortar = null;
+                if (cancelar.signal.aborted) {
+                  // Abortado por el techo: puede que Meta igual lo haya aceptado antes del corte (eso
+                  // ningún cliente lo puede saber). Mismo trato que un resultado DESCONOCIDO: candado
+                  // «dudoso» (no se reintenta solo), aviso al dueño, y nada se registra como entregado.
+                  cuenta.fallos += 1;
+                  log('error', 'generarPdf.uwLinea', `${from}: informe Uw ${e.folio}: POST abortado por el techo — NO se reintenta. Revisar si llegó.`);
+                  avisarEntregaDudosa({ tipo: 'Informe Uw de la línea', folio: e.folio, motivo: 'abortado por el techo', nombre: clientName || '' });
+                  try { escribir(clave, { at: Date.now(), folio: e.folio, dudoso: true }, entregaTtlSeg()); } catch { /* el aviso ya salió */ }
+                  return 'vencido';
+                }
+                if (envio?.ok === true && envio?.msgId) techo.algunoAceptado = true;
                 // [Codex r2] HTTP 200 no prueba entrega (AGENTS.md). Misma regla que vientos:
                 //  - sin `ok` y con resultado DESCONOCIDO (timeout/5xx: quizá llegó) ⇒ candado
                 //    «dudoso», NO se reintenta solo y se avisa al dueño;
@@ -4521,33 +4651,26 @@ Comuna: ${datos.comuna}`
                   cuenta.fallos += 1;
                   continue;
                 }
-                cuenta.enviados += 1;
-                try { await escribir(clave, { at: Date.now(), folio: e.folio, quote: quoteNumber || null, msgId: envio.msgId }, entregaTtlSeg()); }
-                catch { /* el candado evita repetir; perderlo solo repite el PDF */ }
-                // [Codex r1] `ok` = Meta aceptó el POST, NO que llegó. El rastro deja que el acuse
-                // `failed` posterior (`acuse.fallo`) suelte este candado y avise, igual que con el
-                // informe térmico: si no, un 131047 dejaba al cliente sin Uw durante todo el candado.
+                cuenta.enviados += 1;   // = ACEPTADO por Meta; la entrega la confirma el `delivered`
+                // [2026-10-22 · Codex P1 en #14] `ok` + `msgId` = Meta ACEPTÓ el POST, no que llegó.
+                // El candado queda PENDIENTE (bloquea un reenvío mientras tanto, pero vive solo
+                // TTL_PENDIENTE_UW_S) y el evento «entregado» y el archivo ISO se escriben recién
+                // con el acuse `delivered` de ESTE msgId (`registrarEntregaUw`, en el bloque de acuses).
+                // El rastro lleva lo necesario para hacerlo sin depender de este turno.
+                // [Codex r1] El RASTRO primero y el candado después, sin `await` entre el POST y ellos:
+                // `escribir` pone la memoria en el acto, así que dentro del proceso ningún acuse puede
+                // procesarse entre la respuesta de Meta y estas dos líneas.
                 try {
-                    await escribir(`wamsg:${envio.msgId}`, {
-                      msgId: envio.msgId, tipo: 'uw_linea', folio: e.folio,
-                      telefono: String(from) /* [chat] destinatario del envío */, cliente: String(claves.cliente), clave,
-                    }, 3 * 24 * 3600);
-                } catch { /* sin rastro: un rechazo tardío no suelta el candado */ }
-                safe('generarPdf.uwLinea.espejo', () => bridge.pushConversationEvent({
-                  channel: 'whatsapp', external_id: telefonoCliente, direction: 'outbound',
-                  actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
-                  body: `📐 Informe Uw de la línea ${e.linea} (${e.folio}) enviado al cliente · piloto`,
-                  metadata: { source: 'oliver_gpt_uw_linea_piloto', folio: e.folio, ventana: e.ventana,
-                              filename: archivo, media_id: media, msg_id: envio.msgId, quote_number: quoteNumber || null },
-                }));
-                // Registro ISO de la ENTREGA: nombre único por entrega (WorkDrive no sobrescribe y
-                // el mismo PDF va a muchos clientes); el folio AT-NCH3137-1 lo manda a CM-FR-008.
-                safe('generarPdf.uwLinea.registro', () => (deps.saveMedia || saveMedia)({
-                  phone: telefonoCliente, direction: 'outbound', mediaType: 'document',
-                  mimeType: 'application/pdf', filename: nombreParaArchivo(e, telefonoCliente, new Date(), envio.msgId),
-                  buffer: pdf, waMediaId: media,
-                  aiDescription: `Informe Uw de la línea ${e.linea} ${e.folio} (piloto, cotización ${quoteNumber || 's/n'})`,
-                }));
+                  escribir(`wamsg:${envio.msgId}`, {
+                    msgId: envio.msgId, tipo: 'uw_linea', folio: e.folio,
+                    telefono: String(from) /* [chat] destinatario del envío */, cliente: String(claves.cliente), clave,
+                    codigo: e.codigo, sha256: e.sha256, archivo: e.archivo, linea: e.linea, ventana: e.ventana,
+                    quote: quoteNumber || null, media,
+                  }, TTL_PENDIENTE_UW_S);
+                } catch { /* sin rastro: ni el `delivered` ni el `failed` pueden cerrar este envío */ }
+                try { escribir(clave, { at: Date.now(), folio: e.folio, quote: quoteNumber || null, msgId: envio.msgId, pendiente: true }, TTL_PENDIENTE_UW_S); }
+                catch { /* el candado evita repetir; perderlo solo repite el PDF */ }
+                log('info', 'generarPdf.uwLinea', `${from}: informe Uw ${e.folio} ACEPTADO por Meta (${envio.msgId}) — se registra con el delivered`);
               } catch (err) {
                 cuenta.fallos += 1;
                 log('warn', 'generarPdf.uwLinea', `${from}: informe Uw ${e.folio}: ${err?.message || err}`);
@@ -4560,11 +4683,41 @@ Comuna: ${datos.comuna}`
           };
           const enviarUwLineaConTecho = async () => {
             const techoMs = Number(deps.seqUwLineaTimeoutMs ?? 30_000);
-            const techo = { vencido: false };
+            // Presupuesto de un POST a Meta: el timeout del adaptador de WhatsApp (15 s) + margen. Se
+            // RESERVA dentro del techo (no arranca un POST que no cabe) y, si aun así uno sigue en vuelo
+            // al vencer (un adaptador que no respeta su timeout), se le da un seguro corto: total ≤ 32 s.
+            const reservaMs = Number(deps.seqUwLineaReservaMs ?? 17_000);
+            const envioMaxMs = Number(deps.seqUwLineaEnvioMaxMs ?? 2_000);
+            const techo = { vencido: false, enEnvio: null, algunoAceptado: false, vence: Date.now() + techoMs, reservaMs };
             let vence = null;
             return Promise.race([
               safe('generarPdf.uwLinea', () => enviarUwLinea(techo)),
-              new Promise((res) => { vence = setTimeout(() => { techo.vencido = true; res('timeout'); }, techoMs); }),
+              new Promise((res) => {
+                vence = setTimeout(async () => {
+                  techo.vencido = true;   // ningún envío NUEVO arranca desde acá
+                  const enVuelo = techo.enEnvio;
+                  if (enVuelo) {
+                    let tope = null;
+                    const termino = await Promise.race([
+                      Promise.resolve(enVuelo).then(() => true, () => true),
+                      new Promise((r) => { tope = setTimeout(() => r(false), envioMaxMs); }),
+                    ]).finally(() => { if (tope) clearTimeout(tope); });
+                    if (!termino && techo.abortar) {
+                      // [Codex r5] Vencido también el seguro: se CANCELA el POST y se espera a que la
+                      // cancelación se asiente antes de soltar la propuesta (un adaptador que respeta
+                      // `signal` rechaza en el acto; si no la respeta, se espera hasta el mismo tope).
+                      techo.abortar();
+                      let tope2 = null;
+                      await Promise.race([
+                        Promise.resolve(enVuelo).catch(() => null),
+                        new Promise((r) => { tope2 = setTimeout(r, envioMaxMs); }),
+                      ]).finally(() => { if (tope2) clearTimeout(tope2); });
+                    }
+                  }
+                  // Si el POST en vuelo terminó aceptado, es un documento antes del precio: lleva pausa.
+                  res(techo.algunoAceptado ? 'enviado' : 'timeout');
+                }, techoMs);
+              }),
             ]).finally(() => { if (vence) clearTimeout(vence); });
           };
           log('info', 'generarPdf.docsSel',

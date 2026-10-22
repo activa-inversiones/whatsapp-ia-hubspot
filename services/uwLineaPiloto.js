@@ -147,3 +147,9 @@ export function captionUwLinea(e) {
  *  (`documentosCotizacion.js`: `claveEntrega(telefono, tipo)` + `entregaTtlSeg()`), en vez de
  *  un candado paralelo con su propia llave y su propio TTL (Thermos calidad r1, B3). */
 export const tipoEntregaUw = (e) => `uw_linea:${e.ventana}`;
+
+/** [2026-10-22 · Codex P1 en #14] Mientras Meta no confirme la entrega (`delivered`), el candado
+ *  queda PENDIENTE y vive lo mismo que el rastro `wamsg:` (3 días). Así, si no llega ningún acuse
+ *  (ni `delivered` ni `failed`), el candado vence solo y la próxima cotización puede reintentar,
+ *  en vez de dejar al cliente 90 días sin el informe. Con `delivered` pasa al TTL normal. */
+export const TTL_PENDIENTE_UW_S = 3 * 24 * 3600;

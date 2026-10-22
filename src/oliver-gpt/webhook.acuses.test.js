@@ -376,7 +376,7 @@ test('📐 Uw: el failed de un envío VIEJO NO suelta el candado del envío nuev
 
 test('📐 Uw: el failed del MISMO envío que puso el candado sí lo suelta (la próxima cotización reintenta)', async () => {
   const { deps, spy } = makeDeps({ enviado: rastroUw('wamid.UW_1') });
-  deps._estado.set(CLAVE_UW, { valor: { at: Date.now(), msgId: 'wamid.UW_1' }, expira: null });
+  deps._estado.set(CLAVE_UW, { valor: { at: Date.now(), msgId: 'wamid.UW_1', pendiente: true }, expira: null });
   await handleWebhook({ body: acuse('failed', 'wamid.UW_1', { errors: [{ code: 131047, title: 'x' }] }) }, makeRes(), deps);
   await new Promise((r) => setTimeout(r, 120));
   assert.ok(spy.borrados.includes(CLAVE_UW), `borrados: ${JSON.stringify(spy.borrados)}`);
@@ -388,5 +388,14 @@ test('📐 Uw: sin candado (venció o ya se soltó) el failed no rompe nada ni b
   await handleWebhook({ body: acuse('failed', 'wamid.UW_2', { errors: [{ code: 131047, title: 'x' }] }) }, res, deps);
   await new Promise((r) => setTimeout(r, 120));
   assert.equal(res.sentStatus, 200);
+  assert.ok(!spy.borrados.includes(CLAVE_UW), `borrados: ${JSON.stringify(spy.borrados)}`);
+});
+
+test('📐 Uw: un failed que llega DESPUÉS del delivered no suelta un candado ya ENTREGADO', async () => {
+  // [2026-10-22 · Codex/Copilot] Soltarlo habilitaría que la próxima cotización repita el informe.
+  const { deps, spy } = makeDeps({ enviado: rastroUw('wamid.UW_3') });
+  deps._estado.set(CLAVE_UW, { valor: { at: Date.now(), msgId: 'wamid.UW_3', pendiente: false, archivo: 'si' }, expira: null });
+  await handleWebhook({ body: acuse('failed', 'wamid.UW_3', { errors: [{ code: 131047, title: 'x' }] }) }, makeRes(), deps);
+  await new Promise((r) => setTimeout(r, 120));
   assert.ok(!spy.borrados.includes(CLAVE_UW), `borrados: ${JSON.stringify(spy.borrados)}`);
 });

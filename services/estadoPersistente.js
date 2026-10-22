@@ -105,13 +105,38 @@ export function leerLocal(clave) {
 }
 
 /**
+ * [2026-10-22 · Codex r3, piloto Uw] ESCRITURAS A LA BASE EN ORDEN, POR CLAVE.
+ * `escribir`/`borrar` mandan el PUT/DELETE sin esperarlo: dos transiciones seguidas de la MISMA
+ * clave (no → en_curso → si) podían llegar a Postgres desordenadas y, tras un reinicio, la base
+ * quedaba en un estado viejo («no» con la memoria en «si») y el efecto se repetía. Acá cada
+ * pedido de una clave sale recién cuando terminó el anterior de esa misma clave, en el orden en
+ * que se escribió la memoria. Devuelve si la base lo confirmó.
+ * [Codex r4] TODAS las escrituras remotas pasan por acá (escribir, escribirDurable, borrar,
+ * borrarDurable, actualizarSi, borrarSi): si una sola quedara afuera, podía adelantarse o atrasarse.
+ */
+const COLA_POR_CLAVE = new Map();
+function pedirEnOrdenCrudo(metodo, clave, cuerpo) {
+  if (!PERSISTENCIA_ACTIVA) return Promise.resolve(null);
+  const previo = COLA_POR_CLAVE.get(clave);
+  // Sin nada pendiente para esta clave, el pedido sale EN EL ACTO (como siempre: `escribir` es el
+  // camino caliente y su guardia lo exige). Solo se encola detrás de otro de la MISMA clave.
+  const este = previo ? previo.catch(() => null).then(() => pedir(metodo, clave, cuerpo)) : pedir(metodo, clave, cuerpo);
+  COLA_POR_CLAVE.set(clave, este);
+  este.finally(() => { if (COLA_POR_CLAVE.get(clave) === este) COLA_POR_CLAVE.delete(clave); }).catch(() => {});
+  return este;
+}
+function pedirEnOrden(metodo, clave, cuerpo) {
+  return pedirEnOrdenCrudo(metodo, clave, cuerpo).then((r) => (PERSISTENCIA_ACTIVA ? (r !== null && r?.ok !== false) : false));
+}
+
+/**
  * Escribe: memoria al instante, Postgres en segundo plano.
  * @param {number} ttlSegundos  vida del dato. Tope de 30 días del lado del servidor.
  */
 export function escribir(clave, valor, ttlSegundos = 3600) {
   MEMORIA.set(clave, { valor, expira: Date.now() + ttlSegundos * 1000 });
   // Fire-and-forget a propósito: el turno del cliente no espera a la base.
-  pedir('PUT', clave, { valor, ttl_segundos: ttlSegundos }).catch(() => {});
+  pedirEnOrden('PUT', clave, { valor, ttl_segundos: ttlSegundos }).catch(() => {});   // [Codex r4] en orden
   return valor;
 }
 
@@ -142,7 +167,7 @@ export async function escribirDurable(clave, valor, ttlSegundos = 3600) {
   if (!PERSISTENCIA_ACTIVA) {
     return { ok: false, enMemoria: true, motivo: 'persistencia_apagada' };
   }
-  const r = await pedir('PUT', clave, { valor, ttl_segundos: ttlSegundos });
+  const r = await pedirEnOrdenCrudo('PUT', clave, { valor, ttl_segundos: ttlSegundos });   // [Codex r4] en orden
   // `pedir` devuelve null ante timeout, 5xx o sales-os caido. Null = no sabemos que quedo.
   // [Tridente r4 #4] Y un 200 con {ok:false} (sales-os viejo: la BD no guardó) tampoco es éxito.
   return (r === null || r.ok !== true)
@@ -223,13 +248,41 @@ export async function borrarSi(clave, condicion) {
   let cumple = false;
   try { cumple = Boolean(condicion(valor)); } catch { cumple = false; }
   if (!cumple) return { borrado: false, motivo: 'no_coincide' };
-  borrar(clave);
-  return { borrado: true };
+  MEMORIA.delete(clave);
+  const persistido = await pedirEnOrden('DELETE', clave);   // [Codex r3] en orden con los PUT de la clave
+  return { borrado: true, persistido };
+}
+
+/**
+ * [2026-10-22 · piloto Uw, entrega con `delivered`] REESCRIBE SOLO SI EL VALOR VIGENTE CUMPLE
+ * `condicion`, en el mismo paso síncrono que la comparación (hermana de `borrarSi`). Sirve para
+ * que el MISMO `delivered` repetido por Meta (1-3 veces) promueva el candado UNA sola vez, y para
+ * no promover un candado que ya es de otro envío. ⚠️ Mismo límite: atómico dentro del proceso,
+ * no entre dos instancias.
+ * @param {(valor:any)=>boolean} condicion
+ * @param {(valor:any)=>any} nuevo  recibe el valor vigente y devuelve el que se escribe
+ * @returns {Promise<{actualizado:boolean, motivo?:string, valor?:any}>}
+ */
+export async function actualizarSi(clave, condicion, nuevo, ttlSegundos = 3600) {
+  const r = await leerConEstado(clave);
+  if (!r.ok) return { actualizado: false, motivo: 'no_se_pudo_leer' };
+  const e = MEMORIA.get(clave);                     // ← desde acá, síncrono hasta la escritura
+  const valor = vigente(e) ? e.valor : null;
+  if (valor === null || valor === undefined) return { actualizado: false, motivo: 'no_existe' };
+  let cumple = false;
+  try { cumple = Boolean(condicion(valor)); } catch { cumple = false; }
+  if (!cumple) return { actualizado: false, motivo: 'no_coincide' };
+  let siguiente;
+  try { siguiente = nuevo(valor); } catch { return { actualizado: false, motivo: 'error' }; }
+  MEMORIA.set(clave, { valor: siguiente, expira: Date.now() + ttlSegundos * 1000 });   // síncrono con la comparación
+  // [Codex r3] Y se ESPERA la base, en orden con las demás escrituras de esta clave.
+  const persistido = await pedirEnOrden('PUT', clave, { valor: siguiente, ttl_segundos: ttlSegundos });
+  return { actualizado: true, valor: siguiente, persistido };
 }
 
 export function borrar(clave) {
   MEMORIA.delete(clave);
-  pedir('DELETE', clave).catch(() => {});
+  pedirEnOrden('DELETE', clave).catch(() => {});   // [Codex r4] en orden
 }
 
 /**
@@ -240,7 +293,7 @@ export async function borrarDurable(clave) {
   MEMORIA.delete(clave);
   if (!PERSISTENCIA_ACTIVA) return { ok: false, enMemoria: true, motivo: 'persistencia_apagada' };
   for (let intento = 0; intento < 2; intento++) {
-    const r = await pedir('DELETE', clave).catch(() => null);
+    const r = await pedirEnOrdenCrudo('DELETE', clave).catch(() => null);   // [Codex r4] en orden
     if (r !== null && r?.ok !== false) return { ok: true };
   }
   return { ok: false, motivo: 'sales_os_no_confirmo' };
@@ -249,4 +302,4 @@ export async function borrarDurable(clave) {
 /** Para tests. */
 export function _reset() { MEMORIA.clear(); }
 
-export default { leer, leerConEstado, leerLocal, escribir, escribirDurable, reservar, liberarReserva, borrarSi, borrar, borrarDurable, PERSISTENCIA_ACTIVA };
+export default { leer, leerConEstado, leerLocal, escribir, escribirDurable, reservar, liberarReserva, borrarSi, actualizarSi, borrar, borrarDurable, PERSISTENCIA_ACTIVA };
