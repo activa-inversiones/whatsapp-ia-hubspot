@@ -24,16 +24,16 @@ const TRIPLE = 'Corredera SLIDING H98 Triple Riel S75';
 
 test('🔴 los DOS Uf del mismo perfil, cada uno de su fuente, sin promediar', () => {
   const [f] = filasUfDosModelos([ventana(DOBLE, H98())]);
-  assert.deepEqual(f.ufsModelo1, [2.3], 'modelo 1 = el Uf que THERMAL usó para el Uw (detalle.uf)');
+  assert.equal(f.ufModelo1, 2.3, 'modelo 1 = el Uf que THERMAL usó para el Uw (detalle.uf)');
   assert.deepEqual(f.nodos.map((n) => n.uf), [2.1, 2.2, 1.7], 'modelo 2 = Tabla 1 del folio 000012');
   assert.equal(f.folio, 'AT-NCH3137-2-2026-000012');
   // Ningún campo trae un promedio ni un valor «combinado».
-  assert.deepEqual(Object.keys(f).sort(), ['folio', 'linea', 'nodos', 'ufsModelo1']);
+  assert.deepEqual(Object.keys(f).sort(), ['folio', 'linea', 'nodos', 'ufModelo1']);
 });
 
 test('🔴 el modelo 1 se LEE del ítem: sale el número que de verdad entró al Uw', () => {
   const [f] = filasUfDosModelos([ventana(TRIPLE, H98(2.31))]);
-  assert.deepEqual(f.ufsModelo1, [2.31], 'si THERMAL cambia el certificado, el informe lo sigue');
+  assert.equal(f.ufModelo1, 2.31, 'si THERMAL cambia el certificado, el informe lo sigue');
   assert.deepEqual(f.nodos.map((n) => n.uf), [2.4, 2.2, 2.5, 1.7], 'Tabla 1 del folio 000008');
 });
 
@@ -59,9 +59,22 @@ test('una fila por LÍNEA, no por ventana, en el orden del proyecto', () => {
   assert.deepEqual(filas.map((f) => f.linea), ['Corredera S75 H98 triple riel', 'Corredera S75 H98 doble riel']);
 });
 
-test('🔴 [Codex r2] misma línea con Uf distintos del modelo 1: se declaran TODOS, nunca el primero en silencio', () => {
-  const [f] = filasUfDosModelos([ventana(DOBLE, H98(2.31)), ventana(DOBLE, H98(2.3)), ventana(DOBLE, H98(2.31))]);
-  assert.deepEqual(f.ufsModelo1, [2.3, 2.31]);
+test('🔴 [Codex r2-r3] misma línea con Uf distintos del modelo 1: esa línea NO se declara (ni el primero, ni juntos)', () => {
+  const filas = filasUfDosModelos([ventana(DOBLE, H98(2.31)), ventana(DOBLE, H98(2.3)), ventana(TRIPLE, H98())]);
+  assert.deepEqual(filas.map((f) => f.linea), ['Corredera S75 H98 triple riel'], 'la doble se cae; la triple sigue');
+  // Iguales a como se imprimen (2 decimales) no son una discrepancia.
+  assert.equal(filasUfDosModelos([ventana(DOBLE, H98(2.3)), ventana(DOBLE, H98(2.300001))]).length, 1);
+});
+
+test('[Codex r3] el perfil sale del mismo objeto que el Uf: si los dos niveles discrepan, no se declara', () => {
+  const raro = { perfil: 'Sliding_H80', uw: 2.6, detalle: { perfil: 'Sliding_H98', uf: 2.3 } };
+  assert.deepEqual(filasUfDosModelos([ventana(DOBLE, raro)]), []);
+});
+
+test('🔴 [Codex r3] cada folio va con SUS valores (Tabla 1 del PDF oficial): cambiar uno sin el otro rompe', () => {
+  const par = (k) => [UF_FEM_TRI_POR_LINEA[k].folio, UF_FEM_TRI_POR_LINEA[k].nodos.map((n) => n.uf)];
+  assert.deepEqual(par('corredera sliding h98 doble riel s75'), ['AT-NCH3137-2-2026-000012', [2.1, 2.2, 1.7]]);
+  assert.deepEqual(par('corredera sliding h98 triple riel s75'), ['AT-NCH3137-2-2026-000008', [2.4, 2.2, 2.5, 1.7]]);
 });
 
 test('la tabla fem-tri solo tiene líneas H98 con folio de informe de marcos', () => {

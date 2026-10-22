@@ -793,26 +793,34 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
       const filasUf = filasUfDosModelos(ventanas);
       if (filasUf.length) {
         const T = TEXTO_UF_DOS_MODELOS;
-        seccion(T.titulo);
-        parrafo(T.entrada, { size: 9.5 });
         const XU = { lin: 58, a: 200, b: 330 };
         const altoFila = (f) => 12 * f.nodos.length + 18;
-        // [Copilot/Codex r2] La cabecera no queda huérfana: entra junto con su primera fila.
-        saltoSiNoCabe(36 + altoFila(filasUf[0]) + 4);
-        doc.rect(50, y, W - 100, 30).fill(NAVY);
-        doc.fillColor(GOLD).fontSize(7.5).font('Helvetica-Bold').text('LÍNEA', XU.lin, y + 6);
-        doc.text(T.cabecera1, XU.a, y + 6);
-        doc.text(T.cabecera2, XU.b, y + 6);
-        doc.fillColor('#cbd5e1').fontSize(6.5).font('Helvetica').text(T.sub1, XU.a, y + 17);
-        doc.text(T.sub2, XU.b, y + 17);
-        y += 36;
+        // [Copilot/Codex r2-r3] Título, entrada, cabecera y primera fila entran JUNTOS (alturas
+        // medidas): ni el título al pie de una hoja con la tabla en la otra, ni la cabecera huérfana.
+        doc.fontSize(9.5).font('Helvetica');
+        saltoSiNoCabe(30 + doc.heightOfString(T.entrada, { width: W - 100, align: 'justify' }) + 8
+          + 36 + altoFila(filasUf[0]) + 4);
+        seccion(T.titulo);
+        parrafo(T.entrada, { size: 9.5 });
+        const cabeceraUf = () => {
+          doc.rect(50, y, W - 100, 30).fill(NAVY);
+          doc.fillColor(GOLD).fontSize(7.5).font('Helvetica-Bold').text('LÍNEA', XU.lin, y + 6);
+          doc.text(T.cabecera1, XU.a, y + 6);
+          doc.text(T.cabecera2, XU.b, y + 6);
+          doc.fillColor('#cbd5e1').fontSize(6.5).font('Helvetica').text(T.sub1, XU.a, y + 17);
+          doc.text(T.sub2, XU.b, y + 17);
+          y += 36;
+        };
+        cabeceraUf();
         for (const f of filasUf) {
           const alto = altoFila(f);
-          saltoSiNoCabe(alto + 4);
+          // [Codex r3] Si la fila salta de hoja, la cabecera se repite: sin ella los números
+          // quedan sin decir de qué modelo son.
+          const yAntes = y;
+          saltoSiNoCabe(36 + alto + 4);
+          if (y < yAntes) cabeceraUf();
           doc.fillColor(DARK).fontSize(8).font('Helvetica-Bold').text(f.linea, XU.lin, y, { width: 135 });
-          // Uno o más (si las ventanas de la línea trajeran Uf distintos): nunca uno elegido en silencio.
-          doc.fillColor(DARK).fontSize(13).font('Helvetica-Bold')
-            .text(f.ufsModelo1.map((u) => dec(u, 2)).join(' / '), XU.a, y - 2, { width: 125, lineBreak: false });
+          doc.fillColor(DARK).fontSize(13).font('Helvetica-Bold').text(dec(f.ufModelo1, 2), XU.a, y - 2, { lineBreak: false });
           doc.fillColor(GRAY).fontSize(6.5).font('Helvetica').text(T.pie1, XU.a, y + 13, { width: 120 });
           f.nodos.forEach((n, i) => {
             doc.fillColor(GRAY).fontSize(7.5).font('Helvetica').text(n.nodo, XU.b, y + i * 12, { width: 130, lineBreak: false });
@@ -837,8 +845,9 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
         };
         caja(T.modelo1Titulo, T.modelo1);
         caja(T.modelo2Titulo, T.modelo2);
-        saltoSiNoCabe(24);
-        doc.fillColor(GRAY).fontSize(7.5).font('Helvetica-Oblique').text(T.cierre, 58, y, { width: W - 116 });
+        doc.fillColor(GRAY).fontSize(7.5).font('Helvetica-Oblique');
+        saltoSiNoCabe(doc.heightOfString(T.cierre, { width: W - 116 }) + 12);
+        doc.text(T.cierre, 58, y, { width: W - 116 });
         y = doc.y + 12;
       }
 

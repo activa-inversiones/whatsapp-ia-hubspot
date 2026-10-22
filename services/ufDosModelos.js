@@ -85,7 +85,10 @@ const normalizar = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, '
 function ufModelo1(v) {
   const t = v && v._perfil && v._perfil.termico;
   if (!t || typeof t !== 'object') return null;
-  const perfil = t.perfil ?? t.detalle?.perfil;
+  // [Codex r3] El perfil sale del MISMO objeto que entrega el Uf (`detalle`); si el nivel de
+  // arriba dice otra cosa, la respuesta es inconsistente y no se declara.
+  const perfil = t.detalle?.perfil ?? t.perfil;
+  if (t.perfil != null && t.detalle?.perfil != null && String(t.perfil) !== String(t.detalle.perfil)) return null;
   const uf = Number(t.detalle?.uf);
   return { perfil: perfil == null ? null : String(perfil), uf: Number.isFinite(uf) && uf > 0 ? uf : null };
 }
@@ -96,7 +99,7 @@ function ufModelo1(v) {
  * PURA: es lo que se le declara al cliente en un documento firmado, y por eso se testea aparte.
  *
  * @param {Array} ventanas  las del informe: {producto, _perfil: {termico: {perfil, detalle: {uf}}}}
- * @returns {Array<{linea, folio, ufsModelo1: number[], nodos: Array<{nodo, uf}>}>}
+ * @returns {Array<{linea, folio, ufModelo1: number, nodos: Array<{nodo, uf}>}>}
  */
 export function filasUfDosModelos(ventanas) {
   const vistas = new Map();
@@ -109,18 +112,19 @@ export function filasUfDosModelos(ventanas) {
     // El modelo 1 tiene que ser del MISMO perfil que el fem-tri: un Uf de otro perfil al lado
     // sería comparar dos marcos distintos.
     if (!m1 || m1.uf === null || m1.perfil !== fem.perfil) continue;
-    // [Codex r2] Una fila por LÍNEA, pero sin elegir en silencio: si dos ventanas de la misma
-    // línea trajeran Uf distintos del modelo 1, se declaran TODOS (ordenados), no el primero.
+    // Una fila por LÍNEA. [Codex r2-r3] Si dos ventanas de la misma línea trajeran Uf distintos
+    // del modelo 1 (comparados como se imprimen, a 2 decimales), la línea NO se declara: ni se
+    // elige uno en silencio, ni se juntan en una celda que no dice qué Uf entró a qué Uw.
     let fila = vistas.get(clave);
     if (!fila) {
-      fila = { linea: fem.linea, folio: fem.folio, ufsModelo1: [], nodos: fem.nodos.map((n) => ({ ...n })) };
+      fila = { linea: fem.linea, folio: fem.folio, ufModelo1: m1.uf, nodos: fem.nodos.map((n) => ({ ...n })) };
       vistas.set(clave, fila);
       filas.push(fila);
+    } else if (m1.uf.toFixed(2) !== fila.ufModelo1.toFixed(2)) {
+      fila.inconsistente = true;
     }
-    if (!fila.ufsModelo1.includes(m1.uf)) fila.ufsModelo1.push(m1.uf);
   }
-  for (const f of filas) f.ufsModelo1.sort((a, b) => a - b);
-  return filas;
+  return filas.filter((f) => !f.inconsistente);
 }
 
 export default { filasUfDosModelos, UF_FEM_TRI_POR_LINEA, TEXTO_UF_DOS_MODELOS };
