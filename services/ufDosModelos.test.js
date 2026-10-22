@@ -83,6 +83,8 @@ test('[Codex r4] el Uf del modelo 1 tiene que ser un número: true / "2.3" no se
 test('[Codex r3] el perfil sale del mismo objeto que el Uf: si los dos niveles discrepan, no se declara', () => {
   const raro = { perfil: 'Sliding_H80', uw: 2.6, detalle: { perfil: 'Sliding_H98', uf: 2.3 } };
   assert.deepEqual(filasUfDosModelos([ventana(DOBLE, raro)]), []);
+  // [Codex r6] sin `detalle.perfil` no hay respaldo con el perfil de arriba.
+  assert.deepEqual(filasUfDosModelos([ventana(DOBLE, { perfil: 'Sliding_H98', uw: 2.6, detalle: { uf: 2.3 } })]), []);
 });
 
 test('🔴 [Codex r3] cada folio va con SUS valores (Tabla 1 del PDF oficial): cambiar uno sin el otro rompe', () => {

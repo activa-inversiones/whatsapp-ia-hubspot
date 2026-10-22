@@ -83,6 +83,7 @@ export const TEXTO_UF_DOS_MODELOS = Object.freeze({
     + 'decimales de su fuente.',
 });
 
+// Misma normalización que el piloto Uw (uwLineaPiloto.js): la regla de calce es la del dueño.
 const normalizar = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
 /** Uf del modelo 1 que entró al Uw de ESTA ventana, o null si no viene (no se inventa). */
@@ -91,8 +92,11 @@ function ufModelo1(v) {
   if (!t || typeof t !== 'object') return null;
   // [Codex r3] El perfil sale del MISMO objeto que entrega el Uf (`detalle`); si el nivel de
   // arriba dice otra cosa, la respuesta es inconsistente y no se declara.
-  const perfil = t.detalle?.perfil ?? t.perfil;
-  if (t.perfil != null && t.detalle?.perfil != null && String(t.perfil) !== String(t.detalle.perfil)) return null;
+  // [Codex r6] Sin respaldo: `DetalleUw.perfil` es obligatorio en el contrato de THERMAL, así que
+  // un `detalle` sin perfil es una respuesta incompleta y no se declara.
+  if (!t.detalle || typeof t.detalle !== 'object' || t.detalle.perfil == null) return null;
+  const perfil = t.detalle.perfil;
+  if (t.perfil != null && String(t.perfil) !== String(perfil)) return null;
   // [Codex r4] Solo un número JSON: `Number(true)` es 1 y se declararía «1,00 W/m²K».
   const bruto = t.detalle?.uf;
   const uf = typeof bruto === 'number' && Number.isFinite(bruto) && bruto > 0 ? bruto : null;
