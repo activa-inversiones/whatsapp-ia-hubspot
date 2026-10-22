@@ -66,6 +66,19 @@ test('🔴 [Codex r2-r3] misma línea con Uf distintos del modelo 1: esa línea 
   assert.equal(filasUfDosModelos([ventana(DOBLE, H98(2.3)), ventana(DOBLE, H98(2.300001))]).length, 1);
 });
 
+test('🔴 [Codex r4 · Copilot r4] UNA ventana de la línea sin modelo 1 compatible invalida la LÍNEA entera', () => {
+  const h80 = { perfil: 'Sliding_H80', uw: 2.7, detalle: { perfil: 'Sliding_H80', uf: 2.3 } };
+  for (const mala of [null, { perfil: 'Sliding_H98', uw: 2.6 }, h80, H98(0)]) {
+    assert.deepEqual(filasUfDosModelos([ventana(DOBLE, H98()), ventana(DOBLE, mala)]), [], `segunda ventana: ${JSON.stringify(mala)}`);
+    assert.deepEqual(filasUfDosModelos([ventana(DOBLE, mala), ventana(DOBLE, H98())]), [], 'y en cualquier orden');
+  }
+});
+
+test('[Codex r4] el Uf del modelo 1 tiene que ser un número: true / "2.3" no se declaran', () => {
+  assert.deepEqual(filasUfDosModelos([ventana(DOBLE, H98(true))]), []);
+  assert.deepEqual(filasUfDosModelos([ventana(DOBLE, H98('2.3'))]), []);
+});
+
 test('[Codex r3] el perfil sale del mismo objeto que el Uf: si los dos niveles discrepan, no se declara', () => {
   const raro = { perfil: 'Sliding_H80', uw: 2.6, detalle: { perfil: 'Sliding_H98', uf: 2.3 } };
   assert.deepEqual(filasUfDosModelos([ventana(DOBLE, raro)]), []);

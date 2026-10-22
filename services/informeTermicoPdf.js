@@ -812,13 +812,16 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
           y += 36;
         };
         cabeceraUf();
-        for (const f of filasUf) {
+        filasUf.forEach((f, i) => {
           const alto = altoFila(f);
           // [Codex r3] Si la fila salta de hoja, la cabecera se repite: sin ella los números
-          // quedan sin decir de qué modelo son.
-          const yAntes = y;
-          saltoSiNoCabe(36 + alto + 4);
-          if (y < yAntes) cabeceraUf();
+          // quedan sin decir de qué modelo son. [Copilot r4] La primera fila ya se reservó junto
+          // con la cabecera: volver a pedir lugar la mandaría a otra hoja dejando la cabecera sola.
+          if (i > 0) {
+            const yAntes = y;
+            saltoSiNoCabe(36 + alto + 4);
+            if (y < yAntes) cabeceraUf();
+          }
           doc.fillColor(DARK).fontSize(8).font('Helvetica-Bold').text(f.linea, XU.lin, y, { width: 135 });
           doc.fillColor(DARK).fontSize(13).font('Helvetica-Bold').text(dec(f.ufModelo1, 2), XU.a, y - 2, { lineBreak: false });
           doc.fillColor(GRAY).fontSize(6.5).font('Helvetica').text(T.pie1, XU.a, y + 13, { width: 120 });
@@ -830,7 +833,7 @@ export async function generarInformeTermicoPdf(datos, { nombre = '', rut = '', r
             .text(`W/m²K · folio ${f.folio}`, XU.b, y + f.nodos.length * 12 + 1, { width: 200, lineBreak: false });
           y += alto;
           doc.strokeColor('#eef2f6').lineWidth(0.5).moveTo(50, y - 4).lineTo(W - 50, y - 4).stroke();
-        }
+        });
         y += 6;
         const caja = (titulo, texto) => {
           // [Codex r2] Se reserva lo que MIDE la caja, no un número fijo.
