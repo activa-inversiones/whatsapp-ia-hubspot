@@ -45,3 +45,36 @@ test('🔴 INTERCALACIÓN: el reenvío escribe B mientras el borrado de A espera
   assert.equal(r.borrado, false, 'compara contra lo vigente AL BORRAR, no contra lo leído antes');
   assert.equal(leerLocal(K).msgId, 'wamid.B');
 });
+
+// [Ronda 2 · Codex + Copilot] Caché VACÍA y lectura remota DEMORADA: si mientras viaja el GET (que
+// trae A desde la base) el proceso escribe B, la hidratación no puede pisar B ni el borrado llevárselo.
+// `leerConEstado` re-chequea la memoria después del await (compuerta 24-ago); este test lo fija.
+test('🔴 caché vacía + GET remoto demorado: el reenvío escribe B durante la espera ⇒ B sobrevive', async () => {
+  const fetchPrevio = global.fetch;
+  let soltarGet;
+  const getEnVuelo = new Promise((r) => { soltarGet = r; });
+  const pedidos = [];
+  global.fetch = async (url, opts = {}) => {
+    const metodo = opts.method || 'GET';
+    pedidos.push(metodo);
+    if (metodo === 'GET') { await getEnVuelo; return { ok: true, json: async () => ({ ok: true, valor: { msgId: 'wamid.A' } }) }; }
+    return { ok: true, json: async () => ({ ok: true }) };
+  };
+  process.env.SALES_OS_URL = 'http://sales-os.test';
+  process.env.SALES_OS_OPERATOR_TOKEN = 'token-de-prueba';
+  try {
+    const m = await import('./estadoPersistente.js?borrarSi=remoto');   // instancia nueva: memoria vacía
+    assert.equal(m.PERSISTENCIA_ACTIVA, true, 'control: la persistencia está prendida');
+    const pendiente = m.borrarSi(K, deA);    // sale a buscar A a la base y espera
+    await new Promise((r) => { setTimeout(r, 10); });
+    m.escribir(K, { msgId: 'wamid.B' });     // el reenvío escribe B mientras el GET viaja
+    soltarGet();                              // la base contesta con el A viejo
+    const r = await pendiente;
+    assert.equal(r.borrado, false, `no se borra: ${JSON.stringify(r)}`);
+    assert.equal(m.leerLocal(K)?.msgId, 'wamid.B', 'la hidratación no pisó B');
+    assert.ok(!pedidos.includes('DELETE'), 'ni se mandó a borrar a la base');
+  } finally {
+    global.fetch = fetchPrevio;
+    delete process.env.SALES_OS_URL; delete process.env.SALES_OS_OPERATOR_TOKEN;
+  }
+});
