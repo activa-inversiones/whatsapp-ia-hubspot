@@ -76,6 +76,20 @@ function armar({ informeEnvio = { ok: true, msgId: 'doc.1' }, informeCuelga = fa
     leerEstado: async (k) => (vigente(estado.get(k)) ? estado.get(k).valor : null),
     escribirEstado: poner,
     escribirEstadoDurable: async (k, v, ttl) => { poner(k, v, ttl); return { ok: true }; },
+    // [2026-10-22] Misma semántica que `estadoPersistente.borrarSi` / `actualizarSi`: comparan y
+    // escriben en un paso sobre el mismo almacén del arnés.
+    borrarEstadoSi: async (k, cond) => {
+      const e = estado.get(k); const v = vigente(e) ? e.valor : null;
+      if (v == null) return { borrado: false, motivo: 'no_existe' };
+      if (!cond(v)) return { borrado: false, motivo: 'no_coincide' };
+      estado.delete(k); return { borrado: true };
+    },
+    actualizarEstadoSi: async (k, cond, nuevo, ttl) => {
+      const e = estado.get(k); const v = vigente(e) ? e.valor : null;
+      if (v == null) return { actualizado: false, motivo: 'no_existe' };
+      if (!cond(v)) return { actualizado: false, motivo: 'no_coincide' };
+      const n = nuevo(v); poner(k, n, ttl); return { actualizado: true, valor: n };
+    },
     fusionarEstado: (k, calc, ttl = 300) => {
       const e = estado.get(k); const actual = vigente(e) ? e.valor : null;
       const { valor, guardar } = calc(actual) || {};
@@ -473,7 +487,17 @@ function armarUw(opts = {}) {
   return a;
 }
 
-test('📐 D1 en el piloto y con calce exacto: térmico → vientos → Uw de la línea → propuesta, archivado con nombre único', async () => {
+// 🔁 [2026-10-22] D1 y D6 SE DIERON VUELTA A PROPÓSITO. Antes fijaban que el archivo ISO y el
+// candado de 90 días se escribían apenas Meta ACEPTABA el envío. Comentario de Codex en
+// whatsapp-ia-hubspot#14 (P1, «Wait for `delivered` before recording Uw delivery») y encargo del
+// 22-oct: HTTP 200 no prueba entrega (AGENTS.md) ⇒ al aceptar queda PENDIENTE; el evento y el
+// archivo se escriben con el acuse `delivered` de ESE msgId.
+const deliveredUw = (telefono, msgId = 'uw.1') => ({ entry: [{ changes: [{ value: { statuses: [{
+  id: msgId, status: 'delivered', recipient_id: telefono,
+}] } }] }] });
+const archivosUw = (spy) => spy.medios.filter((m) => /^Informe-Uw/.test(m.filename || ''));
+
+test('📐 D1 en el piloto y con calce exacto: térmico → vientos → Uw de la línea → propuesta; el archivo ISO llega con el delivered', async () => {
   const { deps, spy, telefono } = armarUw();
   await conPiloto(telefono, async () => {
     await handleWebhook({ body: {} }, makeRes(), deps);
@@ -483,8 +507,15 @@ test('📐 D1 en el piloto y con calce exacto: térmico → vientos → Uw de la
   assert.ok(pos(spy, 'vientos') < pos(spy, 'uw') && pos(spy, 'uw') < pos(spy, 'propuesta'),
     `vientos → uw → propuesta — linea: ${JSON.stringify(spy.linea)}`);
   assert.deepEqual(spy.descargas, ['AT-NCH3137-1-2026-000027-7492c9'], 'H98 doble riel = V2N vigente');
-  assert.ok(await esperar(() => spy.medios.some((m) => /^Informe-Uw-.*-entrega-\d{17}-\d{4}-[0-9A-Za-z]+\.pdf$/.test(m.filename))),
+  await new Promise((r) => { setTimeout(r, 50); });
+  assert.deepEqual(archivosUw(spy), [], 'aceptado por Meta NO es entregado: todavía no se archiva');
+  assert.ok(!spy.eventos.some((e) => /Informe Uw/.test(e.body || '')), 'ni se anuncia como entregado');
+  // Llega el `delivered` de ESE envío
+  await handleWebhook({ body: deliveredUw(telefono) }, makeRes(), deps);
+  assert.ok(await esperar(() => archivosUw(spy).length === 1),
     `registro ISO con nombre por entrega — ${JSON.stringify(spy.medios.map((m) => m.filename))}`);
+  assert.match(archivosUw(spy)[0].filename, /^Informe-Uw-.*-AT-NCH3137-1-2026-000027-entrega-\d{17}-\d{4}-[0-9A-Za-z]+\.pdf$/);
+  assert.ok(spy.eventos.some((e) => /Informe Uw.*ENTREGADO/.test(e.body || '')), 'y el evento dice ENTREGADO');
 });
 
 test('📐 D2 FUERA del piloto no sale (la lista por defecto es solo el número del dueño)', async () => {
@@ -531,7 +562,7 @@ test('📐 D5 un cliente que YA recibió el Uw de esa línea (candado de 90 día
   assert.deepEqual(spy.descargas, [], 'ni siquiera se descarga');
 });
 
-test('📐 D6 la primera entrega deja la marca (TTL del selector) y el rastro para el acuse de Meta', async () => {
+test('📐 D6 el envío aceptado deja candado PENDIENTE (3 días) + rastro; el delivered lo pasa al TTL del selector (90)', async () => {
   const { deps, spy, telefono, estado } = armarUw();
   const ttls = new Map();
   const escribir = deps.escribirEstado;
@@ -543,11 +574,17 @@ test('📐 D6 la primera entrega deja la marca (TTL del selector) y el rastro pa
   assert.equal(cuenta(spy, 'uw'), 1);
   const clave = `docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`;
   const marca = estado.get(clave);
-  assert.ok(marca && marca.valor?.folio === 'AT-NCH3137-1-2026-000027', `marca: ${JSON.stringify(marca)}`);
-  assert.equal(ttls.get(clave), 90 * 24 * 3600, 'el mismo TTL del selector (COTIZACION_DOCS_VENTANA_DIAS, 90 por defecto)');
-  // [Codex r1] `ok` de Meta no es entrega: queda el rastro para que un `failed` tardío suelte el candado.
+  assert.ok(marca && marca.valor?.folio === 'AT-NCH3137-1-2026-000027' && marca.valor?.pendiente === true, `marca: ${JSON.stringify(marca)}`);
+  assert.equal(ttls.get(clave), 3 * 24 * 3600, 'pendiente: vive lo mismo que el rastro; sin acuse vence y se reintenta');
+  // [Codex r1] `ok` de Meta no es entrega: queda el rastro para que el `delivered` o el `failed` cierren.
   const rastro = estado.get('wamsg:uw.1');
-  assert.ok(rastro && rastro.valor?.tipo === 'uw_linea' && rastro.valor?.clave === clave, `rastro: ${JSON.stringify(rastro)}`);
+  assert.ok(rastro && rastro.valor?.tipo === 'uw_linea' && rastro.valor?.clave === clave && rastro.valor?.codigo,
+    `rastro: ${JSON.stringify(rastro)}`);
+  await handleWebhook({ body: deliveredUw(telefono) }, makeRes(), deps);
+  assert.ok(await esperar(() => estado.get(clave)?.valor?.pendiente === false), `marca: ${JSON.stringify(estado.get(clave))}`);
+  const resta = estado.get(clave).expira - Date.now();
+  assert.ok(resta > 89 * 24 * 3600 * 1000 && resta <= 90 * 24 * 3600 * 1000,
+    `entregado: el TTL del selector (COTIZACION_DOCS_VENTANA_DIAS, 90 por defecto) — quedan ${Math.round(resta / 86_400_000)} días`);
 });
 
 test('📐 D8 con selección MANUAL del cockpit el Uw no se agrega (ni el primero: nadie lo eligió)', async () => {
@@ -597,4 +634,58 @@ test('📐 D10 Meta no confirma (sin id de mensaje): NO cuenta como enviado, que
   const marca = estado.get(`docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`);
   assert.equal(marca?.valor?.dudoso, true, `marca: ${JSON.stringify(marca)}`);
   assert.ok(!spy.medios.some((m) => /^Informe-Uw/.test(m.filename)), 'lo no confirmado NO se archiva como entregado');
+});
+
+test('📐 D11 Meta repite el delivered (1-3 veces): el archivo ISO y el evento salen UNA sola vez', async () => {
+  const { deps, spy, telefono } = armarUw();
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  for (let i = 0; i < 3; i++) await handleWebhook({ body: deliveredUw(telefono) }, makeRes(), deps);
+  await new Promise((r) => { setTimeout(r, 100); });
+  assert.equal(archivosUw(spy).length, 1, JSON.stringify(spy.medios.map((m) => m.filename)));
+  assert.equal(spy.eventos.filter((e) => /Informe Uw.*ENTREGADO/.test(e.body || '')).length, 1);
+});
+
+test('📐 D12 el delivered de un envío que ya NO es el del candado (otro msgId) no registra nada', async () => {
+  const { deps, spy, telefono, estado } = armarUw();
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  const clave = `docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`;
+  estado.set(clave, { valor: { ...estado.get(clave).valor, msgId: 'uw.OTRO' }, expira: Date.now() + 3_600_000 });
+  await handleWebhook({ body: deliveredUw(telefono) }, makeRes(), deps);
+  await new Promise((r) => { setTimeout(r, 100); });
+  assert.deepEqual(archivosUw(spy), []);
+  assert.equal(estado.get(clave).valor.msgId, 'uw.OTRO', 'el candado del otro envío no se toca');
+});
+
+test('📐 D13 [Codex P2 en #14] el techo vence con el POST del Uw EN VUELO: la propuesta espera a que termine, nunca antes', async () => {
+  const { deps, spy, telefono } = armarUw();
+  deps.seqUwLineaTimeoutMs = 100;
+  const enviar = deps.sendWaDocument;
+  deps.sendWaDocument = async (to, m, filename, cap) => {
+    if (/^Informe-Uw/.test(filename || '')) await new Promise((r) => { setTimeout(r, 400); });   // POST lento
+    return enviar(to, m, filename, cap);
+  };
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  assert.equal(cuenta(spy, 'uw'), 1, `linea: ${JSON.stringify(spy.linea)}`);
+  assert.ok(pos(spy, 'uw') < pos(spy, 'propuesta'), `el Uw en vuelo llega ANTES del precio — linea: ${JSON.stringify(spy.linea)}`);
+});
+
+test('📐 D14 el POST en vuelo se cuelga más allá del tope: la propuesta sale igual (nunca se pierde)', async () => {
+  const { deps, spy, telefono } = armarUw();
+  deps.seqUwLineaTimeoutMs = 100;
+  deps.seqUwLineaEnvioMaxMs = 150;
+  const enviar = deps.sendWaDocument;
+  deps.sendWaDocument = (to, m, filename, cap) => (/^Informe-Uw/.test(filename || '') ? new Promise(() => {}) : enviar(to, m, filename, cap));
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0), 'la propuesta no se pierde');
+  });
 });

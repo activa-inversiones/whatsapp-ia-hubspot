@@ -227,6 +227,31 @@ export async function borrarSi(clave, condicion) {
   return { borrado: true };
 }
 
+/**
+ * [2026-10-22 · piloto Uw, entrega con `delivered`] REESCRIBE SOLO SI EL VALOR VIGENTE CUMPLE
+ * `condicion`, en el mismo paso síncrono que la comparación (hermana de `borrarSi`). Sirve para
+ * que el MISMO `delivered` repetido por Meta (1-3 veces) promueva el candado UNA sola vez, y para
+ * no promover un candado que ya es de otro envío. ⚠️ Mismo límite: atómico dentro del proceso,
+ * no entre dos instancias.
+ * @param {(valor:any)=>boolean} condicion
+ * @param {(valor:any)=>any} nuevo  recibe el valor vigente y devuelve el que se escribe
+ * @returns {Promise<{actualizado:boolean, motivo?:string, valor?:any}>}
+ */
+export async function actualizarSi(clave, condicion, nuevo, ttlSegundos = 3600) {
+  const r = await leerConEstado(clave);
+  if (!r.ok) return { actualizado: false, motivo: 'no_se_pudo_leer' };
+  const e = MEMORIA.get(clave);                     // ← desde acá, síncrono hasta la escritura
+  const valor = vigente(e) ? e.valor : null;
+  if (valor === null || valor === undefined) return { actualizado: false, motivo: 'no_existe' };
+  let cumple = false;
+  try { cumple = Boolean(condicion(valor)); } catch { cumple = false; }
+  if (!cumple) return { actualizado: false, motivo: 'no_coincide' };
+  let siguiente;
+  try { siguiente = nuevo(valor); } catch { return { actualizado: false, motivo: 'error' }; }
+  escribir(clave, siguiente, ttlSegundos);
+  return { actualizado: true, valor: siguiente };
+}
+
 export function borrar(clave) {
   MEMORIA.delete(clave);
   pedir('DELETE', clave).catch(() => {});
@@ -249,4 +274,4 @@ export async function borrarDurable(clave) {
 /** Para tests. */
 export function _reset() { MEMORIA.clear(); }
 
-export default { leer, leerConEstado, leerLocal, escribir, escribirDurable, reservar, liberarReserva, borrarSi, borrar, borrarDurable, PERSISTENCIA_ACTIVA };
+export default { leer, leerConEstado, leerLocal, escribir, escribirDurable, reservar, liberarReserva, borrarSi, actualizarSi, borrar, borrarDurable, PERSISTENCIA_ACTIVA };

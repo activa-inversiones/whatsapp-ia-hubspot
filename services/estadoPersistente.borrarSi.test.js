@@ -3,7 +3,7 @@
 // Sin red: con la persistencia apagada, la memoria es la fuente.
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { borrarSi, escribir, leerLocal, _reset } from './estadoPersistente.js';
+import { borrarSi, actualizarSi, escribir, leerLocal, _reset } from './estadoPersistente.js';
 
 beforeEach(() => _reset());
 const K = 'docs_entregado:uw_linea:V2N:940415964';
@@ -77,4 +77,32 @@ test('🔴 caché vacía + GET remoto demorado: el reenvío escribe B durante la
     global.fetch = fetchPrevio;
     delete process.env.SALES_OS_URL; delete process.env.SALES_OS_OPERATOR_TOKEN;
   }
+});
+
+// ── actualizarSi (2026-10-22 · entrega del Uw con `delivered`) ─────────────────────────────
+const pendienteDeA = (v) => v?.msgId === 'wamid.A' && v?.pendiente === true;
+const entregado = (v) => ({ ...v, pendiente: false });
+
+test('actualizarSi: candado pendiente del mismo msgId ⇒ se promueve UNA vez (el 2º delivered no)', async () => {
+  escribir(K, { msgId: 'wamid.A', pendiente: true });
+  assert.equal((await actualizarSi(K, pendienteDeA, entregado, 60)).actualizado, true);
+  assert.equal(leerLocal(K).pendiente, false);
+  assert.equal((await actualizarSi(K, pendienteDeA, entregado, 60)).motivo, 'no_coincide');
+});
+
+test('actualizarSi: otro msgId o sin candado ⇒ no escribe', async () => {
+  escribir(K, { msgId: 'wamid.B', pendiente: true });
+  assert.equal((await actualizarSi(K, pendienteDeA, entregado, 60)).actualizado, false);
+  assert.equal(leerLocal(K).pendiente, true);
+  _reset();
+  assert.equal((await actualizarSi(K, pendienteDeA, entregado, 60)).motivo, 'no_existe');
+  assert.equal(leerLocal(K), null, 'no crea un candado que no existía');
+});
+
+test('🔴 actualizarSi INTERCALACIÓN: el reenvío escribe B mientras la promoción de A espera ⇒ B intacto', async () => {
+  escribir(K, { msgId: 'wamid.A', pendiente: true });
+  const pendiente = actualizarSi(K, pendienteDeA, entregado, 60);
+  escribir(K, { msgId: 'wamid.B', pendiente: true });
+  assert.equal((await pendiente).actualizado, false);
+  assert.deepEqual(leerLocal(K), { msgId: 'wamid.B', pendiente: true });
 });
