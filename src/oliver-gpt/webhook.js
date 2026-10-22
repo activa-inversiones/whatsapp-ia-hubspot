@@ -1137,15 +1137,16 @@ export async function handleWebhook(req, res, deps = {}) {
     // los unicos que dejamos rastreados: un texto suelto que falla lo arregla el proximo
     // mensaje, un PDF que no llego no se arregla solo.
     // 📐 [2026-10-22 · Codex P1 en #14] Entrega CONFIRMADA del informe Uw del piloto (#1581).
-    // Dos pasos con idempotencia SEPARADA, para que un fallo del archivo se pueda reparar:
     //  1) ENTREGA: el candado PENDIENTE de ESTE msgId pasa a entregado (TTL del selector), en un
-    //     paso (`actualizarSi`). Solo quien lo promueve emite el evento «ENTREGADO»: el
-    //     `delivered` repetido por Meta no lo duplica y un candado de otro envío no se toca.
-    //  2) ARCHIVO ISO: lo toma quien deja `archivo: 'en_curso'` (otro paso atómico, desde 'no' o
-    //     'fallo'). Si falla, queda 'fallo' y el siguiente `delivered`/`read` de ese msgId lo
-    //     REINTENTA — antes, un fallo transitorio dejaba el registro ISO perdido 90 días (Codex r1).
+    //     paso (`actualizarSi`): el `delivered` repetido no lo promueve dos veces y un candado de
+    //     otro envío no se toca.
+    //  2) EFECTOS, cada uno con su propia idempotencia RECUPERABLE (Codex r1 y r2): el evento
+    //     «ENTREGADO» y el archivo ISO. Cada efecto lo toma quien lo deja 'en_curso' (desde 'no',
+    //     'fallo' o un 'en_curso' abandonado); si falla queda 'fallo' y el próximo `delivered`/`read`
+    //     de ese msgId lo REINTENTA. Así ninguno de los dos se pierde por un fallo transitorio y
+    //     ninguno se duplica dentro del proceso.
     // ⚠️ Atómico dentro del proceso; el KV de sales-os no tiene compare-and-set entre instancias.
-    const ARCHIVO_EN_CURSO_MS = Number(deps.uwArchivoEnCursoMs ?? 5 * 60_000);
+    const EFECTO_EN_CURSO_MS = Number(deps.uwArchivoEnCursoMs ?? 5 * 60_000);
     const registrarEntregaUw = async (rastro, ac) => {
       if (!rastro?.clave || !ac?.msgId) return;
       const actualizarSi = deps.actualizarEstadoSi || actualizarEstadoSi;
@@ -1154,34 +1155,43 @@ export async function handleWebhook(req, res, deps = {}) {
       try {
         promovido = await actualizarSi(rastro.clave,
           (v) => esDeEste(v) && v?.pendiente === true,
-          (v) => ({ ...v, pendiente: false, entregadoAt: Date.now(), archivo: 'no' }), entregaTtlSeg());
+          (v) => ({ ...v, pendiente: false, entregadoAt: Date.now(), evento: 'no', archivo: 'no' }), entregaTtlSeg());
       } catch { /* sin promoción: el candado pendiente vence solo */ }
       const cliente = String(rastro.cliente || rastro.telefono || '');
-      if (promovido.actualizado) {
-        await safe('acuse.uwLinea.espejo', () => (deps.bridge || realBridge).pushConversationEvent({
+      // Un efecto que se hace UNA vez y se reintenta si falló. `hacer` devuelve true si quedó hecho.
+      const efecto = async (campo, hacer) => {
+        const desde = `${campo}Desde`;
+        let tomado = { actualizado: false };
+        try {
+          tomado = await actualizarSi(rastro.clave,
+            (v) => esDeEste(v) && v?.pendiente === false && (v?.[campo] === 'no' || v?.[campo] === 'fallo'
+              || (v?.[campo] === 'en_curso' && Date.now() - Number(v?.[desde] || 0) > EFECTO_EN_CURSO_MS)),
+            (v) => ({ ...v, [campo]: 'en_curso', [desde]: Date.now() }), entregaTtlSeg());
+        } catch { /* sin toma: otro acuse lo hará */ }
+        if (!tomado.actualizado) return null;
+        let ok = false;
+        try { ok = Boolean(await hacer()); }
+        catch (err) { log('error', 'acuse.uwLinea', `${campo} de ${rastro.folio} (${ac.msgId}) falló — se reintenta con el próximo acuse: ${err?.message || err}`); }
+        try {
+          await actualizarSi(rastro.clave, (v) => esDeEste(v) && v?.[campo] === 'en_curso',
+            (v) => ({ ...v, [campo]: ok ? 'si' : 'fallo' }), entregaTtlSeg());
+        } catch { /* queda 'en_curso': se retoma pasado el plazo */ }
+        return ok;
+      };
+      const hizoEvento = await efecto('evento', async () => {
+        // `pushConversationEvent` NO lanza: devuelve {ok}. `skipped` = la ingesta está apagada en
+        // este entorno: no hay nada que reintentar.
+        const r = await (deps.bridge || realBridge).pushConversationEvent({
           channel: 'whatsapp', external_id: cliente, direction: 'outbound',
           actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
           body: `📐 Informe Uw de la línea ${rastro.linea || ''} (${rastro.folio}) ENTREGADO al cliente · piloto`.replace(/\s+/g, ' '),
           metadata: { source: 'oliver_gpt_uw_linea_piloto', folio: rastro.folio, ventana: rastro.ventana || null,
                       msg_id: ac.msgId, media_id: rastro.media || null, quote_number: rastro.quote || null },
-        }));
-      }
-      // Paso 2: el archivo, si nadie lo hizo todavía (o falló antes)
-      let tomado = { actualizado: false, motivo: 'error' };
-      try {
-        tomado = await actualizarSi(rastro.clave,
-          // 'en_curso' VIEJO (el proceso murió a mitad de archivar) también se puede retomar: pasado
-          // ARCHIVO_EN_CURSO_MS nadie lo está haciendo (Copilot r2).
-          (v) => esDeEste(v) && v?.pendiente === false && (v?.archivo === 'no' || v?.archivo === 'fallo'
-            || (v?.archivo === 'en_curso' && Date.now() - Number(v?.archivoDesde || 0) > ARCHIVO_EN_CURSO_MS)),
-          (v) => ({ ...v, archivo: 'en_curso', archivoDesde: Date.now() }), entregaTtlSeg());
-      } catch { /* sin toma: otro intento lo hará */ }
-      if (!tomado.actualizado) {
-        if (!promovido.actualizado) log('info', 'acuse.uwLinea', `${ac.estado || 'acuse'} de ${ac.msgId}: nada que registrar (${promovido.motivo}/${tomado.motivo})`);
-        return;
-      }
-      let ok = false;
-      try {
+        });
+        if (!(r?.ok === true || r?.skipped === true)) throw new Error('sales-os no confirmó el evento');
+        return true;
+      });
+      const hizoArchivo = await efecto('archivo', async () => {
         const pdf = await (deps.descargarInformeUw || descargarInformeUw)(rastro.codigo, { sha256: rastro.sha256 });
         // `saveMedia` NO lanza: ante HTTP de error o red caída devuelve null (mediaStore.js). Sin
         // respuesta de sales-os, el archivo NO quedó: se marca 'fallo' para reintentarlo.
@@ -1194,14 +1204,11 @@ export async function handleWebhook(req, res, deps = {}) {
           aiDescription: `Informe Uw de la línea ${rastro.linea || ''} ${rastro.folio} (piloto, cotización ${rastro.quote || 's/n'}) · entregado`,
         });
         if (!guardado) throw new Error('sales-os no confirmó el guardado (saveMedia devolvió null)');
-        ok = true;
-      } catch (err) {
-        log('error', 'acuse.uwLinea', `ENTREGADO ${rastro.folio} (${ac.msgId}) pero NO archivado (se reintenta con el próximo acuse): ${err?.message || err}`);
+        return true;
+      });
+      if (!promovido.actualizado && hizoEvento === null && hizoArchivo === null) {
+        log('info', 'acuse.uwLinea', `${ac.estado || 'acuse'} de ${ac.msgId}: nada que registrar (${promovido.motivo})`);
       }
-      try {
-        await actualizarSi(rastro.clave, (v) => esDeEste(v) && v?.archivo === 'en_curso',
-          (v) => ({ ...v, archivo: ok ? 'si' : 'fallo' }), entregaTtlSeg());
-      } catch { /* queda 'en_curso': no se duplica; el log de arriba lo dice */ }
     };
     const acuses = (deps.parseStatuses || realParseStatuses)(req.body);
     if (acuses.length) {

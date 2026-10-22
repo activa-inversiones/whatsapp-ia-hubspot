@@ -797,3 +797,29 @@ test('📐 D18 saveMedia NO lanza (devuelve null si sales-os falla): eso es «fa
   const clave = `docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`;
   assert.ok(await esperar(() => estado.get(clave)?.valor?.archivo === 'fallo'), `marca: ${JSON.stringify(estado.get(clave))}`);
 });
+
+test('📐 D19 [Codex r2] el EVENTO «ENTREGADO» falla (sales-os no confirma): el próximo acuse lo reintenta, una sola vez', async () => {
+  const { deps, spy, telefono, estado } = armarUw();
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  const empujar = deps.bridge.pushConversationEvent;
+  let fallar = true;
+  deps.bridge.pushConversationEvent = async (p) => {
+    if (fallar && /Informe Uw.*ENTREGADO/.test(p.body || '')) return { ok: false };
+    return empujar(p);
+  };
+  await handleWebhook({ body: deliveredUw(telefono) }, makeRes(), deps);
+  const clave = `docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`;
+  assert.ok(await esperar(() => estado.get(clave)?.valor?.evento === 'fallo'), `marca: ${JSON.stringify(estado.get(clave))}`);
+  assert.equal(spy.eventos.filter((e) => /Informe Uw.*ENTREGADO/.test(e.body || '')).length, 0);
+  fallar = false;
+  const read = { entry: [{ changes: [{ value: { statuses: [{ id: 'uw.1', status: 'read', recipient_id: telefono }] } }] }] };
+  await handleWebhook({ body: read }, makeRes(), deps);
+  assert.ok(await esperar(() => estado.get(clave)?.valor?.evento === 'si'));
+  await handleWebhook({ body: read }, makeRes(), deps);
+  await new Promise((r) => { setTimeout(r, 100); });
+  assert.equal(spy.eventos.filter((e) => /Informe Uw.*ENTREGADO/.test(e.body || '')).length, 1, 'el evento sale una sola vez');
+  assert.equal(archivosUw(spy).length, 1, 'y el archivo, que no había fallado, tampoco se duplica');
+});
