@@ -205,6 +205,23 @@ export function liberarReserva(clave, token) {
 }
 
 /**
+ * [2026-10-22 · Codex r3, piloto Uw] ESCRITURAS A LA BASE EN ORDEN, POR CLAVE.
+ * `escribir`/`borrar` mandan el PUT/DELETE sin esperarlo: dos transiciones seguidas de la MISMA
+ * clave (no → en_curso → si) podían llegar a Postgres desordenadas y, tras un reinicio, la base
+ * quedaba en un estado viejo («no» con la memoria en «si») y el efecto se repetía. Acá cada
+ * pedido de una clave sale recién cuando terminó el anterior de esa misma clave, en el orden en
+ * que se escribió la memoria. Devuelve si la base lo confirmó.
+ */
+const COLA_POR_CLAVE = new Map();
+function pedirEnOrden(metodo, clave, cuerpo) {
+  const previo = COLA_POR_CLAVE.get(clave) || Promise.resolve();
+  const este = previo.catch(() => null).then(() => (PERSISTENCIA_ACTIVA ? pedir(metodo, clave, cuerpo) : null));
+  COLA_POR_CLAVE.set(clave, este);
+  este.finally(() => { if (COLA_POR_CLAVE.get(clave) === este) COLA_POR_CLAVE.delete(clave); }).catch(() => {});
+  return este.then((r) => (PERSISTENCIA_ACTIVA ? (r !== null && r?.ok !== false) : false));
+}
+
+/**
  * [2026-10-22 · Codex, compuerta del candado Uw] BORRA SOLO SI EL VALOR VIGENTE CUMPLE `condicion`.
  * Leer y después borrar en dos pasos dejaba una ventana: entre el `await` de la lectura y el
  * borrado, otra ejecución podía reescribir la clave (un reenvío con candado nuevo) y el borrado
@@ -223,8 +240,9 @@ export async function borrarSi(clave, condicion) {
   let cumple = false;
   try { cumple = Boolean(condicion(valor)); } catch { cumple = false; }
   if (!cumple) return { borrado: false, motivo: 'no_coincide' };
-  borrar(clave);
-  return { borrado: true };
+  MEMORIA.delete(clave);
+  const persistido = await pedirEnOrden('DELETE', clave);   // [Codex r3] en orden con los PUT de la clave
+  return { borrado: true, persistido };
 }
 
 /**
@@ -248,8 +266,10 @@ export async function actualizarSi(clave, condicion, nuevo, ttlSegundos = 3600) 
   if (!cumple) return { actualizado: false, motivo: 'no_coincide' };
   let siguiente;
   try { siguiente = nuevo(valor); } catch { return { actualizado: false, motivo: 'error' }; }
-  escribir(clave, siguiente, ttlSegundos);
-  return { actualizado: true, valor: siguiente };
+  MEMORIA.set(clave, { valor: siguiente, expira: Date.now() + ttlSegundos * 1000 });   // síncrono con la comparación
+  // [Codex r3] Y se ESPERA la base, en orden con las demás escrituras de esta clave.
+  const persistido = await pedirEnOrden('PUT', clave, { valor: siguiente, ttl_segundos: ttlSegundos });
+  return { actualizado: true, valor: siguiente, persistido };
 }
 
 export function borrar(clave) {

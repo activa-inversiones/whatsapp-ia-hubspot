@@ -481,6 +481,7 @@ function conPiloto(lista, fn) {
 }
 function armarUw(opts = {}) {
   const a = armar({ ventanas: H98, ...opts });
+  a.deps.uwReintentosMs = [];   // sin esperas por defecto; D20 prueba el reintento en el momento
   a.spy.descargas = []; a.spy.medios = [];
   a.deps.descargarInformeUw = async (codigo) => { a.spy.descargas.push(codigo); return Buffer.from('%PDF-1.7 uw'); };
   a.deps.saveMedia = async (m) => { a.spy.medios.push(m); return { ok: true }; };
@@ -822,4 +823,20 @@ test('📐 D19 [Codex r2] el EVENTO «ENTREGADO» falla (sales-os no confirma): 
   await new Promise((r) => { setTimeout(r, 100); });
   assert.equal(spy.eventos.filter((e) => /Informe Uw.*ENTREGADO/.test(e.body || '')).length, 1, 'el evento sale una sola vez');
   assert.equal(archivosUw(spy).length, 1, 'y el archivo, que no había fallado, tampoco se duplica');
+});
+
+test('📐 D20 [Codex r3] el archivo falla una vez y se REINTENTA en el momento, sin esperar otro acuse', async () => {
+  const { deps, spy, telefono, estado } = armarUw();
+  deps.uwReintentosMs = [20, 20];
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  const guardar = deps.saveMedia;
+  let fallos = 1;
+  deps.saveMedia = async (m) => { if (fallos > 0 && /^Informe-Uw/.test(m.filename || '')) { fallos -= 1; return null; } return guardar(m); };
+  await handleWebhook({ body: deliveredUw(telefono) }, makeRes(), deps);   // UN solo acuse
+  const clave = `docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`;
+  assert.ok(await esperar(() => estado.get(clave)?.valor?.archivo === 'si'), `marca: ${JSON.stringify(estado.get(clave))}`);
+  assert.equal(archivosUw(spy).length, 1);
 });

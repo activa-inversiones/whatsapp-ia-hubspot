@@ -1147,6 +1147,8 @@ export async function handleWebhook(req, res, deps = {}) {
     //     ninguno se duplica dentro del proceso.
     // ⚠️ Atómico dentro del proceso; el KV de sales-os no tiene compare-and-set entre instancias.
     const EFECTO_EN_CURSO_MS = Number(deps.uwArchivoEnCursoMs ?? 5 * 60_000);
+    // Esperas entre reintentos de un efecto (evento / archivo). Peor caso: 3 intentos × ~25 s + 10 s ≪ 5 min.
+    const REINTENTOS_EFECTO_MS = Array.isArray(deps.uwReintentosMs) ? deps.uwReintentosMs : [2_000, 8_000];
     const registrarEntregaUw = async (rastro, ac) => {
       if (!rastro?.clave || !ac?.msgId) return;
       const actualizarSi = deps.actualizarEstadoSi || actualizarEstadoSi;
@@ -1169,9 +1171,17 @@ export async function handleWebhook(req, res, deps = {}) {
             (v) => ({ ...v, [campo]: 'en_curso', [desde]: Date.now() }), entregaTtlSeg());
         } catch { /* sin toma: otro acuse lo hará */ }
         if (!tomado.actualizado) return null;
+        // [Codex r3] Reintento EN EL MOMENTO, con espera creciente: no depender de que Meta mande otro
+        // acuse. Si aun así falla, queda 'fallo' (el próximo `delivered`/`read` lo retoma) y el log lo grita.
         let ok = false;
-        try { ok = Boolean(await hacer()); }
-        catch (err) { log('error', 'acuse.uwLinea', `${campo} de ${rastro.folio} (${ac.msgId}) falló — se reintenta con el próximo acuse: ${err?.message || err}`); }
+        for (let intento = 0; intento <= REINTENTOS_EFECTO_MS.length && !ok; intento++) {
+          if (intento > 0) await new Promise((r) => { setTimeout(r, REINTENTOS_EFECTO_MS[intento - 1]); });
+          try { ok = Boolean(await hacer()); }
+          catch (err) {
+            log(intento === REINTENTOS_EFECTO_MS.length ? 'error' : 'warn', 'acuse.uwLinea',
+              `${campo} de ${rastro.folio} (${ac.msgId}) falló (intento ${intento + 1}/${REINTENTOS_EFECTO_MS.length + 1}): ${err?.message || err}`);
+          }
+        }
         try {
           await actualizarSi(rastro.clave, (v) => esDeEste(v) && v?.[campo] === 'en_curso',
             (v) => ({ ...v, [campo]: ok ? 'si' : 'fallo' }), entregaTtlSeg());
