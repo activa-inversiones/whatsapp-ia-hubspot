@@ -1183,7 +1183,9 @@ export async function handleWebhook(req, res, deps = {}) {
       let ok = false;
       try {
         const pdf = await (deps.descargarInformeUw || descargarInformeUw)(rastro.codigo, { sha256: rastro.sha256 });
-        await (deps.saveMedia || saveMedia)({
+        // `saveMedia` NO lanza: ante HTTP de error o red caída devuelve null (mediaStore.js). Sin
+        // respuesta de sales-os, el archivo NO quedó: se marca 'fallo' para reintentarlo.
+        const guardado = await (deps.saveMedia || saveMedia)({
           phone: cliente, direction: 'outbound', mediaType: 'document', mimeType: 'application/pdf',
           // Nombre único por entrega (WorkDrive no sobrescribe; el mismo PDF va a muchos clientes).
           // El folio AT-NCH3137-1 lo archiva en CM-FR-008 (sales-os #32).
@@ -1191,6 +1193,7 @@ export async function handleWebhook(req, res, deps = {}) {
           buffer: pdf, waMediaId: rastro.media || null,
           aiDescription: `Informe Uw de la línea ${rastro.linea || ''} ${rastro.folio} (piloto, cotización ${rastro.quote || 's/n'}) · entregado`,
         });
+        if (!guardado) throw new Error('sales-os no confirmó el guardado (saveMedia devolvió null)');
         ok = true;
       } catch (err) {
         log('error', 'acuse.uwLinea', `ENTREGADO ${rastro.folio} (${ac.msgId}) pero NO archivado (se reintenta con el próximo acuse): ${err?.message || err}`);

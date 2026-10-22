@@ -784,3 +784,16 @@ test('📐 D17 un archivo «en curso» abandonado (el proceso murió) se retoma 
   assert.ok(await esperar(() => archivosUw(spy).length === 1), 'se retomó el archivo');
   assert.equal(estado.get(clave).valor.archivo, 'si');
 });
+
+test('📐 D18 saveMedia NO lanza (devuelve null si sales-os falla): eso es «fallo», no «archivado»', async () => {
+  // mediaStore.saveMedia traga el error y devuelve null: contarlo como archivado perdía el registro ISO.
+  const { deps, spy, telefono, estado } = armarUw();
+  await conPiloto(telefono, async () => {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    assert.ok(await esperar(() => pos(spy, 'propuesta') >= 0));
+  });
+  deps.saveMedia = async () => null;
+  await handleWebhook({ body: deliveredUw(telefono) }, makeRes(), deps);
+  const clave = `docs_entregado:uw_linea:V2N:${telefono.slice(-9)}`;
+  assert.ok(await esperar(() => estado.get(clave)?.valor?.archivo === 'fallo'), `marca: ${JSON.stringify(estado.get(clave))}`);
+});
