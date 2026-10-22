@@ -56,10 +56,11 @@ export const UF_FEM_TRI_POR_LINEA = Object.freeze({
 // (lo vigila el test). El modelo 1 explica la extensión H80 → H98 (decisión del dueño 26-ago)
 // como lo que es: el ensayo se hizo sobre la hoja H80 del mismo sistema.
 export const TEXTO_UF_DOS_MODELOS = Object.freeze({
-  titulo: 'Transmitancia del marco (Uf): dos modelos, dos valores',
-  entrada: 'El marco de sus correderas tiene hoy dos valores de Uf, calculados con dos modelos distintos. '
-    + 'Se declaran los dos, uno al lado del otro. No se promedian ni uno reemplaza al otro: cada número '
-    + 'responde a su propio modelo, y se informa de cuál salió.',
+  titulo: 'Transmitancia del marco (Uf): dos modelos, lado a lado',
+  entrada: 'El marco de sus correderas tiene hoy valores de Uf de dos modelos distintos: el modelo 1 entrega '
+    + 'un valor para el perfil completo y el modelo 2 uno por cada nodo del marco. Se declaran los dos, uno al '
+    + 'lado del otro. No se promedian ni uno reemplaza al otro: cada número responde a su propio modelo, y se '
+    + 'informa de cuál salió.',
   cabecera1: 'MODELO 1 · Uf',
   sub1: 'Informe THERM de WinHouse',
   cabecera2: 'MODELO 2 · Uf por nodo',
@@ -72,10 +73,10 @@ export const TEXTO_UF_DOS_MODELOS = Object.freeze({
   modelo2Titulo: 'Modelo 2 — Motor de elementos finitos fem-tri de ACTIVA THERMAL (NCh 3137/2 · ISO 10077-2)',
   modelo2: 'Un Uf por cada nodo del marco (cada corte: los rieles inferiores y el traslapo), calculado sobre '
     + 'la geometría de la hoja H98. Uf = (L2D - Up·bp)/bf, con dos cifras significativas (cl. 7.4). Cada '
-    + 'informe tiene folio y es verificable con su código QR.',
+    + 'informe de marcos lleva su propio folio, citado en la tabla.',
   cierre: 'Los dos modelos difieren en la geometría modelada (H80 / H98) y en la forma de informar (perfil '
-    + 'completo / nodo a nodo). Sus valores se declaran tal como salen de cada uno: ninguno se ajusta para '
-    + 'acercarlo al otro.',
+    + 'completo / nodo a nodo). Cada valor se declara tal como lo entrega su modelo, sin promediarlo y con los '
+    + 'decimales de su fuente.',
 });
 
 const normalizar = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -95,22 +96,30 @@ function ufModelo1(v) {
  * PURA: es lo que se le declara al cliente en un documento firmado, y por eso se testea aparte.
  *
  * @param {Array} ventanas  las del informe: {producto, _perfil: {termico: {perfil, detalle: {uf}}}}
- * @returns {Array<{linea, folio, ufModelo1, nodos: Array<{nodo, uf}>}>}
+ * @returns {Array<{linea, folio, ufsModelo1: number[], nodos: Array<{nodo, uf}>}>}
  */
 export function filasUfDosModelos(ventanas) {
-  const vistas = new Set();
+  const vistas = new Map();
   const filas = [];
   for (const v of Array.isArray(ventanas) ? ventanas : []) {
     const clave = normalizar(v?.producto || v?._perfil?.producto_label || v?._perfil?.product);
     const fem = UF_FEM_TRI_POR_LINEA[clave];
-    if (!fem || vistas.has(clave)) continue;
+    if (!fem) continue;
     const m1 = ufModelo1(v);
     // El modelo 1 tiene que ser del MISMO perfil que el fem-tri: un Uf de otro perfil al lado
     // sería comparar dos marcos distintos.
     if (!m1 || m1.uf === null || m1.perfil !== fem.perfil) continue;
-    vistas.add(clave);
-    filas.push({ linea: fem.linea, folio: fem.folio, ufModelo1: m1.uf, nodos: fem.nodos.map((n) => ({ ...n })) });
+    // [Codex r2] Una fila por LÍNEA, pero sin elegir en silencio: si dos ventanas de la misma
+    // línea trajeran Uf distintos del modelo 1, se declaran TODOS (ordenados), no el primero.
+    let fila = vistas.get(clave);
+    if (!fila) {
+      fila = { linea: fem.linea, folio: fem.folio, ufsModelo1: [], nodos: fem.nodos.map((n) => ({ ...n })) };
+      vistas.set(clave, fila);
+      filas.push(fila);
+    }
+    if (!fila.ufsModelo1.includes(m1.uf)) fila.ufsModelo1.push(m1.uf);
   }
+  for (const f of filas) f.ufsModelo1.sort((a, b) => a - b);
   return filas;
 }
 

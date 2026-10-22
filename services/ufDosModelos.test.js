@@ -24,16 +24,16 @@ const TRIPLE = 'Corredera SLIDING H98 Triple Riel S75';
 
 test('🔴 los DOS Uf del mismo perfil, cada uno de su fuente, sin promediar', () => {
   const [f] = filasUfDosModelos([ventana(DOBLE, H98())]);
-  assert.equal(f.ufModelo1, 2.3, 'modelo 1 = el Uf que THERMAL usó para el Uw (detalle.uf)');
+  assert.deepEqual(f.ufsModelo1, [2.3], 'modelo 1 = el Uf que THERMAL usó para el Uw (detalle.uf)');
   assert.deepEqual(f.nodos.map((n) => n.uf), [2.1, 2.2, 1.7], 'modelo 2 = Tabla 1 del folio 000012');
   assert.equal(f.folio, 'AT-NCH3137-2-2026-000012');
   // Ningún campo trae un promedio ni un valor «combinado».
-  assert.deepEqual(Object.keys(f).sort(), ['folio', 'linea', 'nodos', 'ufModelo1']);
+  assert.deepEqual(Object.keys(f).sort(), ['folio', 'linea', 'nodos', 'ufsModelo1']);
 });
 
 test('🔴 el modelo 1 se LEE del ítem: sale el número que de verdad entró al Uw', () => {
   const [f] = filasUfDosModelos([ventana(TRIPLE, H98(2.31))]);
-  assert.equal(f.ufModelo1, 2.31, 'si THERMAL cambia el certificado, el informe lo sigue');
+  assert.deepEqual(f.ufsModelo1, [2.31], 'si THERMAL cambia el certificado, el informe lo sigue');
   assert.deepEqual(f.nodos.map((n) => n.uf), [2.4, 2.2, 2.5, 1.7], 'Tabla 1 del folio 000008');
 });
 
@@ -59,6 +59,11 @@ test('una fila por LÍNEA, no por ventana, en el orden del proyecto', () => {
   assert.deepEqual(filas.map((f) => f.linea), ['Corredera S75 H98 triple riel', 'Corredera S75 H98 doble riel']);
 });
 
+test('🔴 [Codex r2] misma línea con Uf distintos del modelo 1: se declaran TODOS, nunca el primero en silencio', () => {
+  const [f] = filasUfDosModelos([ventana(DOBLE, H98(2.31)), ventana(DOBLE, H98(2.3)), ventana(DOBLE, H98(2.31))]);
+  assert.deepEqual(f.ufsModelo1, [2.3, 2.31]);
+});
+
 test('la tabla fem-tri solo tiene líneas H98 con folio de informe de marcos', () => {
   for (const [k, e] of Object.entries(UF_FEM_TRI_POR_LINEA)) {
     assert.equal(e.perfil, 'Sliding_H98', k);
@@ -76,12 +81,22 @@ test('🔴 el texto al cliente declara el método y nunca dice HUECO / no compra
   assert.match(todo, /No se promedian/);
 });
 
+test('🔴 [Copilot/Codex r1-r2] el modelo 1 dice que el informe es del H80 y que ACTIVA lo aplica al H98', () => {
+  const T = TEXTO_UF_DOS_MODELOS;
+  assert.match(T.modelo1, /hoja H80 \(tabla C\.1\)/);
+  assert.match(T.modelo1, /ACTIVA aplica ese valor a la hoja H98/);
+  assert.match(T.modelo1, /Es el Uf con que se calculó el Uw/);
+  assert.match(T.cierre, /perfil completo \/ nodo a nodo/);
+  // Ni una causa no medida («difieren porque…») ni una verificabilidad que el cliente no recibe (QR).
+  assert.doesNotMatch(Object.values(T).join(' '), /porque|QR/);
+});
+
 const DATOS = { comuna: 'Temuco', regimen: 'PDA', uw_max_Wm2K: 3.2, zona_termica_NCh1079: 'F', criterio_ref: 'PDA Temuco art. 27' };
 
 test('🔴 PDF renderizado: la sección aparece con los dos Uf y los folios', async () => {
   const ventanas = [ventana(DOBLE, H98()), { ...ventana(TRIPLE, H98()), id: 'V2' }];
   const txt = textoDelPdf(await generarInformeTermicoPdf(DATOS, { ventanas }));
-  assert.ok(txt.includes('dos modelos, dos valores'), 'el título de la sección');
+  assert.ok(txt.includes('dos modelos, lado a lado'), 'el título de la sección');
   assert.ok(txt.includes('2,30'), 'el Uf del modelo 1');
   for (const v of ['2,1', '2,2', '1,7', '2,4', '2,5']) assert.ok(txt.includes(v), `el Uf fem-tri ${v}`);
   assert.ok(txt.includes('AT-NCH3137-2-2026-000012') && txt.includes('AT-NCH3137-2-2026-000008'), 'los dos folios');
@@ -91,5 +106,5 @@ test('🔴 PDF renderizado: la sección aparece con los dos Uf y los folios', as
 test('sin líneas con los dos modelos el informe sale como antes (sin la sección)', async () => {
   const ventanas = [ventana('Fijo S60', { perfil: 'S60_fijo', uw: 2.6, detalle: { uf: 1.49 } })];
   const txt = textoDelPdf(await generarInformeTermicoPdf(DATOS, { ventanas }));
-  assert.ok(!txt.includes('dos modelos, dos valores'));
+  assert.ok(!txt.includes('dos modelos, lado a lado'));
 });
