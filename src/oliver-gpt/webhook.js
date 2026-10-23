@@ -5003,7 +5003,12 @@ Comuna: ${datos.comuna}`
           // [2026-10-22] La casilla «Informe Uw de la línea» también vale en el camino clásico (sin informe-primero):
           // ahí todo va después de la propuesta, así que no hay techo que respetar.
           if (docSent && !modoInformePrimero && uwElegido) {
-            safe('generarPdf.uwLinea.clasico', () => enviarUwLinea());
+            // [Copilot r2] El motivo queda en el log también acá (atribución, apagado, sin línea…): si el Uw no sale, se ve por qué.
+            safe('generarPdf.uwLinea.clasico', async () => {
+              const r = await enviarUwLinea();
+              log('info', 'generarPdf.secuencia', `${from}: uw_linea (clásico) → ${r || 'sin_resultado'}`);
+              return r;
+            });
           }
           if (docSent && !modoInformePrimero && docsSel.termico) {
             try {
