@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CATALOGO_UW_LINEA, elegirInformesUwLinea, listaPiloto, enPilotoUwLinea, descargarInformeUw,
-  nombreParaCliente, nombreParaArchivo, captionUwLinea, tipoEntregaUw, MAX_INFORMES_UW,
+  nombreParaCliente, nombreParaArchivo, captionUwLinea, tipoEntregaUw, MAX_INFORMES_UW, politicaUwLinea, techoSinLimite, uwApagado,
 } from './uwLineaPiloto.js';
 
 test('calce EXACTO: los rótulos reales del motor encuentran su ventana tipo', () => {
@@ -96,4 +96,30 @@ test('si el catálogo trae el sha256, un PDF distinto NO se entrega', async () =
   await assert.rejects(descargarInformeUw('AT-NCH3137-1-2026-000027-7492c9',
     { fetchImpl: ok, sha256: CATALOGO_UW_LINEA['corredera sliding h98 doble riel s75'].sha256 }), /sha256/);
   for (const e of Object.values(CATALOGO_UW_LINEA)) assert.match(e.sha256, /^[0-9a-f]{64}$/, e.ventana);
+});
+
+test('[2026-10-22] politicaUwLinea — tabla de verdad: la casilla manda siempre; sin casilla, solo el piloto y nunca con selección manual', () => {
+  const p = (elegido, enPiloto, seleccionManual) => politicaUwLinea({ elegido, enPiloto, seleccionManual });
+  assert.deepEqual(p(true, false, true), { enviar: true, motivo: 'casilla', ignorarCandado: true }, 'casilla: cualquier cliente, aunque haya marca manual');
+  assert.deepEqual(p(true, true, false), { enviar: true, motivo: 'casilla', ignorarCandado: true });
+  assert.deepEqual(p(false, false, false), { enviar: false, motivo: 'fuera_piloto', ignorarCandado: false });
+  assert.deepEqual(p(false, false, true), { enviar: false, motivo: 'fuera_piloto', ignorarCandado: false });
+  assert.deepEqual(p(false, true, true), { enviar: false, motivo: 'seleccion_manual', ignorarCandado: false }, 'nadie lo eligió');
+  assert.deepEqual(p(false, true, false), { enviar: true, motivo: 'piloto', ignorarCandado: false });
+  for (const v of ['true', 1, 'false', null, undefined]) assert.equal(politicaUwLinea({ elegido: v }).motivo, 'fuera_piloto', JSON.stringify(v));
+});
+
+test('[2026-10-22] techoSinLimite: ningún campo undefined (la reserva y el seguro no se disparan solos)', () => {
+  const t = techoSinLimite();
+  assert.equal(t.vencido, false);
+  assert.equal(Date.now() + t.reservaMs > t.vence, false);
+  assert.notEqual(techoSinLimite(), techoSinLimite(), 'un objeto nuevo por envío');
+});
+
+test('[2026-10-22 · Thermos M2] UW_LINEA_PILOTO_LISTA=- apaga TAMBIÉN la casilla del cockpit', () => {
+  assert.deepEqual(politicaUwLinea({ elegido: true, enPiloto: true, apagado: true }), { enviar: false, motivo: 'apagado', ignorarCandado: false });
+  assert.equal(uwApagado({ UW_LINEA_PILOTO_LISTA: '-' }), true);
+  assert.equal(uwApagado({ UW_LINEA_PILOTO_LISTA: ' - ' }), true);
+  assert.equal(uwApagado({}), false);
+  assert.equal(uwApagado({ UW_LINEA_PILOTO_LISTA: '569' }), false);
 });

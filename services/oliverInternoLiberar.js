@@ -85,10 +85,13 @@ export function registrarRutaLiberar(app, { validInternalOperatorToken, handleWe
       const campo = (k) => String(b[k] || '').trim().slice(0, 80);
       const items = itemsDesdeLineasBot(b.lineas, campo('color'));
       if (!items.length) return res.status(400).json({ ok: false, error: 'sin líneas cotizadas: nada que emitir' });
-      // `documentos_elegidos` es TRAZA (queda en el evento del chat): el efecto real viaja por la marca «próxima» de
-      // documentos que sales-os deja ANTES de pedir y que generarPdf consume al decidir (cotizacion-documentos/decidir).
+      // `documentos_elegidos`: para térmico y vientos es TRAZA (queda en el evento del chat; el efecto real viaja por la
+      // marca «próxima» que sales-os deja ANTES de pedir y que generarPdf consume al decidir). Para `uw` es el EFECTO.
       const de = b.documentos_elegidos && typeof b.documentos_elegidos === 'object' ? b.documentos_elegidos : null;
-      const documentos = de ? { termico: Boolean(de.termico), vientos: Boolean(de.vientos) } : null;
+      // [2026-10-22] `uw` = casilla «Informe Uw de la línea» del cockpit: a diferencia de térmico y vientos, su EFECTO
+      // viaja por acá (la marca «próxima» de sales-os no la conoce). generarPdf lo lee de `emisionInterna.documentos`.
+      // Solo el booleano `true` habilita el Uw (Codex: `Boolean("false")` es true y saltaría piloto y candado).
+      const documentos = de ? { termico: Boolean(de.termico), vientos: Boolean(de.vientos), uw: de.uw === true } : null;
 
       let resolver;
       const resultado = new Promise((r) => { resolver = r; });

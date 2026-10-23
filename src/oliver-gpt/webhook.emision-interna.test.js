@@ -20,7 +20,7 @@ function makeRes() { return { sendStatus: () => {}, status: () => ({ json: () =>
 // Un teléfono distinto por test: el pipeline tiene anti-duplicado por cliente (mismos ítems en minutos = misma
 // propuesta, folio reusado) y eso es correcto en producción, pero acá haría que el 2.º test «reuse» el del 1.º.
 let telefonoN = 0;
-function harness({ emisionInterna, aiPaused = false, folioOk = true }) {
+function harness({ emisionInterna, aiPaused = false, folioOk = true, origen = 'default_modificacion', estadoInicial = null }) {
   telefonoN += 1;
   const TEL = `5694138${String(1000 + telefonoN).slice(-4)}`;
   const registro = { tel: TEL, turnos: 0, docs: [], textos: [], eventos: [], fetches: [], guardado: null, zoho: 0, quotes: [] };
@@ -33,12 +33,12 @@ function harness({ emisionInterna, aiPaused = false, folioOk = true }) {
         ? { ok: true, status: 200, json: async () => ({ quote_number: 'CM-FR-004-2026-0800' }), text: async () => '' }
         : { ok: false, status: 503, json: async () => ({}), text: async () => 'caido' };
     }
-    return { ok: true, status: 200, json: async () => ({ ok: true, termico: false, vientos: false, origen: 'default_modificacion' }), text: async () => '{}' };
+    return { ok: true, status: 200, json: async () => ({ ok: true, termico: false, vientos: false, origen }), text: async () => '{}' };
   };
   const deps = {
     conv: new Map(), seen: new Set(), locks: new Map(),
     dormir: async () => {},
-    leerEstado: async () => null,
+    leerEstado: async (k) => (estadoInicial && k in estadoInicial ? estadoInicial[k] : null),
     escribirEstado: () => {},
     parseInbound: () => ({ ok: true, from: TEL, type: 'text', text: MARCA, msgId: `interno-${Math.random()}`, enviadoAt: Date.now() }),
     sendWhatsAppText: async (_to, texto) => { registro.textos.push(texto); return { ok: true, msgId: 'txt-1' }; },
@@ -297,4 +297,130 @@ test('[#1500-C r5] terna ya entregada + color del vendedor = una de las opciones
     assert.ok(traza, 'queda en la ficha qué opción quedó como definitiva');
     assert.equal(registro.guardado.state.last_quote.quote_number, `${base}-B`, 'la sesión recuerda la opción definitiva');
   } finally { restaurar(); }
+});
+
+// ── [2026-10-22] CASILLA «Informe Uw de la línea» del cockpit ────────────────────────────────────────────────
+// Pedido del dueño: «le falta agregar los otros botones de los informes… para envío de otros clientes». La casilla es
+// una decisión EXPLÍCITA del vendedor para ESE cliente: vale para cualquier cliente (no solo la lista del piloto Uw).
+const ITEMS_H98 = [{ producto_label: 'Corredera SLIDING H98 Doble Riel S75', measures: '2500x2000', color: 'BLANCO', qty: 1, unit_price: 713025, glass_label: 'Termopanel 5+12+5' }];
+const conUw = (deps, registro) => {
+  registro.descargas = [];
+  deps.descargarInformeUw = async (codigo) => { registro.descargas.push(codigo); return Buffer.from('%PDF-1.7 uw'); };
+};
+const esperarHasta = async (cond, ms = 4000) => { const fin = Date.now() + ms; while (Date.now() < fin) { if (cond()) return true; await new Promise((r) => { setTimeout(r, 20); }); } return false; };
+
+test('[casilla Uw] marcada: un cliente FUERA de la lista del piloto recibe el informe Uw de su línea', async () => {
+  const { ei, resultado } = emision({ items: ITEMS_H98, documentos: { termico: false, vientos: false, uw: true } });
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei });
+  conUw(deps, registro);
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout && r.ok === true, JSON.stringify(r));
+    assert.ok(await esperarHasta(() => registro.docs.some((d) => /^Informe-Uw/.test(d.filename))),
+      `docs: ${JSON.stringify(registro.docs.map((d) => d.filename))}`);
+    assert.deepEqual(registro.descargas, ['AT-NCH3137-1-2026-000027-7492c9'], 'H98 doble riel = V2N');
+    assert.equal(registro.docs.find((d) => /^Informe-Uw/.test(d.filename)).to, registro.tel, 'al cliente');
+  } finally { restaurar(); }
+});
+
+test('[casilla Uw] SIN marcar: el cliente fuera del piloto no recibe Uw (como siempre)', async () => {
+  const { ei, resultado } = emision({ items: ITEMS_H98, documentos: { termico: false, vientos: false, uw: false } });
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei });
+  conUw(deps, registro);
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout && r.ok === true, JSON.stringify(r));
+    await new Promise((res) => { setTimeout(res, 300); });
+    assert.equal(registro.docs.some((d) => /^Informe-Uw/.test(d.filename)), false, JSON.stringify(registro.docs.map((d) => d.filename)));
+    assert.deepEqual(registro.descargas, []);
+  } finally { restaurar(); }
+});
+
+test('[casilla Uw] marcada en modo informe-primero: el Uw llega ANTES de la propuesta', async () => {
+  const { ei, resultado } = emision({ items: ITEMS_H98, documentos: { termico: false, vientos: false, uw: true } });
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei });
+  conUw(deps, registro);
+  deps.secuenciaInformePrimero = () => true;
+  deps.seqInformeTimeoutMs = 400;
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout && r.ok === true, JSON.stringify(r));
+    const nombres = registro.docs.map((d) => d.filename);
+    const iUw = nombres.findIndex((f) => /^Informe-Uw/.test(f));
+    const iProp = nombres.findIndex((f) => /^CM-FR-004/.test(f));
+    assert.ok(iUw >= 0 && iProp >= 0 && iUw < iProp, `Uw antes del precio — docs: ${JSON.stringify(nombres)}`);
+  } finally { restaurar(); }
+});
+
+// [2026-10-22 · Thermos calidad, BLOQUEANTE] EL CAMINO REAL: con «elegir» sales-os SIEMPRE deja la marca «próxima», así que
+// el bot decide con origen 'manual' (docsForzar). Los casos de arriba corrían sin esa marca.
+test('[casilla Uw · real] marca MANUAL de sales-os + casilla marcada ⇒ el cliente recibe el Uw', async () => {
+  const { ei, resultado } = emision({ items: ITEMS_H98, documentos: { termico: false, vientos: false, uw: true } });
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei, origen: 'manual' });
+  conUw(deps, registro);
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout && r.ok === true, JSON.stringify(r));
+    assert.ok(await esperarHasta(() => registro.docs.some((d) => /^Informe-Uw/.test(d.filename))),
+      `docs: ${JSON.stringify(registro.docs.map((d) => d.filename))}`);
+  } finally { restaurar(); }
+});
+
+test('[casilla Uw · real] cliente DENTRO del piloto + marca MANUAL + casilla APAGADA ⇒ NO recibe Uw (nadie lo eligió)', async () => {
+  const { ei, resultado } = emision({ items: ITEMS_H98, documentos: { termico: true, vientos: true, uw: false } });
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei, origen: 'manual' });
+  conUw(deps, registro);
+  // El piloto corre en la secuencia informe-primero: ahí es donde la selección manual tiene que frenarlo.
+  deps.secuenciaInformePrimero = () => true;
+  deps.seqInformeTimeoutMs = 400;
+  const previo = process.env.UW_LINEA_PILOTO_LISTA;
+  process.env.UW_LINEA_PILOTO_LISTA = registro.tel;   // el cliente SÍ está en el piloto
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout && r.ok === true, JSON.stringify(r));
+    await new Promise((res) => { setTimeout(res, 300); });
+    assert.equal(registro.docs.some((d) => /^Informe-Uw/.test(d.filename)), false, JSON.stringify(registro.docs.map((d) => d.filename)));
+  } finally {
+    if (previo === undefined) delete process.env.UW_LINEA_PILOTO_LISTA; else process.env.UW_LINEA_PILOTO_LISTA = previo;
+    restaurar();
+  }
+});
+
+test('[casilla Uw · real] casilla marcada con el candado VIGENTE (ya lo recibió) ⇒ se manda igual (decisión explícita)', async () => {
+  const { ei, resultado } = emision({ items: ITEMS_H98, documentos: { termico: false, vientos: false, uw: true } });
+  let telActual = null;
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei, origen: 'manual' });
+  telActual = registro.tel;
+  deps.leerEstado = async (k) => (k === `docs_entregado:uw_linea:V2N:${telActual.slice(-9)}` ? { at: Date.now(), msgId: 'viejo', pendiente: false } : null);
+  conUw(deps, registro);
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout && r.ok === true, JSON.stringify(r));
+    assert.ok(await esperarHasta(() => registro.docs.some((d) => /^Informe-Uw/.test(d.filename))),
+      `docs: ${JSON.stringify(registro.docs.map((d) => d.filename))}`);
+  } finally { restaurar(); }
+});
+
+test('[casilla Uw · Thermos M2] con UW_LINEA_PILOTO_LISTA=- la casilla marcada NO manda el Uw', async () => {
+  const { ei, resultado } = emision({ items: ITEMS_H98, documentos: { termico: false, vientos: false, uw: true } });
+  const { deps, registro, restaurar } = harness({ emisionInterna: ei, origen: 'manual' });
+  conUw(deps, registro);
+  const previo = process.env.UW_LINEA_PILOTO_LISTA;
+  process.env.UW_LINEA_PILOTO_LISTA = '-';
+  try {
+    await handleWebhook({ body: {} }, makeRes(), deps);
+    const r = await Promise.race([resultado, new Promise((res) => { setTimeout(() => res({ timeout: true }), 8000); })]);
+    assert.ok(!r.timeout && r.ok === true, JSON.stringify(r));
+    await new Promise((res) => { setTimeout(res, 300); });
+    assert.equal(registro.docs.some((d) => /^Informe-Uw/.test(d.filename)), false);
+  } finally {
+    if (previo === undefined) delete process.env.UW_LINEA_PILOTO_LISTA; else process.env.UW_LINEA_PILOTO_LISTA = previo;
+    restaurar();
+  }
 });

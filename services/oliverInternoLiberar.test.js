@@ -128,7 +128,7 @@ test('[#1500-C] arma el turno interno: inbound sintético del teléfono del clie
   assert.equal(ei.comuna, 'Angol');
   assert.equal(ei.operador, 'Mary');
   assert.equal(ei.borrador_id, 'q-sales-os-1', '[#1504 r5] el id del borrador viaja al pipeline y vuelve en el quote-event');
-  assert.deepEqual(ei.documentos, { termico: true, vientos: false });
+  assert.deepEqual(ei.documentos, { termico: true, vientos: false, uw: false }, 'sin la casilla Uw, uw=false');
   assert.equal(ei.items.length, 1);
   assert.equal(ei.items[0].unit_price, 792902);
   assert.equal(res.codigo, 200, JSON.stringify(res.cuerpo));
@@ -173,4 +173,28 @@ test('[#1500-C] si handleWebhook explota, 500 lector_fallo (no un 200 vacío ni 
   const { res } = await pedir({ body: BODY_OK, webhook: async () => { throw new Error('se cayó'); } });
   assert.equal(res.codigo, 500);
   assert.match(res.cuerpo.detalle, /se cayó/);
+});
+
+test('[2026-10-22] la casilla «Informe Uw de la línea» llega al pipeline como documentos.uw (su efecto viaja por acá)', async () => {
+  const { llamadas } = await pedir({
+    body: { ...BODY_OK, documentos_elegidos: { termico: false, vientos: false, uw: true } },
+    webhook: async (_req, res, deps) => {
+      res.sendStatus(200);
+      deps.emisionInterna.onResultado({ ok: true, quote_number: 'CM-FR-004-2026-0801', message: 'Listo', pdf_sent: true });
+    },
+  });
+  assert.deepEqual(llamadas[0].deps.emisionInterna.documentos, { termico: false, vientos: false, uw: true });
+});
+
+test('[2026-10-22 · Codex] solo el booleano true habilita el Uw: "false", 1 o null llegan como uw=false', async () => {
+  for (const v of ['false', 1, null]) {
+    const { llamadas } = await pedir({
+      body: { ...BODY_OK, documentos_elegidos: { termico: false, vientos: false, uw: v } },
+      webhook: async (_req, res, deps) => {
+        res.sendStatus(200);
+        deps.emisionInterna.onResultado({ ok: true, quote_number: 'CM-FR-004-2026-0802', message: 'Listo', pdf_sent: true });
+      },
+    });
+    assert.equal(llamadas[0].deps.emisionInterna.documentos.uw, false, JSON.stringify(v));
+  }
 });

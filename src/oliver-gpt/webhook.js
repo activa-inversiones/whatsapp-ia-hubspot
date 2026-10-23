@@ -70,7 +70,7 @@ import { pedirVientos, ventanasParaVientos } from '../../services/vientosThermal
 import { motorCotizo, vidrioDelMotor, precioCoincide, elegirVidrio, aplicarVidrio, avisarVidrio, VIDRIO_RESPALDO } from '../../services/vidrioCotizado.js'; // [2026-10-05] el vidrio lo decide el motor
 import { generarInformeVientosPdf } from '../../services/informesThermal.js';
 import { decidirDocumentosCotizacion, leerEntregasLocales, marcarEntregaLocal, claveEntrega, entregaTtlSeg } from '../../services/documentosCotizacion.js'; // [2026-09-30] selector de documentos por cotización
-import { elegirInformesUwLinea, enPilotoUwLinea, descargarInformeUw, nombreParaCliente, nombreParaArchivo, captionUwLinea, tipoEntregaUw, TTL_PENDIENTE_UW_S } from '../../services/uwLineaPiloto.js'; // [2026-10-21] piloto informe Uw de la línea (#1581)
+import { elegirInformesUwLinea, enPilotoUwLinea, descargarInformeUw, nombreParaCliente, nombreParaArchivo, captionUwLinea, tipoEntregaUw, TTL_PENDIENTE_UW_S, politicaUwLinea, techoSinLimite, uwApagado } from '../../services/uwLineaPiloto.js'; // [2026-10-21] piloto informe Uw de la línea (#1581)
 import { clasificarResultadoEmision } from '../../services/oliverInternoLiberar.js'; // [2026-10-12 · #1500-C] emisión interna: resultado → forma que lee sales-os
 import { numerarVentanas } from '../../services/etiquetaVentana.js'; // [2026-09-19] el numero se congela antes de filtrar
 
@@ -1194,9 +1194,9 @@ export async function handleWebhook(req, res, deps = {}) {
         const r = await (deps.bridge || realBridge).pushConversationEvent({
           channel: 'whatsapp', external_id: cliente, direction: 'outbound',
           actor_type: 'ai', actor_name: 'Oliver', message_type: 'document',
-          body: `📐 Informe Uw de la línea ${rastro.linea || ''} (${rastro.folio}) ENTREGADO al cliente · piloto`.replace(/\s+/g, ' '),
+          body: `📐 Informe Uw de la línea ${rastro.linea || ''} (${rastro.folio}) ENTREGADO al cliente · ${rastro.origen === 'casilla' ? 'elegido en el cockpit' : 'piloto'}`.replace(/\s+/g, ' '),
           metadata: { source: 'oliver_gpt_uw_linea_piloto', folio: rastro.folio, ventana: rastro.ventana || null,
-                      msg_id: ac.msgId, media_id: rastro.media || null, quote_number: rastro.quote || null },
+                      msg_id: ac.msgId, media_id: rastro.media || null, quote_number: rastro.quote || null, origen: rastro.origen || 'piloto' },
         });
         if (!(r?.ok === true || r?.skipped === true)) throw new Error('sales-os no confirmó el evento');
         return true;
@@ -1211,7 +1211,7 @@ export async function handleWebhook(req, res, deps = {}) {
           // El folio AT-NCH3137-1 lo archiva en CM-FR-008 (sales-os #32).
           filename: nombreParaArchivo({ archivo: rastro.archivo, folio: rastro.folio }, cliente, new Date(), ac.msgId),
           buffer: pdf, waMediaId: rastro.media || null,
-          aiDescription: `Informe Uw de la línea ${rastro.linea || ''} ${rastro.folio} (piloto, cotización ${rastro.quote || 's/n'}) · entregado`,
+          aiDescription: `Informe Uw de la línea ${rastro.linea || ''} ${rastro.folio} (${rastro.origen === 'casilla' ? 'elegido en el cockpit' : 'piloto'}, cotización ${rastro.quote || 's/n'}) · entregado`,
         });
         if (!guardado) throw new Error('sales-os no confirmó el guardado (saveMedia devolvió null)');
         return true;
@@ -4546,6 +4546,9 @@ Comuna: ${datos.comuna}`
             });
           } catch (e) { log('error', 'generarPdf.docsSel', e?.message || e); }
           const docsForzar = docsSel?.origen === 'manual';
+          // [2026-10-22] La casilla «Informe Uw de la línea» del cockpit (emisión interna). Se decide UNA vez, junto a
+          // térmico y vientos; la usan el paso del Uw en informe-primero y en el camino clásico.
+          const uwElegido = emisionInterna?.documentos?.uw === true;
           // El informe de vientos con su propio techo (motor + PDF + pausa + envío): regalo
           // que jamás retiene la propuesta.
           const enviarVientosConTecho = async () => {
@@ -4560,15 +4563,15 @@ Comuna: ${datos.comuna}`
           // folio AT-NCH3137-1, QR público). Decisión del dueño: primero solo a su número, solo
           // calce exacto de línea. Va después de vientos y antes del precio, con su propio techo:
           // como los otros informes, es un regalo que jamás retiene la propuesta.
-          const enviarUwLinea = async (techo = { vencido: false }) => {
-            if (!enPilotoUwLinea(from)) return 'fuera_piloto';
+          const enviarUwLinea = async (techo = techoSinLimite()) => {
             // [Thermos r1] Solo cuando el que escribe ES el cliente. En modo atribución (el dueño
             // cotiza a nombre de X) el PDF le llegaría al dueño y quedaría registrado como de X:
-            // la medición del piloto contaría una entrega que X nunca recibió.
+            // la medición del piloto contaría una entrega que X nunca recibió. (Invariante de entrega.)
             if (String(from).replace(/\D/g, '') !== String(claves.cliente).replace(/\D/g, '')) return 'atribucion';
-            // [Thermos r1] Selección MANUAL del cockpit: el dueño eligió qué documentos van y el
-            // selector no conoce el Uw ⇒ no se agrega un documento que nadie eligió.
-            if (docsForzar) return 'seleccion_manual';
+            // ¿Se manda? Una sola regla (`politicaUwLinea`, services/uwLineaPiloto.js): la casilla del cockpit lo
+            // manda a cualquier cliente; sin casilla, solo el piloto y nunca con una selección manual que no lo incluyó.
+            const pol = politicaUwLinea({ elegido: uwElegido, enPiloto: enPilotoUwLinea(from), seleccionManual: docsForzar, apagado: uwApagado() });
+            if (!pol.enviar) return pol.motivo;
             const elegidos = elegirInformesUwLinea(input.items || []);
             if (!elegidos.length) {
               log('info', 'generarPdf.uwLinea', `${from}: sin línea del catálogo — ${(input.items || []).map((it) => it.producto_label || it.product || '').join(' | ')}`);
@@ -4578,15 +4581,14 @@ Comuna: ${datos.comuna}`
             const escribir = deps.escribirEstado || escribirEstado;
             const cuenta = { enviados: 0, yaTenia: 0, fallos: 0 };
             for (const e of elegidos) {
-              // Mismo candado que el selector de documentos (llave y TTL), por CLIENTE.
-              // [Codex r1] NO lo salta `docsForzar`: esa marca manual del cockpit decide térmico y
-              // vientos; el selector no conoce el Uw, así que no puede ordenar reenviarlo.
+              // Mismo candado que el selector de documentos (llave y TTL), por CLIENTE. Lo salta SOLO la casilla
+              // «Informe Uw de la línea» (`pol.ignorarCandado`), igual que térmico/vientos marcados a mano.
               const clave = claveEntrega(claves.cliente, tipoEntregaUw(e));
               try {
                 // [Thermos r1] El `reset` del cliente suelta también este candado, igual que en
                 // térmico y vientos (`candadoVigente`): el dueño prueba como cliente nuevo.
                 const resetAt = Number(await leer(claves.reset)) || 0;
-                if (candadoVigente(await leer(clave), resetAt)) { cuenta.yaTenia += 1; continue; }
+                if (!pol.ignorarCandado && candadoVigente(await leer(clave), resetAt)) { cuenta.yaTenia += 1; continue; }
               } catch { /* sin estado: se manda; es un piloto acotado a una lista */ }
               // [Thermos r1] Un ítem que falla no corta los demás.
               try {
@@ -4666,6 +4668,7 @@ Comuna: ${datos.comuna}`
                     telefono: String(from) /* [chat] destinatario del envío */, cliente: String(claves.cliente), clave,
                     codigo: e.codigo, sha256: e.sha256, archivo: e.archivo, linea: e.linea, ventana: e.ventana,
                     quote: quoteNumber || null, media,
+                    origen: pol.motivo,   // 'casilla' (elegido en el cockpit) | 'piloto' — separa las dos mediciones
                   }, TTL_PENDIENTE_UW_S);
                 } catch { /* sin rastro: ni el `delivered` ni el `failed` pueden cerrar este envío */ }
                 try { escribir(clave, { at: Date.now(), folio: e.folio, quote: quoteNumber || null, msgId: envio.msgId, pendiente: true }, TTL_PENDIENTE_UW_S); }
@@ -4996,6 +4999,16 @@ Comuna: ${datos.comuna}`
           if (docSent && !modoInformePrimero && docsSel.vientos && docsForzar) {
             // El camino clásico nunca mandó vientos; solo si alguien lo marcó a mano.
             safe('generarPdf.vientos.clasico', () => enviarInformeVientos({ forzar: true }));
+          }
+          // [2026-10-22] La casilla «Informe Uw de la línea» también vale en el camino clásico (sin informe-primero):
+          // ahí todo va después de la propuesta, así que no hay techo que respetar.
+          if (docSent && !modoInformePrimero && uwElegido) {
+            // [Copilot r2] El motivo queda en el log también acá (atribución, apagado, sin línea…): si el Uw no sale, se ve por qué.
+            safe('generarPdf.uwLinea.clasico', async () => {
+              const r = await enviarUwLinea();
+              log('info', 'generarPdf.secuencia', `${from}: uw_linea (clásico) → ${r || 'sin_resultado'}`);
+              return r;
+            });
           }
           if (docSent && !modoInformePrimero && docsSel.termico) {
             try {
