@@ -185,3 +185,16 @@ test('[2026-10-22] la casilla «Informe Uw de la línea» llega al pipeline como
   });
   assert.deepEqual(llamadas[0].deps.emisionInterna.documentos, { termico: false, vientos: false, uw: true });
 });
+
+test('[2026-10-22 · Codex] solo el booleano true habilita el Uw: "false", 1 o null llegan como uw=false', async () => {
+  for (const v of ['false', 1, null]) {
+    const { llamadas } = await pedir({
+      body: { ...BODY_OK, documentos_elegidos: { termico: false, vientos: false, uw: v } },
+      webhook: async (_req, res, deps) => {
+        res.sendStatus(200);
+        deps.emisionInterna.onResultado({ ok: true, quote_number: 'CM-FR-004-2026-0802', message: 'Listo', pdf_sent: true });
+      },
+    });
+    assert.equal(llamadas[0].deps.emisionInterna.documentos.uw, false, JSON.stringify(v));
+  }
+});

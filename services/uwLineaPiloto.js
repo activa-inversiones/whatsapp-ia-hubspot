@@ -86,6 +86,9 @@ export function listaPiloto(env = process.env) {
   return String(crudo).split(',').map((t) => (t.trim() === '*' ? '*' : t.replace(/\D/g, ''))).filter(Boolean);
 }
 
+/** ¿Está apagado el envío de Uw? (`UW_LINEA_PILOTO_LISTA=-`). Corta también la casilla del cockpit. */
+export const uwApagado = (env = process.env) => String(env.UW_LINEA_PILOTO_LISTA ?? '').trim() === '-';
+
 export function enPilotoUwLinea(waId, { lista = listaPiloto() } = {}) {
   if (!Array.isArray(lista) || !lista.length) return false;
   if (lista.includes('*')) return true;
@@ -153,3 +156,26 @@ export const tipoEntregaUw = (e) => `uw_linea:${e.ventana}`;
  *  (ni `delivered` ni `failed`), el candado vence solo y la próxima cotización puede reintentar,
  *  en vez de dejar al cliente 90 días sin el informe. Con `delivered` pasa al TTL normal. */
 export const TTL_PENDIENTE_UW_S = 3 * 24 * 3600;
+
+/**
+ * [2026-10-22] ¿Se manda el informe Uw en ESTA emisión? Una sola regla, como dato (Thermos calidad: antes eran tres
+ * `if` repartidos en webhook.js). La guardia de atribución (quien escribe ≠ cliente) NO va acá: es una invariante de
+ * entrega y se mira aparte.
+ *  - `elegido`: el vendedor marcó la casilla «Informe Uw de la línea» en el cockpit (decisión explícita para ESE
+ *    cliente, pedido del dueño 22-oct «para envío de otros clientes») ⇒ se manda a cualquier cliente y aunque ya lo
+ *    tenga (como térmico/vientos marcados a mano).
+ *  - sin casilla: el piloto de siempre ⇒ solo la lista, nunca con selección manual (nadie lo eligió), y con candado.
+ */
+export function politicaUwLinea({ elegido = false, enPiloto = false, seleccionManual = false, apagado = false } = {}) {
+  // [Thermos M2] El interruptor `UW_LINEA_PILOTO_LISTA=-` apaga TODO envío de Uw, también el de la casilla: si un dato
+  // del catálogo resulta malo, se corta sin deploy y sin depender de que nadie marque la casilla.
+  if (apagado === true) return { enviar: false, motivo: 'apagado', ignorarCandado: false };
+  if (elegido === true) return { enviar: true, motivo: 'casilla', ignorarCandado: true };
+  if (!enPiloto) return { enviar: false, motivo: 'fuera_piloto', ignorarCandado: false };
+  if (seleccionManual) return { enviar: false, motivo: 'seleccion_manual', ignorarCandado: false };
+  return { enviar: true, motivo: 'piloto', ignorarCandado: false };
+}
+
+/** Techo para un envío SIN límite de tiempo (camino clásico: todo va después de la propuesta). Misma forma que el techo
+ *  de la secuencia informe-primero, así ningún campo queda `undefined` por accidente (Thermos calidad). */
+export const techoSinLimite = () => ({ vencido: false, enEnvio: null, algunoAceptado: false, vence: Infinity, reservaMs: 0, abortar: null });
