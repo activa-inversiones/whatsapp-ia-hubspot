@@ -4561,14 +4561,19 @@ Comuna: ${datos.comuna}`
           // calce exacto de línea. Va después de vientos y antes del precio, con su propio techo:
           // como los otros informes, es un regalo que jamás retiene la propuesta.
           const enviarUwLinea = async (techo = { vencido: false }) => {
-            if (!enPilotoUwLinea(from)) return 'fuera_piloto';
+            // [2026-10-22 · dueño: «le falta agregar los otros botones de los informes… para envío de otros clientes»]
+            // La casilla «Informe Uw de la línea» del cockpit es una decisión EXPLÍCITA del vendedor para ESE cliente:
+            // vale para cualquier cliente (no solo la lista del piloto) y, como térmico y vientos marcados a mano,
+            // se manda aunque el cliente ya lo tenga. Sin la casilla, todo sigue como el piloto.
+            const elegidoUw = emisionInterna?.documentos?.uw === true;
+            if (!elegidoUw && !enPilotoUwLinea(from)) return 'fuera_piloto';
             // [Thermos r1] Solo cuando el que escribe ES el cliente. En modo atribución (el dueño
             // cotiza a nombre de X) el PDF le llegaría al dueño y quedaría registrado como de X:
             // la medición del piloto contaría una entrega que X nunca recibió.
             if (String(from).replace(/\D/g, '') !== String(claves.cliente).replace(/\D/g, '')) return 'atribucion';
             // [Thermos r1] Selección MANUAL del cockpit: el dueño eligió qué documentos van y el
             // selector no conoce el Uw ⇒ no se agrega un documento que nadie eligió.
-            if (docsForzar) return 'seleccion_manual';
+            if (docsForzar && !elegidoUw) return 'seleccion_manual';
             const elegidos = elegirInformesUwLinea(input.items || []);
             if (!elegidos.length) {
               log('info', 'generarPdf.uwLinea', `${from}: sin línea del catálogo — ${(input.items || []).map((it) => it.producto_label || it.product || '').join(' | ')}`);
@@ -4586,7 +4591,7 @@ Comuna: ${datos.comuna}`
                 // [Thermos r1] El `reset` del cliente suelta también este candado, igual que en
                 // térmico y vientos (`candadoVigente`): el dueño prueba como cliente nuevo.
                 const resetAt = Number(await leer(claves.reset)) || 0;
-                if (candadoVigente(await leer(clave), resetAt)) { cuenta.yaTenia += 1; continue; }
+                if (!elegidoUw && candadoVigente(await leer(clave), resetAt)) { cuenta.yaTenia += 1; continue; }
               } catch { /* sin estado: se manda; es un piloto acotado a una lista */ }
               // [Thermos r1] Un ítem que falla no corta los demás.
               try {
@@ -4996,6 +5001,11 @@ Comuna: ${datos.comuna}`
           if (docSent && !modoInformePrimero && docsSel.vientos && docsForzar) {
             // El camino clásico nunca mandó vientos; solo si alguien lo marcó a mano.
             safe('generarPdf.vientos.clasico', () => enviarInformeVientos({ forzar: true }));
+          }
+          // [2026-10-22] La casilla «Informe Uw de la línea» también vale en el camino clásico (sin informe-primero):
+          // ahí todo va después de la propuesta, así que no hay techo que respetar.
+          if (docSent && !modoInformePrimero && emisionInterna?.documentos?.uw === true) {
+            safe('generarPdf.uwLinea.clasico', () => enviarUwLinea({ vencido: false, enEnvio: null, algunoAceptado: false, vence: Infinity, reservaMs: 0 }));
           }
           if (docSent && !modoInformePrimero && docsSel.termico) {
             try {

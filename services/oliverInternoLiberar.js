@@ -88,7 +88,9 @@ export function registrarRutaLiberar(app, { validInternalOperatorToken, handleWe
       // `documentos_elegidos` es TRAZA (queda en el evento del chat): el efecto real viaja por la marca «próxima» de
       // documentos que sales-os deja ANTES de pedir y que generarPdf consume al decidir (cotizacion-documentos/decidir).
       const de = b.documentos_elegidos && typeof b.documentos_elegidos === 'object' ? b.documentos_elegidos : null;
-      const documentos = de ? { termico: Boolean(de.termico), vientos: Boolean(de.vientos) } : null;
+      // [2026-10-22] `uw` = casilla «Informe Uw de la línea» del cockpit: a diferencia de térmico y vientos, su EFECTO
+      // viaja por acá (la marca «próxima» de sales-os no la conoce). generarPdf lo lee de `emisionInterna.documentos`.
+      const documentos = de ? { termico: Boolean(de.termico), vientos: Boolean(de.vientos), uw: Boolean(de.uw) } : null;
 
       let resolver;
       const resultado = new Promise((r) => { resolver = r; });
