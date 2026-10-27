@@ -113,6 +113,11 @@ const CASOS = [
   ['fija simple', { producto_label: 'Ventana fija', measures: '800x600', color: 'Blanco' }],
   ['altísima y angosta', { producto_label: 'Ventana proyectante', measures: '400x2400', color: 'Blanco' }],
   ['larguísima y baja', { producto_label: 'Ventana fija', measures: '3000x400', color: 'Blanco' }],
+  // [2026-10-27] Las tres formas del dueño (Winart v73315): también tienen que quedar adentro de su caja.
+  ['puerta con poste T', { producto_label: 'Puerta abatible interior S60 · 2 paños (1 poste T): vidrio / machihembrado', measures: '1050x2000', color: 'Nogal', puerta: { postes: 1, panos: [{ relleno: 'VIDRIO', alto_util_mm: 1000 }, { relleno: 'MACHIHEMBRADO', alto_util_mm: 680 }] } }],
+  ['compuesta anidada', { producto_label: 'Ventana compuesta: [Proyectante 1300mm (arriba) + Fijo 798mm (abajo)] 600mm + Fijo 1100mm', measures: '1702x2100', color: 'New Black', compuesta: { orientacion: 'horizontal', partes: [{ tipo: 'COMPUESTA', ancho_mm: 600, alto_mm: 2100, compuesta: { orientacion: 'vertical', partes: [{ tipo: 'PROYECTANTE', ancho_mm: 600, alto_mm: 1300 }, { tipo: 'FIJA', ancho_mm: 600, alto_mm: 798 }] } }, { tipo: 'FIJA', ancho_mm: 1100, alto_mm: 2100 }] } }],
+  ['triangular 2 paños', { producto_label: 'Fijo triangular S60 · base 4500 × alto 1330 mm, 2 paños', measures: '4500x1330', color: 'Nogal', triangular: { base_mm: 4500, alto_mm: 1330, divisiones: 2 } }],
+  ['triangular 1 paño', { producto_label: 'Fijo triangular S60 · base 2000 × alto 900 mm, 1 paño', measures: '2000x900', color: 'Blanco' }],
 ];
 
 test('🔴 el volumen NUNCA se sale de su caja, en ningún tipo ni proporción', () => {

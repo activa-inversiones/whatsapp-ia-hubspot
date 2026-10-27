@@ -243,9 +243,10 @@ export const TOOL_DEFS = [
         'ni precio_por_m2. EL VIDRIO Y LA SERIE SE ELIGEN SOLOS (por tamaño y ambiente) — NO ' +
         'pases glass_id ni serie; NO uses listar_vidrios. Solo manda tipo + medidas_texto + (si es baño) ambiente. ' +
         'Cotiza ventanas estándar S60/SLIDING, PUERTAS ABATIBLES (PUERTA 1 hoja / PUERTA_DOBLE 2 hojas / ' +
-        'PUERTA_INTERIOR) y la línea AMERICANA corredera (hasta 2,5 m por lado; escribí "corredera ' +
+        'PUERTA_INTERIOR; con `puerta_panos` si lleva postes T con paños de vidrio o machihembrado), el FIJO TRIANGULAR ' +
+        '(tipo TRIANGULAR: medidas_texto = base x alto) y la línea AMERICANA corredera (hasta 2,5 m por lado; escribí "corredera ' +
         'línea americana" en descripcion_producto). Para mosquiteros, plegables (incluida puerta plegable), formas ' +
-        'irregulares o líneas Andes, Zenia o Venau, NO ejecutes esta tool: llama notificar_marcelo. (La Americana SÍ se cotiza.)',
+        'irregulares (circular, arco, hexagonal, ovalada) o líneas Andes, Zenia o Venau, NO ejecutes esta tool: llama notificar_marcelo. (La Americana y la triangular SÍ se cotizan.)',
       parameters: {
         type: 'object',
         properties: {
@@ -264,7 +265,14 @@ export const TOOL_DEFS = [
               'COMPUESTA: tipo COMPUESTA con `partes` [{tipo:PUERTA_ENVOLVENTE, ancho_mm}, {tipo:FIJA, ancho_mm}], NUNCA dos items separados. ' +
               'CORREDERA de 3 hojas "donde solo corre la del medio" / "laterales fijas": sigue siendo CORREDERA (doble riel), copialo tal cual. ' +
               'Puertas abatibles: PUERTA (1 hoja exterior), PUERTA_DOBLE (2 hojas), PUERTA_INTERIOR. ' +
-              'La puerta corredera de patio va como CORREDERA. NUNCA TERMOPANEL (es vidrio).',
+              'La puerta corredera de patio va como CORREDERA. NUNCA TERMOPANEL (es vidrio). ' +
+              'TRIANGULAR = ventana fija triangular / hastial ("ventana triángulo", "triangular"): medidas_texto = BASE x ALTO del vértice ' +
+              '(ej. "4500x1330"); si el cliente dice en cuántos paños la quiere, manda divisiones_triangulo. ' +
+              'Un paño de una COMPUESTA puede ser a su vez una compuesta APILADA (ej. "a la izquierda proyectante arriba y fijo abajo, ' +
+              'a la derecha un fijo entero"): tipo COMPUESTA horizontal con partes [{tipo:COMPUESTA, ancho_mm, tipo_arriba, tipo_abajo, ' +
+              'alto_arriba_mm, alto_abajo_mm}, {tipo:FIJA, ancho_mm}] y alto_mm = el alto común. ' +
+              'Una PUERTA con postes T / divisiones horizontales (paños de vidrio o placa machihembrada de PVC): tipo PUERTA (o ' +
+              'PUERTA_INTERIOR) con `puerta_panos` de arriba hacia abajo.',
           },
           // [2026-08-25 · Codex] SIN ESTO `partes` SE DESCARTABA EN SILENCIO: el schema tiene
           // additionalProperties:false, asi que el campo se caia antes de salir del LLM y la
@@ -294,9 +302,15 @@ export const TOOL_DEFS = [
                 // [2026-10-14 · #1519] + PUERTA_ENVOLVENTE / PUERTA: «puerta abatir exterior 560 + fijo 2000» es UNA
                 // ventana compuesta (así la arma Winart: dos marcos + acople). Usar PUERTA_ENVOLVENTE para la puerta
                 // exterior normal; PUERTA solo si el cliente pide zapata.
-                tipo: { type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE', 'PUERTA_ENVOLVENTE', 'PUERTA'], description: 'Apertura de ESTE paño. PUERTA_ENVOLVENTE = puerta abatible exterior (la normal); PUERTA = con zapata.' },
+                // [2026-10-27] + COMPUESTA: un paño partido en dos mitades apiladas (arriba/abajo) dentro de una compuesta
+                // HORIZONTAL — la ventana del dueño en Winart v73315: [proyectante 1300 arriba + fijo 800 abajo] 600 + fijo 1100.
+                tipo: { type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE', 'PUERTA_ENVOLVENTE', 'PUERTA', 'COMPUESTA'], description: 'Apertura de ESTE paño. PUERTA_ENVOLVENTE = puerta abatible exterior (la normal); PUERTA = con zapata. COMPUESTA = este paño va partido en una mitad ARRIBA y otra ABAJO (solo en orientacion horizontal): manda tipo_arriba, tipo_abajo y, si el cliente los dio, alto_arriba_mm / alto_abajo_mm.' },
                 ancho_mm: { type: 'number', description: 'Ancho de ESTE paño en milimetros. Usalo en orientacion HORIZONTAL.' },
                 alto_mm: { type: 'number', description: 'Alto de ESTE paño en milimetros. Usalo en orientacion VERTICAL (paños apilados).' },
+                tipo_arriba: { type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE'], description: 'SOLO si tipo=COMPUESTA: apertura de la mitad de ARRIBA, tal como la describió el cliente. Si no lo dijo, pregúntele.' },
+                tipo_abajo: { type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE'], description: 'SOLO si tipo=COMPUESTA: apertura de la mitad de ABAJO.' },
+                alto_arriba_mm: { type: 'number', description: 'SOLO si tipo=COMPUESTA y el cliente dio la altura de la mitad de arriba (ej. "1300 arriba y 800 abajo"): el número tal cual. Si no lo dio, no lo mandes: se reparte mitad y mitad.' },
+                alto_abajo_mm: { type: 'number', description: 'SOLO si tipo=COMPUESTA y el cliente dio la altura de la mitad de abajo.' },
               },
               required: ['tipo'],
             },
@@ -388,6 +402,31 @@ export const TOOL_DEFS = [
           // Medido en la propuesta 0485: al dejar una ventana afuera, TODAS las de abajo se
           // corrieron y 4 de 16 salieron con un numero distinto al de la lista del cliente.
           // Su N°14 aparecia como "V13". Con esto el documento imprime SU numero.
+          // [2026-10-27] PUERTA CON POSTES T. Pedido del dueño: «a la puerta agregarle poste T cuantos quiera el cliente o
+          // divisiones así podrá decidir si quiere machiembre en ellas PVC o vidrio termopanel». N paños = N−1 postes T.
+          puerta_panos: {
+            type: 'array',
+            description:
+              'SOLO para tipo PUERTA / PUERTA_INTERIOR, y SOLO si el cliente pidió la puerta con postes T, travesaños o ' +
+              'divisiones horizontales (paños). La lista de paños DE ARRIBA HACIA ABAJO, cada uno con su relleno: VIDRIO ' +
+              '(termopanel) o MACHIHEMBRADO (placa de PVC machihembrada, "machiembre"). 2 paños = 1 poste T, 3 paños = 2 postes, ' +
+              'etc. Si el cliente dio el alto de cada paño, mándalo en alto_mm (todos o ninguno). Una puerta toda machihembrada ' +
+              'sin postes es UN paño MACHIHEMBRADO. Si solo dice "con poste T" sin decir el relleno, pregúntele vidrio o machihembrado.',
+            minItems: 1,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                relleno: { type: 'string', enum: ['VIDRIO', 'MACHIHEMBRADO'], description: 'VIDRIO = termopanel · MACHIHEMBRADO = placa de PVC.' },
+                alto_mm: { type: 'number', description: 'Alto de ESTE paño en mm tal como lo dijo el cliente, solo si lo dio (todos o ninguno). El sistema reparte el alto útil de la hoja en esa PROPORCIÓN (el marco, la hoja y cada poste se comen parte del alto) y publica el útil de cada paño.' },
+              },
+              required: ['relleno'],
+            },
+          },
+          divisiones_triangulo: {
+            type: 'integer', enum: [1, 2],
+            description: 'SOLO para tipo TRIANGULAR: 1 = un solo triángulo; 2 = dos triángulos unidos en el vértice (lo usual sobre 2,5 m de base). Si el cliente no lo dijo, NO lo mandes: el sistema decide por el tamaño y lo avisa.',
+          },
           pos: { type: 'integer', description: 'El numero que el CLIENTE le dio a esta ventana en SU lista (1, 2, 3...). Copialo tal cual de lo que el escribio; NO lo renumeres ni lo inventes. Si su lista no venia numerada, NO mandes este campo. Sirve para que el PDF y los informes usen SU numeracion y el pueda casar cada ventana con su pedido.' },
           unidad_confirmada: {
             type: 'string',
@@ -944,8 +983,51 @@ export function textoDeEstaVentana(textoCliente, { medidas_texto = '', ancho_mm,
   return reconocida ? quedan.join('\n') : t;
 }
 
-export function partesParaMotor(partes, orientacion) {
+/**
+ * [2026-10-27] El paño COMPUESTO (anidado) tal como lo manda el LLM —tipo_arriba / tipo_abajo / alto_*— se traduce a
+ * la forma del motor: { tipo: 'COMPUESTA', ancho_mm, partes: [{ tipo, alto_mm }, { tipo, alto_mm }] }. Sin altos, mitad y
+ * mitad del alto común (el motor cede la junta de 2 mm en el de abajo y lo declara). Lo demás viaja tal cual.
+ */
+/**
+ * [Codex r1 #2] Lo que NO se traduce se rechaza con el nombre del campo, antes de inventar nada: una sola altura de
+ * las dos (el 1300 del cliente se perdería en un 50/50), o un paño compuesto sin tipo_arriba/tipo_abajo.
+ * @returns {string|null} el motivo, o null si todo está completo.
+ */
+export function errorPartesAnidadas(partes) {
+  for (const p of (Array.isArray(partes) ? partes : [])) {
+    if (String(p?.tipo || '').toUpperCase() !== 'COMPUESTA') continue;
+    if (!p.tipo_arriba || !p.tipo_abajo) return 'Un paño tipo COMPUESTA necesita tipo_arriba y tipo_abajo (la apertura de cada mitad, como la dijo el cliente). Si no lo dijo, pregúntele.';
+    const a = p.alto_arriba_mm, b = p.alto_abajo_mm;
+    const vA = a !== undefined && a !== null && a !== '', vB = b !== undefined && b !== null && b !== '';
+    if (vA !== vB) return 'Las alturas de las mitades del paño compuesto van las dos o ninguna (alto_arriba_mm y alto_abajo_mm): con una sola no se sabe la otra. Pídale la que falta o no mande ninguna.';
+    if (vA && !(Number(a) > 0 && Number(b) > 0)) return 'alto_arriba_mm y alto_abajo_mm tienen que ser números en mm mayores que 0.';
+  }
+  return null;
+}
+
+export function partesAnidadasParaMotor(partes, altoComun) {
   const ps = Array.isArray(partes) ? partes : [];
+  return ps.map((p) => {
+    if (String(p?.tipo || '').toUpperCase() !== 'COMPUESTA') return p;
+    const arriba = String(p.tipo_arriba || '').toUpperCase();
+    const abajo = String(p.tipo_abajo || '').toUpperCase();
+    const a = Number(p.alto_arriba_mm), b = Number(p.alto_abajo_mm);
+    const alto = Number(altoComun);
+    const conAltos = Number.isFinite(a) && a > 0 && Number.isFinite(b) && b > 0;
+    const mitad = Number.isFinite(alto) && alto > 0 ? Math.round(alto / 2) : undefined;
+    return {
+      tipo: 'COMPUESTA',
+      ancho_mm: p.ancho_mm,
+      partes: [
+        { tipo: arriba || undefined, alto_mm: conAltos ? a : mitad },
+        { tipo: abajo || undefined, alto_mm: conAltos ? b : (mitad !== undefined ? alto - mitad : undefined) },
+      ],
+    };
+  });
+}
+
+export function partesParaMotor(partes, orientacion, altoComun) {
+  const ps = partesAnidadasParaMotor(partes, altoComun);
   if (!ps.length) return undefined;
   const tipos = ps.map((p) => String(p?.tipo || '').toUpperCase());
   // [Codex post-despliegue · P1] EL ORDEN TAMBIÉN ES PARTE DEL DEFAULT: define qué paño abre. El motor arma
@@ -1070,6 +1152,14 @@ export async function runTool(name, input = {}, ctx = {}) {
       }
       const med = esq ? { ok: true, ancho_mm: esq.ancho_max_mm, alto_mm: esq.alto_mm, corregido: false } : med0;
       if (!med.ok) return med; // medidas fuera de rango → el LLM pide confirmación, no cotiza
+      // [2026-10-27 · Codex r1 #2/#3] Lo incompleto se rechaza ACÁ con el nombre del campo, no se degrada a otra ventana.
+      {
+        const _eAn = errorPartesAnidadas(input.partes);
+        if (_eAn) return { ok: false, precio_invalido: true, requiere_revision: true, error: _eAn };
+        if (Array.isArray(input.puerta_panos) && input.puerta_panos.length === 0) {
+          return { ok: false, precio_invalido: true, requiere_revision: true, error: 'puerta_panos vino vacío: mande la lista de paños de arriba hacia abajo (VIDRIO / MACHIHEMBRADO) o no mande el campo si la puerta es lisa.' };
+        }
+      }
       const qty = Math.max(1, Number(input.cantidad) || 1);
       const d = {
         // [2026-07-06 LOTE2] Sufijo "mm": medidas YA resueltas acá → normMeasuresLocal (priceAllEngine)
@@ -1098,9 +1188,12 @@ export async function runTool(name, input = {}, ctx = {}) {
           // (total 2202 ≠ los 2200 que pidio la clienta) y el precio difiere del reparto
           // canonico del dueño (mitad y mitad DEL VANO, acople adentro). Si todos los paños
           // son iguales, eso ES el default del motor: se dejan caer y el motor reparte bien.
-          partes: partesParaMotor(input.partes, input.orientacion),
+          partes: partesParaMotor(input.partes, input.orientacion, med.alto_mm),
           // [2026-08-25] El eje viaja con el item hasta el motor y hasta el dibujo del PDF.
           orientacion: input.orientacion || undefined,
+          // [2026-10-27] Puerta con postes T (paños de arriba hacia abajo) y divisiones del triángulo: tal cual al motor.
+          puerta_panos: Array.isArray(input.puerta_panos) && input.puerta_panos.length ? input.puerta_panos : undefined,
+          divisiones_triangulo: input.divisiones_triangulo !== undefined && input.divisiones_triangulo !== null ? input.divisiones_triangulo : undefined,
           // [2026-09-26 · #947] La ventana en esquina YA ARMADA desde los paños del cliente.
           // El pricer la toma antes que la notacion de tres medidas y antes que la etiqueta.
           // El alto viaja ADENTRO (Codex r2 GRAVE 3): `measures` puede darse vuelta en el pre-pass
@@ -1148,6 +1241,9 @@ export async function runTool(name, input = {}, ctx = {}) {
         glass_label: it.glass_label,
         producto_label: it.producto_label,
         serie: it.serie,
+        // [2026-10-27] La forma que resolvió el motor viaja al pending_quote y al PDF (como `compuesta`).
+        puerta: it.puerta || undefined,
+        triangular: it.triangular || undefined,
         pos: input.pos !== undefined ? Number(input.pos) : undefined,  // [2026-09-19] SU numero, no el del array
         // 🔴 [dueño, 2026-09-19] *"podemos dejarla solo como cotizacion mas economica"* +
         // *"pero indicandole a cliente eso"*. Un monorriel (una hoja que corre + un paño fijo)

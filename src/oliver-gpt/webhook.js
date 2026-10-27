@@ -244,6 +244,7 @@ import { modoInternoOliver, textoCorteVendedor, perfilEquipo } from '../../servi
 import { decidirEntrada, decidirAudio, esArchivoPeligroso } from './ruido.js'; // [#1505 · 13-oct] compuerta de ruido y cuarentena de archivos (decisión pura)
 import { aplicarCompuertaRuido } from './turnoDeterminista.js'; // [#1505] cierre del turno determinista (sin cerebro)
 import { limpiarParaCliente } from '../../services/salidaSegura.js'; // [2026-09-15] embudo único: envío, voz, historia y registro dicen lo mismo
+import { formaParaReCotizar } from './forma-item.js'; // [2026-10-27] postes T y divisiones del triángulo, de vuelta al motor
 
 /* =========================================================================
  * CONFIG
@@ -3469,6 +3470,8 @@ Comuna: ${datos.comuna}`
                   descripcion: x.it.descripcion || '',
                   orientacion: x.it.compuesta?.orientacion || x.it.orientacion || undefined,
                   partes: Array.isArray(x.it.compuesta?.partes) ? x.it.compuesta.partes : undefined,
+                  // [2026-10-27] La forma (postes T de la puerta, divisiones del triángulo) vuelve al motor desde UN solo lugar.
+                  ...formaParaReCotizar(x.it),
                 })),
                 comuna: input.comuna || state.comuna || '',
                 texto_cliente: _textoCliente,
@@ -3524,6 +3527,8 @@ Comuna: ${datos.comuna}`
                     descripcion: it.descripcion || it.ambiente || '',
                     orientacion: it.compuesta?.orientacion || it.orientacion || undefined,
                     partes:      Array.isArray(it.compuesta?.partes) ? it.compuesta.partes : undefined,
+                    // [2026-10-27] La forma (postes T de la puerta, divisiones del triángulo) vuelve al motor desde UN solo lugar.
+                    ...formaParaReCotizar(it),
                     // 🔴 [2026-09-24 · #888] LA ESQUINA VIAJA TAL CUAL A LA SONDA DE COLOR.
                     // Observacion del dueño, y tiene razon: *"solo son materiales distintos,
                     // no medidas; la ventana sigue siendo la misma, asi que deberia ser mas
@@ -5200,6 +5205,8 @@ Comuna: ${datos.comuna}`
                   descripcion: it.descripcion || it.ambiente || '',
                   orientacion: it.compuesta?.orientacion || it.orientacion || undefined,
                   partes:      Array.isArray(it.compuesta?.partes) ? it.compuesta.partes : undefined,
+                  // [2026-10-27] La forma (postes T de la puerta, divisiones del triángulo) vuelve al motor desde UN solo lugar.
+                  ...formaParaReCotizar(it),
                 })),
                 comuna: input.comuna || state.comuna || '',
                 texto_cliente: _textoCliente,

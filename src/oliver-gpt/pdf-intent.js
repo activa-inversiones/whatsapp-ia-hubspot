@@ -60,6 +60,8 @@ export function itemsFromQuoteCalls(toolCalls, defaultColor) {
         // esto el PDF determinista dibujaba la compuesta como un paño (0358 de Paula) y toda
         // corredera con el grueso por defecto.
         compuesta: t.result.compuesta || undefined,
+        puerta: t.result.puerta || undefined,         // [2026-10-27] postes T y relleno por paño → dibujo
+        triangular: t.result.triangular || undefined, // [2026-10-27] lados y divisiones → dibujo
         hoja_mm: (String(t.result.producto_label || '').match(/H(\d{2,3})/i) || [])[1]
           ? Number(String(t.result.producto_label || '').match(/H(\d{2,3})/i)[1]) : undefined,
         // [2026-09-19] El numero que le puso el CLIENTE. Sin esto el PDF renumera y su N.14

@@ -341,6 +341,51 @@ export function dibujarVentanaIso(doc, caja, it) {
     const arr = Math.abs(m.y - _ext.y) <= T, aba = Math.abs(m.y + m.h - _ext.y2) <= T;
     return { ni: izq && arr, nd: der && arr, si: izq && aba, sd: der && aba };
   };
+  // ── TRIANGULAR: los triángulos se extruyen igual que un marco (fuga arriba-derecha) ──
+  // [2026-10-27] El plano trae `triangulo.panos` (exterior / interior / junquillo / vidrio) y
+  // `marcos` vacío: acá se le da volumen. Por cada paño: la cara trasera (el triángulo corrido
+  // por la fuga), las caras laterales de los lados que miran arriba o a la derecha, y encima
+  // la cara frontal con su cristal, como en el muestrario de la ventana rectangular.
+  if (p.triangulo) {
+    const mover = (pts) => pts.map((q) => [q.x + fuga.dx, q.y + fuga.dy]);
+    const aPts = (pts) => pts.map((q) => [q.x, q.y]);
+    for (const t of p.triangulo.panos) {
+      const ext = t.exterior;
+      poligono(doc, mover(ext), oscuro, p.color.e);
+      for (let i = 0; i < 3; i += 1) {
+        const a = ext[i], b = ext[(i + 1) % 3];
+        // Un lado se ve de canto si su normal exterior apunta hacia la fuga (arriba o derecha).
+        const cx = (ext[0].x + ext[1].x + ext[2].x) / 3, cy = (ext[0].y + ext[1].y + ext[2].y) / 3;
+        const nx = (a.y - b.y), ny = (b.x - a.x);
+        const hacia = ((a.x + b.x) / 2 - cx) * nx + ((a.y + b.y) / 2 - cy) * ny > 0 ? 1 : -1;
+        if (hacia * nx * fuga.dx + hacia * ny * fuga.dy > 0) {
+          poligono(doc, [[a.x, a.y], [b.x, b.y], [b.x + fuga.dx, b.y + fuga.dy], [a.x + fuga.dx, a.y + fuga.dy]], ny * hacia < 0 ? claro : oscuro, p.color.e);
+        }
+      }
+      poligono(doc, aPts(ext), p.color.f, p.color.e);
+      doc.polygon(...aPts(t.interior)).lineWidth(0.4).stroke(p.color.e);
+      doc.polygon(...aPts(t.junquillo)).lineWidth(0.3).stroke(p.color.e);
+      doc.polygon(...aPts(t.vidrio)).lineWidth(0.35).fillAndStroke(p.vidrio, p.color.e);
+      // Reflejo recortado al cristal, como en el rectángulo.
+      doc.save();
+      doc.polygon(...aPts(t.vidrio)).clip();
+      const bx = Math.min(...t.vidrio.map((q) => q.x)), bx2 = Math.max(...t.vidrio.map((q) => q.x));
+      const by = Math.min(...t.vidrio.map((q) => q.y)), by2 = Math.max(...t.vidrio.map((q) => q.y));
+      const a2 = (bx2 - bx) * 0.3;
+      doc.fillOpacity(0.45).fillColor('#FFFFFF');
+      doc.polygon([bx, by2], [bx + a2 * 0.4, by], [bx + a2, by], [bx + a2 * 0.6, by2]).fill();
+      doc.restore();
+      const c = t.centro;
+      doc.fillColor('#44515E').font('Helvetica-Bold').fontSize(5.6)
+         .text(t.rotulo, c.x - 20, c.y + 2, { width: 40, align: 'center', lineBreak: false });
+    }
+    const ac = p.triangulo.acople;
+    if (ac) {
+      doc.save().lineWidth(Math.max(0.6, ac.ancho)).strokeColor(p.color.e)
+         .moveTo(ac.x, ac.y1).lineTo(ac.x, ac.y2).stroke().restore();
+    }
+  }
+
   for (const m of marcos) {
     doc.rect(m.x, m.y, m.w, m.h).lineWidth(0.6).fillAndStroke(p.color.f, p.color.e);
     // La folia de la cara frontal: misma textura y brillo que el plano 2D (muestrario 26-ago).
@@ -380,7 +425,32 @@ export function dibujarVentanaIso(doc, caja, it) {
     if (j && j.w > 0 && j.h > 0) doc.rect(j.x, j.y, j.w, j.h).lineWidth(0.3).stroke(p.color.e);
 
     const v = hoja.vidrioRect;
-    if (v.w > 0 && v.h > 0) {
+    if (hoja.panosPuerta) {
+      // [2026-10-27] PUERTA CON POSTES T: cada paño con su relleno. El vidrio lleva su reflejo recortado a la
+      // celda; la placa machihembrada va en el color del perfil, con las tablas rayadas; el poste T, como un
+      // travesaño del mismo perfil (misma folia que el bastidor).
+      for (const c of hoja.panosPuerta.celdas) {
+        if (c.relleno === 'VIDRIO') {
+          doc.rect(c.x, c.y, c.w, c.h).lineWidth(0.35).fillAndStroke(p.vidrio, p.color.e);
+          doc.save();
+          doc.rect(c.x, c.y, c.w, c.h).clip();
+          doc.fillOpacity(0.5).fillColor('#FFFFFF');
+          const a = c.w * 0.42;
+          doc.polygon([c.x - a, c.y + c.h], [c.x + a * 0.15, c.y], [c.x + a * 0.75, c.y], [c.x - a + a * 0.6, c.y + c.h]).fill();
+          doc.restore();
+        } else {
+          doc.rect(c.x, c.y, c.w, c.h).lineWidth(0.35).fillAndStroke(p.color.f, p.color.e);
+          const paso = Math.max(2.2, c.w / 9);
+          doc.save().lineWidth(0.3).strokeColor(p.color.e);
+          for (let xx = c.x + paso; xx < c.x + c.w - 0.5; xx += paso) doc.moveTo(xx, c.y).lineTo(xx, c.y + c.h).stroke();
+          doc.restore();
+        }
+      }
+      for (const t of hoja.panosPuerta.postes) {
+        doc.rect(t.x, t.y, t.w, t.h).lineWidth(0.35).fillAndStroke(p.color.f, p.color.e);
+        pintarTexturaPerfil(doc, t, t.h, p.color);
+      }
+    } else if (v.w > 0 && v.h > 0) {
       doc.rect(v.x, v.y, v.w, v.h).lineWidth(0.35).fillAndStroke(p.vidrio, p.color.e);
       // Reflejo: dos franjas diagonales, que es como se lee un vidrio en un render. Van
       // RECORTADAS al vidrio (`clip`) para que no se derramen sobre el marco.

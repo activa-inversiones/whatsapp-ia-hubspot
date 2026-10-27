@@ -274,6 +274,9 @@ function tipoDe(it) {
   // *"PUSISTE LA FORMA DE PROYECTANTE DEBE SER LA FIGURA DE CORREDERA"*.
   if (esMonorriel(it)) return "CORREDERA";
   if (p.includes("COMPUESTA")) return "COMPUESTA";
+  // [2026-10-27] El fijo triangular («Fijo triangular S60 · base 4500 × alto 1330 mm, 2 paños») contiene «FIJO»:
+  // va antes de la rama que lo mandaría al rectángulo.
+  if (p.includes("TRIANGULAR")) return "TRIANGULAR";
   if (p.includes("PUERTA")) return p.includes("DOBLE") || p.includes("2H") ? "PUERTA_DOBLE" : "PUERTA";
   if (p.includes("CORREDERA") || p.includes("SLIDING")) return "CORREDERA";
   if (p.includes("OSCILO")) return "OSCILOBATIENTE";
@@ -564,6 +567,41 @@ function rectJunquillo(v, j) {
 
 // El tipo de UN paño de la compuesta (lo que devuelve el motor en compuesta.partes[].tipo).
 // FIJA/PROYECTANTE/BATIENTE/OSCILOBATIENTE — los cuatro que el motor acepta como paño.
+// ── Geometría del triángulo (fijo triangular) ───────────────────────────────
+/** El triángulo `pts` encogido `inset` px hacia su incentro (el marco y el junquillo de tres lados). */
+function triInterior(pts, inset) {
+  const [A, B, C] = pts;
+  const d = (P, Q) => Math.hypot(P.x - Q.x, P.y - Q.y);
+  const a = d(B, C), b = d(A, C), c = d(A, B);
+  const per = a + b + c;
+  if (!(per > 0)) return pts.map((p) => ({ ...p }));
+  const I = { x: (a * A.x + b * B.x + c * C.x) / per, y: (a * A.y + b * B.y + c * C.y) / per };
+  const s = per / 2;
+  const area = Math.sqrt(Math.max(0, s * (s - a) * (s - b) * (s - c)));
+  const r = area / s;
+  const f = r > 0 ? Math.max(0.05, (r - inset) / r) : 1;
+  return pts.map((p) => ({ x: I.x + (p.x - I.x) * f, y: I.y + (p.y - I.y) * f }));
+}
+function triCentro(pts) {
+  return { x: (pts[0].x + pts[1].x + pts[2].x) / 3, y: (pts[0].y + pts[1].y + pts[2].y) / 3 };
+}
+
+/**
+ * [2026-10-27] Los paños de una PUERTA con postes T: del motor (`it.puerta.panos`, con su alto útil) o, como
+ * última red, del label («· 2 paños (1 poste T): vidrio / machihembrado»). Devuelve null si la puerta es lisa.
+ */
+export function panosPuertaDe(it) {
+  const del = Array.isArray(it?.puerta?.panos) ? it.puerta.panos : null;
+  if (del && del.length) {
+    return del.map((p) => ({ relleno: /MACHI/i.test(String(p.relleno)) ? "MACHIHEMBRADO" : "VIDRIO", peso: Number(p.alto_util_mm) || Number(p.alto_mm) || 1 }));
+  }
+  const label = `${String(it?.producto_label || "")} ${String(it?.product || "")}`;
+  const m = /\d+\s*pa[ñn]os?[^:]*:\s*((?:vidrio|machihembrado)(?:\s*\/\s*(?:vidrio|machihembrado))*)/i.exec(label);
+  if (!m) return null;
+  return m[1].split("/").map((s) => ({ relleno: /machi/i.test(s) ? "MACHIHEMBRADO" : "VIDRIO", peso: 1 }));
+}
+const POSTE_T_MM = 60;
+
 function tipoDeParte(t) {
   const s = String(t || "").toUpperCase();
   if (s.includes("OSCILO")) return "OSCILOBATIENTE";
@@ -1081,6 +1119,40 @@ function planoDeVentana(it, caja) {
   const intX = x + marco, intY = y + marco;
   const intW = Math.max(1, w - 2 * marco), intH = Math.max(1, h - 2 * marco);
 
+  // ── TRIANGULAR: UNO O DOS TRIÁNGULOS FIJOS, UNIDOS EN EL VÉRTICE POR EL ACOPLE ──────────
+  // [2026-10-27] Como lo dibujó el dueño en Winart (v73315, elemento 377304): dos triángulos
+  // rectángulos espejados, cada uno con su marco de tres lados y su cristal, y entre ellos el
+  // acople mini. El motor manda `triangular` (base, alto, divisiones); si no vino, se lee del label.
+  if (tipo === "TRIANGULAR") {
+    const divs = Number(it?.triangular?.divisiones)
+      || (/(\d)\s*pa[ñn]os?/i.exec(String(it?.producto_label || it?.product || "")) || [])[1]
+      || (ancho > 2500 ? 2 : 1);
+    const divisiones = Number(divs) === 2 ? 2 : 1;
+    const apex = { x: x + w / 2, y };
+    const triangulos = divisiones === 2
+      ? [[{ x, y: y + h }, apex, { x: x + w / 2, y: y + h }], [apex, { x: x + w, y: y + h }, { x: x + w / 2, y: y + h }]]
+      : [[{ x, y: y + h }, apex, { x: x + w, y: y + h }]];
+    const marcoT = marcoDe("FIJA");
+    const panos = triangulos.map((pts, i) => {
+      const vidrio = triInterior(pts, marcoT + junquillo);
+      return {
+        idx: i, exterior: pts, interior: triInterior(pts, marcoT), junquillo: vidrio, vidrio,
+        rotulo: `F${i + 1}`, centro: triCentro(vidrio),
+      };
+    });
+    return {
+      tipo, ancho, alto, escala, color, vidrio, glassCode: codigoVidrio(it),
+      cotas: cotasDe({ x, y, w, h, ancho, alto }),
+      // El rectángulo envolvente: de ahí salen las cotas (base y alto del vértice). No se pinta como marco.
+      marcoRect: { x, y, w, h },
+      marcos: [],
+      marco: marcoT, perfilHoja, junquillo, hojas: [],
+      triangulo: { divisiones, panos, acople: divisiones === 2 ? { x: x + w / 2, y1: y, y2: y + h, ancho: Math.max(1, 2 * escala) } : null },
+      etiqueta: `${ancho}×${alto} mm`,
+      etiquetaVidrio: etiquetaVidrioDe(it),
+    };
+  }
+
   // ── ESQUINA / BOW WINDOW: N VENTANAS UNIDAS POR UN CONECTOR ─────────────────
   // 🔴 [2026-09-24 · #883] Pedido del dueño sobre la bow window que estaba cotizando. Hasta
   // hoy el motor la COTIZABA (#722, #882) y el PDF no la dibujaba: salia partida en ventanas
@@ -1245,48 +1317,80 @@ function planoDeVentana(it, caja) {
     // todas las compuestas hasta hoy: una cotizacion vieja no cambia de dibujo.
     const esVertical = String(it?.compuesta?.orientacion || '').toLowerCase() === 'vertical';
     const marcosC = repartirPorPartes(x, y, w, h, partes, acople, esVertical);
-    const hojasC = marcosC.map((r, i) => {
-      const tp = tipoDeParte(partes[i].tipo);
-      // Cada paño tiene su PROPIO marco de los 4 lados: la hoja arranca adentro de él.
-      // Cada paño es una ventana completa y lleva SU marco: 48 mm el fijo, 40 mm el que abre.
-      const marcoP = marcoDe(tp);
-      const mx = Math.min(marcoP, r.w / 3), my = Math.min(marcoP, r.h / 3);
-      const hoja = {
-        x: r.x + mx, y: r.y + my,
-        w: Math.max(0.5, r.w - 2 * mx), h: Math.max(0.5, r.h - 2 * my),
-        idx: i,
-      };
-      // Un FIJO no tiene bastidor: el vidrio se apoya en el marco con el junquillo. Un paño
-      // que ABRE si lleva su hoja, y adentro de ella el junquillo.
-      const perfil = tp === "FIJA" ? junquillo : perfilHoja;
-      const insetX = Math.min(perfil, hoja.w / 3);
-      const insetY = Math.min(perfil, hoja.h / 3);
-      const vidrioRect = {
-        x: hoja.x + insetX, y: hoja.y + insetY,
-        w: Math.max(0, hoja.w - 2 * insetX), h: Math.max(0, hoja.h - 2 * insetY),
-      };
-      return {
-        ...hoja, vidrioRect, junquilloRect: rectJunquillo(vidrioRect, Math.min(junquillo, insetX, insetY)),
-        manoDerecha: true, tipo: tp,
-        // `sinBastidor` le dice al pintado que NO trace el rectangulo de la hoja: en el plano
-        // real ese contorno no existe, y dibujarlo hace parecer que el fijo tambien abre.
-        sinBastidor: tp === "FIJA",
-        // Un paño FIJO no lleva símbolo: es justamente lo que lo distingue del que abre.
-        simbolo: tp === "FIJA" ? [] : simboloApertura(tp, vidrioRect, true),
-        // 🔴 [2026-09-11] En una compuesta la flecha estaba clavada en 0, asi que un paño
-        // CORREDERA quedaba sin la unica señal que dice hacia donde corre. `simboloApertura`
-        // ya devuelve [] para CORREDERA (no lleva diagonales): sin flecha no llevaba NADA.
-        // La corredera de una compuesta corre hacia el paño fijo, que es el que tiene al lado.
-        flecha: tp === "CORREDERA" ? (i === 0 ? 1 : -1) : 0,
-      };
+    // [2026-10-27] UN PAÑO PUEDE SER A SU VEZ UNA COMPUESTA (anidada, un nivel): la ventana del
+    // dueño en Winart v73315 — [proyectante 1300 arriba + fijo 800 abajo] 600 + fijo 1100. Ese paño
+    // se reparte POR DENTRO de su rectángulo en el otro eje, con la misma función y el mismo acople
+    // de 2 mm: son tres marcos completos unidos por acoples, igual que lo arma la fábrica. Es el
+    // mismo camino que ya usa la esquina (#947) para su lateral compuesto.
+    const hojasC = [];
+    const marcosPub = [];
+    const tiposC = [];
+    marcosC.forEach((r, i) => {
+      const sub = (Array.isArray(partes[i]?.compuesta?.partes) && partes[i].compuesta.partes.length >= 2)
+        ? partes[i].compuesta.partes
+        : (/^compuest/i.test(String(partes[i]?.tipo || "")) && Array.isArray(partes[i]?.partes) && partes[i].partes.length >= 2
+          ? partes[i].partes : null);
+      const celdas = sub ? repartirPorPartes(r.x, r.y, r.w, r.h, sub, acople, !esVertical) : [{ ...r, idx: 0 }];
+      const tiposCelda = sub ? sub.map((pt) => tipoDeParte(pt.tipo)) : [tipoDeParte(partes[i].tipo)];
+      celdas.forEach((c, j) => {
+        const tp = tiposCelda[j];
+        // Cada paño tiene su PROPIO marco de los 4 lados: la hoja arranca adentro de él.
+        // Cada paño es una ventana completa y lleva SU marco: 48 mm el fijo, 40 mm el que abre.
+        const marcoP = marcoDe(tp);
+        const mx = Math.min(marcoP, c.w / 3), my = Math.min(marcoP, c.h / 3);
+        const hoja = {
+          x: c.x + mx, y: c.y + my,
+          w: Math.max(0.5, c.w - 2 * mx), h: Math.max(0.5, c.h - 2 * my),
+          idx: hojasC.length,
+        };
+        // Un FIJO no tiene bastidor: el vidrio se apoya en el marco con el junquillo. Un paño
+        // que ABRE si lleva su hoja, y adentro de ella el junquillo.
+        const perfil = tp === "FIJA" ? junquillo : perfilHoja;
+        const insetX = Math.min(perfil, hoja.w / 3);
+        const insetY = Math.min(perfil, hoja.h / 3);
+        const vidrioRect = {
+          x: hoja.x + insetX, y: hoja.y + insetY,
+          w: Math.max(0, hoja.w - 2 * insetX), h: Math.max(0, hoja.h - 2 * insetY),
+        };
+        hojasC.push({
+          ...hoja, vidrioRect, junquilloRect: rectJunquillo(vidrioRect, Math.min(junquillo, insetX, insetY)),
+          manoDerecha: true, tipo: tp,
+          // `sinBastidor` le dice al pintado que NO trace el rectangulo de la hoja: en el plano
+          // real ese contorno no existe, y dibujarlo hace parecer que el fijo tambien abre.
+          sinBastidor: tp === "FIJA",
+          // Un paño FIJO no lleva símbolo: es justamente lo que lo distingue del que abre.
+          simbolo: tp === "FIJA" ? [] : simboloApertura(tp, vidrioRect, true),
+          // 🔴 [2026-09-11] En una compuesta la flecha estaba clavada en 0, asi que un paño
+          // CORREDERA quedaba sin la unica señal que dice hacia donde corre. `simboloApertura`
+          // ya devuelve [] para CORREDERA (no lleva diagonales): sin flecha no llevaba NADA.
+          // La corredera de una compuesta corre hacia el paño fijo, que es el que tiene al lado.
+          flecha: tp === "CORREDERA" ? (i === 0 ? 1 : -1) : 0,
+          pano: i,
+        });
+        marcosPub.push({ x: c.x, y: c.y, w: c.w, h: c.h, marco: marcoP, pano: i });
+        tiposC.push(tp);
+      });
     });
-    const tiposC = partes.map((pt) => tipoDeParte(pt.tipo));
     const rotulosC = etiquetasDePanos(tiposC);
     hojasC.forEach((hj, i) => { hj.rotulo = rotulosC[i]; hj.manilla = manillaDe(hj, escala); });
-    const marcosPub = marcosC.map((r, i) => ({ x: r.x, y: r.y, w: r.w, h: r.h, marco: marcoDe(tiposC[i]) }));
     return {
       tipo, ancho, alto, escala, color, vidrio, glassCode: codigoVidrio(it),
-      cotas: cotasDe({ x, y, w, h, ancho, alto, marcos: marcosPub, partes, vertical: esVertical }),
+      // Las cotas de la fila interior son POR PAÑO (no por celda); las mitades de un paño anidado se
+      // acotan en el otro eje, pegadas a su celda, para que el cliente vea el 1300 y el 800 de su pedido.
+      cotas: [
+        ...cotasDe({ x, y, w, h, ancho, alto, marcos: marcosC.map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h })), partes, vertical: esVertical }),
+        ...marcosPub.flatMap((m, k) => {
+          const pt = partes[m.pano];
+          const sub = pt?.compuesta?.partes || (Array.isArray(pt?.partes) ? pt.partes : null);
+          if (!sub || sub.length < 2) return [];
+          const j = marcosPub.slice(0, k).filter((q) => q.pano === m.pano).length;
+          const mm = Math.round(Number(esVertical ? sub[j]?.ancho_mm : sub[j]?.alto_mm) || 0);
+          if (!mm) return [];
+          return [esVertical
+            ? { lado: "sup", desde: m.x, hasta: m.x + m.w, fila: 0, texto: String(mm) }
+            : { lado: "izq", desde: m.y, hasta: m.y + m.h, fila: 0, texto: String(mm) }];
+        }),
+      ],
       // Sin marco exterior único: `marcos` son los marcos completos, uno por paño.
       marcoRect: null,
       // Cada marco viaja con su propio grosor: lo usa el pintado para el inglete.
@@ -1437,6 +1541,30 @@ function planoDeVentana(it, caja) {
   // medio es F1 y los laterales A1/A2, igual que los rotula Winart.
   const rotulos = etiquetasDePanos(hojas.map((hj) => hj.tipo || tipo));
   hojas.forEach((hj, i) => { hj.tipo = hj.tipo || tipo; hj.rotulo = rotulos[i]; hj.manilla = manillaDe(hj, escala); });
+  // ── PUERTA CON POSTES T: la hoja se parte en paños horizontales (vidrio o placa machihembrada) ──
+  // [2026-10-27] Como la dibujó el dueño en Winart (v73315, «puerta machiembre»): la hoja de siempre, con
+  // un travesaño (poste T) entre paño y paño y las placas machihembradas rayadas. Los paños se reparten
+  // sobre el vidrio de la hoja según el alto útil que calculó el motor; cada poste ocupa 60 mm a escala.
+  const panosP = (tipo === "PUERTA" && hojas.length === 1) ? panosPuertaDe(it) : null;
+  if (panosP && panosP.length >= 1) {
+    const v = hojas[0].vidrioRect;
+    const nP = panosP.length;
+    const poste = nP > 1 ? Math.min(Math.max(1.2, POSTE_T_MM * escala), v.h / (2 * nP)) : 0;
+    const libre = Math.max(0, v.h - poste * (nP - 1));
+    const pesos = panosP.map((p) => Math.max(0.01, p.peso));
+    const suma = pesos.reduce((a, b) => a + b, 0);
+    let cy = v.y;
+    const celdas = panosP.map((p, k) => {
+      const hh = libre * (pesos[k] / suma);
+      const celda = { x: v.x, y: cy, w: v.w, h: hh, relleno: p.relleno };
+      cy += hh + poste;
+      return celda;
+    });
+    const postes = celdas.slice(0, -1).map((c) => ({ x: v.x, y: c.y + c.h, w: v.w, h: poste }));
+    hojas[0].panosPuerta = { celdas, postes };
+    // Las placas machihembradas no se simbolizan como vidrio que abre: el arco de apertura se mantiene
+    // (la puerta sigue abriendo), pero el código del vidrio solo va en los paños de vidrio.
+  }
   // Recien ahora se ordena para pintar: primero las del riel de ATRAS. Al reves, la de atras
   // taparia a la de adelante justo en el traslape y se veria como no esta armada la ventana.
   if (corre) hojas.sort((a, b) => (a.riel || 0) - (b.riel || 0));
@@ -1495,6 +1623,36 @@ function dibujarVentana(doc, caja, it) {
   }
   doc.restore();
 
+  // ── TRIANGULAR: se pinta aparte (no hay rectángulos de marco ni hojas) ──────
+  if (p.triangulo) {
+    const poly = (pts) => doc.polygon(...pts.map((q) => [q.x, q.y]));
+    for (const t of p.triangulo.panos) {
+      poly(t.exterior).lineWidth(0.7).fillAndStroke(p.color.f, p.color.e);
+      poly(t.interior).lineWidth(0.45).stroke(p.color.e);          // borde interior del marco
+      poly(t.junquillo).lineWidth(0.35).stroke(p.color.e);         // el junquillo
+      poly(t.vidrio).lineWidth(0.4).fillAndStroke(p.vidrio, p.color.e);
+      // Rótulo F1/F2 y el código del vidrio, en el centro del cristal.
+      const c = t.centro;
+      const hayCodigo = !!p.glassCode;
+      doc.fillColor("#44515E").font("Helvetica-Bold").fontSize(5.6)
+         .text(t.rotulo, c.x - 20, c.y - (hayCodigo ? 6 : 3), { width: 40, align: "center" });
+      if (hayCodigo) {
+        doc.font("Helvetica").fontSize(4.6).fillColor("#6B7B8D")
+           .text(p.glassCode, c.x - 24, c.y + 0.4, { width: 48, align: "center" });
+      }
+    }
+    // El acople del vértice: la junta vertical entre los dos triángulos.
+    const a = p.triangulo.acople;
+    if (a) {
+      doc.save().lineWidth(Math.max(0.5, a.ancho)).strokeColor(p.color.e)
+         .moveTo(a.x, a.y1).lineTo(a.x, a.y2).stroke().restore();
+    }
+    doc.fillColor("#6B7B8D").fontSize(6.5).font("Helvetica")
+       .text(p.etiqueta, caja.x, caja.y + caja.h - 8, { width: caja.w, align: "center" });
+    doc.restore();
+    return p;
+  }
+
   // Marco(s) exterior(es). La compuesta trae UNO POR PAÑO (son ventanas acopladas, no
   // una ventana dividida); el resto de los tipos, uno solo.
   for (const m of (p.marcos || [p.marcoRect])) {
@@ -1533,7 +1691,26 @@ function dibujarVentana(doc, caja, it) {
       doc.rect(j.x, j.y, j.w, j.h).lineWidth(0.35).stroke(p.color.e);
     }
     const v = hoja.vidrioRect;
-    doc.rect(v.x, v.y, v.w, v.h).lineWidth(0.4).fillAndStroke(p.vidrio, p.color.e);
+    if (hoja.panosPuerta) {
+      // [2026-10-27] PUERTA CON POSTES T: cada paño con su relleno. El vidrio como siempre; la placa
+      // machihembrada en el color del perfil con las tablas rayadas (así se lee «machiembre» en el plano).
+      for (const c of hoja.panosPuerta.celdas) {
+        if (c.relleno === "VIDRIO") {
+          doc.rect(c.x, c.y, c.w, c.h).lineWidth(0.4).fillAndStroke(p.vidrio, p.color.e);
+        } else {
+          doc.rect(c.x, c.y, c.w, c.h).lineWidth(0.4).fillAndStroke(p.color.f, p.color.e);
+          const paso = Math.max(2.2, c.w / 9);
+          doc.save().lineWidth(0.3).strokeColor(p.color.e);
+          for (let xx = c.x + paso; xx < c.x + c.w - 0.5; xx += paso) doc.moveTo(xx, c.y).lineTo(xx, c.y + c.h).stroke();
+          doc.restore();
+        }
+      }
+      for (const t of hoja.panosPuerta.postes) {
+        doc.rect(t.x, t.y, t.w, t.h).lineWidth(0.4).fillAndStroke(p.color.f, p.color.e);
+      }
+    } else {
+      doc.rect(v.x, v.y, v.w, v.h).lineWidth(0.4).fillAndStroke(p.vidrio, p.color.e);
+    }
 
     // Diagonales de apertura, en trazo discontinuo como en plano.
     if (hoja.simbolo.length) {

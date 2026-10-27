@@ -56,6 +56,7 @@ import { stripMontos, stripAccionesFalsas, quoteDataComplete, itemsParaPropuesta
 import { escalationMessage, isEscalationRequest, sendEscalationTemplate } from './escalation.js';
 import { crearCanalesAvisoVidrio, almacenDeAvisos } from './canalesAvisoVidrio.js'; // [2026-10-05 r8] los tres canales del aviso por satén perdido (la MISMA fábrica que WhatsApp)
 import { FOLIO_REUSO_MS } from '../../services/folioReuso.js'; // cuánto vive un folio reusado: UNA constante para los dos canales
+import { formaParaReCotizar } from './forma-item.js'; // [2026-10-27] postes T y divisiones del triángulo, de vuelta al motor
 
 /* =========================================================================
  * ESTADO IN-MEMORY (piloto) — por canal+sender.
@@ -644,6 +645,8 @@ export async function handleChannelTurn(
                   descripcion: it.descripcion || it.ambiente || '',
                   orientacion: it.compuesta?.orientacion || it.orientacion || undefined,
                   partes:      Array.isArray(it.compuesta?.partes) ? it.compuesta.partes : undefined,
+                  // [2026-10-27] La forma (postes T de la puerta, divisiones del triángulo) vuelve al motor desde UN solo lugar.
+                  ...formaParaReCotizar(it),
                 })),
                 comuna: input.comuna || state.comuna || '',
                 texto_cliente: _textoCliente,
@@ -698,6 +701,8 @@ export async function handleChannelTurn(
                     descripcion: it.descripcion || it.ambiente || '',
                     orientacion: it.compuesta?.orientacion || it.orientacion || undefined,
                     partes:      Array.isArray(it.compuesta?.partes) ? it.compuesta.partes : undefined,
+                    // [2026-10-27] La forma (postes T de la puerta, divisiones del triángulo) vuelve al motor desde UN solo lugar.
+                    ...formaParaReCotizar(it),
                   })),
                   comuna: input.comuna || state.comuna || '',
                   texto_cliente: _textoCliente,
@@ -937,6 +942,8 @@ export async function handleChannelTurn(
                     descripcion: it.descripcion || it.ambiente || '',
                     orientacion: it.compuesta?.orientacion || it.orientacion || undefined,
                     partes:      Array.isArray(it.compuesta?.partes) ? it.compuesta.partes : undefined,
+                    // [2026-10-27] La forma (postes T de la puerta, divisiones del triángulo) vuelve al motor desde UN solo lugar.
+                    ...formaParaReCotizar(it),
                   })),
                   comuna: clientComuna,
                   texto_cliente: _textoCliente,

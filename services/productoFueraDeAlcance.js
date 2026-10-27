@@ -41,7 +41,9 @@ function quitarMencionesNegadas(texto) {
 // [Ronda 3.1] + puertas?: una "puerta redonda"/"puerta en forma de arco" es forma
 // irregular (S60_FORMAS) — fuera de alcance aunque las puertas abatibles ya se coticen.
 const NOUN_VENTANA = '(?:ventanas?|ventanal(?:es)?|puertas?|panos?|vanos?|tragaluces?)';
-const FORMA_IRREG = '(?:circular(?:es)?|redond[ao]s?|ovalad[ao]s?|hexagonal(?:es)?|octogonal(?:es)?|triangular(?:es)?|semicircular(?:es)?|arcos?)';
+// [2026-10-27] «triangular» SALE de la lista: el fijo triangular ya se cotiza (motor TRIANGULAR, calibrado contra
+// Winart v73315 del dueño). Lo detecta enginePricer y viaja como apertura TRIANGULAR; no escala.
+const FORMA_IRREG = '(?:circular(?:es)?|redond[ao]s?|ovalad[ao]s?|hexagonal(?:es)?|octogonal(?:es)?|semicircular(?:es)?|arcos?)';
 // [Ronda 2.3 — Codex] Heurística clave: SIN artículos en los conectores. Un artículo antes
 // de la forma ("con EL arco decorativo") señala que la forma es un OBJETO de la escena, no
 // el adjetivo de la ventana pedida — eso separa "con forma de arco" (producto, escala) de
@@ -118,6 +120,13 @@ export function detectarProductoFueraDeAlcance(textoCliente, normalizados = {}) 
   // de un arco decorativo" escalaba una ventana cotizable (falso positivo de la revisión
   // cruzada). "ventana redonda" y "una ventana que sea redonda" siguen detectando.
   if (/\bformas?\s+irregulares?\b/.test(textoDetectable) || FORMA_CERCA_RE.test(textoDetectable)) {
+    return resultado('forma_irregular');
+  }
+  // [2026-10-27 · Codex r1 #4] Lo que se midió es el FIJO triangular. Una «puerta triangular» o una «corredera
+  // triangular» no existen en el motor: siguen siendo forma irregular (escalan a Marcelo), no se cotizan como fijo.
+  // Solo PEGADOS («puerta triangular», «ventana triangular corredera»): «reemplazar la triangular por una puerta» o
+  // «proyectante, sin triángulo» no son un producto triangular que abre.
+  if (/\b(?:puertas?|correderas?|corredizas?|deslizantes?|proyectantes?|batientes?|abatibles?|oscilobatientes?)\s+(?:(?:de\s+)?forma\s+)?(?:triangular(?:es)?|tri[aá]ngulos?)\b|\b(?:triangular(?:es)?|tri[aá]ngulos?)\s+(?:y\s+)?(?:puertas?|correderas?|corredizas?|deslizantes?|proyectantes?|batientes?|abatibles?|oscilobatientes?)\b/.test(textoDetectable)) {
     return resultado('forma_irregular');
   }
 

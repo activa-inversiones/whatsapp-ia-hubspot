@@ -41,6 +41,10 @@ export const APERTURAS = Object.freeze([
   'PUERTA',           // abatible exterior con zapata, 1 hoja (default del motor)
   'PUERTA_INTERIOR',  // abatible interior, 1 hoja
   'PUERTA_DOBLE',     // abatible 2 hojas con zapata
+  // [2026-10-27] Fijo TRIANGULAR (hastial): el motor lo cotiza calibrado contra Winart v73315 (proyecto 61767 del
+  // dueño: 4500 de base × 1330 de alto, dos triángulos + acople). Hasta hoy escalaba como «forma irregular» y
+  // los clientes reclamaban. ancho_mm = BASE, alto_mm = ALTURA del vértice.
+  'TRIANGULAR',
 ]);
 
 // 🔴 [2026-09-24 · #884] LO QUE EL MOTOR ACEPTA ES MAS QUE LO QUE EL LLM PUEDE PEDIR, y la
@@ -190,7 +194,7 @@ function normalizeColor(c) {
  */
 export async function calcularCotizacion(params = {}) {
   const { tipo, ancho_mm, alto_mm, glass_id, serie, color, comuna, cantidad, hojas, partes, orientacion,
-    riel, activos, hojas_fijas, angulo } = params;
+    riel, activos, hojas_fijas, angulo, panos, divisiones } = params;
   const fueraDeAlcance = detectarProductoFueraDeAlcance('', { tipo, serie, riel });  // [2026-09-19] el riel decide si un ANDES es el monorriel calibrado
   if (fueraDeAlcance.fueraDeAlcance) {
     throw new EngineError(fueraDeAlcance.razon, { body: fueraDeAlcance });
@@ -246,6 +250,11 @@ export async function calcularCotizacion(params = {}) {
   // [#1519 · Codex r2 #3] Viaja TAL CUAL: Number('dos') = NaN se serializaba como null y el motor lo leía
   // como «sin fijas» (cotizaba todas móviles en silencio). El motor valida estricto y rechaza con su motivo.
   if (hojas_fijas !== undefined && hojas_fijas !== null) payload.hojas_fijas = hojas_fijas;
+  // [2026-10-27] QUINTA VEZ QUE SE EXTIENDE ESTA LISTA BLANCA, Y ESTA VEZ SE EXTIENDE JUNTO CON EL PRICER.
+  // `panos`: los paños de una puerta con postes T (relleno vidrio / machihembrado), tal cual: el motor valida.
+  // `divisiones`: 1 ó 2 triángulos del fijo triangular. Sin ellos la puerta saldría lisa y el triángulo con el default.
+  if (Array.isArray(panos) && panos.length) payload.panos = panos;
+  if (divisiones !== undefined && divisiones !== null) payload.divisiones = divisiones;
   if (color !== undefined) payload.color = normalizeColor(color);
   if (comuna !== undefined) payload.comuna = comuna;
   if (cantidad !== undefined) payload.cantidad = Number(cantidad);

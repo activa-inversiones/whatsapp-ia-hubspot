@@ -13,6 +13,9 @@ const APERTURAS_ESPERADAS = ['CORREDERA', 'PROYECTANTE', 'FIJA', 'BATIENTE', 'OS
   // [2026-08-25] COMPUESTA = mitad fija + mitad proyectante como UNA ventana (decision
   // del dueño, PROPUESTA-COMPUESTA). El motor la soporta desde 463248c en sales-os.
   'COMPUESTA',
+  // [2026-10-27] TRIANGULAR = fijo triangular (hastial), calibrado contra Winart v73315 del dueño. Dejó de
+  // ser «forma irregular» (T8): decisión del dueño, los clientes reclamaban.
+  'TRIANGULAR',
 ];
 
 function getToolDef(name) {

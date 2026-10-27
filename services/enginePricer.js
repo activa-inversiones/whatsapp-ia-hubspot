@@ -102,7 +102,7 @@ function detectarAperturaLocal(text) {
   // ABATIBLE, necesito ventana corredera" dejaba vivo "abatible" (→ BATIENTE mal).
   // [3.3] La negación también viene POSPUESTA en chileno: "…, no puerta doble" (sin
   // verbo) y "puerta doble no; puerta simple sí" (negación después del sustantivo).
-  const MODS = '(?:\\s+(?:abatibles?|dobles?|simples?|interior(?:es)?|exterior(?:es)?|correderas?|corredizas?|deslizantes?|fij[ao]s?|batientes?|oscilobatientes?|proyectantes?|compuestas?|basculantes?|plegables?|de\\s+(?:una|dos|1|2)\\s+hojas?))*';
+  const MODS = '(?:\\s+(?:abatibles?|dobles?|simples?|interior(?:es)?|exterior(?:es)?|correderas?|corredizas?|deslizantes?|fij[ao]s?|batientes?|oscilobatientes?|proyectantes?|compuestas?|basculantes?|plegables?|triangular(?:es)?|de\\s+(?:una|dos|1|2)\\s+hojas?))*';
   const tl = t
     .replace(
       new RegExp(`\\b(?:no\\s+(?:quiero|necesito|busco)|no|sin|que\\s+no\\s+sea)\\s+(?:(?:una?|la|el)\\s+)?(?:puertas?|ventanas?|ventanal(?:es)?|compuestas?|correderas?|corredizas?)${MODS}\\b`, 'g'),
@@ -112,7 +112,16 @@ function detectarAperturaLocal(text) {
       new RegExp(`\\b(?:puertas?|ventanas?|ventanal(?:es)?)${MODS}[\\s,;]*\\b(?:no|tampoco)\\b`, 'g'),
       " "
     )
-      const iPuerta = tl.indexOf("puerta");
+  // [2026-10-27] FIJO TRIANGULAR («ventana triangular», «triángulo», «hastial»): va PRIMERO porque la frase
+  // suele traer además «fija» y la rama FIJO se la robaría. El motor la cotiza (calibrado contra Winart v73315).
+  // [Thermos B1] «no triangular» / «sin triángulo» es una negación, no un pedido.
+  // (La negación se mira en el texto ORIGINAL `t`: la limpieza de arriba se come el «no» de «ventana fija, no triangular».)
+  // [Codex r1 #4] Solo el FIJO: con «puerta», «corredera» o una apertura en la frase, el triángulo no manda
+  // (la guarda de alcance ya escaló «puerta triangular»; «reemplazar la ventana triangular por una puerta» sigue a la puerta).
+  if (/triangul|tri[aá]ngulo|\bhastial/.test(tl)
+      && !/puerta|corredera|corrediz|deslizan|sliding|proyectante|batiente|abatible|oscilo/.test(tl)
+      && !/\b(?:no|sin|nada\s+de|que\s+no\s+sea)\s+(?:(?:una?|la|el)\s+)?(?:ventanas?\s+)?(?:triangular|tri[aá]ngulo)/.test(t)) return "TRIANGULAR";
+  const iPuerta = tl.indexOf("puerta");
   const iVentana = tl.search(/ventan/);
   // "cambiar/reemplazar X POR Y": el producto pedido es Y aunque aparezca después
   // ("reemplazar la ventana por una puerta abatible" ES una puerta — regresión Codex).
@@ -280,6 +289,9 @@ export function mapAperturaToEngine(product) {
       return "PUERTA_INTERIOR";
     case "PUERTA_DOBLE":
       return "PUERTA_DOBLE";
+    // [2026-10-27] Fijo triangular: el motor lo cotiza (tipo TRIANGULAR, serie S60).
+    case "TRIANGULAR":
+      return "TRIANGULAR";
     // BASCULANTE, PLEGABLE y cualquier otro → default seguro
     default:
       return "CORREDERA";
@@ -901,7 +913,8 @@ export function validateDimensionsLocal(product, ancho_mm, alto_mm) {
   // Para el fijo decide el MOTOR (revisarFabricabilidad), que es la fuente única de esos límites.
   let _aperturaLim = null;
   try { _aperturaLim = mapAperturaToEngine(product); } catch { _aperturaLim = null; }
-  if (_aperturaLim === "FIJA") return null;
+  // [2026-10-27] El fijo TRIANGULAR tampoco: su base (4500 en el del dueño) no es el ancho de un paño que abre.
+  if (_aperturaLim === "FIJA" || _aperturaLim === "TRIANGULAR") return null;
   const lim = FABRICATION_LIMITS.S60.ventana;
   if (ancho_mm > lim.maxAncho || alto_mm > lim.maxAlto) {
     const slidingLim = FABRICATION_LIMITS.SLIDING.H98;
@@ -1099,9 +1112,17 @@ export async function priceAllEngine(d, customer_id = "") {
   //   · aparece en el orden INVERSO                        → ya fue corregido → NO se toca;
   //   · no aparece (o aparece en ambos)                    → manda la declaracion global.
   const _paresTexto = paresDeclaradosEnTexto(d.texto_cliente);
+  // [2026-10-27 · Thermos M1] EL TRIANGULAR NO SE DA VUELTA. En un rectángulo intercambiar ancho y alto no mueve el
+  // precio; en el triángulo cambia la geometría entera (base ≠ altura del vértice: lados, hipotenusa, división, m² de
+  // cristal). El contrato de la tool es ancho = BASE y alto = ALTURA, tal como lo escribió el cliente.
+  const _esTriangularIdx = (idx) => {
+    try { return mapAperturaToEngine(`${d.items[idx]?.product || ""} ${d.items[idx]?.descripcion || ""}`) === "TRIANGULAR"; } catch { return false; }
+  };
   if (tableIsAltoAncho) {
-    for (const mm of measured) {
+    for (let _i = 0; _i < measured.length; _i += 1) {
+      const mm = measured[_i];
       if (!mm) continue;
+      if (_esTriangularIdx(_i)) continue;             // base × alto, tal cual
       const crudo = `${Math.round(mm.ancho_mm)}|${Math.round(mm.alto_mm)}`;
       const inverso = `${Math.round(mm.alto_mm)}|${Math.round(mm.ancho_mm)}`;
       const talCual = _paresTexto.has(crudo);
@@ -1160,7 +1181,9 @@ export async function priceAllEngine(d, customer_id = "") {
       || !!leerMedidaTriple(`${item.medidas_texto || ""}`) || !!leerMedidaTriple(`${item.measures || ""}`)
       || !!leerMedidaTriple(`${item.medidas || ""}`)  // [Codex r5] el campo heredado que 4b tambien lee
       || esBowPorForma(`${item.descripcion || ""} ${item.product || ""} ${item.producto_label || ""} ${item.label || ""} ${item.producto || ""}`);
-    if (tableIsAltoAncho && m && !_esBowTemprano) {
+    // [Thermos M1] El triangular tampoco: su par nunca se dio vuelta arriba, así que `measures` queda como vino.
+    const _esTriangular = (() => { try { return mapAperturaToEngine(`${item.product || ""} ${item.descripcion || ""}`) === "TRIANGULAR"; } catch { return false; } })();
+    if (tableIsAltoAncho && m && !_esBowTemprano && !_esTriangular) {
       // 🔴 [2026-08-26] LA MEDIDA CORREGIDA TIENE QUE QUEDAR EN EL ITEM, NO SOLO EN EL PRECIO.
       // Hasta hoy el pre-pass daba vuelta las medidas para COTIZAR pero dejaba `item.measures`
       // con el texto original del cliente. Resultado medido en la propuesta de Paula: se cobro
@@ -1465,7 +1488,11 @@ export async function priceAllEngine(d, customer_id = "") {
     const color = normColorLocal(item.color || d.default_color || "");
     // [#1500-A r4] El color que de verdad se COBRA queda en el item (el canal interno lo guarda en vez del texto del LLM).
     item.color_cobrado = color;
-    let glass_id = pickGlassId(m.ancho_mm, m.alto_mm, item.ambiente); // por área + baño (la ESQUINA lo re-elige abajo, por su paño mayor)
+    // [2026-10-27 · Thermos M2] El TRIANGULAR es medio rectángulo: el vidrio se elige por su ÁREA REAL (base × alto / 2),
+    // el mismo criterio con que el motor aplica el upgrade a 5+12+5 sobre 2 m². Si no, un hastial de 2200×1700 (1,87 m²
+    // de triángulo) salía con el termopanel grueso por el área del rectángulo que no tiene. DECISIÓN DECLARADA (#1590):
+    // la regla del dueño «todo termopanel > 2 m² va 5+12+5» se aplica al cristal que de verdad lleva.
+    let glass_id = pickGlassId(m.ancho_mm, _esTriangular ? m.alto_mm / 2 : m.alto_mm, item.ambiente); // por área + baño (la ESQUINA lo re-elige abajo, por su paño mayor)
     item.glass_label = etiquetaVidrio(glass_id);
     const comuna = d.comuna || "";
     const cantidad = Math.max(1, Number(item.qty) || 1);
@@ -1694,6 +1721,10 @@ export async function priceAllEngine(d, customer_id = "") {
         // [2026-08-25 · Codex] El eslabon que faltaba: sin esto los anchos de paño del
         // cliente morian en el pricer y toda compuesta salia 50/50.
         partes: Array.isArray(item.partes) && item.partes.length ? item.partes : undefined,
+        // [2026-10-27] Los paños de la puerta con postes T y las divisiones del triángulo, tal cual los mandó la
+        // tool (el motor valida y rechaza con su motivo). Sin esto la puerta saldría lisa.
+        panos: Array.isArray(item.puerta_panos) && item.puerta_panos.length ? item.puerta_panos : undefined,
+        divisiones: item.divisiones_triangulo !== undefined && item.divisiones_triangulo !== null ? item.divisiones_triangulo : undefined,
         // [2026-08-25] El eje. `item.orientacion` gana (el LLM la leyo del pedido); si no
         // viene, se mira como lo pidio el cliente. Sin señal: horizontal, como siempre.
         // El eje: lo que diga el item manda; si no dice nada, lo que escribio el cliente.
@@ -1761,6 +1792,10 @@ export async function priceAllEngine(d, customer_id = "") {
     // dibujaba como UN paño solo. Con esto viaja: cada paño con su tipo y su ancho real,
     // que es lo que el dibujo necesita para poner el travesaño donde va y marcar cual abre.
     if (r.compuesta) item.compuesta = r.compuesta;
+    // [2026-10-27] La puerta con postes T (paños y relleno) y el triángulo (lados, divisiones) viajan igual:
+    // el PDF los dibuja de ahí, no de la etiqueta.
+    if (r.puerta) item.puerta = r.puerta;
+    if (r.triangular) item.triangular = r.triangular;
     // 🔴 [2026-09-24 · #886] La esquina que resolvio el motor viaja al item, igual que la
     // compuesta: es lo que el PDF necesita para dibujar la figura y no una ventana cualquiera.
     if (r.esquina) item.esquina = { ...(item.esquina || {}), ...r.esquina };
