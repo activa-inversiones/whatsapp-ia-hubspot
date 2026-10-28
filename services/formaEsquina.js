@@ -132,7 +132,35 @@ const TIPOS_PANO = Object.freeze({
 // BOW_HOJAS_CORREDERA en quoteEngine.js). Una sola hoja que corre es un monorriel.
 export const HOJAS_CORREDERA = Object.freeze([2, 3, 4]);
 const HOJAS_EN_PALABRAS = Object.freeze({ 2: "dos", 3: "tres", 4: "cuatro" });
+const HOJAS_DESDE_PALABRA = Object.freeze({ dos: 2, tres: 3, cuatro: 4 });
 const TIPOS_MITAD = Object.freeze(["FIJA", "PROYECTANTE", "BATIENTE", "OSCILOBATIENTE"]);
+
+// ¿El cliente escribio "N hojas" (cifra o palabra) de ESTE paño? Vale solo si esta en la MISMA
+// frase que el ancho crudo del paño: entre los dos no puede haber un cierre de frase (". " / ";")
+// ni un par "AxB" de OTRA ventana. "corredera de 3 hojas de 2000x1500. aparte, ... corredera
+// 1840x1570" NO autoriza 3 hojas en la de 1840 (lo probo Thermos); "corredera de 3 hojas
+// 1840x1570" y "corredera 1840x1570 de tres hojas" si.
+function hojasDichasDelPano(hojas, anchoCrudo, texto) {
+  const t = String(texto || "");
+  const re = new RegExp(`\\b(?:${hojas}|${HOJAS_EN_PALABRAS[hojas]})\\s*hojas?\\b`, "gi");
+  const a = Number.isInteger(anchoCrudo) ? String(anchoCrudo) : String(anchoCrudo).replace(".", "[.,]");
+  const reAncho = new RegExp(`(?<![\\d.,])${a}(?![\\d])`, "g");
+  const posAncho = [...t.matchAll(reAncho)].map((m) => m.index);
+  if (!posAncho.length) return false;
+  const rePar = /(\d+(?:[.,]\d+)?)\s*[x×X]\s*(\d+(?:[.,]\d+)?)/g;
+  const esDeEste = (s) => casi(num(s.replace(",", ".")), anchoCrudo);
+  for (const m of t.matchAll(re)) {
+    for (const p of posAncho) {
+      const [lo, hi] = m.index < p ? [m.index + m[0].length, p] : [p + String(anchoCrudo).length, m.index];
+      const seg = t.slice(lo, hi);
+      if (seg.length > 160) continue;
+      if (/[.;]\s|[.;]$|\n/.test(seg)) continue;
+      const ajeno = [...seg.matchAll(rePar)].some((x) => !esDeEste(x[1]) && !esDeEste(x[2]));
+      if (!ajeno) return true;
+    }
+  }
+  return false;
+}
 function tipoDeclarado(t) {
   const s = String(t || "").trim().toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
   return TIPOS_PANO[s] || null;
@@ -430,8 +458,12 @@ export function esquinaDesdePanos(panos, {
         return { error: `El paño ${i + 1} es una corredera de "${p.hojas}" hojas y eso no se cotiza en una esquina: `
           + "van de 2 a 4 hojas (una sola hoja que corre junto a un paño fijo es un monorriel). Confírmelo con el cliente." };
       }
-      if (exigir_literal && hojas !== 2
-        && !new RegExp(`\\b(?:${hojas}|${HOJAS_EN_PALABRAS[hojas]})\\s*hojas?\\b`, "i").test(String(texto_cliente || ""))) {
+      // [Thermos BAJO-3] "3 hojas" tiene que estar dicho de ESTE paño: cerca de su ancho en el texto
+      // (hasta 80 caracteres), no en cualquier parte de la conversacion. Sin eso, "quiero una
+      // corredera de 3 hojas de 2000x1500. aparte, ventana en esquina: ... corredera 1840x1570"
+      // autorizaba 3 hojas en la esquina (sobrecobro). Misma trampa que ya se cerro para los
+      // anchos con "solo los pares de ESTA ventana".
+      if (exigir_literal && hojas !== 2 && !hojasDichasDelPano(hojas, anchos[i], texto_cliente)) {
         // [Thermos] El error NO empuja al default: "corredera triple" o "de tres paños" se PREGUNTA.
         return { error: `El cliente no escribió que la corredera del paño ${i + 1} tenga ${hojas} hojas. `
           + "Copie lo que dijo tal cual, o pregúntele cuántas hojas corren: no se supone." };
@@ -564,10 +596,16 @@ export function esquinaDesdeLabel(it) {
     const ancho_mm = parseFloat(cab[2].replace(",", "."));
     if (!Number.isFinite(ancho_mm) || ancho_mm <= 0) return null;
     if (/^corredera/i.test(cab[1])) {
-      // [2026-10-28] Las hojas vienen en la etiqueta ("(2 hojas)", "(3 hojas)"). Si
-      // el LLM las borro al reescribirla, 2: el default del motor, que es lo que se cobro.
-      const mh = t.slice(cab[0].length).match(/\(\s*(\d)\s*hojas/i);
-      partes.push({ tipo: "CORREDERA", ancho_mm, hojas: mh ? Number(mh[1]) : 2 });
+      // [2026-10-28] Las hojas vienen en la etiqueta del motor ("(2 hojas)"). 🔴 [Thermos, MEDIDO]
+      // EL LLM LA REESCRIBE AL PEDIR EL PDF y le saca el parentesis: "Corredera 1840mm de 3 hojas",
+      // "1840mm: 3 hojas", "1840mm 3 hojas", "de tres hojas". Exigir el "(" devolvia 2 en los
+      // tres casos, y esa etiqueta es la que RE-COTIZA y pisa el precio del PDF (webhook,
+      // _guardiaApertura): una de 3 hojas se cobraba de 2. Se lee "N hojas" donde este, en cifra
+      // o en palabra. Si de verdad no dice cuantas, 2: el default del motor, que es lo que se cobro.
+      const resto = t.slice(cab[0].length);
+      const mh = resto.match(/\b(\d|dos|tres|cuatro)\s*hojas?\b/i);
+      const hojas = mh ? (HOJAS_DESDE_PALABRA[mh[1].toLowerCase()] ?? Number(mh[1])) : 2;
+      partes.push({ tipo: "CORREDERA", ancho_mm, hojas });
       continue;
     }
     if (!/^compuest/i.test(cab[1])) { partes.push({ tipo, ancho_mm }); continue; }

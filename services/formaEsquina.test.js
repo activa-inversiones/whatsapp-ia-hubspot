@@ -191,6 +191,37 @@ test('🔴 [v74443] la etiqueta del motor con una corredera se vuelve a leer con
   // Si el LLM borro las hojas al reescribir: 2, que es lo que el motor cobro por defecto.
   const sinHojas = 'Bow window · 2 paños (Fijo 1724mm + Corredera 1840mm) · unión 90°';
   assert.deepEqual(esquinaDesdeLabel({ producto_label: sinHojas }).partes[1], { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 2 });
+  // 🔴 [Thermos MEDIO-1, MEDIDO] Las TRES formas en que el LLM reescribe sin parentesis devolvian 2,
+  // y esa etiqueta re-cotiza y pisa el precio del PDF: una de 3 hojas se cobraba de 2.
+  for (const l of [
+    'Bow window · 2 paños (Fijo 1724mm + Corredera 1840mm de 3 hojas) · unión 90°',
+    'Bow window · 2 paños (Fijo 1724mm + Corredera 1840mm: 3 hojas) · unión 90°',
+    'Bow window · 2 paños (Fijo 1724mm + Corredera 1840mm 3 hojas) · unión 90°',
+    'Bow window · 2 paños (Fijo 1724mm + Corredera 1840mm de tres hojas) · unión 90°',
+  ]) {
+    assert.equal(esquinaDesdeLabel({ producto_label: l }).partes[1].hojas, 3, l);
+  }
+  // Y con la corredera PRIMERO, el "2 paños" de la etiqueta no se confunde con las hojas.
+  const primero = 'Bow window · 2 paños (Corredera 1840mm de 4 hojas + Fijo 1724mm) · unión 90°';
+  assert.deepEqual(esquinaDesdeLabel({ producto_label: primero }).partes.map((p) => p.hojas), [4, undefined]);
+});
+
+test('🔒 [Thermos BAJO-3] "3 hojas" dicho de OTRA ventana del mismo chat no autoriza 3 hojas en la esquina', () => {
+  const texto = 'quiero una corredera de 3 hojas de 2000x1500. aparte, ventana en esquina: fija 1724x1570 y corredera 1840x1570, angulo 90';
+  const e = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 3 }],
+    { alto_mm: 1570, angulo: 90, exigir_literal: true, texto_cliente: texto, pares: paresDelTexto(texto) });
+  assert.match(e.error, /3 hojas/);
+  assert.equal(e.partes, undefined);
+  // Dicho de ESTE paño (cerca de su ancho), pasa: antes o despues del numero.
+  for (const ok of [
+    'ventana en esquina: fija 1724x1570 y corredera de 3 hojas 1840x1570, angulo 90',
+    'ventana en esquina: fija 1724x1570 y corredera 1840x1570 de tres hojas, angulo 90',
+  ]) {
+    const r = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 3 }],
+      { alto_mm: 1570, angulo: 90, exigir_literal: true, texto_cliente: ok, pares: paresDelTexto(ok) });
+    assert.equal(r.error, undefined, r.error);
+    assert.equal(r.partes[1].hojas, 3);
+  }
 });
 
 test('🔒 #947 sin alto no hay ventana: se pide, no se inventa', () => {
