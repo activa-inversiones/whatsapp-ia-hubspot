@@ -758,7 +758,7 @@ test('🔒 [v74443] unas hojas que el cliente NO escribió no llegan al motor: l
     }, {});
     assert.equal(enviados.length, 0, 'no se cotiza una ventana que el cliente no describio');
     assert.notEqual(r.ok, true);
-    assert.match(JSON.stringify(r), /4 hojas/);
+    assert.match(JSON.stringify(r), /2 hojas y se mandaron 4/, 'el cliente dijo 2 y el LLM mandó 4: se le pide que copie');
   });
 });
 

@@ -135,18 +135,25 @@ const HOJAS_EN_PALABRAS = Object.freeze({ 2: "dos", 3: "tres", 4: "cuatro" });
 const HOJAS_DESDE_PALABRA = Object.freeze({ dos: 2, tres: 3, cuatro: 4 });
 const TIPOS_MITAD = Object.freeze(["FIJA", "PROYECTANTE", "BATIENTE", "OSCILOBATIENTE"]);
 
-// ¿El cliente escribio "N hojas" (cifra o palabra) de ESTE paño? Vale solo si esta en la MISMA
-// frase que el ancho crudo del paño: entre los dos no puede haber un cierre de frase (". " / ";")
-// ni un par "AxB" de OTRA ventana. "corredera de 3 hojas de 2000x1500. aparte, ... corredera
-// 1840x1570" NO autoriza 3 hojas en la de 1840 (lo probo Thermos); "corredera de 3 hojas
-// 1840x1570" y "corredera 1840x1570 de tres hojas" si.
-function hojasDichasDelPano(hojas, anchoCrudo, texto) {
+// Las hojas que el cliente DIJO de ESTE paño ("N hojas", en cifra o en palabra), leidas del texto.
+// Una mencion vale solo si esta en la MISMA frase que el ancho crudo del paño: entre los dos no
+// puede haber un cierre de frase (". " / ";") ni un par "AxB" de OTRA ventana. "corredera de 3
+// hojas de 2000x1500. aparte, ... corredera 1840x1570" NO dice 3 hojas de la de 1840 (lo probo
+// Thermos); "corredera de 3 hojas 1840x1570" y "corredera 1840x1570 de tres hojas" si.
+// [Codex r1 MEDIO] Con DOS paños del mismo ancho, cada uno mira SU ocurrencia del ancho en el
+// texto (la k-esima, en el orden del cliente): una sola mencion no se la apropian los dos. Si el
+// texto tiene menos ocurrencias que paños de ese ancho, se devuelve `ambiguo` y se pregunta.
+// Devuelve { hojas: Set<number>, ambiguo: boolean }.
+function hojasDichasEnTexto(anchoCrudo, texto, { ocurrencia = 0, repetidos = 1 } = {}) {
   const t = String(texto || "");
-  const re = new RegExp(`\\b(?:${hojas}|${HOJAS_EN_PALABRAS[hojas]})\\s*hojas?\\b`, "gi");
+  const dichas = new Set();
+  const re = /\b(2|3|4|dos|tres|cuatro)\s*hojas?\b/gi;
   const a = Number.isInteger(anchoCrudo) ? String(anchoCrudo) : String(anchoCrudo).replace(".", "[.,]");
   const reAncho = new RegExp(`(?<![\\d.,])${a}(?![\\d])`, "g");
-  const posAncho = [...t.matchAll(reAncho)].map((m) => m.index);
-  if (!posAncho.length) return false;
+  const todas = [...t.matchAll(reAncho)].map((m) => m.index);
+  if (!todas.length) return { hojas: dichas, ambiguo: false };
+  const ambiguo = repetidos > 1 && todas.length < repetidos;
+  const posAncho = ambiguo ? todas : [todas[Math.min(ocurrencia, todas.length - 1)]];
   const rePar = /(\d+(?:[.,]\d+)?)\s*[x×X]\s*(\d+(?:[.,]\d+)?)/g;
   const esDeEste = (s) => casi(num(s.replace(",", ".")), anchoCrudo);
   for (const m of t.matchAll(re)) {
@@ -156,10 +163,10 @@ function hojasDichasDelPano(hojas, anchoCrudo, texto) {
       if (seg.length > 160) continue;
       if (/[.;]\s|[.;]$|\n/.test(seg)) continue;
       const ajeno = [...seg.matchAll(rePar)].some((x) => !esDeEste(x[1]) && !esDeEste(x[2]));
-      if (!ajeno) return true;
+      if (!ajeno) { dichas.add(HOJAS_DESDE_PALABRA[m[1].toLowerCase()] ?? Number(m[1])); break; }
     }
   }
-  return false;
+  return { hojas: dichas, ambiguo: ambiguo && dichas.size > 0 };
 }
 function tipoDeclarado(t) {
   const s = String(t || "").trim().toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
@@ -453,20 +460,38 @@ export function esquinaDesdePanos(panos, {
       // mas de cuatro no esta medido: se pregunta, no se adivina. Con literalidad exigida, 3 o 4
       // tienen que estar escritas por el cliente ("3 hojas" / "tres hojas"): el LLM no las inventa.
       const p = lista[i] || {};
-      const hojas = vacio(p.hojas) ? 2 : num(p.hojas);
-      if (!HOJAS_CORREDERA.includes(hojas)) {
+      let hojas = vacio(p.hojas) ? null : num(p.hojas);
+      if (hojas !== null && !HOJAS_CORREDERA.includes(hojas)) {
         return { error: `El paño ${i + 1} es una corredera de "${p.hojas}" hojas y eso no se cotiza en una esquina: `
           + "van de 2 a 4 hojas (una sola hoja que corre junto a un paño fijo es un monorriel). Confírmelo con el cliente." };
       }
-      // [Thermos BAJO-3] "3 hojas" tiene que estar dicho de ESTE paño: cerca de su ancho en el texto
-      // (hasta 80 caracteres), no en cualquier parte de la conversacion. Sin eso, "quiero una
-      // corredera de 3 hojas de 2000x1500. aparte, ventana en esquina: ... corredera 1840x1570"
-      // autorizaba 3 hojas en la esquina (sobrecobro). Misma trampa que ya se cerro para los
-      // anchos con "solo los pares de ESTA ventana".
-      if (exigir_literal && hojas !== 2 && !hojasDichasDelPano(hojas, anchos[i], texto_cliente)) {
-        // [Thermos] El error NO empuja al default: "corredera triple" o "de tres paños" se PREGUNTA.
-        return { error: `El cliente no escribió que la corredera del paño ${i + 1} tenga ${hojas} hojas. `
-          + "Copie lo que dijo tal cual, o pregúntele cuántas hojas corren: no se supone." };
+      if (exigir_literal) {
+        // 🔴 [Codex r1 ALTO + Thermos BAJO-3] LAS HOJAS LAS DICE EL CLIENTE, Y SE LEEN DE SU TEXTO, en
+        // la misma frase que el ancho de ESTE paño. Lo que mando el LLM tiene que calzar con eso:
+        //   · el cliente dijo "3 hojas" y el LLM no mando hojas (o mando 2) → antes se cobraban 2 en
+        //     silencio; ahora van 3 si lo omitio, y si mando otro numero se le pide que copie;
+        //   · el cliente no dijo nada → 2, el default del motor (y el LLM no puede inventar 3 o 4);
+        //   · "3 hojas" dicho de OTRA ventana del mismo chat no vale para esta;
+        //   · dos paños del mismo ancho con una sola mencion → se pregunta, no se adivina.
+        const repetidos = anchos.filter((a) => casi(a, anchos[i])).length;
+        const ocurrencia = anchos.slice(0, i).filter((a) => casi(a, anchos[i])).length;
+        const dicho = hojasDichasEnTexto(anchos[i], texto_cliente, { ocurrencia, repetidos });
+        if (dicho.ambiguo || dicho.hojas.size > 1) {
+          return { error: `El cliente menciona hojas (${[...dicho.hojas].join(" y ")}) que no se pueden asignar sin duda a la corredera del paño ${i + 1}. `
+            + "Pregúntele cuántas hojas corren en ese paño: no se supone." };
+        }
+        const dicha = dicho.hojas.size === 1 ? [...dicho.hojas][0] : null;
+        if (hojas === null) hojas = dicha ?? 2;
+        else if (dicha !== null && hojas !== dicha) {
+          return { error: `El cliente escribió que la corredera del paño ${i + 1} tiene ${dicha} hojas y se mandaron ${hojas}. `
+            + "Copie lo que dijo tal cual." };
+        } else if (dicha === null && hojas !== 2) {
+          // [Thermos] El error NO empuja al default: "corredera triple" o "de tres paños" se PREGUNTA.
+          return { error: `El cliente no escribió que la corredera del paño ${i + 1} tenga ${hojas} hojas. `
+            + "Copie lo que dijo tal cual, o pregúntele cuántas hojas corren: no se supone." };
+        }
+      } else if (hojas === null) {
+        hojas = 2;
       }
       partes.push({ tipo: "CORREDERA", ancho_mm: anchosMm[i], hojas });
       continue;

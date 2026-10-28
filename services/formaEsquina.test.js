@@ -206,6 +206,36 @@ test('🔴 [v74443] la etiqueta del motor con una corredera se vuelve a leer con
   assert.deepEqual(esquinaDesdeLabel({ producto_label: primero }).partes.map((p) => p.hojas), [4, undefined]);
 });
 
+test('🔴 [Codex r1 ALTO] el cliente escribió "3 hojas" y el LLM las omitió (o mandó 2): NO se cobran 2 en silencio', () => {
+  const texto = 'ventana en esquina: fija 1724x1570 y corredera de 3 hojas 1840x1570, angulo 90';
+  const opts = { alto_mm: 1570, angulo: 90, exigir_literal: true, texto_cliente: texto, pares: paresDelTexto(texto) };
+  // Omitidas → se leen del texto del cliente: 3.
+  const omitidas = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840 }], opts);
+  assert.equal(omitidas.error, undefined, omitidas.error);
+  assert.equal(omitidas.partes[1].hojas, 3);
+  // Mandó 2 contra el "3 hojas" escrito → se le pide que copie, no se cobra 2.
+  const bajadas = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 2 }], opts);
+  assert.match(bajadas.error, /3 hojas y se mandaron 2/);
+  assert.equal(bajadas.partes, undefined);
+  // Y "dos hojas" dicho por el cliente con el LLM mandando 2: pasa.
+  const dos = 'ventana en esquina: fija 1724x1570 y corredera de dos hojas 1840x1570, angulo 90';
+  assert.equal(esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 2 }],
+    { ...opts, texto_cliente: dos, pares: paresDelTexto(dos) }).partes[1].hojas, 2);
+});
+
+test('🔒 [Codex r1 MEDIO] dos correderas del mismo ancho: cada una lee SU mención; una sola mención para las dos se pregunta', () => {
+  const texto = 'ventana en esquina: corredera de 3 hojas 1840x1570, fija 1000x1570 y otra corredera 1840x1570 de 2 hojas, angulo 90';
+  const panos = [{ tipo: 'CORREDERA', ancho_mm: 1840 }, { tipo: 'FIJA', ancho_mm: 1000 }, { tipo: 'CORREDERA', ancho_mm: 1840 }];
+  const r = esquinaDesdePanos(panos, { alto_mm: 1570, angulo: 90, exigir_literal: true, texto_cliente: texto, pares: paresDelTexto(texto) });
+  assert.equal(r.error, undefined, r.error);
+  assert.deepEqual(r.partes.map((p) => p.hojas), [3, undefined, 2]);
+  // Una sola ocurrencia del ancho para dos paños, con mención: ambiguo → se pregunta.
+  const una = 'ventana en esquina: dos correderas de 1840x1570 con 3 hojas y una fija 1000x1570, angulo 90';
+  const amb = esquinaDesdePanos([{ tipo: 'CORREDERA', ancho_mm: 1840, hojas: 3 }, { tipo: 'FIJA', ancho_mm: 1000 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 3 }],
+    { alto_mm: 1570, angulo: 90, exigir_literal: true, texto_cliente: una, pares: paresDelTexto(una) });
+  assert.match(amb.error, /sin duda/);
+});
+
 test('🔒 [Thermos BAJO-3] "3 hojas" dicho de OTRA ventana del mismo chat no autoriza 3 hojas en la esquina', () => {
   const texto = 'quiero una corredera de 3 hojas de 2000x1500. aparte, ventana en esquina: fija 1724x1570 y corredera 1840x1570, angulo 90';
   const e = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 3 }],
