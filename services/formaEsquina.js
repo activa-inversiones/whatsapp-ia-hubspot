@@ -564,7 +564,7 @@ export function esquinaDesdeLabel(it) {
     const ancho_mm = parseFloat(cab[2].replace(",", "."));
     if (!Number.isFinite(ancho_mm) || ancho_mm <= 0) return null;
     if (/^corredera/i.test(cab[1])) {
-      // [2026-10-28] Las hojas vienen en la etiqueta ("(2 hojas)", "(3 hojas, triple riel)"). Si
+      // [2026-10-28] Las hojas vienen en la etiqueta ("(2 hojas)", "(3 hojas)"). Si
       // el LLM las borro al reescribirla, 2: el default del motor, que es lo que se cobro.
       const mh = t.slice(cab[0].length).match(/\(\s*(\d)\s*hojas/i);
       partes.push({ tipo: "CORREDERA", ancho_mm, hojas: mh ? Number(mh[1]) : 2 });

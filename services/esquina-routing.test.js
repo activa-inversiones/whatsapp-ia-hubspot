@@ -762,6 +762,27 @@ test('🔒 [v74443] unas hojas que el cliente NO escribió no llegan al motor: l
   });
 });
 
+test('🔴 [v74443] IDA Y VUELTA: la esquina que DEVUELVE el motor (con riel DOBLE) se re-manda tal cual y el motor la acepta', async () => {
+  // enginePricer.js:1805 mezcla `r.esquina` del motor en `item.esquina`; la re-cotizacion por
+  // `_yaArmada` manda esas partes de vuelta. El motor acepta su propio `riel: 'DOBLE'` (test del
+  // motor «acepta SOLO hojas»: el valor MEDIDO pasa). Aca se fija lo que el bot manda.
+  await conMotorStub(async (enviados) => {
+    const LABEL = 'Bow window · ventana en esquina (2 paños, union 90°): Fijo 1724mm + Corredera 1840mm (3 hojas)';
+    const items = [{ measures: '3564x1570', product: LABEL, producto_label: LABEL, color: 'Grafito', qty: 1,
+      esquina: { ancho_total_mm: 3564, alto_total_mm: 1570, uniones: 1, angulo: 90, alto_mm: 1570,
+        esquineros: [{ angulo: 90, familia: 'SLIDING', uniones: 1, codigo: 'PI-SLD-EQC-GR', refuerzo: 'PL-SLD-TC-EQC-15' }],
+        partes: [
+          { tipo: 'FIJA', ancho_mm: 1724, alto_mm: 1570, producto_label: 'Fijo S60', costo_clp: 275183, area_m2: 2.707 },
+          { tipo: 'CORREDERA', ancho_mm: 1840, alto_mm: 1570, producto_label: 'Corredera SLIDING H80 Doble Riel S75', costo_clp: 536227, area_m2: 2.889, hojas: 3, riel: 'DOBLE' },
+        ] } }];
+    await priceAllEngine({ comuna: 'Temuco', items });
+    assert.equal(enviados.length, 1);
+    assert.equal(enviados[0].tipo, 'ESQUINA');
+    assert.equal(enviados[0].partes[1].hojas, 3, 'las hojas sobreviven al ida y vuelta');
+    assert.equal(enviados[0].partes[1].riel, 'DOBLE', 'y el riel que devolvio el motor viaja tal cual');
+  });
+});
+
 test('🔴 [v74443] la re-cotización por ETIQUETA (opciones por color / PDF) conserva la corredera y sus hojas', async () => {
   await conMotorStub(async (enviados) => {
     const LABEL = 'Bow window · ventana en esquina (2 paños, union 90°): Fijo 1724mm + Corredera 1840mm (3 hojas)';
