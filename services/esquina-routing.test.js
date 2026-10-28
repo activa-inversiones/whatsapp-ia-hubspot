@@ -714,3 +714,62 @@ test('🔴 #947 · MEDIDO (propuesta 0557) · por la etiqueta que REESCRIBE el L
     assert.equal(enviados[0].glass_id, 1608);
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════════════════
+// [2026-10-28] LA BOW WINDOW CON UN PAÑO CORREDERA — dueño, Winart v74443 (proyecto 62697)
+// ═════════════════════════════════════════════════════════════════════════════════════════
+// Textual: *«decia que en una bow windows no recibia corredera hay esta podria tener corredera
+// si el cliente lo pide y cuantas necesite»*. Fijo 1724 + corredera de 2 hojas 1840, alto 1570.
+const PEDIDO_CORREDERA = {
+  tipo: 'FIJA',
+  medidas_texto: 'ventana en esquina: fija 1724x1570 y corredera de 2 hojas 1840x1570, angulo 90',
+  descripcion_producto: 'bow window con un fijo y una corredera de 2 hojas',
+  panos_esquina: [{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 2 }],
+  angulo_esquina: 90, alto_mm: 1570,
+  color: 'Grafito', comuna: 'Temuco', cantidad: 1,
+};
+
+test('🔴 [dueño 28-oct · v74443] desde la TOOL: la bow window con un paño CORREDERA llega al motor con sus hojas', async () => {
+  const { runTool } = await import('../src/oliver-gpt/tools.js');
+  await conMotorStub(async (enviados) => {
+    const r = await runTool('calcular_cotizacion', PEDIDO_CORREDERA, {});
+    assert.equal(enviados.length, 1, 'UNA llamada: es una ventana con su poste, no un fijo y una corredera sueltos');
+    const b = enviados[0];
+    assert.equal(b.tipo, 'ESQUINA');
+    assert.equal(b.alto_mm, 1570);
+    assert.equal(b.angulo, 90);
+    assert.equal(b.ancho_mm, 3564, '1724 + 1840, suma directa');
+    // 🔴 Las hojas VIAJAN: sin esto el motor cotiza 2 aunque el cliente haya pedido 3.
+    assert.deepEqual(b.partes, [{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 2 }]);
+    assert.equal(b.color, 'GRAFITO');
+    assert.ok(b.glass_id, 'el vidrio se elige por el paño mayor (la corredera)');
+    assert.equal(r.ok, true);
+    assert.equal(r.medidas_resueltas, '3564x1570mm');
+    assert.match(r.nota_linea || '', /1840 mm corredera de 2 hojas/);
+  });
+});
+
+test('🔒 [v74443] unas hojas que el cliente NO escribió no llegan al motor: la tool lo dice y no cotiza', async () => {
+  const { runTool } = await import('../src/oliver-gpt/tools.js');
+  await conMotorStub(async (enviados) => {
+    const r = await runTool('calcular_cotizacion', {
+      ...PEDIDO_CORREDERA,
+      panos_esquina: [{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 4 }],
+    }, {});
+    assert.equal(enviados.length, 0, 'no se cotiza una ventana que el cliente no describio');
+    assert.notEqual(r.ok, true);
+    assert.match(JSON.stringify(r), /4 hojas/);
+  });
+});
+
+test('🔴 [v74443] la re-cotización por ETIQUETA (opciones por color / PDF) conserva la corredera y sus hojas', async () => {
+  await conMotorStub(async (enviados) => {
+    const LABEL = 'Bow window · ventana en esquina (2 paños, union 90°): Fijo 1724mm + Corredera 1840mm (3 hojas)';
+    const items = [{ measures: '3564x1570', product: LABEL, producto_label: LABEL, color: 'Grafito', qty: 1 }];
+    await priceAllEngine({ comuna: 'Temuco', items });
+    assert.equal(enviados.length, 1);
+    assert.equal(enviados[0].tipo, 'ESQUINA');
+    assert.deepEqual(enviados[0].partes, [{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 3 }]);
+    assert.equal(enviados[0].angulo, 90);
+  });
+});

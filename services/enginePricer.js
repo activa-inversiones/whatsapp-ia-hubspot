@@ -1603,7 +1603,9 @@ export async function priceAllEngine(d, customer_id = "") {
                 tipo: x.tipo,
                 alto_mm: Number(x.alto_mm) > 0 ? Number(x.alto_mm) : Math.round(_altoLabel / 2),
               })) }
-          : { tipo: pt.tipo, ancho_mm: pt.ancho_mm }));
+          // [2026-10-28] La corredera conserva sus hojas al re-armarse por etiqueta (sonda de
+          // color, PDF): sin esto una de 3 hojas volvia a cotizarse de 2 en cada re-cotizacion.
+          : { tipo: pt.tipo, ancho_mm: pt.ancho_mm, ...(pt.tipo === "CORREDERA" && pt.hojas ? { hojas: pt.hojas } : {}) }));
         // Los sub-paños sin alto declarado se reparten el vano en dos, que es el default del
         // motor de compuestas: asi el precio coincide con el dibujo.
         for (const pt of partes) {
@@ -1680,10 +1682,12 @@ export async function priceAllEngine(d, customer_id = "") {
       } else if (_bow.origen === "panos_del_cliente") {
         // [#947] Paño por paño, en el orden del cliente, para que compare contra su muro.
         const _nombre = (t) => ({ FIJA: "fija", PROYECTANTE: "proyectante", BATIENTE: "batiente",
-          OSCILOBATIENTE: "oscilobatiente" })[t] || String(t || "").toLowerCase();
+          OSCILOBATIENTE: "oscilobatiente", CORREDERA: "corredera" })[t] || String(t || "").toLowerCase();
         const _desc = (p) => (p.tipo === "COMPUESTA"
           ? `${p.ancho_mm} mm con la mitad de arriba ${_nombre(p.partes?.[0]?.tipo)} y la de abajo ${_nombre(p.partes?.[1]?.tipo)}`
-          : `${p.ancho_mm} mm ${_nombre(p.tipo)}`);
+          // [2026-10-28] La corredera dice sus hojas: es lo que el cliente corrige si no era asi.
+          : p.tipo === "CORREDERA" ? `${p.ancho_mm} mm corredera de ${p.hojas || 2} hojas`
+            : `${p.ancho_mm} mm ${_nombre(p.tipo)}`);
         item.nota_linea = `Ventana en esquina de ${_bow.partes.length} paños: `
           + `${_bow.partes.map(_desc).join(" + ")}, uniones a ${_bow.angulo}°. `
           + "Si algún paño no es así, se corrige antes del PDF.";

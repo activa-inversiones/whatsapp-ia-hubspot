@@ -1239,6 +1239,33 @@ function planoDeVentana(it, caja) {
         const mx = Math.min(marcoP, c.w / 3), my = Math.min(marcoP, c.h / 3);
         const hoja = { x: c.x + mx, y: c.y + my,
           w: Math.max(0.5, c.w - 2 * mx), h: Math.max(0.5, c.h - 2 * my), idx: hojasE.length };
+        marcosPubE.push({ x: c.x, y: c.y, w: c.w, h: c.h, marco: marcoP, pano: i });
+        if (tp === "CORREDERA") {
+          // 🔴 [2026-10-28 · dueño, Winart v74443] EL PAÑO QUE CORRE SE DIBUJA COMO LA CORREDERA
+          // SUELTA: sus hojas repartidas dentro de SU marco, traslapadas, una por riel (riel 1 =
+          // interior = adelante) y con la flecha de cada una — el mismo `repartirHojas` de la rama
+          // de la corredera normal, para que la hoja de la esquina y la de una corredera comun se
+          // vean iguales. Las hojas salen del motor (`hojas`), de la etiqueta "(2 hojas)" o de los
+          // paños del cliente; sin dato, 2, que es lo que se cobro.
+          const nH = Math.max(2, Number(partesE[i]?.hojas) || 2);
+          repartirHojas(hoja.x, hoja.y, hoja.w, hoja.h, nH, true, anchoHojaMm * escala).forEach((r) => {
+            const insetX = Math.min(perfilHoja, r.w / 3), insetY = Math.min(perfilHoja, r.h / 3);
+            const vidrioRect = { x: r.x + insetX, y: r.y + insetY,
+              w: Math.max(0, r.w - 2 * insetX), h: Math.max(0, r.h - 2 * insetY) };
+            hojasE.push({
+              ...r, idx: hojasE.length, vidrioRect,
+              junquilloRect: rectJunquillo(vidrioRect, Math.min(junquillo, insetX, insetY)),
+              manoDerecha: r.idx % 2 === 0, tipo: "CORREDERA", sinBastidor: false,
+              simbolo: [],
+              // Como en la corredera suelta: la de la izquierda corre a la derecha y viceversa.
+              flecha: r.idx % 2 === 0 ? 1 : -1,
+              // Con 3 hojas la del medio no cierra contra ninguna jamba: sin manilla, como la cobra Winart.
+              sinManilla: nH % 2 === 1 && r.idx === (nH - 1) / 2,
+              pano: i,
+            });
+          });
+          return;
+        }
         const perfil = tp === "FIJA" ? junquillo : perfilHoja;
         const insetX = Math.min(perfil, hoja.w / 3), insetY = Math.min(perfil, hoja.h / 3);
         const vidrioRect = { x: hoja.x + insetX, y: hoja.y + insetY,
@@ -1254,7 +1281,6 @@ function planoDeVentana(it, caja) {
           // cual va girado, sin tener que adivinarlo por la posicion.
           pano: i,
         });
-        marcosPubE.push({ x: c.x, y: c.y, w: c.w, h: c.h, marco: marcoP, pano: i });
       });
     });
     hojasE.forEach((hj) => { hj.manilla = manillaDe(hj, escala); });
@@ -1280,6 +1306,8 @@ function planoDeVentana(it, caja) {
           // [#947] El compuesto se declara como tal: `tipoDeParte` no lo conoce y lo bajaba a FIJA.
           tipo: /^compuest/i.test(String(pt.tipo || "")) ? "COMPUESTA" : tipoDeParte(pt.tipo),
           ancho_mm: pt.ancho_mm, idx: i,
+          // [2026-10-28] La corredera declara sus hojas, que es lo que se dibujo.
+          ...(tipoDeParte(pt.tipo) === "CORREDERA" ? { hojas: Math.max(2, Number(pt.hojas) || 2) } : {}),
           girado: i === 0 || i === n - 1,
           // [#887] Si este paño se completo con un default (label sin detalle), queda dicho.
           ...(pt.derivado_de ? { derivado_de: pt.derivado_de } : {}),

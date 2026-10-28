@@ -885,6 +885,12 @@ corren", "doble riel triple hoja la del medio fija" o "triple riel, las 3 corren
   [2026-10-14 · #1519] TAMBIÉN AL REVÉS: "corredera de 3 hojas y SOLO CORRE LA DEL MEDIO",
   "laterales fijas y el centro se mueve", "los lados fijos" → es CORREDERA doble riel (UNA
   ventana), copie la frase tal cual en descripcion_producto; el sistema fija las dos laterales.
+  [2026-10-28 · dueño, Winart v74443] PERO una BOW WINDOW SÍ puede llevar un paño que corre:
+  "ventana en esquina: un fijo de 1724 y una corredera de 2 hojas de 1840, alto 1570, a 90°" →
+  ese paño va como tipo CORREDERA dentro de panos_esquina (con hojas solo si el cliente las dijo);
+  vea el bloque de la bow window más abajo. Dentro de la esquina la corredera es doble riel con
+  TODAS sus hojas corriendo: si pide la del medio fija, laterales fijas o triple riel EN LA ESQUINA,
+  consúltelo con Marcelo (no está medido). Lo que NO es bow window es la corredera SOLA.
 ⭐ PUERTA + FIJO UNIDOS = UNA COMPUESTA (Winart la fabrica así: dos marcos + acople). "puerta
 envolvente exterior 560 + fijo 2000", "puerta abatible al lado de un fijo", "puerta + fijo +
 puerta": tipo COMPUESTA, orientacion horizontal, con partes = [{tipo: PUERTA_ENVOLVENTE,
@@ -930,6 +936,10 @@ CÓMO SE PIDE — UNA sola llamada a calcular_cotizacion, así:
                        FIJA / PROYECTANTE / BATIENTE / OSCILOBATIENTE, o COMPUESTA con arriba y abajo
                        OBLIGATORIOS ("mitad proyectante arriba, mitad fija abajo"); si dio las alturas de
                        las mitades, alto_arriba_mm / alto_abajo_mm tal cual las escribió.
+                       [2026-10-28] También CORREDERA ("en la esquina un fijo y una corredera de 2 hojas"):
+                       tipo CORREDERA y hojas = cuántas hojas corren SOLO si el cliente lo dijo (2, 3 o 4);
+                       si no lo dijo, NO mande hojas (se cotiza de 2 hojas, que es lo usual). Así entra
+                       una corredera en una bow window: como paño, en su lugar, con el ángulo de la esquina.
       angulo_esquina = OBLIGATORIO. El ángulo de las uniones que dijo el cliente (90 es lo usual; 45 si dice
                        "cerca de 45 grados"; 135 se entiende como ángulo interior). Si no lo dijo, pregúntelo
                        UNA vez (Regla #11); si no lo sabe, mande 90. Nunca lo mande sin haber preguntado.

@@ -1518,3 +1518,38 @@ test("🔴 #947 · MEDIDO (propuesta 0557) · con la etiqueta REESCRITA por el L
   const lat = p.hojas.filter((h) => h.pano === 3).sort((a, b) => a.y - b.y);
   assert.deepEqual(lat.map((h) => h.tipo), ["PROYECTANTE", "FIJA"]);
 });
+
+test("🔴 [dueño 28-oct · v74443] el paño CORREDERA de una esquina se dibuja con sus hojas, flechas y rieles", () => {
+  const LABEL = "Bow window · ventana en esquina (2 paños, union 90°): Fijo 1724mm + Corredera 1840mm (2 hojas)";
+  const base = { product: LABEL, producto_label: LABEL, measures: "3564x1570mm", color: "Grafito" };
+  const motor = { ...base, esquina: { partes: [
+    { tipo: "FIJA", ancho_mm: 1724 }, { tipo: "CORREDERA", ancho_mm: 1840, hojas: 2, riel: "DOBLE" },
+  ], uniones: 1, angulo: 90, alto_mm: 1570 } };
+  const caja = { x: 0, y: 0, w: 900, h: 420 };
+  const pM = planoDeVentana(motor, caja);
+  const pL = planoDeVentana(base, caja);          // sin geometria: se arma desde la etiqueta
+  assert.equal(pM.tipo, "ESQUINA");
+  assert.equal(pM.hojas.length, 3, "1 fijo + las 2 hojas de la corredera");
+  assert.equal(pL.hojas.length, 3, "por etiqueta tiene que dar LO MISMO");
+  const corr = pM.hojas.filter((h) => h.pano === 1).sort((a, b) => a.x - b.x);
+  assert.deepEqual(corr.map((h) => h.tipo), ["CORREDERA", "CORREDERA"]);
+  assert.deepEqual(corr.map((h) => h.flecha), [1, -1], "la izquierda corre a la derecha y viceversa, como la corredera suelta");
+  assert.deepEqual(corr.map((h) => h.riel), [0, 1], "una hoja por riel");
+  assert.ok(corr.every((h) => !h.sinBastidor), "la hoja corredera lleva bastidor");
+  assert.ok(corr.every((h) => h.manilla), "y su manilla");
+  assert.ok(corr[0].x + corr[0].w > corr[1].x, "traslapadas, como en la corredera suelta");
+  assert.equal(pM.esquina.partes[1].tipo, "CORREDERA");
+  assert.equal(pM.esquina.partes[1].hojas, 2);
+  // El fijo de al lado no cambio: sin bastidor, sin flecha.
+  const fijo = pM.hojas.find((h) => h.pano === 0);
+  assert.equal(fijo.tipo, "FIJA");
+  assert.equal(fijo.sinBastidor, true);
+  assert.equal(fijo.flecha, 0);
+  // Con 3 hojas, la del medio va sin manilla (como la cobra Winart: 2 manillas, no 3).
+  const tres = { ...motor, esquina: { ...motor.esquina, partes: [motor.esquina.partes[0], { ...motor.esquina.partes[1], hojas: 3 }] } };
+  const c3 = planoDeVentana(tres, caja).hojas.filter((h) => h.pano === 1).sort((a, b) => a.x - b.x);
+  assert.equal(c3.length, 3);
+  assert.equal(c3[1].sinManilla, true);
+  assert.equal(c3[1].manilla, null);
+  assert.ok(c3[0].manilla && c3[2].manilla);
+});

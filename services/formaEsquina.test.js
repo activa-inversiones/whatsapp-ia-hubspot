@@ -126,11 +126,71 @@ test('🔒 #947 NO adivina: un paño no es una esquina, y siete tampoco', () => 
   assert.match(esquinaDesdePanos([], { alto_mm: 1500 }).error, /entre 2 y 6/);
 });
 
-test('🔒 #947 un paño que CORRE no entra en una esquina: se rechaza, no se degrada a fijo', () => {
-  const e = esquinaDesdePanos([{ tipo: 'CORREDERA', ancho_mm: 1200 }, { tipo: 'FIJA', ancho_mm: 400 }],
-    { alto_mm: 1500 });
-  assert.match(e.error, /CORREDERA/);
-  assert.equal(e.partes, undefined);
+// 🔴 [2026-10-28] ESTE TEST SE DIO VUELTA, Y QUEDA DICHO POR QUE Y POR QUIEN. Hasta hoy fijaba
+// que un paño que corre NO entra en una esquina (#947, 26-sep). Orden del dueño, textual:
+// *«decia que en una bow windows no recibia corredera hay esta podria tener corredera si el
+// cliente lo pide y cuantas necesite»*, con su ventana armada en Winart (proyecto 62697,
+// v74443: fijo 1724 + corredera de 2 hojas 1840, alto 1570, a 90°). El motor la cotiza con el
+// esquinero de la linea SLIDING (quoteEngine.esquina.test.mjs §8). Lo que SIGUE rechazandose:
+// una sola hoja que corre (eso es un monorriel), mas de cuatro, y una puerta.
+test('🔴 [dueño 28-oct · v74443] un paño CORREDERA SI entra en una esquina, con sus hojas (2 si no dijo)', () => {
+  const e = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840 }], { alto_mm: 1570 });
+  assert.equal(e.error, undefined, e.error);
+  assert.deepEqual(e.partes, [{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 2 }]);
+  assert.equal(e.ancho_total_mm, 3564);
+  assert.equal(e.uniones, 1);
+  // En minuscula, como "corrediza", y con las hojas que dijo el cliente.
+  const e3 = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'corrediza', ancho_mm: 1840, hojas: 3 }], { alto_mm: 1570 });
+  assert.equal(e3.partes[1].tipo, 'CORREDERA');
+  assert.equal(e3.partes[1].hojas, 3);
+});
+
+test('🔒 [v74443] lo que sigue sin entrar: una hoja sola (monorriel), cinco hojas, y una puerta', () => {
+  const uno = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 1 }], { alto_mm: 1570 });
+  assert.match(uno.error, /monorriel/i);
+  assert.equal(uno.partes, undefined);
+  const cinco = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 5 }], { alto_mm: 1570 });
+  assert.match(cinco.error, /2 a 4/);
+  const puerta = esquinaDesdePanos([{ tipo: 'PUERTA', ancho_mm: 900 }, { tipo: 'FIJA', ancho_mm: 400 }], { alto_mm: 1500 });
+  assert.match(puerta.error, /PUERTA/);
+  assert.equal(puerta.partes, undefined);
+});
+
+test('🔒 [v74443] con literalidad exigida, 3 hojas tienen que estar escritas por el cliente', () => {
+  const texto = 'ventana en esquina: fija 1724x1570 y corredera de 3 hojas 1840x1570, angulo 90';
+  const ok = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 3 }],
+    { alto_mm: 1570, angulo: 90, exigir_literal: true, texto_cliente: texto, pares: paresDelTexto(texto) });
+  assert.equal(ok.error, undefined, ok.error);
+  assert.equal(ok.partes[1].hojas, 3);
+  // "tres hojas" en palabras tambien es del cliente.
+  const palabras = 'ventana en esquina: fija 1724x1570 y corredera de tres hojas 1840x1570, angulo 90';
+  assert.equal(esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 3 }],
+    { alto_mm: 1570, angulo: 90, exigir_literal: true, texto_cliente: palabras, pares: paresDelTexto(palabras) }).partes[1].hojas, 3);
+  // Un numero de hojas que el cliente NO escribio se rechaza: el LLM no lo inventa.
+  const texto2 = 'ventana en esquina: fija 1724x1570 y corredera 1840x1570, angulo 90';
+  const inventada = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 4 }],
+    { alto_mm: 1570, angulo: 90, exigir_literal: true, texto_cliente: texto2, pares: paresDelTexto(texto2) });
+  assert.match(inventada.error, /4 hojas/);
+  assert.equal(inventada.partes, undefined);
+  // Sin `hojas` no hay nada que inventar: 2.
+  const sin = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840 }],
+    { alto_mm: 1570, angulo: 90, exigir_literal: true, texto_cliente: texto2, pares: paresDelTexto(texto2) });
+  assert.equal(sin.error, undefined, sin.error);
+  assert.equal(sin.partes[1].hojas, 2);
+});
+
+test('🔴 [v74443] la etiqueta del motor con una corredera se vuelve a leer con sus hojas', () => {
+  const motor = 'Bow window · ventana en esquina (2 paños, union 90°): Fijo 1724mm + Corredera 1840mm (2 hojas)';
+  const a = esquinaDesdeLabel({ producto_label: motor });
+  assert.deepEqual(a.partes, [{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 2 }]);
+  assert.equal(a.angulo, 90);
+  assert.equal(a.uniones, 1);
+  // Como la reescribe el LLM al pedir el PDF.
+  const llm = 'Bow window · 2 paños (Fijo 1724mm + Corredera 1840mm (3 hojas)) · unión 90°';
+  assert.equal(esquinaDesdeLabel({ producto_label: llm }).partes[1].hojas, 3);
+  // Si el LLM borro las hojas al reescribir: 2, que es lo que el motor cobro por defecto.
+  const sinHojas = 'Bow window · 2 paños (Fijo 1724mm + Corredera 1840mm) · unión 90°';
+  assert.deepEqual(esquinaDesdeLabel({ producto_label: sinHojas }).partes[1], { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 2 });
 });
 
 test('🔒 #947 sin alto no hay ventana: se pide, no se inventa', () => {

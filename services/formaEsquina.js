@@ -113,15 +113,25 @@ export const BOW_MIN_PANOS = 2;
 export const BOW_MAX_PANOS = 6;
 
 // El tipo de un paño DECLARADO por el LLM. A diferencia de `tipoDeParte` (que lee una etiqueta
-// que el motor ya valido), aca lo desconocido se RECHAZA: "CORREDERA" no puede degradarse a
+// que el motor ya valido), aca lo desconocido se RECHAZA: "PUERTA" no puede degradarse a
 // FIJA en silencio, que es exactamente el error caro (cotizar otra ventana sin aviso).
+// 🔴 [2026-10-28] CORREDERA ENTRA. Pedido del dueño, textual: *«decia que en una bow windows no
+// recibia corredera hay esta podria tener corredera si el cliente lo pide y cuantas necesite»*.
+// El motor la cotiza (calibrada contra su v74443: fijo 1724 + corredera de 2 hojas 1840, alto
+// 1570, con el esquinero de la linea SLIDING) y el paño viaja con `hojas`: 2, 3 o 4; 2 si el
+// cliente no dijo cuantas, que es lo que el dueño dibujo.
 const TIPOS_PANO = Object.freeze({
   FIJA: "FIJA", FIJO: "FIJA",
   PROYECTANTE: "PROYECTANTE",
   BATIENTE: "BATIENTE", ABATIBLE: "BATIENTE",
   OSCILOBATIENTE: "OSCILOBATIENTE",
   COMPUESTA: "COMPUESTA", COMPUESTO: "COMPUESTA", MIXTA: "COMPUESTA", MIXTO: "COMPUESTA",
+  CORREDERA: "CORREDERA", CORREDIZA: "CORREDERA",
 });
+// Las hojas que una corredera puede llevar dentro de la esquina (las mismas del motor:
+// BOW_HOJAS_CORREDERA en quoteEngine.js). Una sola hoja que corre es un monorriel.
+export const HOJAS_CORREDERA = Object.freeze([2, 3, 4]);
+const HOJAS_EN_PALABRAS = Object.freeze({ 2: "dos", 3: "tres", 4: "cuatro" });
 const TIPOS_MITAD = Object.freeze(["FIJA", "PROYECTANTE", "BATIENTE", "OSCILOBATIENTE"]);
 function tipoDeclarado(t) {
   const s = String(t || "").trim().toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
@@ -170,7 +180,7 @@ export function numeroEscritoPorElCliente(n, texto) {
  * @param {{ancho_mm:number, alto_mm:number}} resuelto - el par ya en mm
  */
 export function factorDelTexto(medidas_texto, resuelto) {
-  const m = String(medidas_texto || "").match(/(\d+(?:[.,]\d+)?)\s*(?:[x×X\/]|por)\s*(\d+(?:[.,]\d+)?)/);
+  const m = String(medidas_texto || "").match(/(\d+(?:[.,]\d+)?)\s*(?:[x×X/]|por)\s*(\d+(?:[.,]\d+)?)/);
   if (!m || !resuelto) return 1;
   const a = parseFloat(m[1].replace(",", ".")), b = parseFloat(m[2].replace(",", "."));
   const ra = Number(resuelto.ancho_mm), rb = Number(resuelto.alto_mm);
@@ -279,8 +289,8 @@ export function esquinaDesdePanos(panos, {
     const tipo = tipoDeclarado(p.tipo);
     if (!tipo) {
       return { error: `El paño ${i + 1} es "${p.tipo}" y ese tipo no va en una ventana en esquina. `
-        + "Cada paño puede ser FIJA, PROYECTANTE, BATIENTE, OSCILOBATIENTE o COMPUESTA (mitad y mitad). "
-        + "Si un paño CORRE, no es una bow window: consúltelo con Marcelo." };
+        + "Cada paño puede ser FIJA, PROYECTANTE, BATIENTE, OSCILOBATIENTE, CORREDERA (con sus hojas) "
+        + "o COMPUESTA (mitad y mitad). Una puerta u otro tipo: consúltelo con Marcelo." };
     }
     const a = num(p.ancho_mm);
     if (!Number.isFinite(a) || a <= 0) {
@@ -409,6 +419,26 @@ export function esquinaDesdePanos(panos, {
   // (400 arriba + 1100 abajo); si no, mitad y mitad sin perder un milimetro (771 + 770).
   const partes = [];
   for (let i = 0; i < tipos.length; i++) {
+    if (tipos[i] === "CORREDERA") {
+      // [2026-10-28] «cuantas necesite»: las hojas las dice el CLIENTE. Sin dato son 2 (lo que el
+      // dueño dibujo en la v74443). Una sola hoja que corre es un monorriel, no una corredera, y
+      // mas de cuatro no esta medido: se pregunta, no se adivina. Con literalidad exigida, 3 o 4
+      // tienen que estar escritas por el cliente ("3 hojas" / "tres hojas"): el LLM no las inventa.
+      const p = lista[i] || {};
+      const hojas = vacio(p.hojas) ? 2 : num(p.hojas);
+      if (!HOJAS_CORREDERA.includes(hojas)) {
+        return { error: `El paño ${i + 1} es una corredera de "${p.hojas}" hojas y eso no se cotiza en una esquina: `
+          + "van de 2 a 4 hojas (una sola hoja que corre junto a un paño fijo es un monorriel). Confírmelo con el cliente." };
+      }
+      if (exigir_literal && hojas !== 2
+        && !new RegExp(`\\b(?:${hojas}|${HOJAS_EN_PALABRAS[hojas]})\\s*hojas?\\b`, "i").test(String(texto_cliente || ""))) {
+        // [Thermos] El error NO empuja al default: "corredera triple" o "de tres paños" se PREGUNTA.
+        return { error: `El cliente no escribió que la corredera del paño ${i + 1} tenga ${hojas} hojas. `
+          + "Copie lo que dijo tal cual, o pregúntele cuántas hojas corren: no se supone." };
+      }
+      partes.push({ tipo: "CORREDERA", ancho_mm: anchosMm[i], hojas });
+      continue;
+    }
     if (tipos[i] !== "COMPUESTA") { partes.push({ tipo: tipos[i], ancho_mm: anchosMm[i] }); continue; }
     const p = lista[i] || {};
     if (exigir_literal && (vacio(p.arriba) || vacio(p.abajo))) {
@@ -471,6 +501,7 @@ function tipoDeParte(t) {
   if (s.includes("PROYECT")) return "PROYECTANTE";
   if (s.includes("ABAT") || s.includes("BATIENTE")) return "BATIENTE";
   if (s.startsWith("COMPUEST")) return "COMPUESTA";
+  if (s.includes("CORRE")) return "CORREDERA";   // [2026-10-28] "Corredera 1840mm (2 hojas)"
   return "FIJA";
 }
 
@@ -499,7 +530,8 @@ export function esquinaDesdeLabel(it) {
   // porque viajo por unit_price). Ahora los paños se leen DONDE ESTEN: desde el primer
   // "<Tipo> <n>mm" hasta el cierre del parentesis o el fin, y las mitades del compuesto se
   // aceptan con o sin milimetros. Lo que no se entiende sigue devolviendo null: no se adivina.
-  const TIPO = "(?:fij[oa]|compuest[oa]|proyectante|batiente|oscilobatiente|abatible)";
+  // [2026-10-28] "corredera" tambien: la etiqueta del motor dice "Corredera 1840mm (2 hojas)".
+  const TIPO = "(?:fij[oa]|compuest[oa]|proyectante|batiente|oscilobatiente|abatible|corredera)";
   const inicio = label.search(new RegExp(`${TIPO}\\s+\\d+(?:[.,]\\d+)?\\s*mm`, "i"));
   if (inicio < 0) return null;
   // Se corta en el ")" que cierra el nivel donde empezo la lista (si la lista venia entre
@@ -531,6 +563,13 @@ export function esquinaDesdeLabel(it) {
     const tipo = tipoDeParte(cab[1]);
     const ancho_mm = parseFloat(cab[2].replace(",", "."));
     if (!Number.isFinite(ancho_mm) || ancho_mm <= 0) return null;
+    if (/^corredera/i.test(cab[1])) {
+      // [2026-10-28] Las hojas vienen en la etiqueta ("(2 hojas)", "(3 hojas, triple riel)"). Si
+      // el LLM las borro al reescribirla, 2: el default del motor, que es lo que se cobro.
+      const mh = t.slice(cab[0].length).match(/\(\s*(\d)\s*hojas/i);
+      partes.push({ tipo: "CORREDERA", ancho_mm, hojas: mh ? Number(mh[1]) : 2 });
+      continue;
+    }
     if (!/^compuest/i.test(cab[1])) { partes.push({ tipo, ancho_mm }); continue; }
     // Un paño COMPUESTO trae sus mitades: con milimetros ("Proyectante 770mm (arriba)") o solo
     // con la posicion ("Proyectante arriba"), que es como las reescribe el LLM.

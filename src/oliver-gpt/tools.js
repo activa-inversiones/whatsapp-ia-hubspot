@@ -16,7 +16,7 @@ import { normMeasures } from './normalizers.js';
 import '../sales-agent/whatsapp-adapter.js';
 import '../../services/quotePdf.js';
 import { priceAllEngine, esMonorrielPorForma } from '../../services/enginePricer.js'; // [2026-06-14] pricer completo de V1 (serie SLIDING+hojas+vidrio auto)
-import { esquinaDesdePanos, esBowPorForma, paresDelTexto } from '../../services/formaEsquina.js'; // [2026-09-26 · #947] la bow window paño por paño
+import { esquinaDesdePanos, esBowPorForma, paresDelTexto, HOJAS_CORREDERA } from '../../services/formaEsquina.js'; // [2026-09-26 · #947] la bow window paño por paño
 import { detectarProductoFueraDeAlcance } from '../../services/productoFueraDeAlcance.js'; // [Ronda 2] guarda temprana en calcular_por_area
 import { VIDRIO_BASE } from '../../services/vidriosBase.js'; // [2026-10-06] relleno = 4+12+4 base de Winart
 
@@ -336,8 +336,9 @@ export const TOOL_DEFS = [
               additionalProperties: false,
               properties: {
                 tipo: {
-                  type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE', 'COMPUESTA'],
-                  description: 'Apertura de ESTE paño. COMPUESTA = "mitad proyectante arriba y mitad fija abajo" (u otra combinación arriba/abajo).',
+                  type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE', 'COMPUESTA', 'CORREDERA'],
+                  description: 'Apertura de ESTE paño. COMPUESTA = "mitad proyectante arriba y mitad fija abajo" (u otra combinación arriba/abajo). ' +
+                    'CORREDERA = este paño corre (una corredera de 2 a 4 hojas dentro de la esquina; vea hojas).',
                 },
                 ancho_mm: { type: 'number', description: 'Ancho de ESTE paño, EL NÚMERO TAL CUAL LO ESCRIBIÓ EL CLIENTE (sin convertir ni redondear: si escribió "33x154" manda 33). La unidad la resuelve el sistema con su texto. Un número que el cliente no escribió se rechaza.' },
                 arriba: {
@@ -347,6 +348,11 @@ export const TOOL_DEFS = [
                 abajo: {
                   type: 'string', enum: ['FIJA', 'PROYECTANTE', 'BATIENTE', 'OSCILOBATIENTE'],
                   description: 'OBLIGATORIO si tipo=COMPUESTA: apertura de la mitad de ABAJO, tal como la describió el cliente.',
+                },
+                hojas: {
+                  type: 'integer', minimum: HOJAS_CORREDERA[0], maximum: HOJAS_CORREDERA[HOJAS_CORREDERA.length - 1],
+                  description: 'SOLO si tipo=CORREDERA y el cliente dijo cuántas hojas corren ("corredera de 3 hojas"): 2, 3 o 4. ' +
+                    'Si no lo dijo, NO lo mande (se cotiza de 2 hojas). Una sola hoja que corre con un fijo es un monorriel, no va acá.',
                 },
                 alto_arriba_mm: { type: 'number', description: 'SOLO si tipo=COMPUESTA y el cliente dio la altura de la mitad de arriba (ej. "400 arriba y 1100 abajo"): el número tal cual lo escribió. Si no lo dio, no lo mandes: se reparte mitad y mitad.' },
                 alto_abajo_mm: { type: 'number', description: 'SOLO si tipo=COMPUESTA y el cliente dio la altura de la mitad de abajo: el número tal cual lo escribió.' },
