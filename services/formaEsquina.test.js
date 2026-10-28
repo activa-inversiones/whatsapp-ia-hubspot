@@ -236,6 +236,21 @@ test('🔒 [Codex r1 MEDIO] dos correderas del mismo ancho: cada una lee SU menc
   assert.match(amb.error, /sin duda/);
 });
 
+test('🔴 [dueño 28-oct, frase REAL en Oliver interno] la terna "ancho x ancho x alto" con los paños descritos se cotiza, no se pregunta', () => {
+  const texto = '1 bow windows 1725x1843x1570  fijo de 1725mm y el otro paño en 90 grados 1843 mm corredera';
+  const r = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1725 }, { tipo: 'CORREDERA', ancho_mm: 1843 }],
+    { alto_mm: 1570, angulo: 90, exigir_literal: true, texto_cliente: texto, pares: paresDelTexto(texto) });
+  assert.equal(r.error, undefined, r.error);
+  assert.deepEqual(r.partes, [{ tipo: 'FIJA', ancho_mm: 1725 }, { tipo: 'CORREDERA', ancho_mm: 1843, hojas: 2 }]);
+  assert.equal(r.alto_mm, 1570);
+  assert.equal(r.ancho_total_mm, 3568);
+  // Pero una terna que NO contiene el alto mandado sigue frenando: "1725x1843x1500" con alto 1570.
+  const otra = '1 bow windows 1725x1843x1500 fijo de 1725mm y el otro paño 1843 mm corredera';
+  const e = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1725 }, { tipo: 'CORREDERA', ancho_mm: 1843 }],
+    { alto_mm: 1570, angulo: 90, exigir_literal: true, texto_cliente: otra, pares: paresDelTexto(otra) });
+  assert.match(e.error, /alto/i);
+});
+
 test('🔒 [Thermos BAJO-3] "3 hojas" dicho de OTRA ventana del mismo chat no autoriza 3 hojas en la esquina', () => {
   const texto = 'quiero una corredera de 3 hojas de 2000x1500. aparte, ventana en esquina: fija 1724x1570 y corredera 1840x1570, angulo 90';
   const e = esquinaDesdePanos([{ tipo: 'FIJA', ancho_mm: 1724 }, { tipo: 'CORREDERA', ancho_mm: 1840, hojas: 3 }],

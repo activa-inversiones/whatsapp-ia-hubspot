@@ -398,8 +398,19 @@ export function esquinaDesdePanos(panos, {
     const fa = factorDelNumero(alto);
     if (fa.error) return { error: fa.error };
     const altoMm = alto * fa.factor;
+    // [2026-10-28, frase del dueño] LA TERNA "ancho x ancho x alto": "1 bow windows 1725x1843x1570 fijo
+    // de 1725mm y el otro paño en 90 grados 1843 mm corredera". `paresDelTexto` lee "1725x1843" como
+    // un par y el alto 1570 no aparece en el, asi que esta guardia pedia confirmar el alto. Si el
+    // texto trae una terna cuyo tercer numero (o cualquiera) es el alto y los otros son anchos de la
+    // lista, ese par SI tiene su alto: viene de la terna. No se adivina nada: los tres numeros son del
+    // cliente y los tres estan en la lista o en el alto.
+    const ternas = [...String(texto_cliente || "").matchAll(/(\d+(?:[.,]\d+)?)\s*[x×X]\s*(\d+(?:[.,]\d+)?)\s*[x×X]\s*(\d+(?:[.,]\d+)?)/g)]
+      .map((m) => [num(m[1]), num(m[2]), num(m[3])]);
+    const parDeTernaConAlto = (p) => ternas.some((t) => casi(t[0], p.a) && casi(t[1], p.b)
+      && t.some((v) => casi(v, alto))
+      && t.filter((v) => !casi(v, alto)).every((v) => anchos.some((a) => casi(a, v))));
     if (relevantes.length >= 1) {
-      const comun = relevantes.every((p) => casi(p.a * p.factor, altoMm) || casi(p.b * p.factor, altoMm));
+      const comun = relevantes.every((p) => casi(p.a * p.factor, altoMm) || casi(p.b * p.factor, altoMm) || parDeTernaConAlto(p));
       if (!comun) {
         return { error: `El alto ${alto} no es la medida común de los paños que escribió el cliente `
           + `(${relevantes.map((p) => p.crudo.trim()).join(", ")}). El alto de una esquina es el mismo en todos los paños: copie ese.` };
